@@ -268,6 +268,8 @@ const storybookProject: Project = {
   id: "project-board-ui",
   companyId: "company-storybook",
   urlKey: "board-ui",
+  code: null,
+  parentId: null,
   goalId: "goal-company",
   goalIds: ["goal-company"],
   goals: [{ id: "goal-company", title: "We're building Paperclip" }],

@@ -30,6 +30,7 @@ import {
   Plus,
 } from "lucide-react";
 import { Identity } from "./Identity";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 import { agentUrl, projectUrl } from "../lib/utils";
 
 export function CommandPalette() {
@@ -225,9 +226,16 @@ export function CommandPalette() {
             <CommandSeparator />
             <CommandGroup heading="Projects">
               {projects.slice(0, 10).map((project) => (
-                <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
+                <CommandItem
+                  key={project.id}
+                  value={`${project.name} ${project.code ?? ""}`}
+                  onSelect={() => go(projectUrl(project))}
+                >
                   <Hexagon className="mr-2 h-4 w-4" />
-                  {project.name}
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="truncate">{project.name}</span>
+                    <ProjectCodeBadge code={project.code} />
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>

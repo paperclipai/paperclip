@@ -61,6 +61,7 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -880,7 +881,7 @@ export function NewIssueDialog() {
       orderedProjects.map((project) => ({
         id: project.id,
         label: project.name,
-        searchText: project.description ?? "",
+        searchText: `${project.code ?? ""} ${project.description ?? ""}`,
       })),
     [orderedProjects],
   );
@@ -1172,7 +1173,8 @@ export function NewIssueDialog() {
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
                         style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
                       />
-                      <span className="truncate">{option.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                      <ProjectCodeBadge code={currentProject.code} />
                     </>
                   ) : (
                     <span className="text-muted-foreground">Project</span>
@@ -1187,7 +1189,8 @@ export function NewIssueDialog() {
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
                         style={{ backgroundColor: project?.color ?? "#6366f1" }}
                       />
-                      <span className="truncate">{option.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                      <ProjectCodeBadge code={project?.code} />
                     </>
                   );
                 }}

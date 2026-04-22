@@ -472,6 +472,8 @@ describe("optimistic issue comments", () => {
           id: "project-1",
           companyId: "company-1",
           urlKey: "project-one",
+          code: null,
+          parentId: null,
           goalId: null,
           goalIds: [],
           goals: [],

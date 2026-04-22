@@ -21,7 +21,9 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { buildProjectHierarchyEntries } from "../lib/project-hierarchy";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -36,6 +38,7 @@ function SortableProjectItem({
   activeProjectRef,
   companyId,
   companyPrefix,
+  depth,
   isMobile,
   project,
   projectSidebarSlots,
@@ -44,6 +47,7 @@ function SortableProjectItem({
   activeProjectRef: string | null;
   companyId: string | null;
   companyPrefix: string | null;
+  depth: number;
   isMobile: boolean;
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
@@ -84,17 +88,21 @@ function SortableProjectItem({
             if (isMobile) setSidebarOpen(false);
           }}
           className={cn(
-            "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+            "flex min-w-0 items-center gap-2.5 py-1.5 pr-3 text-[13px] font-medium transition-colors",
             activeProjectRef === routeRef || activeProjectRef === project.id
               ? "bg-accent text-foreground"
               : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
           )}
+          style={{ paddingLeft: `${0.75 + Math.min(depth, 6) * 1}rem` }}
         >
           <span
-            className="shrink-0 h-3.5 w-3.5 rounded-sm"
+            className="h-3.5 w-3.5 shrink-0 rounded-sm"
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
-          <span className="flex-1 truncate">{project.name}</span>
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="truncate">{project.name}</span>
+            <ProjectCodeBadge code={project.code} className="hidden max-w-[4rem] lg:inline-flex" />
+          </span>
           {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
         </NavLink>
         {projectSidebarSlots.length > 0 && (
@@ -155,6 +163,10 @@ export function SidebarProjects() {
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
+  const projectEntries = useMemo(
+    () => buildProjectHierarchyEntries(orderedProjects, orderedProjects),
+    [orderedProjects],
+  );
 
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);
   const activeProjectRef = projectMatch?.[1] ?? null;
@@ -184,14 +196,14 @@ export function SidebarProjects() {
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
         <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
+          <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-1">
             <ChevronRight
               className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
+                "h-3 w-3 text-muted-foreground/60 opacity-0 transition-transform group-hover:opacity-100",
+                open && "rotate-90",
               )}
             />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+            <span className="font-mono text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60">
               Projects
             </span>
           </CollapsibleTrigger>
@@ -200,7 +212,7 @@ export function SidebarProjects() {
               e.stopPropagation();
               openNewProject();
             }}
-            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
             aria-label="New project"
           >
             <Plus className="h-3 w-3" />
@@ -218,13 +230,14 @@ export function SidebarProjects() {
             items={orderedProjects.map((project) => project.id)}
             strategy={verticalListSortingStrategy}
           >
-            <div className="flex flex-col gap-0.5 mt-0.5">
-              {orderedProjects.map((project: Project) => (
+            <div className="mt-0.5 flex flex-col gap-0.5">
+              {projectEntries.map(({ project, depth }) => (
                 <SortableProjectItem
                   key={project.id}
                   activeProjectRef={activeProjectRef}
                   companyId={selectedCompanyId}
                   companyPrefix={selectedCompany?.issuePrefix ?? null}
+                  depth={depth}
                   isMobile={isMobile}
                   project={project}
                   projectSidebarSlots={projectSidebarSlots}

@@ -456,6 +456,20 @@
       "when": 1776780002000,
       "tag": "0064_issue_thread_interaction_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776772605294,
+      "tag": "0067_nested_project_parent",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776774346677,
+      "tag": "0068_project_codes",
+      "breakpoints": true
     }
   ]
 }

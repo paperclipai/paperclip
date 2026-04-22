@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockProjectService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -21,28 +21,76 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
-
-vi.mock("../services/index.js", () => ({
-  logActivity: mockLogActivity,
-  projectService: () => mockProjectService,
-  secretService: () => mockSecretService,
-  workspaceOperationService: () => mockWorkspaceOperationService,
-}));
-
 vi.mock("../services/workspace-runtime.js", () => ({
+  startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForProjectWorkspace: vi.fn(),
+}));
+vi.mock("../services/workspace-runtime.ts", () => ({
   startRuntimeServicesForWorkspaceControl: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../routes/projects.js", async () =>
+    vi.importActual<typeof import("../routes/projects.ts")>("../routes/projects.ts"),
+  );
+  vi.doMock("../routes/projects.ts", async () =>
+    vi.importActual<typeof import("../routes/projects.ts")>("../routes/projects.ts"),
+  );
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-runtime-service-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-runtime-service-authz.ts")>(
+      "../routes/workspace-runtime-service-authz.ts",
+    ),
+  );
+  vi.doMock("../routes/workspace-runtime-service-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-runtime-service-authz.ts")>(
+      "../routes/workspace-runtime-service-authz.ts",
+    ),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
   vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+  vi.doMock("../telemetry.ts", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
 
   vi.doMock("../services/index.js", () => ({
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    secretService: () => mockSecretService,
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+  vi.doMock("../services/index.ts", () => ({
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
@@ -53,12 +101,48 @@ function registerModuleMocks() {
     startRuntimeServicesForWorkspaceControl: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
+  vi.doMock("../services/workspace-runtime.ts", () => ({
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
 }
 
+function resetProjectRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../routes/projects.js");
+  vi.doUnmock("../routes/projects.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../routes/workspace-runtime-service-authz.js");
+  vi.doUnmock("../routes/workspace-runtime-service-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/workspace-runtime.js");
+  vi.doUnmock("../services/workspace-runtime.ts");
+}
+
+let routeImportSeq = 0;
+
 async function createApp() {
+  resetProjectRouteModules();
+  registerModuleMocks();
+  routeImportSeq += 1;
+  const routeModulePath = `../routes/projects.ts?project-routes-env-${routeImportSeq}`;
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/projects.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -117,17 +201,18 @@ function buildProject(overrides: Record<string, unknown> = {}) {
 
 describe("project env routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/projects.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
+    resetProjectRouteModules();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockProjectService.createWorkspace.mockResolvedValue(null);
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
+  });
+
+  afterEach(() => {
+    resetProjectRouteModules();
+    vi.resetAllMocks();
   });
 
   it("normalizes env bindings on create and logs only env keys", async () => {

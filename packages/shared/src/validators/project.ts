@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PROJECT_STATUSES } from "../constants.js";
+import { PROJECT_CODE_MAX_LENGTH, isValidProjectCode, normalizeProjectCode } from "../project-code.js";
 import { envConfigSchema } from "./secret.js";
 
 const executionWorkspaceStrategySchema = z
@@ -95,6 +96,16 @@ export const updateProjectWorkspaceSchema = z.object({
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 
 const projectFields = {
+  code: z.preprocess((value) => {
+    if (value === undefined || value === null) return value;
+    if (typeof value !== "string") return value;
+    return normalizeProjectCode(value);
+  }, z.string()
+    .max(PROJECT_CODE_MAX_LENGTH, `Project code must be ${PROJECT_CODE_MAX_LENGTH} characters or fewer`)
+    .refine(isValidProjectCode, "Project code can only contain A-Z and 0-9")
+    .nullable()
+    .optional()),
+  parentId: z.string().uuid().optional().nullable(),
   /** @deprecated Use goalIds instead */
   goalId: z.string().uuid().optional().nullable(),
   goalIds: z.array(z.string().uuid()).optional(),
@@ -115,6 +126,12 @@ export const createProjectSchema = z.object({
 });
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
+
+export const duplicateProjectSchema = z.object({
+  name: z.string().min(1).optional(),
+}).strict();
+
+export type DuplicateProject = z.infer<typeof duplicateProjectSchema>;
 
 export const updateProjectSchema = z.object(projectFields).partial();
 

@@ -1,0 +1,2 @@
+ALTER TABLE "projects" ADD COLUMN "code" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "projects_company_code_uq" ON "projects" USING btree ("company_id","code") WHERE "projects"."code" is not null;

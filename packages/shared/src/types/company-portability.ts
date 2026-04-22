@@ -49,8 +49,10 @@ export interface CompanyPortabilitySidebarOrder {
 export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
+  code: string | null;
   path: string;
   description: string | null;
+  parentSlug: string | null;
   ownerAgentSlug: string | null;
   leadAgentSlug: string | null;
   targetDate: string | null;

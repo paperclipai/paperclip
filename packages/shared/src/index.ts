@@ -198,6 +198,13 @@ export {
   validateConfiguredBindMode,
 } from "./network-bind.js";
 
+export {
+  PROJECT_CODE_MAX_LENGTH,
+  PROJECT_CODE_PATTERN,
+  isValidProjectCode,
+  normalizeProjectCode,
+} from "./project-code.js";
+
 export type {
   Company,
   FeedbackVote,
@@ -566,10 +573,12 @@ export {
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
   createProjectSchema,
+  duplicateProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   type CreateProject,
+  type DuplicateProject,
   type UpdateProject,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,

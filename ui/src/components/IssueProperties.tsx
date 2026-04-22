@@ -35,6 +35,7 @@ import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -789,7 +790,8 @@ export function IssueProperties({
         className="shrink-0 h-3 w-3 rounded-sm"
         style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
       />
-      <span className="text-sm break-words min-w-0">{projectName(issue.projectId)}</span>
+      <span className="min-w-0 flex-1 truncate text-sm">{projectName(issue.projectId)}</span>
+      <ProjectCodeBadge code={orderedProjects.find((project) => project.id === issue.projectId)?.code} />
     </>
   ) : (
     <>
@@ -826,7 +828,7 @@ export function IssueProperties({
           .filter((option) => {
             if (!projectSearch.trim()) return true;
             const q = projectSearch.toLowerCase();
-            return option.name.toLowerCase().includes(q);
+            return `${option.name} ${option.kind === "project" ? option.project.code ?? "" : ""}`.toLowerCase().includes(q);
           })
           .map((option) => (
             <button
@@ -866,7 +868,8 @@ export function IssueProperties({
                   style={{ backgroundColor: option.color ?? "#6366f1" }}
                 />
               ) : null}
-              {option.name}
+              <span className="min-w-0 flex-1 truncate">{option.name}</span>
+              {option.kind === "project" ? <ProjectCodeBadge code={option.project.code} /> : null}
             </button>
           ))}
       </div>

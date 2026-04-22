@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, date, index, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { type AnyPgColumn, pgTable, uuid, text, timestamp, date, index, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import type { AgentEnvConfig } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
@@ -9,7 +10,9 @@ export const projects = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    parentId: uuid("parent_id").references((): AnyPgColumn => projects.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
+    code: text("code"),
     name: text("name").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -26,5 +29,9 @@ export const projects = pgTable(
   },
   (table) => ({
     companyIdx: index("projects_company_idx").on(table.companyId),
+    companyParentIdx: index("projects_company_parent_idx").on(table.companyId, table.parentId),
+    companyCodeUq: uniqueIndex("projects_company_code_uq")
+      .on(table.companyId, table.code)
+      .where(sql`${table.code} is not null`),
   }),
 );

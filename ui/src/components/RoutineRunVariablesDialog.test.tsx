@@ -57,6 +57,8 @@ function createProject(): Project {
     id: "project-1",
     companyId: "company-1",
     urlKey: "workspace-project",
+    code: null,
+    parentId: null,
     goalId: null,
     goalIds: [],
     goals: [],

@@ -120,12 +120,14 @@ export {
 
 export {
   createProjectSchema,
+  duplicateProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
   projectWorkspaceRuntimeConfigSchema,
   type CreateProject,
+  type DuplicateProject,
   type UpdateProject,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,

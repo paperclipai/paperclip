@@ -942,6 +942,96 @@ describe("company portability", () => {
     }));
   });
 
+  it("exports and imports project parent hierarchy by slug", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-root",
+        name: "Platform",
+        urlKey: "platform",
+        parentId: null,
+        description: "Root project",
+        leadAgentId: null,
+        targetDate: null,
+        color: "#123456",
+        status: "planned",
+        env: null,
+        executionWorkspacePolicy: null,
+        workspaces: [],
+        archivedAt: null,
+      },
+      {
+        id: "project-child",
+        name: "Platform UI",
+        urlKey: "platform-ui",
+        parentId: "project-root",
+        description: "Nested project",
+        leadAgentId: null,
+        targetDate: null,
+        color: "#654321",
+        status: "planned",
+        env: null,
+        executionWorkspacePolicy: null,
+        workspaces: [],
+        archivedAt: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: false,
+        agents: false,
+        projects: true,
+        issues: false,
+      },
+    });
+
+    expect(exported.manifest.projects.find((project) => project.slug === "platform-ui")?.parentSlug).toBe("platform");
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain('parentSlug: "platform"');
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: input.name === "Platform" ? "imported-root" : "imported-child",
+      name: input.name,
+      urlKey: input.name === "Platform" ? "platform" : "platform-ui",
+    }));
+    projectSvc.update.mockImplementation(async (projectId: string, input: Record<string, unknown>) => ({
+      id: projectId,
+      name: projectId === "imported-root" ? "Platform" : "Platform UI",
+      urlKey: projectId === "imported-root" ? "platform" : "platform-ui",
+      ...input,
+    }));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: false,
+        projects: true,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(projectSvc.update).toHaveBeenCalledWith("imported-child", expect.objectContaining({
+      parentId: "imported-root",
+    }));
+  });
+
   it("infers portable git metadata from a local checkout without task warning fan-out", async () => {
     const portability = companyPortabilityService({} as any);
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-portability-git-"));
