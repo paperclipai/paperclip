@@ -104,6 +104,17 @@ import {
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
 import {
+  execute as kilocodeExecute,
+  listKilocodeSkills,
+  syncKilocodeSkills,
+  testEnvironment as kilocodeTestEnvironment,
+  sessionCodec as kilocodeSessionCodec,
+} from "@paperclipai/adapter-kilocode-local/server";
+import {
+  agentConfigurationDoc as kilocodeAgentConfigurationDoc,
+  models as kilocodeModels,
+} from "@paperclipai/adapter-kilocode-local";
+import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
@@ -373,6 +384,22 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const kilocodeLocalAdapter: ServerAdapterModule = {
+  type: "kilocode_local",
+  execute: kilocodeExecute,
+  testEnvironment: kilocodeTestEnvironment,
+  listSkills: listKilocodeSkills,
+  syncSkills: syncKilocodeSkills,
+  sessionCodec: kilocodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kilocode_local") ?? undefined,
+  models: kilocodeModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: kilocodeAgentConfigurationDoc,
+};
+
 // hermes-paperclip-adapter v0.2.0 predates the authToken field; cast is
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
@@ -457,6 +484,7 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    kilocodeLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
