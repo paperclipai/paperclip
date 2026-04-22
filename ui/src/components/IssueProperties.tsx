@@ -474,6 +474,32 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+
+  const isPendingForCurrentUser = (() => {
+    const state = issue.executionState;
+    if (!state || state.status !== "pending") return false;
+    const p = state.currentParticipant;
+    if (!p || p.type !== "user") return false;
+    return !!currentUserId && p.userId === currentUserId;
+  })();
+
+  const handleStageDecision = (outcome: "approve" | "reject") => {
+    const promptLabel = outcome === "approve"
+      ? "Approve this stage — add a note (required):"
+      : "Request changes — add a note (required):";
+    const note = window.prompt(promptLabel, "");
+    if (note === null) return;
+    const trimmed = note.trim();
+    if (!trimmed) {
+      window.alert("A note is required to advance this stage.");
+      return;
+    }
+    onUpdate({
+      status: outcome === "approve" ? "done" : "in_progress",
+      comment: trimmed,
+    });
+  };
+
   const selectedIssueLabels = useMemo(() => {
     const selectedIds = issue.labelIds ?? [];
     if (selectedIds.length === 0) return issue.labels ?? [];
