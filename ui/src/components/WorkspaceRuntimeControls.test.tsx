@@ -144,6 +144,82 @@ describe("buildWorkspaceRuntimeControlSections", () => {
       }),
     ]);
   });
+
+  it("surfaces running stale runtime services separately from updated commands", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          command: "pnpm dev",
+        }),
+      ],
+      canStartServices: true,
+      canRunJobs: true,
+    });
+
+    expect(sections.services).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "stopped",
+        command: "pnpm dev:once --tailscale-auth",
+        runtimeServiceId: null,
+      }),
+    ]);
+    expect(sections.otherServices).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "running",
+        command: "pnpm dev",
+        runtimeServiceId: "service-web",
+        disabledReason: "This runtime service no longer matches a configured workspace command.",
+      }),
+    ]);
+  });
+
+  it("surfaces running stale runtime services separately from updated commands", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          command: "pnpm dev",
+        }),
+      ],
+      canStartServices: true,
+      canRunJobs: true,
+    });
+
+    expect(sections.services).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "stopped",
+        command: "pnpm dev:once --tailscale-auth",
+        runtimeServiceId: null,
+      }),
+    ]);
+    expect(sections.otherServices).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "running",
+        command: "pnpm dev",
+        runtimeServiceId: "service-web",
+        disabledReason: "This runtime service no longer matches a configured workspace command.",
+      }),
+    ]);
+  });
 });
 
 describe("buildWorkspaceRuntimeControlItems", () => {

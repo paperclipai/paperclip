@@ -35,6 +35,7 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
+  update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -92,7 +93,16 @@ const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+}));
+
 function registerModuleMocks() {
+  vi.doMock("../routes/agents.js", async () => vi.importActual("../routes/agents.js"));
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  vi.doMock("../adapters/index.js", async () => vi.importActual("../adapters/index.js"));
+  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
     trackErrorHandlerCrash: vi.fn(),
@@ -100,6 +110,59 @@ function registerModuleMocks() {
 
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/approvals.js", () => ({
+    approvalService: () => mockApprovalService,
+  }));
+
+  vi.doMock("../services/company-skills.js", () => ({
+    companySkillService: () => mockCompanySkillService,
+  }));
+
+  vi.doMock("../services/budgets.js", () => ({
+    budgetService: () => mockBudgetService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/issue-approvals.js", () => ({
+    issueApprovalService: () => mockIssueApprovalService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
+  }));
+
+  vi.doMock("../services/agent-instructions.js", () => ({
+    agentInstructionsService: () => mockAgentInstructionsService,
+    syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
+  }));
+
+  vi.doMock("../services/workspace-operations.js", () => ({
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -140,8 +203,8 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
 
 async function createApp(actor: Record<string, unknown>, dbOptions: { requireBoardApprovalForNewAgents?: boolean } = {}) {
   const [{ errorHandler }, { agentRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    import("../middleware/index.js"),
+    import("../routes/agents.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -159,8 +222,23 @@ describe("agent permission routes", () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agent-instructions.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/approvals.js");
+    vi.doUnmock("../services/budgets.js");
+    vi.doUnmock("../services/company-skills.js");
+    vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/issue-approvals.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/secrets.js");
+    vi.doUnmock("../services/workspace-operations.js");
+    vi.doUnmock("../adapters/index.js");
     vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
@@ -172,8 +250,14 @@ describe("agent permission routes", () => {
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
-    mockAgentService.activatePendingApproval.mockResolvedValue(baseAgent);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: baseAgent,
+      activated: false,
+    });
+    mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(false);
     mockAccessService.getMembership.mockResolvedValue({
       id: "membership-1",
       companyId,
@@ -209,6 +293,9 @@ describe("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+    });
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -228,7 +315,7 @@ describe("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toEqual({});
     expect(res.body.runtimeConfig).toEqual({});
-  });
+  }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
@@ -353,7 +440,7 @@ describe("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("instructions path or bundle configuration");
     expect(mockLogActivity).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("blocks agent-authenticated instructions-path updates", async () => {
     const app = await createApp({
@@ -527,7 +614,7 @@ describe("agent permission routes", () => {
       true,
       "board-user",
     );
-  });
+  }, 15_000);
 
   it("rejects unsupported query parameters on the agent list route", async () => {
     const app = await createApp({
@@ -711,7 +798,7 @@ describe("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
-  });
+  }, 15_000);
 
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
     mockAgentService.updatePermissions.mockResolvedValue({

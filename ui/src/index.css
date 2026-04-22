@@ -763,6 +763,11 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: none;
 }
 
+.paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"] {
+  border-color: color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
+  background: color-mix(in oklab, var(--accent) 42%, transparent);
+}
+
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }

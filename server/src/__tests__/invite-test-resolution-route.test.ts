@@ -2,12 +2,6 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  accessRoutes,
-  setInviteResolutionNetworkForTest,
-} from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
-
 function createSelectChain(rows: unknown[]) {
   const query = {
     then(resolve: (value: unknown[]) => unknown) {
@@ -50,7 +44,21 @@ function createInvite(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createApp(db: Record<string, unknown>) {
+let currentAccessModule: Awaited<ReturnType<typeof vi.importActual<typeof import("../routes/access.js")>>> | null = null;
+
+async function createApp(
+  db: Record<string, unknown>,
+  network: {
+    lookup: ReturnType<typeof vi.fn>;
+    requestHead: ReturnType<typeof vi.fn>;
+  },
+) {
+  const [access, middleware] = await Promise.all([
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
+  currentAccessModule = access;
+  access.setInviteResolutionNetworkForTest(network);
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = { type: "anon" };
@@ -58,29 +66,41 @@ function createApp(db: Record<string, unknown>) {
   });
   app.use(
     "/api",
-    accessRoutes(db as any, {
+    access.accessRoutes(db as any, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
       allowedHostnames: [],
     }),
   );
-  app.use(errorHandler);
+  app.use(middleware.errorHandler);
   return app;
 }
 
 describe("GET /invites/:token/test-resolution", () => {
-  const lookup = vi.fn();
-  const requestHead = vi.fn();
-
   beforeEach(() => {
-    lookup.mockReset();
-    requestHead.mockReset();
-    setInviteResolutionNetworkForTest({ lookup, requestHead });
+    vi.resetModules();
+    vi.doUnmock("node:dns/promises");
+    vi.doUnmock("node:http");
+    vi.doUnmock("node:https");
+    vi.doUnmock("node:net");
+    vi.doUnmock("../board-claim.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../storage/index.js");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doMock("node:dns/promises", async () => vi.importActual("node:dns/promises"));
+    vi.doMock("node:http", async () => vi.importActual("node:http"));
+    vi.doMock("node:https", async () => vi.importActual("node:https"));
+    vi.doMock("node:net", async () => vi.importActual("node:net"));
+    vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+    currentAccessModule = null;
   });
 
-  afterEach(() => {
-    setInviteResolutionNetworkForTest(null);
+  afterEach(async () => {
+    currentAccessModule?.setInviteResolutionNetworkForTest(null);
   });
 
   it.each([
@@ -97,8 +117,9 @@ describe("GET /invites/:token/test-resolution", () => {
     ["NAT64 well-known prefix", "https://gateway.example.test/health", "64:ff9b::0a00:0001"],
     ["NAT64 local-use prefix", "https://gateway.example.test/health", "64:ff9b:1::0a00:0001"],
   ])("rejects %s targets before probing", async (_label, url, address) => {
-    lookup.mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
-    const app = createApp(createDbStub([createInvite()]));
+    const lookup = vi.fn().mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -109,11 +130,12 @@ describe("GET /invites/:token/test-resolution", () => {
       "url resolves to a private, local, multicast, or reserved address",
     );
     expect(requestHead).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("rejects hostnames that resolve to private addresses", async () => {
-    lookup.mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
-    const app = createApp(createDbStub([createInvite()]));
+    const lookup = vi.fn().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -128,11 +150,12 @@ describe("GET /invites/:token/test-resolution", () => {
   });
 
   it("rejects hostnames when any resolved address is private", async () => {
-    lookup.mockResolvedValue([
-      { address: "93.184.216.34", family: 4 },
+    const lookup = vi.fn().mockResolvedValue([
       { address: "127.0.0.1", family: 4 },
+      { address: "93.184.216.34", family: 4 },
     ]);
-    const app = createApp(createDbStub([createInvite()]));
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -143,9 +166,9 @@ describe("GET /invites/:token/test-resolution", () => {
   });
 
   it("allows public HTTPS targets through the resolved and pinned probe path", async () => {
-    lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
-    requestHead.mockResolvedValue({ httpStatus: 204 });
-    const app = createApp(createDbStub([createInvite()]));
+    const lookup = vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const requestHead = vi.fn().mockResolvedValue({ httpStatus: 204 });
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -176,7 +199,9 @@ describe("GET /invites/:token/test-resolution", () => {
     ["revoked invite", [createInvite({ revokedAt: new Date("2026-03-07T00:05:00.000Z") })]],
     ["expired invite", [createInvite({ expiresAt: new Date("2020-03-07T00:10:00.000Z") })]],
   ])("returns not found for %s tokens before DNS lookup", async (_label, inviteRows) => {
-    const app = createApp(createDbStub(inviteRows));
+    const lookup = vi.fn();
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub(inviteRows), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")

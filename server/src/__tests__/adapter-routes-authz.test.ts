@@ -59,6 +59,30 @@ vi.mock("../adapters/plugin-loader.js", () => ({
   reloadExternalAdapter: mocks.reloadExternalAdapter,
 }));
 
+function registerRouteMocks() {
+  vi.doMock("node:child_process", () => ({
+    execFile: mocks.execFile,
+  }));
+
+  vi.doMock("../services/adapter-plugin-store.js", () => ({
+    listAdapterPlugins: mocks.listAdapterPlugins,
+    addAdapterPlugin: mocks.addAdapterPlugin,
+    removeAdapterPlugin: mocks.removeAdapterPlugin,
+    getAdapterPluginByType: mocks.getAdapterPluginByType,
+    getAdapterPluginsDir: mocks.getAdapterPluginsDir,
+    getDisabledAdapterTypes: mocks.getDisabledAdapterTypes,
+    setAdapterDisabled: mocks.setAdapterDisabled,
+  }));
+
+  vi.doMock("../adapters/plugin-loader.js", () => ({
+    buildExternalAdapters: mocks.buildExternalAdapters,
+    loadExternalAdapterPackage: mocks.loadExternalAdapterPackage,
+    getUiParserSource: mocks.getUiParserSource,
+    getOrExtractUiParserSource: mocks.getOrExtractUiParserSource,
+    reloadExternalAdapter: mocks.reloadExternalAdapter,
+  }));
+}
+
 const EXTERNAL_ADAPTER_TYPE = "external_admin_test";
 const EXTERNAL_PACKAGE_NAME = "paperclip-external-adapter";
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
@@ -167,20 +191,28 @@ function seedInstalledExternalAdapter() {
 }
 
 describe("adapter management route authorization", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.doUnmock("node:child_process");
+    vi.doUnmock("../services/adapter-plugin-store.js");
+    vi.doUnmock("../adapters/plugin-loader.js");
+    vi.doUnmock("../routes/adapters.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../adapters/registry.js");
+    registerRouteMocks();
+    vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
     const [routes, middleware, registry] = await Promise.all([
-      import("../routes/adapters.js"),
-      import("../middleware/index.js"),
-      import("../adapters/registry.js"),
+      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
     ]);
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     setOverridePaused = registry.setOverridePaused;
-  }, 20_000);
-
-  beforeEach(() => {
     vi.clearAllMocks();
     mocks.externalRecords.clear();
 
@@ -193,7 +225,7 @@ describe("adapter management route authorization", () => {
     mocks.buildExternalAdapters.mockResolvedValue([]);
     mocks.loadExternalAdapterPackage.mockResolvedValue(createAdapter());
     mocks.reloadExternalAdapter.mockImplementation(async (type: string) => createAdapter(type));
-  });
+  }, 20_000);
 
   afterEach(() => {
     unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);

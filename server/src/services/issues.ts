@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -79,6 +80,7 @@ export interface IssueFilters {
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  workspaceId?: string;
   executionWorkspaceId?: string;
   parentId?: string;
   labelId?: string;
@@ -168,6 +170,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
+const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -189,6 +192,16 @@ function truncateInlineSummary(value: string | null | undefined, maxChars = CHIL
   const normalized = value?.trim();
   if (!normalized) return null;
   return normalized.length > maxChars ? `${normalized.slice(0, Math.max(0, maxChars - 15)).trimEnd()} [truncated]` : normalized;
+}
+
+function truncateByCodePoint(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return Array.from(value).slice(0, maxChars).join("");
+}
+
+function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
+  if (value == null) return null;
+  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
 }
 
 function appendAcceptanceCriteriaToDescription(description: string | null | undefined, acceptanceCriteria: string[] | undefined) {
@@ -275,7 +288,6 @@ async function listUnresolvedBlockerIssueIds(
     )
     .then((rows) => rows.map((row) => row.id));
 }
-
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -681,7 +693,13 @@ const issueListSelect = {
   description: sql<string | null>`
     CASE
       WHEN ${issues.description} IS NULL THEN NULL
-      ELSE substring(${issues.description} FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})
+      ELSE encode(
+        substring(
+          convert_to(${issues.description}, current_setting('server_encoding'))
+          FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_BYTES}
+        ),
+        'base64'
+      )
     END
   `,
   status: issues.status,
@@ -699,6 +717,7 @@ const issueListSelect = {
   originKind: issues.originKind,
   originId: issues.originId,
   originRunId: issues.originRunId,
+  originFingerprint: issues.originFingerprint,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
@@ -1275,6 +1294,12 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.workspaceId) {
+        conditions.push(or(
+          eq(issues.executionWorkspaceId, filters.workspaceId),
+          eq(issues.projectWorkspaceId, filters.workspaceId),
+        )!);
+      }
       if (filters?.executionWorkspaceId) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }
@@ -1327,7 +1352,10 @@ export function issueService(db: Db) {
           desc(canonicalLastActivityAt),
           desc(issues.updatedAt),
         );
-      const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
+      const rows = (limit === undefined ? await baseQuery : await baseQuery.limit(limit)).map((row) => ({
+        ...row,
+        description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
+      }));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);

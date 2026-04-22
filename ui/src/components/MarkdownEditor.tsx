@@ -730,7 +730,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
-      if (parsed.kind === "user") {
+      if (parsed.kind === "user" || parsed.kind === "issue") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }

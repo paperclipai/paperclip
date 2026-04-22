@@ -462,6 +462,20 @@ describe("agent skill routes", () => {
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining('kind: "request_confirmation"'),
+        }),
+        expect.any(Object),
+      );
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("confirmation:{issueId}:plan:{revisionId}"),
+        }),
+        expect.any(Object),
+      );
     });
   });
 

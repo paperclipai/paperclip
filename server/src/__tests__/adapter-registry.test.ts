@@ -1,5 +1,28 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
+
+const hermesExecuteMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+  })),
+);
+
+vi.mock("hermes-paperclip-adapter/server", () => ({
+  execute: hermesExecuteMock,
+  testEnvironment: async () => ({
+    adapterType: "hermes_local",
+    status: "pass",
+    checks: [],
+    testedAt: new Date(0).toISOString(),
+  }),
+  sessionCodec: null,
+  listSkills: async () => [],
+  syncSkills: async () => ({ entries: [] }),
+  detectModel: async () => null,
+}));
+
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -39,6 +62,7 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
+    hermesExecuteMock.mockClear();
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -184,5 +208,179 @@ describe("server adapter registry", () => {
     expect(await listAdapterModels("claude_local")).toEqual(builtIn?.models ?? []);
     expect(await detectAdapterModel("claude_local")).toBeNull();
     expect(detectModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("injects the local agent JWT and Paperclip API auth guidance into Hermes", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: "llm-token",
+          },
+          promptTemplate: "Existing prompt",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig).toMatchObject({
+      env: {
+        OPENAI_API_KEY: "llm-token",
+        PAPERCLIP_API_KEY: "agent-run-jwt",
+        PAPERCLIP_RUN_ID: "run-123",
+      },
+    });
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "Authorization: Bearer $PAPERCLIP_API_KEY",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
+    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
+  });
+
+  it("preserves Hermes command normalization while injecting auth", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          command: "agent-hermes",
+        },
+      },
+      runtime: {},
+      config: {
+        command: "runtime-hermes",
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.config.hermesCommand).toBe("runtime-hermes");
+    expect(patchedCtx.agent.adapterConfig.hermesCommand).toBe("agent-hermes");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("passes the original Hermes context through when authToken is absent", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+    const ctx = {
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          env: {
+            PAPERCLIP_API_KEY: "server-level-key",
+          },
+          promptTemplate: "Existing prompt",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+    };
+
+    await adapter.execute(ctx);
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+  });
+
+  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          env: {
+            PAPERCLIP_API_KEY: "explicit-agent-key",
+            PAPERCLIP_RUN_ID: "stale-run-id",
+          },
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
+    // No custom promptTemplate was set — Hermes must use its built-in default.
+    // Setting promptTemplate here would replace the full default with just the auth guard text,
+    // stripping assigned issue / workflow instructions.
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+  });
+
+  it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    // Auth token is still injected.
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 });

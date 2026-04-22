@@ -146,6 +146,8 @@ Use it for:
 - explicit waiting relationships
 - automatic wakeups when all blockers resolve
 
+Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
+
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
 ## 7. Consistent Execution Path Rules
