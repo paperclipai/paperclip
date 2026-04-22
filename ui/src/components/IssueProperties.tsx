@@ -114,6 +114,22 @@ function dueDateInputValue(date: Date | string): string {
   return new Date(date).toISOString().split("T")[0]!;
 }
 
+function openDueDatePicker(input: HTMLInputElement | null): void {
+  if (!input) return;
+  const withShowPicker = input as HTMLInputElement & { showPicker?: () => void };
+  if (typeof withShowPicker.showPicker === "function") {
+    try {
+      withShowPicker.showPicker();
+      return;
+    } catch {
+      // showPicker() can throw if called without a user gesture on some
+      // browsers; fall back to focus so the user at least lands on the field.
+    }
+  }
+  input.focus();
+  input.click();
+}
+
 const LEAD_DAYS_PRESETS = [0, 1, 3, 7, 14] as const;
 
 function computeStartDate(dueDate: Date | string, leadDays: number): Date {
@@ -355,6 +371,7 @@ export function IssueProperties({
   const [collaboratorSearch, setCollaboratorSearch] = useState("");
   const [confirmMakeCompanyOpen, setConfirmMakeCompanyOpen] = useState(false);
   const [startOpen, setStartOpen] = useState(false);
+  const dueDateInputRef = useRef<HTMLInputElement>(null);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1219,27 +1236,32 @@ export function IssueProperties({
                         isOverdue ? "text-red-500" : "text-muted-foreground",
                       )}
                     />
-                    <label
+                    <button
+                      type="button"
+                      onClick={() => openDueDatePicker(dueDateInputRef.current)}
                       className={cn(
-                        "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+                        "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors text-left",
                         isOverdue && "text-red-500 font-medium",
                       )}
                       title="Change due date"
                     >
                       <span className="text-sm">{formatDueDateRelative(issue.dueDate)}</span>
-                      <input
-                        type="date"
-                        className="sr-only"
-                        value={dueDateInputValue(issue.dueDate)}
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            onUpdate({
-                              dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString(),
-                            });
-                          }
-                        }}
-                      />
-                    </label>
+                    </button>
+                    <input
+                      ref={dueDateInputRef}
+                      type="date"
+                      className="absolute h-0 w-0 opacity-0 pointer-events-none"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      value={dueDateInputValue(issue.dueDate)}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          onUpdate({
+                            dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString(),
+                          });
+                        }
+                      }}
+                    />
                   </>
                 );
               })()}
@@ -1253,12 +1275,21 @@ export function IssueProperties({
               </button>
             </>
           ) : (
-            <label className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
-              <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">No due date</span>
+            <>
+              <button
+                type="button"
+                onClick={() => openDueDatePicker(dueDateInputRef.current)}
+                className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors text-left"
+              >
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">No due date</span>
+              </button>
               <input
+                ref={dueDateInputRef}
                 type="date"
-                className="sr-only"
+                className="absolute h-0 w-0 opacity-0 pointer-events-none"
+                tabIndex={-1}
+                aria-hidden="true"
                 onChange={(e) => {
                   if (e.target.value) {
                     onUpdate({
@@ -1267,7 +1298,7 @@ export function IssueProperties({
                   }
                 }}
               />
-            </label>
+            </>
           )}
         </PropertyRow>
 
