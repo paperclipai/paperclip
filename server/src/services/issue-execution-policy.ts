@@ -396,12 +396,13 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
         // returnAssignee), fall back to including the returnAssignee — they may be an explicitly
         // named participant at a later stage and should not be silently blocked.
         const actorIsReturnAssignee = principalsEqual(actor, existingState?.returnAssignee ?? null);
+        const canFallbackToReturnAssignee = actor !== null && !actorIsReturnAssignee;
         const participant =
           selectStageParticipant(nextStage, {
             preferred: explicitAssignee,
             exclude: existingState?.returnAssignee ?? null,
           }) ??
-          (!actorIsReturnAssignee
+          (canFallbackToReturnAssignee
             ? selectStageParticipant(nextStage, { preferred: explicitAssignee })
             : null);
         if (!participant) {

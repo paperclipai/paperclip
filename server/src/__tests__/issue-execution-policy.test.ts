@@ -970,6 +970,48 @@ describe("issue execution policy transitions", () => {
       });
     });
 
+    it("treats unknown actor identity as a non-participant before any fallback can apply", () => {
+      const ctoAgentId = "33333333-3333-4333-8333-333333333333";
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: ctoAgentId }],
+        },
+      ]);
+      const reviewStageId = policy.stages[0].id;
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: ctoAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: {},
+          commentBody: "Approval without actor identity should not unlock fallback.",
+        }),
+      ).toThrow("Only the active reviewer or approver can advance the current execution stage");
+    });
+
     it("skips a self-review-only review stage and advances to approval", () => {
       const policy = makePolicy([
         {
