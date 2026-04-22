@@ -290,16 +290,12 @@ function orgInitials(name: string) {
   return `${parts[0]![0]}${parts[parts.length - 1]![0]}`.toUpperCase();
 }
 
-function pushRoute(path: string) {
-  window.history.pushState({}, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
 function OrgSwitcherChip() {
   const [open, setOpen] = useState(false);
   const { organizations, activeOrganizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
   const { companies, setSelectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const navigate = useNavigate();
 
   const label = selectedOrg?.name ?? (loading ? "…" : "Org");
   const initials = orgInitials(label);
@@ -319,16 +315,16 @@ function OrgSwitcherChip() {
     setSelectedOrgId(orgId);
     if (nextCompany) {
       setSelectedCompanyId(nextCompany.id, { source: "manual" });
-      pushRoute(`/${nextCompany.issuePrefix}/dashboard`);
+      navigate(`/${nextCompany.issuePrefix}/dashboard`);
     } else {
-      pushRoute("/home");
+      navigate("/home");
     }
   }
 
   function handleManage() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
-    pushRoute("/organizations");
+    navigate("/organizations");
   }
 
   return (
