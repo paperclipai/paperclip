@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
 
-const { useQueryMock, logMock } = vi.hoisted(() => ({
+const { useQueryMock, logMock, buildTranscriptMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
   logMock: vi.fn(async () => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 })),
+  buildTranscriptMock: vi.fn((chunks: unknown[]) => chunks),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -28,7 +29,7 @@ vi.mock("../../api/heartbeats", () => ({
 }));
 
 vi.mock("../../adapters", () => ({
-  buildTranscript: (chunks: unknown[]) => chunks,
+  buildTranscript: buildTranscriptMock,
   getUIAdapter: () => null,
   onAdapterChange: () => () => {},
 }));
@@ -73,7 +74,9 @@ describe("useLiveRunTranscripts", () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     useQueryMock.mockClear();
-    logMock.mockClear();
+    logMock.mockReset();
+    logMock.mockImplementation(async () => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 }));
+    buildTranscriptMock.mockClear();
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   });
 
@@ -219,6 +222,93 @@ describe("useLiveRunTranscripts", () => {
     });
 
     expect(logMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("can hydrate active runs without opening the live event socket", async () => {
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+        enableRealtimeUpdates: false,
+        logReadLimitBytes: 64_000,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(logMock).toHaveBeenCalledWith("run-1", 0, 64_000);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("rebuilds only the transcript for the run that receives live output", async () => {
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [
+          { id: "run-1", status: "running", adapterType: "codex_local" },
+          { id: "run-2", status: "running", adapterType: "codex_local" },
+        ],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(buildTranscriptMock).toHaveBeenCalledTimes(2);
+    buildTranscriptMock.mockClear();
+
+    await act(async () => {
+      FakeWebSocket.instances[0]!.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            companyId: "company-1",
+            type: "heartbeat.run.log",
+            createdAt: "2026-04-20T00:00:00.000Z",
+            payload: {
+              runId: "run-1",
+              ts: "2026-04-20T00:00:00.000Z",
+              stream: "stdout",
+              chunk: "hello from run 1\n",
+            },
+          }),
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(buildTranscriptMock).toHaveBeenCalledTimes(1);
+    expect(buildTranscriptMock).toHaveBeenCalledWith(
+      [{ ts: "2026-04-20T00:00:00.000Z", stream: "stdout", chunk: "hello from run 1\n" }],
+      null,
+      { censorUsernameInLogs: false },
+    );
 
     act(() => {
       root.unmount();

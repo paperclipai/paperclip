@@ -1,30 +1,30 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { accessRoutes } from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
 
 const logActivityMock = vi.fn();
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    isInstanceAdmin: vi.fn(),
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  boardAuthService: () => ({
-    createChallenge: vi.fn(),
-    resolveBoardAccess: vi.fn(),
-    assertCurrentBoardKey: vi.fn(),
-    revokeBoardApiKey: vi.fn(),
-  }),
-  deduplicateAgentName: vi.fn(),
-  logActivity: (...args: unknown[]) => logActivityMock(...args),
-  notifyHireApproved: vi.fn(),
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => ({
+      isInstanceAdmin: vi.fn(),
+      canUser: vi.fn(),
+      hasPermission: vi.fn(),
+    }),
+    agentService: () => ({
+      getById: vi.fn(),
+    }),
+    boardAuthService: () => ({
+      createChallenge: vi.fn(),
+      resolveBoardAccess: vi.fn(),
+      assertCurrentBoardKey: vi.fn(),
+      revokeBoardApiKey: vi.fn(),
+    }),
+    deduplicateAgentName: vi.fn(),
+    logActivity: (...args: unknown[]) => logActivityMock(...args),
+    notifyHireApproved: vi.fn(),
+  }));
+}
 
 function createDbStub() {
   const createdInvite = {
@@ -76,7 +76,11 @@ function createDbStub() {
   };
 }
 
-function createApp() {
+async function createApp() {
+  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/access.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -103,11 +107,18 @@ function createApp() {
 
 describe("POST /companies/:companyId/invites", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     logActivityMock.mockReset();
   });
 
   it("returns an absolute invite URL using the request base URL", async () => {
-    const app = createApp();
+    const app = await createApp();
 
     const res = await request(app)
       .post("/api/companies/company-1/invites")

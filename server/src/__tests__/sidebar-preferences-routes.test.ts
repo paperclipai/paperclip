@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { sidebarPreferenceRoutes } from "../routes/sidebar-preferences.js";
 
 const mockSidebarPreferenceService = vi.hoisted(() => ({
   getCompanyOrder: vi.fn(),
@@ -12,12 +10,18 @@ const mockSidebarPreferenceService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  sidebarPreferenceService: () => mockSidebarPreferenceService,
-  logActivity: mockLogActivity,
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    sidebarPreferenceService: () => mockSidebarPreferenceService,
+    logActivity: mockLogActivity,
+  }));
+}
 
-function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>) {
+  const [{ sidebarPreferenceRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/sidebar-preferences.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -36,7 +40,13 @@ const ORDERED_IDS = [
 
 describe("sidebar preference routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/sidebar-preferences.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     mockSidebarPreferenceService.getCompanyOrder.mockResolvedValue({
       orderedIds: ORDERED_IDS,
       updatedAt: null,
@@ -56,7 +66,7 @@ describe("sidebar preference routes", () => {
   });
 
   it("returns company rail order for board users", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -75,7 +85,7 @@ describe("sidebar preference routes", () => {
   });
 
   it("updates company rail order for board users", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
@@ -92,7 +102,7 @@ describe("sidebar preference routes", () => {
   });
 
   it("returns project order for companies the board user can access", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -107,7 +117,7 @@ describe("sidebar preference routes", () => {
   });
 
   it("logs project order updates for company-scoped writes", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -136,7 +146,7 @@ describe("sidebar preference routes", () => {
   });
 
   it("rejects company-scoped reads when the board user lacks company access", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -151,7 +161,7 @@ describe("sidebar preference routes", () => {
   });
 
   it("rejects agent callers", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",

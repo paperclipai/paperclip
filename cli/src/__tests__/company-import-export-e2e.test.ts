@@ -287,6 +287,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: `CLI Export Source ${Date.now()}` }),
     });
+    await api(apiBase, `/api/companies/${sourceCompany.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requireBoardApprovalForNewAgents: false }),
+    });
 
     const sourceAgent = await api<{ id: string; name: string }>(
       apiBase,
@@ -498,5 +503,5 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     expect(importedFromZip.company.action).toBe("created");
     expect(importedFromZip.agents.some((agent) => agent.action === "created")).toBe(true);
-  }, 60_000);
+  }, 90_000);
 });

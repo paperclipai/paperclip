@@ -6,12 +6,11 @@ const mockStorage = vi.hoisted(() => ({
   headObject: vi.fn(),
 }));
 
-vi.mock("../storage/index.js", () => ({
-  getStorageService: () => mockStorage,
-}));
-
-import { accessRoutes } from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
+function registerModuleMocks() {
+  vi.doMock("../storage/index.js", () => ({
+    getStorageService: () => mockStorage,
+  }));
+}
 
 function createSelectChain(rows: unknown[]) {
   const query = {
@@ -46,10 +45,14 @@ function createDbStub(...selectResponses: unknown[][]) {
   };
 }
 
-function createApp(
+async function createApp(
   db: Record<string, unknown>,
   actor: Record<string, unknown> = { type: "anon" },
 ) {
+  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = actor;
@@ -70,6 +73,11 @@ function createApp(
 
 describe("GET /invites/:token", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../storage/index.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     mockStorage.headObject.mockReset();
     mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
   });
@@ -89,7 +97,7 @@ describe("GET /invites/:token", () => {
       createdAt: new Date("2026-03-07T00:00:00.000Z"),
       updatedAt: new Date("2026-03-07T00:00:00.000Z"),
     };
-    const app = createApp(
+    const app = await createApp(
       createDbStub(
         [invite],
         [
@@ -138,7 +146,7 @@ describe("GET /invites/:token", () => {
       createdAt: new Date("2026-03-07T00:00:00.000Z"),
       updatedAt: new Date("2026-03-07T00:00:00.000Z"),
     };
-    const app = createApp(
+    const app = await createApp(
       createDbStub(
         [invite],
         [
@@ -181,7 +189,7 @@ describe("GET /invites/:token", () => {
       createdAt: new Date("2026-03-07T00:00:00.000Z"),
       updatedAt: new Date("2026-03-07T00:05:00.000Z"),
     };
-    const app = createApp(
+    const app = await createApp(
       createDbStub(
         [invite],
         [{ requestType: "human", status: "pending_approval" }],
@@ -227,36 +235,36 @@ describe("GET /invites/:token", () => {
       createdAt: new Date("2026-03-07T00:00:00.000Z"),
       updatedAt: new Date("2026-03-07T00:05:00.000Z"),
     };
-    const app = createApp(
+    const reusableJoinRequest = {
+      id: "join-1",
+      requestType: "human",
+      status: "pending_approval",
+      requestingUserId: "user-1",
+      requestEmailSnapshot: "jane@example.com",
+    };
+    const companyBranding = {
+      name: "Acme Robotics",
+      brandColor: "#114488",
+      logoAssetId: "logo-1",
+    };
+    const logoAsset = {
+      companyId: "company-1",
+      objectKey: "company-1/assets/companies/logo-1",
+      contentType: "image/png",
+      byteSize: 3,
+      originalFilename: "logo.png",
+    };
+    const app = await createApp(
       createDbStub(
         [invite],
         [],
         [{ email: "jane@example.com" }],
-        [
-          {
-            id: "join-1",
-            requestType: "human",
-            status: "pending_approval",
-            requestingUserId: "user-1",
-            requestEmailSnapshot: "jane@example.com",
-          },
-        ],
-        [
-          {
-            name: "Acme Robotics",
-            brandColor: "#114488",
-            logoAssetId: "logo-1",
-          },
-        ],
-        [
-          {
-            companyId: "company-1",
-            objectKey: "company-1/assets/companies/logo-1",
-            contentType: "image/png",
-            byteSize: 3,
-            originalFilename: "logo.png",
-          },
-        ],
+        [reusableJoinRequest],
+        [reusableJoinRequest],
+        [companyBranding],
+        [companyBranding],
+        [logoAsset],
+        [logoAsset],
       ),
       { type: "board", userId: "user-1", source: "session" },
     );

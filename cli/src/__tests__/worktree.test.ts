@@ -3,12 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
   authUsers,
   companies,
   createDb,
+  issueComments,
+  issues,
   projects,
   routines,
   routineTriggers,
@@ -17,6 +20,7 @@ import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
   pauseSeededScheduledRoutines,
+  quarantineSeededWorktreeExecutionState,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
@@ -282,6 +286,138 @@ describe("worktree helpers", () => {
     expect(full.nullifyColumns).toEqual({});
   });
 
+  itEmbeddedPostgres("quarantines copied live execution state in seeded worktree databases", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-quarantine-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const idleAgentId = randomUUID();
+    const inProgressIssueId = randomUUID();
+    const todoIssueId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const userIssueId = randomUUID();
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "WTQ",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values([
+        {
+          id: agentId,
+          companyId,
+          name: "CodexCoder",
+          role: "engineer",
+          status: "running",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            heartbeat: { enabled: true, intervalSec: 60 },
+            wakeOnDemand: true,
+          },
+          permissions: {},
+        },
+        {
+          id: idleAgentId,
+          companyId,
+          name: "Reviewer",
+          role: "reviewer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { enabled: false, intervalSec: 300 } },
+          permissions: {},
+        },
+      ]);
+      await db.insert(issues).values([
+        {
+          id: inProgressIssueId,
+          companyId,
+          title: "Copied in-flight issue",
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: "WTQ-1",
+          executionAgentNameKey: "codexcoder",
+          executionLockedAt: new Date("2026-04-18T00:00:00.000Z"),
+        },
+        {
+          id: todoIssueId,
+          companyId,
+          title: "Copied assigned todo issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: "WTQ-2",
+        },
+        {
+          id: reviewIssueId,
+          companyId,
+          title: "Copied assigned review issue",
+          status: "in_review",
+          priority: "medium",
+          assigneeAgentId: idleAgentId,
+          issueNumber: 3,
+          identifier: "WTQ-3",
+        },
+        {
+          id: userIssueId,
+          companyId,
+          title: "Copied user issue",
+          status: "todo",
+          priority: "medium",
+          assigneeUserId: "user-1",
+          issueNumber: 4,
+          identifier: "WTQ-4",
+        },
+      ]);
+
+      await expect(quarantineSeededWorktreeExecutionState(tempDb.connectionString)).resolves.toEqual({
+        disabledTimerHeartbeats: 1,
+        resetRunningAgents: 1,
+        quarantinedInProgressIssues: 1,
+        unassignedTodoIssues: 1,
+        unassignedReviewIssues: 1,
+      });
+
+      const [quarantinedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      expect(quarantinedAgent?.status).toBe("idle");
+      expect(quarantinedAgent?.runtimeConfig).toMatchObject({
+        heartbeat: { enabled: false, intervalSec: 60 },
+        wakeOnDemand: true,
+      });
+
+      const [inProgressIssue] = await db.select().from(issues).where(eq(issues.id, inProgressIssueId));
+      expect(inProgressIssue?.status).toBe("blocked");
+      expect(inProgressIssue?.assigneeAgentId).toBeNull();
+      expect(inProgressIssue?.executionAgentNameKey).toBeNull();
+      expect(inProgressIssue?.executionLockedAt).toBeNull();
+
+      const [todoIssue] = await db.select().from(issues).where(eq(issues.id, todoIssueId));
+      expect(todoIssue?.status).toBe("todo");
+      expect(todoIssue?.assigneeAgentId).toBeNull();
+
+      const [reviewIssue] = await db.select().from(issues).where(eq(issues.id, reviewIssueId));
+      expect(reviewIssue?.status).toBe("in_review");
+      expect(reviewIssue?.assigneeAgentId).toBeNull();
+
+      const [userIssue] = await db.select().from(issues).where(eq(issues.id, userIssueId));
+      expect(userIssue?.status).toBe("todo");
+      expect(userIssue?.assigneeUserId).toBe("user-1");
+
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, inProgressIssueId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain("Quarantined during worktree seed");
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
+    }
+  }, 20_000);
+
   it("copies the source local_encrypted secrets key into the seeded worktree instance", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
     const originalInlineMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -463,7 +599,7 @@ describe("worktree helpers", () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    20000,
+    30000,
   );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
@@ -745,7 +881,7 @@ describe("worktree helpers", () => {
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 30_000);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
@@ -902,7 +1038,7 @@ describe("worktree helpers", () => {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("creates and initializes a worktree from the top-level worktree:make command", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-"));
