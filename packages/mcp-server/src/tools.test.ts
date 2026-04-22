@@ -87,6 +87,27 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("accepts comment aliases and forwards them to the issue comment endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "comment-1", body: "Ship it" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipAddComment");
+    await tool.execute({
+      issueId: "PAP-1135",
+      content: "Ship it",
+      reopen: true,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/comments");
+    expect(JSON.parse(String(init.body))).toEqual({
+      content: "Ship it",
+      reopen: true,
+    });
+  });
+
   it("defaults issue document format to markdown", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ key: "plan", latestRevisionNumber: 2 }),

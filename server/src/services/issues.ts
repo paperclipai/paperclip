@@ -128,6 +128,7 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type DbExecutor = Pick<Db, "select" | "insert" | "update" | "delete" | "execute">;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -607,7 +608,7 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
   return normalized[0] ?? null;
 }
 
-async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
+async function labelMapForIssues(dbOrTx: DbExecutor, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
   const map = new Map<string, IssueLabelRow[]>();
   if (issueIds.length === 0) return map;
   for (const issueIdChunk of chunkList(issueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
@@ -630,7 +631,7 @@ async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<s
   return map;
 }
 
-async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWithLabels[]> {
+async function withIssueLabels(dbOrTx: DbExecutor, rows: IssueRow[]): Promise<IssueWithLabels[]> {
   if (rows.length === 0) return [];
   const labelsByIssueId = await labelMapForIssues(dbOrTx, rows.map((row) => row.id));
   return rows.map((row) => {
@@ -646,7 +647,7 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
 async function activeRunMapForIssues(
-  dbOrTx: any,
+  dbOrTx: DbExecutor,
   issueRows: IssueWithLabels[],
 ): Promise<Map<string, IssueActiveRunRow>> {
   const map = new Map<string, IssueActiveRunRow>();
@@ -986,7 +987,7 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
+  async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: DbExecutor = db) {
     if (labelIds.length === 0) return;
     const existing = await dbOrTx
       .select({ id: labels.id })
@@ -1001,7 +1002,7 @@ export function issueService(db: Db) {
     issueId: string,
     companyId: string,
     labelIds: string[],
-    dbOrTx: any = db,
+    dbOrTx: DbExecutor = db,
   ) {
     const deduped = [...new Set(labelIds)];
     await assertValidLabelIds(companyId, deduped, dbOrTx);
@@ -1145,7 +1146,7 @@ export function issueService(db: Db) {
     companyId: string,
     blockedByIssueIds: string[],
     actor: { agentId?: string | null; userId?: string | null } = {},
-    dbOrTx: any = db,
+    dbOrTx: DbExecutor = db,
   ) {
     const deduped = [...new Set(blockedByIssueIds)];
     if (deduped.some((candidate) => candidate === issueId)) {
@@ -1187,7 +1188,7 @@ export function issueService(db: Db) {
         companyId,
         issueId: blockerIssueId,
         relatedIssueId: issueId,
-        type: "blocks",
+        type: "blocks" as const,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
       })),
@@ -1851,7 +1852,7 @@ export function issueService(db: Db) {
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
-          (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+              (issueData.executionWorkspaceSettings as { [key: string]: unknown } | null | undefined) ?? null;
         const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
         const hasExplicitExecutionWorkspaceOverride =
           issueData.executionWorkspaceId !== undefined ||
@@ -1879,7 +1880,7 @@ export function issueService(db: Db) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
-                ...((workspaceSource.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
+                    ...((workspaceSource.executionWorkspaceSettings as { [key: string]: unknown } | null | undefined) ?? {}),
                 mode: issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
               };
             }
@@ -1901,7 +1902,7 @@ export function issueService(db: Db) {
                 parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
                 isolatedWorkspacesEnabled,
               ),
-            ) as Record<string, unknown> | null;
+                ) as { [key: string]: unknown } | null;
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -2003,7 +2004,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
       },
-      dbOrTx: any = db,
+      dbOrTx: DbExecutor = db,
     ) => {
       const existing = await dbOrTx
         .select()
@@ -2099,7 +2100,7 @@ export function issueService(db: Db) {
         patch.executionLockedAt = null;
       }
 
-      const runUpdate = async (tx: any) => {
+      const runUpdate = async (tx: DbExecutor) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -2947,7 +2948,7 @@ export function issueService(db: Db) {
           cwd: string | null;
           repoUrl: string | null;
           repoRef: string | null;
-          metadata: Record<string, unknown> | null;
+              metadata: { [key: string]: unknown } | null;
           isPrimary: boolean;
           createdAt: Date;
           updatedAt: Date;
@@ -2960,7 +2961,7 @@ export function issueService(db: Db) {
           cwd: string | null;
           repoUrl: string | null;
           repoRef: string | null;
-          metadata: Record<string, unknown> | null;
+              metadata: { [key: string]: unknown } | null;
           isPrimary: boolean;
           createdAt: Date;
           updatedAt: Date;
@@ -2995,7 +2996,7 @@ export function issueService(db: Db) {
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl ?? null,
             repoRef: workspace.repoRef ?? null,
-            metadata: (workspace.metadata as Record<string, unknown> | null) ?? null,
+                metadata: (workspace.metadata as { [key: string]: unknown } | null) ?? null,
             isPrimary: workspace.isPrimary,
             createdAt: workspace.createdAt,
             updatedAt: workspace.updatedAt,
