@@ -239,6 +239,7 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   relatedWork?: IssueRelatedWorkSummary;
+  links?: IssueLink[];
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
@@ -252,6 +253,20 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueLink {
+  id: string;
+  companyId: string;
+  issueId: string;
+  url: string;
+  title: string | null;
+  position: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

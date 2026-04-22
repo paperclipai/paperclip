@@ -17,6 +17,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
+import { ProjectContextContent, ProjectSourceContent } from "../components/ProjectContextContent";
+import { ProjectTasksRail } from "../components/ProjectTasksRail";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
@@ -24,34 +26,12 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { isProjectPluginTab, resolveProjectTab, type ProjectPluginTab, type ProjectTab } from "../lib/project-tabs";
 import { projectRouteRef } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-
-/* ── Top-level tab types ── */
-
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
-type ProjectPluginTab = `plugin:${string}`;
-type ProjectTab = ProjectBaseTab | ProjectPluginTab;
-
-function isProjectPluginTab(value: string | null): value is ProjectPluginTab {
-  return typeof value === "string" && value.startsWith("plugin:");
-}
-
-function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
-  const segments = pathname.split("/").filter(Boolean);
-  const projectsIdx = segments.indexOf("projects");
-  if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
-  const tab = segments[projectsIdx + 2];
-  if (tab === "overview") return "overview";
-  if (tab === "configuration") return "configuration";
-  if (tab === "budget") return "budget";
-  if (tab === "issues") return "list";
-  if (tab === "workspaces") return "workspaces";
-  return null;
-}
 
 /* ── Overview tab content ── */
 
@@ -154,7 +134,15 @@ function ColorPicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  projectRef,
+}: {
+  projectId: string;
+  companyId: string;
+  projectRef: string;
+}) {
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -208,6 +196,14 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       viewStateKey="paperclip:project-issues-view"
+      topContent={
+        <ProjectTasksRail
+          companyId={companyId}
+          projectId={projectId}
+          projectRef={projectRef}
+          placement="top"
+        />
+      }
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -395,6 +391,14 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
+    if (activeTab === "context") {
+      navigate(`/projects/${canonicalProjectRef}/context`, { replace: true });
+      return;
+    }
+    if (activeTab === "source") {
+      navigate(`/projects/${canonicalProjectRef}/source`, { replace: true });
+      return;
+    }
     if (activeTab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
@@ -528,6 +532,12 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "context") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/context`} replace />;
+    }
+    if (cachedTab === "source") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/source`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -555,6 +565,10 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "context") {
+      navigate(`/projects/${canonicalProjectRef}/context`);
+    } else if (tab === "source") {
+      navigate(`/projects/${canonicalProjectRef}/source`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
@@ -628,6 +642,8 @@ export function ProjectDetail() {
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
+            { value: "context", label: "Context" },
+            { value: "source", label: "Source" },
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -653,7 +669,11 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          projectRef={canonicalProjectRef}
+        />
       )}
 
       {activeTab === "workspaces" ? (
@@ -671,6 +691,14 @@ export function ProjectDetail() {
         ) : (
           <p className="text-sm text-muted-foreground">Loading workspaces...</p>
         )
+      ) : null}
+
+      {activeTab === "context" && resolvedCompanyId ? (
+        <ProjectContextContent companyId={resolvedCompanyId} projectId={project.id} />
+      ) : null}
+
+      {activeTab === "source" && resolvedCompanyId ? (
+        <ProjectSourceContent companyId={resolvedCompanyId} projectId={project.id} />
       ) : null}
 
       {activeTab === "configuration" && (

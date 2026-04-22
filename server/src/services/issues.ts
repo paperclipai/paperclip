@@ -14,6 +14,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueLinks,
   issueRelations,
   issueComments,
   issueDocuments,
@@ -141,6 +142,11 @@ type IssueChildCreateInput = IssueCreateInput & {
   blockParentUntilDone?: boolean;
   actorAgentId?: string | null;
   actorUserId?: string | null;
+};
+type IssueLinkActor = {
+  agentId?: string | null;
+  userId?: string | null;
+  runId?: string | null;
 };
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
@@ -2402,6 +2408,112 @@ export function issueService(db: Db) {
         .where(eq(labels.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    listLinks: (issueId: string) =>
+      db
+        .select()
+        .from(issueLinks)
+        .where(eq(issueLinks.issueId, issueId))
+        .orderBy(asc(issueLinks.position), asc(issueLinks.createdAt), asc(issueLinks.id)),
+
+    listLinksForIssues: async (issueIds: string[]) => {
+      const uniqueIssueIds = [...new Set(issueIds)];
+      const grouped = new Map<string, Array<typeof issueLinks.$inferSelect>>();
+      for (const issueId of uniqueIssueIds) grouped.set(issueId, []);
+      if (uniqueIssueIds.length === 0) return grouped;
+
+      const rows = await db
+        .select()
+        .from(issueLinks)
+        .where(inArray(issueLinks.issueId, uniqueIssueIds))
+        .orderBy(asc(issueLinks.position), asc(issueLinks.createdAt), asc(issueLinks.id));
+      for (const row of rows) {
+        grouped.get(row.issueId)?.push(row);
+      }
+      return grouped;
+    },
+
+    getLinkById: (id: string) =>
+      db
+        .select()
+        .from(issueLinks)
+        .where(eq(issueLinks.id, id))
+        .then((rows) => rows[0] ?? null),
+
+    createLink: async (
+      issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
+      data: Pick<typeof issueLinks.$inferInsert, "url"> & { title?: string | null; position?: number | null },
+      actor: IssueLinkActor,
+    ) =>
+      db.transaction(async (tx) => {
+        const position =
+          typeof data.position === "number"
+            ? data.position
+            : await tx
+              .select({ nextPosition: sql<number>`coalesce(max(${issueLinks.position}), -1) + 1` })
+              .from(issueLinks)
+              .where(and(eq(issueLinks.companyId, issue.companyId), eq(issueLinks.issueId, issue.id)))
+              .then((rows) => rows[0]?.nextPosition ?? 0);
+        const now = new Date();
+        const [link] = await tx
+          .insert(issueLinks)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            url: data.url.trim(),
+            title: data.title?.trim() || null,
+            position,
+            createdByAgentId: actor.agentId ?? null,
+            createdByUserId: actor.userId ?? null,
+            createdByRunId: actor.runId ?? null,
+          })
+          .returning();
+        await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, issue.id));
+        return link;
+      }),
+
+    updateLink: async (
+      id: string,
+      data: {
+        url?: string;
+        title?: string | null;
+        position?: number;
+      },
+    ) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(issueLinks)
+          .where(eq(issueLinks.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const now = new Date();
+        const patch: Partial<typeof issueLinks.$inferInsert> = { updatedAt: now };
+        if (data.url !== undefined) patch.url = data.url.trim();
+        if (data.title !== undefined) patch.title = data.title?.trim() || null;
+        if (data.position !== undefined) patch.position = data.position;
+
+        const [updated] = await tx
+          .update(issueLinks)
+          .set(patch)
+          .where(eq(issueLinks.id, id))
+          .returning();
+        if (!updated) return null;
+        await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, updated.issueId));
+        return updated;
+      }),
+
+    deleteLink: async (id: string) =>
+      db.transaction(async (tx) => {
+        const [removed] = await tx
+          .delete(issueLinks)
+          .where(eq(issueLinks.id, id))
+          .returning();
+        if (!removed) return null;
+        await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, removed.issueId));
+        return removed;
+      }),
 
     listComments: async (
       issueId: string,

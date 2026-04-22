@@ -11,6 +11,7 @@ import type {
   IssueDocument,
   IssueLabel,
   IssueThreadInteraction,
+  IssueLink,
   IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -86,6 +87,12 @@ export const issuesApi = {
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
+  listLinks: (id: string) => api.get<IssueLink[]>(`/issues/${id}/links`),
+  createLink: (id: string, data: { url: string; title?: string | null; position?: number }) =>
+    api.post<IssueLink>(`/issues/${id}/links`, data),
+  updateLink: (id: string, data: { url?: string; title?: string | null; position?: number }) =>
+    api.patch<IssueLink>(`/issue-links/${id}`, data),
+  deleteLink: (id: string) => api.delete<IssueLink>(`/issue-links/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
       agentId,

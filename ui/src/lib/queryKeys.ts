@@ -44,6 +44,7 @@ export const queryKeys = {
     listByExecutionWorkspace: (companyId: string, executionWorkspaceId: string) =>
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
+    links: (issueId: string) => ["issues", "links", issueId] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
@@ -76,6 +77,11 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    quickLinks: (companyId: string, projectId: string) =>
+      ["projects", companyId, projectId, "quick-links"] as const,
+    context: (companyId: string, projectId: string) => ["projects", companyId, projectId, "context"] as const,
+    contextSearch: (companyId: string, projectId: string, query: string) =>
+      ["projects", companyId, projectId, "context", "search", query] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,

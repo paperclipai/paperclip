@@ -131,6 +131,29 @@ export {
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
+export {
+  createProjectQuickLinkSchema,
+  deriveProjectQuickLinkTitle,
+  previewProjectQuickLinkSchema,
+  projectQuickLinkMetadataSchema,
+  projectQuickLinkUrlSchema,
+  updateProjectQuickLinkSchema,
+  type CreateProjectQuickLink,
+  type PreviewProjectQuickLink,
+  type UpdateProjectQuickLink,
+} from "./project-quick-link.js";
+export {
+  contextSourceCreateSchema,
+  contextSourceItemStatusSchema,
+  contextSourceSearchSchema,
+  contextSourceStatusSchema,
+  contextSourceTypeSchema,
+  contextSourceUpsertItemSchema,
+  projectContextProfileUpdateSchema,
+  type ContextSourceCreate,
+  type ContextSourceUpsertItem,
+  type ProjectContextProfileUpdate,
+} from "./project-context.js";
 
 export {
   createIssueSchema,
@@ -164,6 +187,8 @@ export {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  createIssueLinkSchema,
+  updateIssueLinkSchema,
   linkIssueApprovalSchema,
   createIssueAttachmentMetadataSchema,
   issueDocumentFormatSchema,
@@ -181,6 +206,8 @@ export {
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type RespondIssueThreadInteraction,
+  type CreateIssueLink,
+  type UpdateIssueLink,
   type LinkIssueApproval,
   type CreateIssueAttachmentMetadata,
   type IssueDocumentFormat,

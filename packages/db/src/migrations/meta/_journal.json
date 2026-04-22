@@ -463,6 +463,13 @@
       "when": 1776821653936,
       "tag": "0065_conscious_jetstream",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1776822429829,
+      "tag": "0066_soft_william_stryker",
+      "breakpoints": true
     }
   ]
 }

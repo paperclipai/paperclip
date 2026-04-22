@@ -3,6 +3,8 @@ export { companyRoutes } from "./companies.js";
 export { companySkillRoutes } from "./company-skills.js";
 export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";
+export { projectContextRoutes } from "./project-context.js";
+export { projectQuickLinkRoutes } from "./project-quick-links.js";
 export { issueRoutes } from "./issues.js";
 export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";

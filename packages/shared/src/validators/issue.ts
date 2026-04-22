@@ -457,6 +457,38 @@ export const respondIssueThreadInteractionSchema = z.object({
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 
+const issueLinkUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .max(2048)
+  .refine((value) => {
+    try {
+      return ["http:", "https:"].includes(new URL(value).protocol);
+    } catch {
+      return false;
+    }
+  }, "Link URL must start with http:// or https://");
+
+export const createIssueLinkSchema = z.object({
+  url: issueLinkUrlSchema,
+  title: z.string().trim().min(1).max(240).optional().nullable(),
+  position: z.number().int().nonnegative().optional(),
+});
+
+export type CreateIssueLink = z.infer<typeof createIssueLinkSchema>;
+
+export const updateIssueLinkSchema = z.object({
+  url: issueLinkUrlSchema.optional(),
+  title: z.string().trim().min(1).max(240).optional().nullable(),
+  position: z.number().int().nonnegative().optional(),
+}).refine(
+  (value) => value.url !== undefined || value.title !== undefined || value.position !== undefined,
+  "At least one issue link field is required",
+);
+
+export type UpdateIssueLink = z.infer<typeof updateIssueLinkSchema>;
+
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),
 });

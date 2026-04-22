@@ -12,6 +12,8 @@ export {
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 export { projectService } from "./projects.js";
+export { projectContextService } from "./project-context.js";
+export { projectQuickLinkService } from "./project-quick-links.js";
 export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,

@@ -9,6 +9,7 @@ import {
   acceptIssueThreadInteractionSchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
+  createIssueLinkSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
@@ -25,6 +26,7 @@ import {
   issueDueDateSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  updateIssueLinkSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
@@ -1021,13 +1023,14 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations, referenceSummary] = await Promise.all([
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations, referenceSummary, links] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      svc.listLinks(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1043,6 +1046,7 @@ export function issueRoutes(
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
       relatedWork: referenceSummary,
+      links,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
       project: project ?? null,
@@ -1063,6 +1067,158 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
+  });
+
+  router.get("/issues/:id/links", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const links = await svc.listLinks(issue.id);
+    res.json(links);
+  });
+
+  router.post("/issues/:id/links", validate(createIssueLinkSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const link = await svc.createLink(issue, req.body, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.link_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        linkId: link.id,
+        url: link.url,
+        title: link.title,
+      },
+    });
+
+    res.status(201).json(link);
+  });
+
+  router.patch("/issue-links/:linkId", validate(updateIssueLinkSchema), async (req, res) => {
+    const linkId = req.params.linkId as string;
+    const existing = await svc.getLinkById(linkId);
+    if (!existing) {
+      res.status(404).json({ error: "Issue link not found" });
+      return;
+    }
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const updated = await svc.updateLink(linkId, req.body);
+    if (!updated) {
+      res.status(404).json({ error: "Issue link not found" });
+      return;
+    }
+
+    const previous: Record<string, unknown> = {};
+    if (req.body.url !== undefined && existing.url !== updated.url) previous.url = existing.url;
+    if (req.body.title !== undefined && existing.title !== updated.title) previous.title = existing.title;
+    if (req.body.position !== undefined && existing.position !== updated.position) previous.position = existing.position;
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.link_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        linkId: updated.id,
+        url: updated.url,
+        title: updated.title,
+        position: updated.position,
+        _previous: Object.keys(previous).length > 0 ? previous : undefined,
+      },
+    });
+
+    res.json(updated);
+  });
+
+  router.delete("/issue-links/:linkId", async (req, res) => {
+    const linkId = req.params.linkId as string;
+    const existing = await svc.getLinkById(linkId);
+    if (!existing) {
+      res.status(404).json({ error: "Issue link not found" });
+      return;
+    }
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const removed = await svc.deleteLink(linkId);
+    if (!removed) {
+      res.status(404).json({ error: "Issue link not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.link_deleted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        linkId: removed.id,
+        url: removed.url,
+        title: removed.title,
+      },
+    });
+
+    res.json(removed);
   });
 
   router.get("/issues/:id/documents", async (req, res) => {

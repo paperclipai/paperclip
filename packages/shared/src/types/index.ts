@@ -62,6 +62,30 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  ProjectQuickLink,
+  ProjectQuickLinkCreateRequest,
+  ProjectQuickLinkMetadataInput,
+  ProjectQuickLinkPreview,
+  ProjectQuickLinkPreviewRequest,
+  ProjectQuickLinkUpdateRequest,
+} from "./project-quick-link.js";
+export type {
+  ContextSource,
+  ContextSourceChunk,
+  ContextSourceCreateRequest,
+  ContextSourceItem,
+  ContextSourceItemStatus,
+  ContextSourceSearchResult,
+  ContextSourceStatus,
+  ContextSourceType,
+  ContextSourceUpsertItemRequest,
+  ProjectContextBundle,
+  ProjectContextBundleSource,
+  ProjectContextOverview,
+  ProjectContextProfile,
+  ProjectContextProfileUpdateRequest,
+} from "./project-context.js";
+export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceConfig,
@@ -113,6 +137,7 @@ export type {
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
+  IssueLink,
   IssueComment,
   IssueThreadInteractionActorFields,
   SuggestedTaskDraft,
