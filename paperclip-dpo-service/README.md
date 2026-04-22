@@ -24,9 +24,10 @@ cd ../paperclip-dpo-service && pnpm install && pnpm build
 SHARED_KEY=$(./scripts/generate-shared-key.sh)
 security add-generic-password -s ai.whitestag.paperclip-dpo-key -a shared -w "$SHARED_KEY"
 
-# 3. launchd installieren — SHARED_KEY wird in die plist geschrieben
-sudo mkdir -p /var/paperclip/dpo /var/log/paperclip-dpo
-sudo chown $USER /var/paperclip/dpo /var/log/paperclip-dpo
+# 3. launchd installieren — SHARED_KEY wird in die plist geschrieben,
+#    Daten- und Log-Verzeichnisse legt das Script in
+#    ~/Library/Application Support/paperclip-dpo/ und
+#    ~/Library/Logs/paperclip-dpo/ selbst an (kein sudo noetig).
 DPO_SHARED_KEY="$SHARED_KEY" ./scripts/install-launchd.sh
 
 # 4. Smoke-Test
