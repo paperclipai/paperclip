@@ -746,7 +746,7 @@ function withActiveRuns(
 }
 
 async function userCommentStatsForIssues(
-  dbOrTx: any,
+  dbOrTx: DbExecutor,
   companyId: string,
   userId: string,
   issueIds: string[],
@@ -782,7 +782,7 @@ async function userCommentStatsForIssues(
 }
 
 async function userReadStatsForIssues(
-  dbOrTx: any,
+  dbOrTx: DbExecutor,
   companyId: string,
   userId: string,
   issueIds: string[],
@@ -808,7 +808,7 @@ async function userReadStatsForIssues(
 }
 
 async function lastActivityStatsForIssues(
-  dbOrTx: any,
+  dbOrTx: DbExecutor,
   companyId: string,
   issueIds: string[],
 ): Promise<IssueLastActivityStat[]> {
@@ -1612,7 +1612,7 @@ export function issueService(db: Db) {
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
     },
 
-    getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {
+    getDependencyReadiness: async (issueId: string, dbOrTx: DbExecutor = db) => {
       const issue = await dbOrTx
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -1623,7 +1623,7 @@ export function issueService(db: Db) {
       return readiness.get(issueId) ?? createIssueDependencyReadiness(issueId);
     },
 
-    listDependencyReadiness: async (companyId: string, issueIds: string[], dbOrTx: any = db) => {
+    listDependencyReadiness: async (companyId: string, issueIds: string[], dbOrTx: DbExecutor = db) => {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
     },
 

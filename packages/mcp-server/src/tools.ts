@@ -23,6 +23,8 @@ export interface ToolDefinition {
   }>;
 }
 
+type JsonMap = { [key: string]: unknown };
+
 function makeTool<TSchema extends z.ZodRawShape>(
   name: string,
   description: string,
@@ -187,21 +189,21 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function readCurrentExecutionWorkspace(context: unknown): Record<string, unknown> | null {
+function readCurrentExecutionWorkspace(context: unknown): JsonMap | null {
   if (!context || typeof context !== "object") return null;
   const workspace = (context as { currentExecutionWorkspace?: unknown }).currentExecutionWorkspace;
-  return workspace && typeof workspace === "object" ? workspace as Record<string, unknown> : null;
+  return workspace && typeof workspace === "object" ? workspace as JsonMap : null;
 }
 
-function readWorkspaceRuntimeServices(workspace: Record<string, unknown> | null): Array<Record<string, unknown>> {
+function readWorkspaceRuntimeServices(workspace: JsonMap | null): JsonMap[] {
   const raw = workspace?.runtimeServices;
   return Array.isArray(raw)
-    ? raw.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    ? raw.filter((entry): entry is JsonMap => Boolean(entry) && typeof entry === "object")
     : [];
 }
 
 function selectRuntimeService(
-  services: Array<Record<string, unknown>>,
+  services: JsonMap[],
   input: { runtimeServiceId?: string | null; serviceName?: string | null },
 ) {
   if (input.runtimeServiceId) {
