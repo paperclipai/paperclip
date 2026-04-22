@@ -5245,7 +5245,7 @@ export function heartbeatService(db: Db) {
     silenceWindowMs?: number;
   }) {
     const minAgeMs = opts?.minAgeMs ?? 10 * 60 * 1000;
-    const silenceWindowMs = opts?.silenceWindowMs ?? 15 * 60 * 1000;
+    const silenceWindowMs = opts?.silenceWindowMs ?? 25 * 60 * 1000;
     const now = new Date();
     const ageCutoff = new Date(now.getTime() - minAgeMs);
     const silenceCutoff = new Date(now.getTime() - silenceWindowMs);
@@ -5337,6 +5337,10 @@ export function heartbeatService(db: Db) {
       "minimax-coding-plan/MiniMax-M2.5",
       "opencode/big-pickle",
       "zai-coding-plan/glm-5",
+      // ollama local = lowest priority. Only reached if ALL paid subs fail.
+      // Also contends with ComfyUI for GPU, so we prefer paid subs first.
+      "ollama/qwen2.5-coder:7b",
+      "ollama/qwen3-coder:30b",
     ],
     // codex_local ladder: both models use your ChatGPT Pro account (dedicated).
     // gpt-5.4 is primary (top capability, fast mode). 5.3-codex is the
