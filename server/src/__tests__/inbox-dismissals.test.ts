@@ -207,6 +207,11 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       approvals: 1,
       failedRuns: 1,
       joinRequests: 0,
+      taskDates: {
+        today: 0,
+        tomorrow: 0,
+        next7Days: 0,
+      },
     });
   });
 });
