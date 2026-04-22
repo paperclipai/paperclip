@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  addIssueCommentSchema,
   checkoutIssueSchema,
   createApprovalSchema,
   createIssueSchema,
@@ -15,7 +14,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   schema: z.AnyZodObject;
-  execute: (input: Record<string, unknown>) => Promise<{
+  execute: (input: { [key: string]: unknown }) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
 }
@@ -105,7 +104,12 @@ const checkoutIssueToolSchema = z.object({
 
 const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
-}).merge(addIssueCommentSchema);
+  body: z.string().min(1).optional(),
+  content: z.string().min(1).optional(),
+  comment: z.string().min(1).optional(),
+  reopen: z.boolean().optional(),
+  interrupt: z.boolean().optional(),
+});
 
 const approvalDecisionSchema = z.object({
   approvalId: approvalIdSchema,
