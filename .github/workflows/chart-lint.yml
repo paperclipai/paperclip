@@ -40,8 +40,12 @@ jobs:
       - name: Install helm-docs
         run: |
           VERSION=v1.14.2
-          curl -sSL "https://github.com/norwoodj/helm-docs/releases/download/${VERSION}/helm-docs_${VERSION#v}_Linux_x86_64.tar.gz" \
-            | tar -xz -C /usr/local/bin helm-docs
+          SHA256=a8cf72ada34fad93285ba2a452b38bdc5bd52cc9a571236244ec31022928d6cc
+          TARBALL=helm-docs_${VERSION#v}_Linux_x86_64.tar.gz
+          curl -fsSL -o "/tmp/${TARBALL}" \
+            "https://github.com/norwoodj/helm-docs/releases/download/${VERSION}/${TARBALL}"
+          echo "${SHA256}  /tmp/${TARBALL}" | sha256sum -c -
+          tar -xz -C /usr/local/bin -f "/tmp/${TARBALL}" helm-docs
           helm-docs --version
 
       - name: Regenerate README and verify no drift
