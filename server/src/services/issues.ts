@@ -2110,7 +2110,7 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null, { allowTerminalReopen = false }: { allowTerminalReopen?: boolean } = {}) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -2167,7 +2167,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!currentIssue) throw notFound("Issue not found");
-      if (TERMINAL_STATUSES.has(currentIssue.status)) {
+      if (TERMINAL_STATUSES.has(currentIssue.status) && !allowTerminalReopen) {
         throw unprocessable(
           `Cannot checkout a terminal issue (status="${currentIssue.status}")`,
           { issueId: id, status: currentIssue.status },
