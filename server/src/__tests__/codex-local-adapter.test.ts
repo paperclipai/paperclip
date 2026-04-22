@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
+import {
+  isCodexResumeModelError,
+  isCodexUnknownSessionError,
+  parseCodexJsonl,
+} from "@paperclipai/adapter-codex-local/server";
 import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 
@@ -30,6 +34,25 @@ describe("codex_local stale session detection", () => {
       "2026-02-19T19:58:53.281939Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c775d-967c-7ef1-acc7-e396dc2c87cc";
 
     expect(isCodexUnknownSessionError("", stderr)).toBe(true);
+  });
+
+  it("treats resume model mismatches as recoverable resume errors", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "error",
+        message: "This session was recorded with model `gpt-5.2-pro` but is resuming with `gpt-5.4`.",
+      },
+    });
+
+    expect(isCodexResumeModelError(stdout, "")).toBe(true);
+  });
+
+  it("treats ChatGPT account model compatibility errors as recoverable resume errors", () => {
+    const stderr =
+      "The 'gpt-5.1-codex-mini' model is not supported when using Codex with a ChatGPT account.";
+
+    expect(isCodexResumeModelError("", stderr)).toBe(true);
   });
 });
 

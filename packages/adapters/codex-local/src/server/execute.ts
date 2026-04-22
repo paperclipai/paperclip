@@ -26,8 +26,15 @@ import {
   parseCodexJsonl,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
+  isCodexResumeModelError,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import {
+  pathExists,
+  prepareManagedCodexHome,
+  resolveManagedCodexHomeDir,
+  resolveSharedCodexHomeDir,
+  seedCodexHomeFromShared,
+} from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -312,8 +319,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
+  const preparedManagedCodexHome = configuredCodexHome
+    ? await seedCodexHomeFromShared(
+        configuredCodexHome,
+        process.env,
+        onLog,
+        "adapter-config override",
+      )
+    : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
@@ -707,11 +720,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionId &&
     !initial.proc.timedOut &&
     (initial.proc.exitCode ?? 0) !== 0 &&
-    isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+    (
+      isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr) ||
+      isCodexResumeModelError(initial.proc.stdout, initial.rawStderr)
+    )
   ) {
     await onLog(
       "stdout",
-      `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      `[paperclip] Codex resume session "${sessionId}" is unavailable or incompatible with the current model/account; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
     return toResult(retry, true, true);

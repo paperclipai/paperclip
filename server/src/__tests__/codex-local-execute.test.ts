@@ -38,6 +38,48 @@ process.exit(1);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeResumeRecoveryCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const countPath = process.env.PAPERCLIP_TEST_COUNT_PATH;
+const attempt = countPath && fs.existsSync(countPath)
+  ? Number.parseInt(fs.readFileSync(countPath, "utf8"), 10) || 0
+  : 0;
+const nextAttempt = attempt + 1;
+if (countPath) {
+  fs.writeFileSync(countPath, String(nextAttempt), "utf8");
+}
+
+const payload = {
+  attempt: nextAttempt,
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+  codexHome: process.env.CODEX_HOME || null,
+};
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
+}
+
+if (process.argv.includes("resume")) {
+  console.log(JSON.stringify({
+    type: "turn.failed",
+    error: {
+      message: "The 'gpt-5.1-codex-mini' model is not supported when using Codex with a ChatGPT account.",
+    },
+  }));
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-2" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh-session-ok" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 2, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -857,6 +899,111 @@ describe("codex execute", () => {
       );
       expect(promptMetrics.instructionsChars).toBe(0);
       expect(promptMetrics.heartbeatPromptChars).toBe(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries with a fresh session when a resumed session fails with a stale model error", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-retry-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const countPath = path.join(root, "attempt-count.txt");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeResumeRecoveryCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-resume-retry",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-stale",
+            cwd: workspace,
+          },
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5.4",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_COUNT_PATH: countPath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_commented",
+          wakeCommentId: "comment-1",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-900",
+              title: "resume recovery",
+              status: "in_progress",
+              priority: "medium",
+            },
+            commentIds: ["comment-1"],
+            latestCommentId: "comment-1",
+            comments: [
+              {
+                id: "comment-1",
+                issueId: "issue-1",
+                body: "Wake up",
+                bodyTruncated: false,
+                createdAt: "2026-04-22T16:00:00.000Z",
+                author: { type: "user", id: "user-1" },
+              },
+            ],
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("codex-session-2");
+      expect(await fs.readFile(countPath, "utf8")).toBe("2");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload & { attempt: number };
+      expect(capture.attempt).toBe(2);
+      expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "--model", "gpt-5.4", "-"]));
+      expect(capture.argv).not.toContain("resume");
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("retrying with a fresh session"),
+        }),
+      );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

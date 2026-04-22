@@ -1204,42 +1204,80 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
-  async function adoptStaleCheckoutRun(input: {
+  async function adoptCheckoutRunIfSafe(input: {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
-    if (!stale) return null;
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select id from issues where id = ${input.issueId} for update`);
+      const current = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
 
-    const now = new Date();
-    const adopted = await db
-      .update(issues)
-      .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
-        executionLockedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.id, input.issueId),
-          eq(issues.status, "in_progress"),
-          eq(issues.assigneeAgentId, input.actorAgentId),
-          eq(issues.checkoutRunId, input.expectedCheckoutRunId),
-        ),
-      )
-      .returning({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+      if (
+        current.status !== "in_progress" ||
+        current.assigneeAgentId !== input.actorAgentId ||
+        current.checkoutRunId !== input.expectedCheckoutRunId
+      ) {
+        return null;
+      }
 
-    return adopted;
+      let canAdopt = false;
+
+      // If there is no live execution owner, or the current run is already the
+      // executor, the checkout lock is stale and can be moved immediately.
+      if (current.executionRunId == null || current.executionRunId === input.actorRunId) {
+        canAdopt = true;
+      } else if (current.executionRunId === input.expectedCheckoutRunId) {
+        // Fallback: the checkout owner still matches the execution owner, so only
+        // adopt once that old run is clearly terminal or missing.
+        canAdopt = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+      }
+
+      if (!canAdopt) return null;
+
+      const now = new Date();
+      const executionRunCondition = current.executionRunId
+        ? eq(issues.executionRunId, current.executionRunId)
+        : isNull(issues.executionRunId);
+
+      return tx
+        .update(issues)
+        .set({
+          checkoutRunId: input.actorRunId,
+          executionRunId: input.actorRunId,
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+            executionRunCondition,
+          ),
+        )
+        .returning({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .then((rows) => rows[0] ?? null);
+    });
   }
 
   async function adoptUnownedCheckoutRun(input: {
@@ -2285,7 +2323,7 @@ export function issueService(db: Db) {
         current.checkoutRunId &&
         current.checkoutRunId !== checkoutRunId
       ) {
-        const adopted = await adoptStaleCheckoutRun({
+        const adopted = await adoptCheckoutRunIfSafe({
           issueId: id,
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
@@ -2372,7 +2410,7 @@ export function issueService(db: Db) {
         current.checkoutRunId &&
         current.checkoutRunId !== actorRunId
       ) {
-        const adopted = await adoptStaleCheckoutRun({
+        const adopted = await adoptCheckoutRunIfSafe({
           issueId: id,
           actorAgentId,
           actorRunId,

@@ -97,3 +97,14 @@ export function isCodexTransientUpstreamError(input: {
   // failure shape; broader 429s may be caused by user or account limits.
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
 }
+
+export function isCodexResumeModelError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return /session was recorded with model .* but is resuming with|model is not supported when using codex with a chatgpt account/i.test(
+    haystack,
+  );
+}
