@@ -24,6 +24,9 @@ fi
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
+else
+    # Always ensure the volume root is writable by node (fresh mounts are owned by root)
+    chown node:node /paperclip
 fi
 
 exec gosu node "$@"
