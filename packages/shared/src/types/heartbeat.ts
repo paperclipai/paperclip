@@ -151,3 +151,73 @@ export interface InstanceSchedulerHeartbeatAgent {
   schedulerActive: boolean;
   lastHeartbeatAt: Date | null;
 }
+
+export type AgentServiceHealthStatus = "healthy" | "down";
+
+export type AgentServiceHealthReason =
+  | "scheduler_disabled"
+  | "no_scheduler_active_agents"
+  | "queued_runs_stuck"
+  | "recent_runtime_failures"
+  | "stale_in_review_issues"
+  | "agent_completion_gaps";
+
+export interface AgentServiceHealthFailureExample {
+  runId: string;
+  companyId: string;
+  companyName: string;
+  agentId: string;
+  agentName: string;
+  adapterType: string;
+  status: "failed" | "timed_out";
+  error: string | null;
+  errorCode: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export type AgentServiceHealthBoardIssueWarningKind = "stale_in_review" | "completion_gap";
+
+export type AgentServiceHealthBoardIssueWarningMessage =
+  | "manual review or status correction needed"
+  | "completion evidence needed";
+
+export interface AgentServiceHealthBoardIssueWarning {
+  kind: AgentServiceHealthBoardIssueWarningKind;
+  issueId: string;
+  companyId: string;
+  companyName: string;
+  companyIssuePrefix: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeAgentName: string | null;
+  updatedAt: string;
+  message: AgentServiceHealthBoardIssueWarningMessage;
+}
+
+export interface AgentServiceHealth {
+  status: AgentServiceHealthStatus;
+  reason: AgentServiceHealthReason | null;
+  message: string;
+  checkedAt: string;
+  scheduler: {
+    enabled: boolean;
+    intervalMs: number;
+  };
+  counts: {
+    activeCompanyCount: number;
+    eligibleAgentCount: number;
+    schedulerActiveAgentCount: number;
+    liveRunCount: number;
+    stuckQueuedRunCount: number;
+    recentHealthyRunCount: number;
+    recentRuntimeFailureAgentCount: number;
+    staleInReviewIssueCount: number;
+    completionGapIssueCount: number;
+  };
+  latestHeartbeatAt: string | null;
+  failureExamples: AgentServiceHealthFailureExample[];
+  boardIssueWarnings: AgentServiceHealthBoardIssueWarning[];
+}

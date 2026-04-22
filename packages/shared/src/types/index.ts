@@ -190,6 +190,13 @@ export type {
   AgentTaskSession,
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
+  AgentServiceHealth,
+  AgentServiceHealthStatus,
+  AgentServiceHealthReason,
+  AgentServiceHealthFailureExample,
+  AgentServiceHealthBoardIssueWarning,
+  AgentServiceHealthBoardIssueWarningKind,
+  AgentServiceHealthBoardIssueWarningMessage,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";

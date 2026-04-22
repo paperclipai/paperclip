@@ -35,6 +35,7 @@ import {
   agentInstructionsService,
   accessService,
   approvalService,
+  agentServiceHealthService,
   companySkillService,
   budgetService,
   heartbeatService,
@@ -86,7 +87,13 @@ function readRunLogLimitBytes(value: unknown) {
   return Math.max(1, Math.min(RUN_LOG_MAX_LIMIT_BYTES, Math.trunc(parsed)));
 }
 
-export function agentRoutes(db: Db) {
+export function agentRoutes(
+  db: Db,
+  opts: {
+    heartbeatSchedulerEnabled?: boolean;
+    heartbeatSchedulerIntervalMs?: number;
+  } = {},
+) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -130,6 +137,7 @@ export function agentRoutes(db: Db) {
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
+  const agentServiceHealth = agentServiceHealthService(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
@@ -1117,6 +1125,15 @@ export function agentRoutes(db: Db) {
       });
 
     res.json(items);
+  });
+
+  router.get("/instance/agent-service-health", async (req, res) => {
+    assertInstanceAdmin(req);
+    const health = await agentServiceHealth.get({
+      heartbeatSchedulerEnabled: opts.heartbeatSchedulerEnabled ?? true,
+      heartbeatSchedulerIntervalMs: opts.heartbeatSchedulerIntervalMs ?? 30_000,
+    });
+    res.json(health);
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {
