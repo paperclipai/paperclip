@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -49,6 +49,7 @@ import {
 const execFileAsync = promisify(execFile);
 const leasedRunIds = new Set<string>();
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -190,6 +191,90 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
+  });
+});
+
+describe("realizeExecutionWorkspace Orebit bootstrap", () => {
+  it("materializes the canonical roster on fresh realization and stays idempotent", async () => {
+    const insertedAgents = new Map<string, Record<string, unknown>>();
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => ({
+            then: async (resolve: (rows: Array<Record<string, unknown>>) => unknown) => resolve([
+              { id: "company-1", issuePrefix: "ORE" },
+            ]),
+          }),
+        }),
+      })),
+      insert: vi.fn((table: unknown) => ({
+        values: (values: Record<string, unknown>) => ({
+          onConflictDoUpdate: () => ({
+            returning: async () => {
+              if (table === agents) {
+                insertedAgents.set(String(values.id), values);
+              }
+              return [values];
+            },
+          }),
+        }),
+      })),
+    } as any;
+
+    const base = {
+      baseCwd: "/tmp/paperclip-orebit-runtime",
+      source: "project_primary" as const,
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef: "HEAD",
+    };
+
+    const first = await realizeExecutionWorkspace({
+      base,
+      config: {
+        workspaceStrategy: { type: "project_primary" },
+      },
+      issue: null,
+      agent: {
+        id: null,
+        name: "Board",
+        companyId: "company-1",
+      },
+      db,
+      companyId: "company-1",
+    });
+
+    expect(first.strategy).toBe("project_primary");
+    expect(insertedAgents.size).toBe(8);
+
+    const second = await realizeExecutionWorkspace({
+      base,
+      config: {
+        workspaceStrategy: { type: "project_primary" },
+      },
+      issue: null,
+      agent: {
+        id: null,
+        name: "Board",
+        companyId: "company-1",
+      },
+      db,
+      companyId: "company-1",
+    });
+
+    expect(second.strategy).toBe("project_primary");
+    expect(insertedAgents.size).toBe(8);
+    expect(Array.from(insertedAgents.values()).map((agent) => agent.name)).toEqual(expect.arrayContaining([
+      "Siro Hermes",
+      "Luna",
+      "Nala",
+      "Milo",
+      "Mochi",
+      "Kuro",
+      "Oyen",
+      "Shiro",
+    ]));
   });
 });
 
@@ -1703,6 +1788,204 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-state"), "utf8")).resolves.toBe("reprovisioned\n");
+  });
+
+  describeEmbeddedPostgres("fresh session realization", () => {
+    it("bootstraps the canonical Orebit roster", async () => {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-orebit-fresh-runtime-"));
+      const dbHandle = await startEmbeddedPostgresTestDatabase("paperclip-orebit-fresh-runtime-");
+
+      try {
+        const db = createDb(dbHandle.connectionString);
+        const [orebitCompany] = await db.insert(companies).values({
+          name: "Orebit",
+          description: "Orebit runtime company",
+          status: "active",
+          issuePrefix: "ORE",
+          budgetMonthlyCents: 0,
+        }).returning();
+
+        expect(orebitCompany).toBeDefined();
+
+        const first = await realizeExecutionWorkspace({
+          base: {
+            baseCwd: tempRoot,
+            source: "project_primary",
+            projectId: "project-1",
+            workspaceId: "workspace-1",
+            repoUrl: null,
+            repoRef: "HEAD",
+          },
+          config: {
+            workspaceStrategy: {
+              type: "project_primary",
+            },
+          },
+          issue: null,
+          agent: {
+            id: null,
+            name: "Board",
+            companyId: orebitCompany!.id,
+          },
+          db,
+          companyId: orebitCompany!.id,
+        });
+
+        expect(first.strategy).toBe("project_primary");
+        const firstRoster = await db.select().from(agents).where(eq(agents.companyId, orebitCompany!.id));
+        expect(firstRoster).toHaveLength(8);
+
+        const second = await realizeExecutionWorkspace({
+          base: {
+            baseCwd: tempRoot,
+            source: "project_primary",
+            projectId: "project-1",
+            workspaceId: "workspace-1",
+            repoUrl: null,
+            repoRef: "HEAD",
+          },
+          config: {
+            workspaceStrategy: {
+              type: "project_primary",
+            },
+          },
+          issue: null,
+          agent: {
+            id: null,
+            name: "Board",
+            companyId: orebitCompany!.id,
+          },
+          db,
+          companyId: orebitCompany!.id,
+        });
+
+        expect(second.strategy).toBe("project_primary");
+        const secondRoster = await db.select().from(agents).where(eq(agents.companyId, orebitCompany!.id));
+        expect(secondRoster).toHaveLength(8);
+        expect(secondRoster.map((agent) => agent.name)).toEqual(expect.arrayContaining([
+          "Siro Hermes",
+          "Luna",
+          "Nala",
+          "Milo",
+          "Mochi",
+          "Kuro",
+          "Oyen",
+          "Shiro",
+        ]));
+        expect(secondRoster.every((agent) => agent.adapterType === "codex_local")).toBe(true);
+        expect(secondRoster.every((agent) => typeof agent.adapterConfig?.cwd === "string")).toBe(true);
+      } finally {
+        await dbHandle.cleanup();
+        await fs.rm(tempRoot, { recursive: true, force: true });
+      }
+    },
+    20000,
+    );
+  });
+
+  describeEmbeddedPostgres("persisted workspace availability", () => {
+    it("bootstraps the canonical Orebit roster", async () => {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-orebit-runtime-"));
+      const dbHandle = await startEmbeddedPostgresTestDatabase("paperclip-orebit-runtime-");
+
+      try {
+        const db = createDb(dbHandle.connectionString);
+        const [orebitCompany] = await db.insert(companies).values({
+          name: "Orebit",
+          description: "Orebit runtime company",
+          status: "active",
+          issuePrefix: "ORE",
+          budgetMonthlyCents: 0,
+        }).returning();
+
+        expect(orebitCompany).toBeDefined();
+
+        const first = await ensurePersistedExecutionWorkspaceAvailable({
+          db,
+          companyId: orebitCompany!.id,
+          base: {
+            baseCwd: tempRoot,
+            source: "project_primary",
+            projectId: "project-1",
+            workspaceId: "workspace-1",
+            repoUrl: null,
+            repoRef: "HEAD",
+          },
+          workspace: {
+            mode: "shared_workspace",
+            strategyType: "project_primary",
+            cwd: tempRoot,
+            providerRef: null,
+            projectId: "project-1",
+            projectWorkspaceId: "workspace-1",
+            repoUrl: null,
+            baseRef: null,
+            branchName: null,
+            config: null,
+          },
+          issue: null,
+          agent: {
+            id: null,
+            name: "Board",
+            companyId: orebitCompany!.id,
+          },
+        });
+
+        expect(first).not.toBeNull();
+        const firstRoster = await db.select().from(agents).where(eq(agents.companyId, orebitCompany!.id));
+        expect(firstRoster).toHaveLength(8);
+
+        const second = await ensurePersistedExecutionWorkspaceAvailable({
+          db,
+          companyId: orebitCompany!.id,
+          base: {
+            baseCwd: tempRoot,
+            source: "project_primary",
+            projectId: "project-1",
+            workspaceId: "workspace-1",
+            repoUrl: null,
+            repoRef: "HEAD",
+          },
+          workspace: {
+            mode: "shared_workspace",
+            strategyType: "project_primary",
+            cwd: tempRoot,
+            providerRef: null,
+            projectId: "project-1",
+            projectWorkspaceId: "workspace-1",
+            repoUrl: null,
+            baseRef: null,
+            branchName: null,
+            config: null,
+          },
+          issue: null,
+          agent: {
+            id: null,
+            name: "Board",
+            companyId: orebitCompany!.id,
+          },
+        });
+
+        expect(second).not.toBeNull();
+        const secondRoster = await db.select().from(agents).where(eq(agents.companyId, orebitCompany!.id));
+        expect(secondRoster).toHaveLength(8);
+        expect(secondRoster.map((agent) => agent.name)).toEqual(expect.arrayContaining([
+          "Siro Hermes",
+          "Luna",
+          "Nala",
+          "Milo",
+          "Mochi",
+          "Kuro",
+          "Oyen",
+          "Shiro",
+        ]));
+        expect(secondRoster.every((agent) => agent.adapterType === "codex_local")).toBe(true);
+        expect(secondRoster.every((agent) => typeof agent.adapterConfig?.cwd === "string")).toBe(true);
+      } finally {
+        await dbHandle.cleanup();
+        await fs.rm(tempRoot, { recursive: true, force: true });
+      }
+    }, 20000);
   });
 
   it("auto-detects the default branch when baseRef is not configured", async () => {
