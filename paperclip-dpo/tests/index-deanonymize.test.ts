@@ -4,10 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { createDpo } from "../src/index.js";
+import { MappingNotFoundError } from "../src/errors.js";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "dpo-rt-")); vi.restoreAllMocks(); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+function createTestDpo() {
+  return createDpo({
+    mappingDbPath: join(dir, "m.db"),
+    mappingKey: randomBytes(32),
+    auditDir: join(dir, "audit"),
+    classifier: { url: "http://x", model: "g", timeoutMs: 1000 },
+  });
+}
 
 function mockClassifier(findings: Array<{ type: string; value: string; confidence: string }>) {
   vi.spyOn(global, "fetch").mockResolvedValue(
@@ -23,12 +33,7 @@ function mockClassifier(findings: Array<{ type: string; value: string; confidenc
 describe("Round-Trip anonymize → deanonymize", () => {
   it("liefert Originaltext zurück, wenn Pseudonyme unverändert in der Antwort stehen", async () => {
     mockClassifier([{ type: "PERSON", value: "Max", confidence: "high" }]);
-    const dpo = createDpo({
-      mappingDbPath: join(dir, "m.db"),
-      mappingKey: randomBytes(32),
-      auditDir: join(dir, "audit"),
-      classifier: { url: "http://x", model: "g", timeoutMs: 1000 },
-    });
+    const dpo = createTestDpo();
     const a = await dpo.anonymize({
       text: "Max ruft an unter +49 30 12345678",
       targetLlm: "claude",
@@ -42,15 +47,17 @@ describe("Round-Trip anonymize → deanonymize", () => {
     dpo.close();
   });
 
-  it("liefert leeren Mapping-Lookup für unbekannte mappingId — Text bleibt unverändert", () => {
-    const dpo = createDpo({
-      mappingDbPath: join(dir, "m.db"),
-      mappingKey: randomBytes(32),
-      auditDir: join(dir, "audit"),
-      classifier: { url: "http://x", model: "g", timeoutMs: 1000 },
-    });
-    const r = dpo.deanonymize({ mappingId: "unknown", text: "[PERSON_A] hallo" });
-    expect(r.text).toBe("[PERSON_A] hallo");
+  it("wirft MappingNotFoundError für unbekannte mappingId", () => {
+    const dpo = createTestDpo();
+    expect(() => dpo.deanonymize({ mappingId: "unknown", text: "[PERSON_A] hallo" }))
+      .toThrow(MappingNotFoundError);
+    dpo.close();
+  });
+
+  it("throws MappingNotFoundError for unknown mappingId", () => {
+    const dpo = createTestDpo();
+    expect(() => dpo.deanonymize({ mappingId: "does-not-exist", text: "x" }))
+      .toThrow(/mapping not found/);
     dpo.close();
   });
 });

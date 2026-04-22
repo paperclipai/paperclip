@@ -1,0 +1,1450 @@
+{
+  "name": "Luna Voice + Telegram V11",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const u = $input.first().json;\nconst msg = u.message ?? u.edited_message ?? u.channel_post ?? u.edited_channel_post ?? u;\n\nconst chatId = msg?.chat?.id ?? null;\nconst messageId = msg?.message_id ?? null;\n\nconst from = msg?.from ?? {};\nconst tgUserId = from?.id ?? null;\nconst firstName = from?.first_name ?? '';\nconst lastName = from?.last_name ?? '';\nconst tgUsername = from?.username ?? '';\nconst languageCode = from?.language_code ?? '';\nconst username = tgUsername || [firstName, lastName].filter(Boolean).join(' ') || 'Unbekannt';\n\n// Voice (Sprachnachricht) ODER Audio (Datei)\nconst voiceFileId = String(msg?.voice?.file_id || msg?.audio?.file_id || '').trim();\n\nconst inputType = voiceFileId ? 'voice' : 'text';\nconst userText = (msg?.text || msg?.caption || '').trim() || (voiceFileId ? '' : '[Leere Textnachricht]');\n\nreturn [{\n  json: {\n    source: 'telegram',\n    chatId,\n    messageId,\n    tgUserId,\n    firstName,\n    lastName,\n    tgUsername,\n    languageCode,\n    username,\n    inputType,\n    userText,\n    voiceFileId\n  }\n}];"
+      },
+      "name": "Normalize Telegram Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        704
+      ],
+      "id": "d53725c6-535e-4215-8e16-a5d576fea99d"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{const chatId = $json.chatId ?? \"NULL\";\nconst tgUserId = $json.tgUserId ?? \"NULL\";\nconst username = String($json.username ?? \"\").replace(/\\'/g, \"\\'\\'\");\nconst firstName = String($json.firstName ?? \"\").replace(/\\'/g, \"\\'\\'\");\nconst lastName = String($json.lastName ?? \"\").replace(/\\'/g, \"\\'\\'\");\nconst tgUsername = String($json.tgUsername ?? \"\").replace(/\\'/g, \"\\'\\'\");\nconst languageCode = String($json.languageCode ?? \"\").replace(/\\'/g, \"\\'\\'\");\nreturn \"WITH updated AS (UPDATE tg_chat_users SET \" +\n  \"tg_user_id = \" + tgUserId + \", \" +\n  \"username = \\'\" + username + \"\\', \" +\n  \"first_name = \\'\" + firstName + \"\\', \" +\n  \"last_name = \\'\" + lastName + \"\\', \" +\n  \"tg_username = \\'\" + tgUsername + \"\\', \" +\n  \"language_code = \\'\" + languageCode + \"\\', \" +\n  \"last_seen_at = now() \" +\n  \"WHERE chat_id = \" + chatId + \" RETURNING 1) \" +\n\"INSERT INTO tg_chat_users (tg_user_id, chat_id, username, first_name, last_name, tg_username, language_code, last_seen_at) \" +\n\"SELECT \" + tgUserId + \", \" + chatId + \", \\'\" + username + \"\\', \\'\" + firstName + \"\\', \\'\" + lastName + \"\\', \\'\" + tgUsername + \"\\', \\'\" + languageCode + \"\\', now() \" +\n\"WHERE NOT EXISTS (SELECT 1 FROM updated);\";}}",
+        "options": {}
+      },
+      "name": "PG Upsert Telegram User",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        928
+      ],
+      "id": "95b38629-0d18-474f-a0e4-9cf2c0073502",
+      "credentials": {
+        "postgres": {
+          "id": "0OC4GHQU52Oducxt",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "049c5f3c-9d30-4f89-a3b0-95717bc7e18b",
+              "leftValue": "={{ $json.voiceFileId }}",
+              "rightValue": "=",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "IF Voice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        704
+      ],
+      "id": "3baa9f1c-7abc-4fa9-a1c1-febe6ca7914e"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{$json.voiceFileId}}",
+        "additionalFields": {}
+      },
+      "name": "Telegram Get Voice File",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1568,
+        224
+      ],
+      "id": "acf90226-08c4-477c-bdf7-efc2381163fd",
+      "webhookId": "b001761c-189c-47bf-a156-6b8efc2a82f5",
+      "credentials": {
+        "telegramApi": {
+          "id": "x61ymUK8JkAnmrM8",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": [
+            {
+              "field1": "voiceFileId",
+              "field2": "result.file_id"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Merge Meta + VoiceBinary",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        1744,
+        448
+      ],
+      "id": "2b8a84f5-1c8f-4413-a856-aaba9df46ae1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/speech-to-text",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model_id",
+              "value": "scribe_v1"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "ElevenLabs STT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1952,
+        224
+      ],
+      "id": "c755aad5-1eb3-4c89-bb44-3d6d4d7478e7",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "RipRN1z2gkBsMZxq",
+          "name": "ElevenLabs"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge Meta + STT",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        2144,
+        464
+      ],
+      "id": "82e8ae2c-038a-49dd-9122-89ea79f69788"
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = $json;\n\n// ElevenLabs STT kann je nach Version unterschiedlich heißen:\nconst transcript =\n  o.text ||\n  o.transcript ||\n  o.transcription ||\n  o.data?.text ||\n  o.data?.transcript ||\n  '';\n\nreturn [{\n  json: {\n    ...o,\n    userText: String(transcript || '').trim(),\n    inputType: 'voice'\n  }\n}];\n"
+      },
+      "name": "Set userText from STT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2336,
+        464
+      ],
+      "id": "51cfc2c1-d64f-4899-8b68-043ec056b6ba"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{`\nWITH last AS (\n  SELECT role, content, created_at\n  FROM tg_chat_memory\n  WHERE chat_id = ${$json.chatId}\n  ORDER BY created_at DESC\n  LIMIT 12\n)\nSELECT COALESCE(\n  json_agg(json_build_object('role', role, 'content', content) ORDER BY created_at),\n  '[]'::json\n) AS history\nFROM last;\n`}}",
+        "options": {}
+      },
+      "name": "PG Select History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        1168
+      ],
+      "id": "0f9cd585-4f46-4305-9b53-00184cfb54c3",
+      "credentials": {
+        "postgres": {
+          "id": "0OC4GHQU52Oducxt",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge Meta + History",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        1952,
+        736
+      ],
+      "id": "bca2d97d-3325-4db0-8eed-27e648d7ce68"
+    },
+    {
+      "parameters": {
+        "jsCode": "let history = $json.history;\n\n// Postgres kann JSON als Objekt/Array oder als String liefern\nif (typeof history === 'string') {\n  try { history = JSON.parse(history); } catch (e) { history = []; }\n}\nif (!Array.isArray(history)) history = [];\n\n// System-Instruktionen (kurz halten, damit weniger \"Meta\" kommt)\nconst systemText =\n  'Du bist ein hilfreicher Assistent. Antworte immer auf Deutsch. Gib nur die Antwort aus, ohne Meta-Sätze.';\n\nconst userName = String($json.username ?? '').trim();\nconst userContent = String($json.userText ?? '').trim() || '[Leere Eingabe]';\n\n// Ollama-kompatible Messages (falls du später wieder umsteigst)\nconst messages = [\n  { role: 'system', content: systemText },\n  ...history,\n  { role: 'user', content: userContent },\n];\n\n// Für den AI Agent Node: Standardmäßig erwartet er das Feld \"chatInput\"\nconst chatParts = [];\nchatParts.push(systemText);\nif (userName) chatParts.push(`Du sprichst mit ${userName}.`);\nfor (const m of history) {\n  const role = m?.role === 'assistant' ? 'Assistant' : 'User';\n  const content = String(m?.content ?? '').trim();\n  if (content) chatParts.push(`${role}: ${content}`);\n}\nchatParts.push(`User: ${userContent}`);\n\nconst chatInput = chatParts.join('\\n');\n\nreturn [{\n  json: {\n    ...$json,\n    chatInput,\n    systemText,\n    ollamaModel: String($json.ollamaModel ?? 'llama3.2'),\n    ollamaMessages: messages,\n  }\n}];\n"
+      },
+      "name": "Build Ollama Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2336,
+        976
+      ],
+      "id": "6da3132a-fcab-49ee-9883-b4346502b25a"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge Meta + OllamaResponse",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        3040,
+        752
+      ],
+      "id": "cc045e4a-3cc1-4624-ade5-42ec07ea216f"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\n\nlet assistantText = String(\n  r.assistantText ??\n  r.output ??\n  r.text ??\n  r.response?.text ??\n  r.message?.content ??\n  r.response ??\n  r.choices?.[0]?.message?.content ??\n  ''\n).trim();\n\nassistantText = assistantText\n  .replace(/<think>[\\s\\S]*?<\\/think>\\s*/gi, '')\n  .replace(/<think>[\\s\\S]*/gi, '')\n  .trim();\n\nreturn [{\n  json: {\n    ...r,\n    assistantText,\n  }\n}];"
+      },
+      "name": "Extract assistantText",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3648,
+        752
+      ],
+      "id": "84b2c54d-192d-471c-b9b1-e4a761303ea4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "e4b3d1e0-f86c-48f2-91f5-96287b0ff67d",
+              "leftValue": "={{ $json.voiceFileId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "IF Need Audio Reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4128,
+        496
+      ],
+      "id": "f18ab413-83bf-44af-a3e3-2f30817aff35"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.assistantTextEscaped}}",
+        "additionalFields": {}
+      },
+      "name": "Telegram Send Text",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        5056,
+        512
+      ],
+      "id": "e67a8ebc-7de4-42c9-b677-799be861526d",
+      "webhookId": "fd57e417-34b1-407b-aa6e-a59af3a43c6f",
+      "credentials": {
+        "telegramApi": {
+          "id": "x61ymUK8JkAnmrM8",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/MiVAi0PlB7YlXfCDRCkq?output_format=opus_48000_64",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "audio/ogg"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.assistantText }}"
+            },
+            {
+              "name": "model_id",
+              "value": "eleven_multilingual_v2"
+            }
+          ]
+        },
+        "options": {
+          "response": {},
+          "timeout": 180000
+        }
+      },
+      "name": "ElevenLabs TTS (Opus)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4496,
+        736
+      ],
+      "id": "f17c0066-8d68-45dc-8bfc-9f3ac0d17bb2",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "RipRN1z2gkBsMZxq",
+          "name": "ElevenLabs"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge Meta + TTSBinary",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        4512,
+        976
+      ],
+      "id": "8c2a1401-5e99-499d-8554-72e124b5e5a9"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendVoice' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ String($json.chatId) }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "voice",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "name": "Telegram Send Voice (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        5056,
+        720
+      ],
+      "id": "0d9df4bd-6f8f-47ed-b4c9-970fe7af9db4"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{\"INSERT INTO tg_chat_memory (chat_id, role, content) VALUES (\" + $json.chatId + \", 'user', '\" + String($json.userText || '').replace(/'/g, \"''\") + \"');\"}}",
+        "options": {}
+      },
+      "name": "PG Insert User",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        3904,
+        1152
+      ],
+      "id": "d00d4b57-2a2e-4928-b225-48baf15a1fdf",
+      "credentials": {
+        "postgres": {
+          "id": "0OC4GHQU52Oducxt",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{\"INSERT INTO tg_chat_memory (chat_id, role, content) VALUES (\" + $json.chatId + \", 'assistant', '\" + String($json.assistantText || '').replace(/'/g, \"''\") + \"');\"}}",
+        "options": {}
+      },
+      "name": "PG Insert Assistant",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        4128,
+        1168
+      ],
+      "id": "456394fb-9522-40ff-840e-e64917eda672",
+      "credentials": {
+        "postgres": {
+          "id": "0OC4GHQU52Oducxt",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userText }}",
+        "options": {
+          "systemMessage": "# ROLLE\nDu bist eine hilfreiche Assistent von Walter namens Luna.\n\n# REGELN\n- Antworte NUR auf Deutsch.\n- Gib NUR die finale Antwort aus (keine Meta-Sätze wie „The user says…“).\n- Wenn die Frage eine einfache Zahl/Antwort hat, antworte kurz.\n- Du stehst als persönliche Assistentin und Freundin von Walter und seiner Frau Clara mit Rat und Tat zur Seite\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        3488,
+        1168
+      ],
+      "id": "dfa26175-4b78-4779-a92c-d8b24efc6e6e",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:1234/v1/models",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "options": {}
+      },
+      "id": "68bfcd2d-b3db-4c57-8f5b-309be4335975",
+      "name": "LM Studio Models",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2592,
+        816
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ZQZf8rLgC1tmLzlg",
+          "name": "LM Studio M4 Max"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge Meta + Models",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        2848,
+        992
+      ],
+      "id": "1db175af-634a-402d-b21c-906f013e9bf2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{Array.isArray($json.data) && $json.data.length > 0}}",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "dbf83704-1d9e-489a-a198-aef0cdcfd000",
+      "name": "IF Model loaded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3024,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "number": [
+            {
+              "name": "chatId",
+              "value": "={{$json.chatId}}"
+            }
+          ],
+          "string": [
+            {
+              "name": "output",
+              "value": "In LM Studio ist kein Modell geladen. Bitte in LM Studio (Local Server) ein Modell laden und dann erneut anfragen."
+            },
+            {
+              "name": "assistantText",
+              "value": "In LM Studio ist kein Modell geladen. Bitte in LM Studio (Local Server) ein Modell laden und dann erneut anfragen."
+            },
+            {
+              "name": "source",
+              "value": "={{$json.source}}"
+            },
+            {
+              "name": "voiceFileId",
+              "value": "={{$json.voiceFileId}}"
+            },
+            {
+              "name": "userText",
+              "value": "={{$json.userText}}"
+            },
+            {
+              "name": "username",
+              "value": "={{$json.username}}"
+            },
+            {
+              "name": "messageId",
+              "value": "={{$json.messageId}}"
+            },
+            {
+              "name": "inputType",
+              "value": "={{$json.inputType}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2e68a1f9-c5c1-4b20-99f5-b7eda6fb4ebf",
+      "name": "No Model Reply (LM Studio)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        3504,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "luna/voice",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1008,
+        1168
+      ],
+      "id": "0222726e-cf7c-4caa-a7bf-3f8ea7f27b37",
+      "name": "Webhook (Luna Voice)",
+      "webhookId": "534e7c51-f8f6-4556-a8ed-258047c616e8"
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "number": [
+            {
+              "name": "chatId",
+              "value": "={{Number($json.body?.chatId ?? 0)}}"
+            },
+            {
+              "name": "messageId",
+              "value": "={{Number($json.body?.messageId ?? 0)}}"
+            }
+          ],
+          "string": [
+            {
+              "name": "username",
+              "value": "={{$json.body?.username ?? 'Luna'}}"
+            },
+            {
+              "name": "inputType",
+              "value": "voice"
+            },
+            {
+              "name": "userText",
+              "value": "={{$json.body?.text ?? ''}}"
+            },
+            {
+              "name": "voiceFileId"
+            },
+            {
+              "name": "source",
+              "value": "luna"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Normalize Webhook Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        1168
+      ],
+      "id": "a017b2b0-26af-4280-ae5d-6dd0acbf3860"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "9eba2541-e85f-4506-9e8b-adf1b44e62bf",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "luna",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "IF Source is Luna?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3840,
+        480
+      ],
+      "id": "ab461771-8c0a-4084-a348-1af3acca2030"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "fc32ce76-0e10-4342-b48d-5ed607004e84",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "telegram",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "IF Audio Target = Telegram?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4768,
+        736
+      ],
+      "id": "cd743db6-7bdb-4919-80f0-8ae450f60f24"
+    },
+    {
+      "parameters": {
+        "jsCode": "// übernimmt das Item mit binary.data und setzt Dateiname/Mime sauber\nconst item = $input.first();\n\nif (!item.binary?.data) {\n  throw new Error('No binary \"data\" found. Check HTTP Request -> Binary Property = data');\n}\n\nitem.binary.data.fileName = 'antwort.mp3';\nitem.binary.data.mimeType = 'audio/mpeg';\n\nreturn [item];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4768,
+        976
+      ],
+      "id": "c193d4b3-3913-4c1c-80e2-dcf9cd1286d7",
+      "name": "Set MP3 metadata"
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "audio/mpeg"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "inline; filename=\"antwort.mp3\""
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        5056,
+        976
+      ],
+      "id": "bd26f39a-b658-451f-9808-a290a43afc45",
+      "name": "Respond to Webhook (MP3)"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ca9a5013-4108-4c28-87a4-dd8973858718",
+              "name": "sessionId",
+              "value": "={{ $json.source + ':' + String($json.chatId ?? 0) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3328,
+        1168
+      ],
+      "id": "f989832d-6656-4187-9490-91a3e479a770",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 100
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        3584,
+        1392
+      ],
+      "id": "5b2e972d-d8ee-443e-8014-893689692660",
+      "name": "Postgres Chat Memory",
+      "credentials": {
+        "postgres": {
+          "id": "0OC4GHQU52Oducxt",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json.assistantText ?? \"\";\nconst escaped = t\n  .replace(/&/g, \"&amp;\")\n  .replace(/</g, \"&lt;\")\n  .replace(/>/g, \"&gt;\");\nreturn [{ ...$json, assistantTextEscaped: escaped }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4464,
+        512
+      ],
+      "id": "bafdb116-239b-4aa4-9728-d6d32800998a",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f4b27eb3-8c3c-4f8e-a266-9330e9d9e9e3",
+              "leftValue": "={{ $json.message.from.id }}",
+              "rightValue": 8311805232,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "a35a78ec-0db1-49c4-9c30-e131374a1773",
+              "leftValue": "={{ $json.message.from.id }}",
+              "rightValue": 1220010628,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        1120,
+        336
+      ],
+      "id": "1fd67169-07df-495e-8bf0-f05b12a8aecf",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "757a081e-369b-46fe-a73b-a49aba0a7521",
+      "name": "Telegram Trigger1",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        896,
+        336
+      ],
+      "webhookId": "30937b26-e0eb-4e2b-9105-a0dbf51acfe7",
+      "credentials": {
+        "telegramApi": {
+          "id": "x61ymUK8JkAnmrM8",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "mistral-small-3.2-24b-instruct-2506",
+          "mode": "list",
+          "cachedResultName": "mistral-small-3.2-24b-instruct-2506"
+        },
+        "responsesApiEnabled": false,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        3360,
+        1440
+      ],
+      "id": "a89415f3-be9c-4af7-866c-b9e500e4ca0e",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "ZQZf8rLgC1tmLzlg",
+          "name": "LM Studio M4 Max"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "assistantText",
+              "value": "={{$json.assistantText ?? $json.output ?? ''}}"
+            },
+            {
+              "name": "output",
+              "value": "={{$json.assistantText ?? $json.output ?? ''}}"
+            },
+            {
+              "name": "source",
+              "value": "={{$json.source}}"
+            }
+          ],
+          "number": [
+            {
+              "name": "chatId",
+              "value": "={{Number($json.chatId ?? 0)}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "587923dd-bf24-43b2-9a71-19961bef2d25",
+      "name": "Prepare Webhook Response (JSON)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        4128,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "26efa05e-56b2-4523-ba14-dc714c12252d",
+      "name": "Respond to Webhook (JSON)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        4464,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\n\nif (!item.binary?.data) {\n  throw new Error('Kein Binary \"data\" gefunden.');\n}\n\nconst ts = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 15);\nitem.binary.data.fileName = `luna_${ts}.ogg`;\nitem.binary.data.fileExtension = 'ogg';\nitem.binary.data.mimeType = 'audio/ogg';\n\nreturn [item];"
+      },
+      "name": "Set TG Audio Filename",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4912,
+        720
+      ],
+      "id": "2e9a4e4c-e80d-4399-b2f2-2c614b10ebeb"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Normalize Telegram Input": {
+      "main": [
+        [
+          {
+            "node": "IF Voice?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "PG Upsert Telegram User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Voice?": {
+      "main": [
+        [
+          {
+            "node": "Telegram Get Voice File",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + VoiceBinary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PG Select History",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Get Voice File": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + VoiceBinary",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Meta + VoiceBinary": {
+      "main": [
+        [
+          {
+            "node": "ElevenLabs STT",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + STT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ElevenLabs STT": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + STT",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Meta + STT": {
+      "main": [
+        [
+          {
+            "node": "Set userText from STT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set userText from STT": {
+      "main": [
+        [
+          {
+            "node": "PG Select History",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG Select History": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + History",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Meta + History": {
+      "main": [
+        [
+          {
+            "node": "Build Ollama Messages",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + OllamaResponse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Ollama Messages": {
+      "main": [
+        [
+          {
+            "node": "LM Studio Models",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + Models",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Meta + OllamaResponse": {
+      "main": [
+        [
+          {
+            "node": "Extract assistantText",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract assistantText": {
+      "main": [
+        [
+          {
+            "node": "PG Insert User",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "PG Insert Assistant",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Source is Luna?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Need Audio Reply?": {
+      "main": [
+        [
+          {
+            "node": "ElevenLabs TTS (Opus)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + TTSBinary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Meta + TTSBinary": {
+      "main": [
+        [
+          {
+            "node": "IF Audio Target = Telegram?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + OllamaResponse",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "LM Studio Models": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + Models",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Meta + Models": {
+      "main": [
+        [
+          {
+            "node": "IF Model loaded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Model loaded?": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Model Reply (LM Studio)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Model Reply (LM Studio)": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + OllamaResponse",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Webhook (Luna Voice)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Webhook Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Webhook Input": {
+      "main": [
+        [
+          {
+            "node": "PG Select History",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Meta + History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Source is Luna?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Webhook Response (JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Need Audio Reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Audio Target = Telegram?": {
+      "main": [
+        [
+          {
+            "node": "Set TG Audio Filename",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set MP3 metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set MP3 metadata": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (MP3)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Telegram Send Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "Normalize Telegram Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Webhook Response (JSON)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set TG Audio Filename": {
+      "main": [
+        [
+          {
+            "node": "Telegram Send Voice (HTTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ElevenLabs TTS (Opus)": {
+      "main": [
+        [
+          {
+            "node": "Merge Meta + TTSBinary",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "db5daa16-b06c-4c7b-b8fe-512a04d12441",
+  "meta": {
+    "instanceId": "3ba44b62f5d02f0e3eb8ac8e69e2dbfcaa4b9bad020f8ff5eea3bbe4b29c7c07"
+  },
+  "id": "yAkktsDiwjZMpLZv",
+  "tags": []
+}
