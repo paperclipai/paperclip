@@ -5955,6 +5955,24 @@ export function heartbeatService(db: Db) {
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
+
+        // Drop deferred mention wakes on closed issues — do not reopen for @-mention comments
+        if (
+          readNonEmptyString(deferredContextSeed.wakeReason) === "issue_comment_mentioned" &&
+          (issue.status === "done" || issue.status === "cancelled")
+        ) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "failed",
+              finishedAt: new Date(),
+              error: "Dropped deferred mention wake: issue was closed before promotion",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled");
         let reopenedActivity: LogActivityInput | null = null;
