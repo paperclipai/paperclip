@@ -403,7 +403,38 @@ describeEmbeddedPostgres("deferred-wake freshness guard (POI-237 Option 1)", () 
     expect(issue?.status).toBe("todo");
   });
 
-  // ── Case 5: non-comment deferred wake on terminal issue → unchanged path ──
+  // ── Case 5: deleted comment rows → treat as fresh (lenient fallback) ──────
+  it("treats deleted deferred comment rows as fresh instead of silently dropping the wake", async () => {
+    const closedAt = new Date("2026-04-01T11:00:00.000Z");
+    const commentTime = new Date("2026-04-01T12:00:00.000Z");
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent(db);
+    const { issueId, runId } = await seedTerminalIssueWithRunningExec(db, companyId, agentId, issuePrefix);
+
+    await seedCloseActivityLog(db, companyId, issueId, closedAt);
+    const commentId = await seedComment(db, companyId, issueId, commentTime);
+    await seedDeferredCommentWake(db, companyId, agentId, issueId, [commentId]);
+
+    await db.delete(issueComments).where(eq(issueComments.id, commentId));
+
+    await heartbeat.cancelRun(runId);
+
+    const [issue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("todo");
+
+    const [deferredWake] = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue_execution_promoted"),
+        ),
+      );
+    expect(deferredWake?.status).not.toBe("failed");
+    expect(deferredWake?.error).not.toBe("deferred_comment_wake_terminal_skipped");
+  });
+
+  // ── Case 6: non-comment deferred wake on terminal issue → unchanged path ──
   it("promotes non-comment deferred wakes on terminal issues without the freshness check", async () => {
     // A deferred wake with no wakeCommentIds must bypass the freshness guard entirely.
     // This verifies Path B (shouldImplicitlyMoveCommentedIssueToTodoForAgent) is not touched.

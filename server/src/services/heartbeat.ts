@@ -5908,21 +5908,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   inArray(issueComments.id, deferredCommentIds),
                 ),
               );
-            const anyFresh = commentRows.some(
-              (row) => row.createdAt.getTime() > closedAt.getTime(),
-            );
-            if (!anyFresh) {
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  status: "failed",
-                  finishedAt: new Date(),
-                  error: "deferred_comment_wake_terminal_skipped",
-                  updatedAt: new Date(),
-                })
-                .where(eq(agentWakeupRequests.id, deferred.id));
-              continue;
+            if (commentRows.length > 0) {
+              const anyFresh = commentRows.some(
+                (row) => row.createdAt.getTime() > closedAt.getTime(),
+              );
+              if (!anyFresh) {
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    status: "failed",
+                    finishedAt: new Date(),
+                    error: "deferred_comment_wake_terminal_skipped",
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(agentWakeupRequests.id, deferred.id));
+                continue;
+              }
             }
+            // Deleted/missing comment rows are treated leniently so comment cleanup
+            // cannot suppress a potentially fresh deferred reopen.
           }
           // No audit entry — lenient fallback: treat as fresh and proceed with reopen.
         }
