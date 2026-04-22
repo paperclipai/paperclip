@@ -112,15 +112,20 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  type AskUserQuestionsAnswer,
   type ActivityEvent,
   type Agent,
   type FeedbackVote,
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type IssueThreadInteraction,
+  type RequestConfirmationInteraction,
+  type SuggestTasksInteraction,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
+type ActionableIssueThreadInteraction = SuggestTasksInteraction | RequestConfirmationInteraction;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;
@@ -509,6 +514,7 @@ type IssueDetailChatTabProps = {
   blockedBy: Issue["blockedBy"];
   comments: IssueDetailComment[];
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
+  interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
   onLoadOlderComments: () => void;
@@ -538,6 +544,15 @@ type IssueDetailChatTabProps = {
   onCancelQueued: (commentId: string) => void;
   interruptingQueuedRunId: string | null;
   onImageClick: (src: string) => void;
+  onAcceptInteraction: (
+    interaction: ActionableIssueThreadInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void>;
+  onRejectInteraction: (interaction: ActionableIssueThreadInteraction, reason?: string) => Promise<void>;
+  onSubmitInteractionAnswers: (
+    interaction: IssueThreadInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void>;
 };
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
@@ -549,6 +564,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockedBy,
   comments,
   locallyQueuedCommentRunIds,
+  interactions,
   hasOlderComments,
   commentsLoadingOlder,
   onLoadOlderComments,
@@ -574,6 +590,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onCancelQueued,
   interruptingQueuedRunId,
   onImageClick,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onSubmitInteractionAnswers,
 }: IssueDetailChatTabProps) {
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
@@ -613,19 +632,22 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => resolveRunningIssueRun(resolvedActiveRun, resolvedLiveRuns),
     [resolvedActiveRun, resolvedLiveRuns],
   );
+  const liveRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of resolvedLiveRuns) ids.add(run.id);
+    if (resolvedActiveRun) ids.add(resolvedActiveRun.id);
+    return ids;
+  }, [resolvedActiveRun, resolvedLiveRuns]);
   const timelineRuns = useMemo(() => {
-    const liveIds = new Set<string>();
-    for (const run of resolvedLiveRuns) liveIds.add(run.id);
-    if (activeRun) liveIds.add(activeRun.id);
-    const historicalRuns = liveIds.size === 0
+    const historicalRuns = liveRunIds.size === 0
       ? resolvedLinkedRuns
-      : resolvedLinkedRuns.filter((run) => !liveIds.has(run.runId));
+      : resolvedLinkedRuns.filter((run) => !liveRunIds.has(run.runId));
     return historicalRuns.map((run) => ({
       ...run,
       adapterType: run.adapterType,
       hasStoredOutput: (run.logBytes ?? 0) > 0,
     }));
-  }, [activeRun, resolvedLinkedRuns, resolvedLiveRuns]);
+  }, [liveRunIds, resolvedLinkedRuns]);
   const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
     const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
     const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
@@ -651,9 +673,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     return comments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
       const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
+      const queuedTargetRunId = locallyQueuedCommentRunIds.get(comment.id) ?? null;
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(nextComment, {
-        queuedTargetRunId: locallyQueuedCommentRunIds.get(comment.id) ?? null,
-        hasLiveRuns,
+        queuedTargetRunId,
+        targetRunIsLive: queuedTargetRunId ? liveRunIds.has(queuedTargetRunId) : false,
         runningRunId: runningIssueRun?.id ?? null,
       });
       if (locallyQueuedComment !== nextComment) {
@@ -676,7 +699,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
       return nextComment;
     });
-  }, [comments, hasLiveRuns, locallyQueuedCommentRunIds, resolvedActivity, resolvedLinkedRuns, runningIssueRun]);
+  }, [comments, liveRunIds, locallyQueuedCommentRunIds, resolvedActivity, resolvedLinkedRuns, runningIssueRun]);
   const timelineEvents = useMemo(
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
@@ -700,6 +723,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       <IssueChatThread
         composerRef={composerRef}
         comments={commentsWithRunMeta}
+        interactions={interactions}
         feedbackVotes={feedbackVotes}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         feedbackTermsUrl={feedbackTermsUrl}
@@ -731,6 +755,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         interruptingQueuedRunId={interruptingQueuedRunId}
         stoppingRunId={interruptingQueuedRunId}
         onStopRun={onInterruptQueued}
+        onAcceptInteraction={onAcceptInteraction}
+        onRejectInteraction={onRejectInteraction}
+        onSubmitInteractionAnswers={(interaction, answers) =>
+          onSubmitInteractionAnswers(interaction, answers)
+        }
         onCancelRun={runningIssueRun
           ? async () => {
               await onInterruptQueued(runningIssueRun.id);
@@ -1002,6 +1031,12 @@ export function IssueDetail() {
     () => flattenIssueCommentPages(commentPages?.pages),
     [commentPages?.pages],
   );
+  const { data: interactions = [] } = useQuery({
+    queryKey: queryKeys.issues.interactions(issueId!),
+    queryFn: () => issuesApi.listInteractions(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId ?? "pending"),
+  });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
@@ -1203,10 +1238,12 @@ export function IssueDetail() {
   const invalidateIssueDetail = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!) });
   }, [issueId, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!), refetchType: "inactive" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!), refetchType: "inactive" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!), refetchType: "inactive" });
   }, [issueId, queryClient]);
 
   const invalidateIssueRunState = useCallback(() => {
@@ -1241,6 +1278,22 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   }, [queryClient, selectedCompanyId]);
+  const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
+    queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
+      queryKeys.issues.interactions(issueId!),
+      (current) => {
+        const existing = current ?? [];
+        const next = existing.filter((entry) => entry.id !== interaction.id);
+        next.push(interaction);
+        next.sort((left, right) => {
+          const createdAtDelta =
+            new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+          return createdAtDelta === 0 ? left.id.localeCompare(right.id) : createdAtDelta;
+        });
+        return next;
+      },
+    );
+  }, [issueId, queryClient]);
 
   const applyOptimisticIssueCacheUpdate = useCallback((refs: Iterable<string>, data: Record<string, unknown>) => {
     queryClient.setQueriesData<Issue>(
@@ -1491,6 +1544,89 @@ export function IssueDetail() {
       }
     },
   });
+  const acceptInteraction = useMutation({
+    mutationFn: ({
+      interaction,
+      selectedClientKeys,
+    }: {
+      interaction: ActionableIssueThreadInteraction;
+      selectedClientKeys?: string[];
+    }) => issuesApi.acceptInteraction(issueId!, interaction.id, { selectedClientKeys }),
+    onSuccess: (interaction) => {
+      upsertInteractionInCache(interaction);
+      if (interaction.kind === "suggest_tasks" && resolvedCompanyId && issue?.id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(resolvedCompanyId, issue.id) });
+      }
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      const createdCount = interaction.kind === "suggest_tasks"
+        ? interaction.result?.createdTasks?.length ?? 0
+        : 0;
+      const skippedCount = interaction.kind === "suggest_tasks"
+        ? interaction.result?.skippedClientKeys?.length ?? 0
+        : 0;
+      pushToast({
+        title: interaction.kind === "request_confirmation"
+          ? "Request confirmed"
+          : skippedCount > 0
+          ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
+          : "Suggested tasks accepted",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Accept failed",
+        body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
+        tone: "error",
+      });
+    },
+  });
+  const rejectInteraction = useMutation({
+    mutationFn: ({ interaction, reason }: { interaction: ActionableIssueThreadInteraction; reason?: string }) =>
+      issuesApi.rejectInteraction(issueId!, interaction.id, reason),
+    onSuccess: (interaction) => {
+      upsertInteractionInCache(interaction);
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({
+        title: interaction.kind === "request_confirmation" ? "Request declined" : "Suggestion rejected",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reject failed",
+        body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
+        tone: "error",
+      });
+    },
+  });
+  const answerInteraction = useMutation({
+    mutationFn: ({
+      interaction,
+      answers,
+    }: {
+      interaction: IssueThreadInteraction;
+      answers: AskUserQuestionsAnswer[];
+    }) => issuesApi.respondToInteraction(issueId!, interaction.id, { answers }),
+    onSuccess: (interaction) => {
+      upsertInteractionInCache(interaction);
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({
+        title: "Answers submitted",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Submit failed",
+        body: err instanceof Error ? err.message : "Unable to submit answers",
+        tone: "error",
+      });
+    },
+  });
 
   const addCommentAndReassign = useMutation({
     mutationFn: ({
@@ -1625,6 +1761,7 @@ export function IssueDetail() {
       const previousLiveRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueId!));
       const previousActiveRun = queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(issueId!));
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const previousLocalQueuedCommentRunIds = locallyQueuedCommentRunIds;
       const liveRunList = previousLiveRuns ?? [];
       const cachedActiveRun = previousActiveRun ?? null;
       const runningIssueRun = resolveRunningIssueRun(cachedActiveRun, liveRunList);
@@ -1653,12 +1790,17 @@ export function IssueDetail() {
         queryKeys.issues.detail(issueId!),
         (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
       );
+      setLocallyQueuedCommentRunIds((current) => {
+        const next = new Map([...current].filter(([, targetRunId]) => targetRunId !== runId));
+        return next.size === current.size ? current : next;
+      });
 
       return {
         previousRuns,
         previousLiveRuns,
         previousActiveRun,
         previousIssue,
+        previousLocalQueuedCommentRunIds,
       };
     },
     onSuccess: () => {
@@ -1675,6 +1817,9 @@ export function IssueDetail() {
       queryClient.setQueryData(queryKeys.issues.liveRuns(issueId!), context?.previousLiveRuns);
       queryClient.setQueryData(queryKeys.issues.activeRun(issueId!), context?.previousActiveRun);
       queryClient.setQueryData(queryKeys.issues.detail(issueId!), context?.previousIssue);
+      if (context?.previousLocalQueuedCommentRunIds) {
+        setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
+      }
       pushToast({
         title: "Interrupt failed",
         body: err instanceof Error ? err.message : "Unable to interrupt the active run",
@@ -2211,6 +2356,21 @@ export function IssueDetail() {
   const handleInterruptQueuedRun = useCallback(async (runId: string) => {
     await interruptQueuedComment.mutateAsync(runId);
   }, [interruptQueuedComment]);
+  const handleAcceptInteraction = useCallback(async (
+    interaction: ActionableIssueThreadInteraction,
+    selectedClientKeys?: string[],
+  ) => {
+    await acceptInteraction.mutateAsync({ interaction, selectedClientKeys });
+  }, [acceptInteraction]);
+  const handleRejectInteraction = useCallback(async (interaction: ActionableIssueThreadInteraction, reason?: string) => {
+    await rejectInteraction.mutateAsync({ interaction, reason });
+  }, [rejectInteraction]);
+  const handleSubmitInteractionAnswers = useCallback(async (
+    interaction: IssueThreadInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => {
+    await answerInteraction.mutateAsync({ interaction, answers });
+  }, [answerInteraction]);
 
   if (isLoading) return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
@@ -2762,6 +2922,7 @@ export function IssueDetail() {
               blockedBy={issue.blockedBy ?? []}
               comments={threadComments}
               locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
+              interactions={interactions}
               hasOlderComments={hasOlderComments}
               commentsLoadingOlder={commentsLoadingOlder}
               onLoadOlderComments={loadOlderComments}
@@ -2787,6 +2948,9 @@ export function IssueDetail() {
               onCancelQueued={handleCancelQueuedComment}
               interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
               onImageClick={handleChatImageClick}
+              onAcceptInteraction={handleAcceptInteraction}
+              onRejectInteraction={handleRejectInteraction}
+              onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
             />
           ) : null}
         </TabsContent>

@@ -720,7 +720,7 @@ describe("optimistic issue comments", () => {
 
     const result = applyLocalQueuedIssueCommentState(comment, {
       queuedTargetRunId: "run-1",
-      hasLiveRuns: true,
+      targetRunIsLive: true,
       runningRunId: "run-1",
     });
 
@@ -746,8 +746,29 @@ describe("optimistic issue comments", () => {
 
     const result = applyLocalQueuedIssueCommentState(comment, {
       queuedTargetRunId: "run-1",
-      hasLiveRuns: false,
+      targetRunIsLive: false,
       runningRunId: null,
+    });
+
+    expect(result).toBe(comment);
+  });
+
+  it("does not keep local queued state when a different run is live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: true,
+      runningRunId: "run-2",
     });
 
     expect(result).toBe(comment);

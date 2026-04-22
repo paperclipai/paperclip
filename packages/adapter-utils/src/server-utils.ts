@@ -84,6 +84,9 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Leave durable progress in comments, documents, or work products with a clear next action.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
+  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
@@ -1345,7 +1348,6 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
-        let childExited = false;
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
@@ -1379,7 +1381,7 @@ export async function runChildProcess(
               onLogError(err, runId, "failed to inspect terminal adapter output");
             }
           }
-          if (!terminalResultSeen || !childExited) return;
+          if (!terminalResultSeen) return;
 
           if (terminalCleanupTimer) return;
           const graceMs = Math.max(0, terminalCleanup.graceMs ?? 5_000);
@@ -1462,7 +1464,6 @@ export async function runChildProcess(
         });
 
         child.on("exit", () => {
-          childExited = true;
           maybeArmTerminalResultCleanup();
         });
 
@@ -1485,4 +1486,77 @@ export async function runChildProcess(
       })
       .catch(reject);
   });
+}
+
+export interface PostIssueCommentResult {
+  commentId: string;
+  body: string;
+}
+
+export class AgentJwtError extends Error {
+  constructor(public readonly reason: string) {
+    super(`agent_jwt_required: ${reason}`);
+    this.name = "AgentJwtError";
+  }
+}
+
+/**
+ * Posts a comment to a Paperclip issue with a single retry on transient failure.
+ *
+ * On `401 agent_jwt_required` the error is surfaced explicitly rather than swallowed
+ * so the agent loop can surface the authentication problem. A second 401 after the
+ * retry throws `AgentJwtError`.
+ */
+export async function postIssueComment(
+  apiUrl: string,
+  apiKey: string,
+  runId: string,
+  issueIdOrIdentifier: string,
+  body: string,
+): Promise<PostIssueCommentResult> {
+  const url = `${apiUrl}/api/issues/${encodeURIComponent(issueIdOrIdentifier)}/comments`;
+  const headers: Record<string, string> = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "X-Paperclip-Run-Id": runId,
+  };
+  const payload = JSON.stringify({ body });
+
+  async function attempt(): Promise<PostIssueCommentResult> {
+    const res = await fetch(url, { method: "POST", headers, body: payload });
+    if (res.status === 401) {
+      let errorCode = "unknown";
+      let reason = "unknown";
+      try {
+        const json = await res.json() as Record<string, unknown>;
+        errorCode = typeof json.error === "string" ? json.error : errorCode;
+        reason = typeof json.reason === "string" ? json.reason : reason;
+      } catch {
+        // ignore parse errors
+      }
+      if (errorCode === "agent_jwt_required") {
+        throw new AgentJwtError(reason);
+      }
+      throw new Error(`HTTP 401: ${errorCode}`);
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} posting comment to ${issueIdOrIdentifier}`);
+    }
+    const json = await res.json() as Record<string, unknown>;
+    return {
+      commentId: typeof json.id === "string" ? json.id : "",
+      body: typeof json.body === "string" ? json.body : body,
+    };
+  }
+
+  try {
+    return await attempt();
+  } catch (err) {
+    if (err instanceof AgentJwtError) {
+      // Single retry with same token — handles transient 401s.
+      // Genuinely expired JWTs will fail again and surface to the agent loop.
+      return await attempt();
+    }
+    throw err;
+  }
 }

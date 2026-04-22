@@ -45,6 +45,14 @@ import {
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
+import { isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -67,6 +75,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
@@ -114,6 +123,18 @@ interface IssueChatMessageContext {
   onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -211,6 +232,7 @@ interface IssueChatComposerProps {
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -256,6 +278,18 @@ interface IssueChatThreadProps {
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
 
@@ -1698,7 +1732,14 @@ function IssueChatFeedbackButtons({
 }
 
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
-  const { agentMap, currentUserId, userLabelMap } = useContext(IssueChatCtx);
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+  } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -1717,6 +1758,27 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         to: IssueTimelineAssignee;
       }
     : null;
+  const interaction = isIssueThreadInteraction(custom.interaction)
+    ? custom.interaction
+    : null;
+
+  if (custom.kind === "interaction" && interaction) {
+    return (
+      <div id={anchorId}>
+        <div className="py-1.5">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (custom.kind === "event" && actorName) {
     const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
@@ -2077,6 +2139,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
 export function IssueChatThread({
   comments,
+  interactions = [],
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -2118,6 +2181,9 @@ export function IssueChatThread({
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onSubmitInteractionAnswers,
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
@@ -2173,6 +2239,7 @@ export function IssueChatThread({
     () =>
       buildIssueChatMessages({
         comments,
+        interactions,
         timelineEvents,
         linkedRuns,
         liveRuns,
@@ -2188,6 +2255,7 @@ export function IssueChatThread({
       }),
     [
       comments,
+      interactions,
       timelineEvents,
       linkedRuns,
       liveRuns,
@@ -2256,7 +2324,14 @@ export function IssueChatThread({
 
   useEffect(() => {
     const hash = location.hash;
-    if (!(hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
+    if (
+      !(
+        hash.startsWith("#comment-")
+        || hash.startsWith("#activity-")
+        || hash.startsWith("#run-")
+        || hash.startsWith("#interaction-")
+      )
+    ) return;
     if (messages.length === 0 || hasScrolledRef.current) return;
     const targetId = hash.slice(1);
     const element = document.getElementById(targetId);
@@ -2286,6 +2361,9 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     }),
     [
       feedbackVoteByTargetId,
@@ -2303,6 +2381,9 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     ],
   );
 

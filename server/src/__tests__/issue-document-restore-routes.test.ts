@@ -25,46 +25,88 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  documentService: () => mockDocumentsService,
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({}),
-  goalService: () => ({}),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    getExperimental: vi.fn(async () => ({})),
-    getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
-  }),
-  issueApprovalService: () => ({}),
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
-    }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(async () => undefined),
+  reportRunActivity: vi.fn(async () => undefined),
+}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({
+    id: "instance-settings-1",
+    general: {
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    },
+  })),
+  getExperimental: vi.fn(async () => ({})),
+  getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
+  listCompanyIds: vi.fn(async () => [companyId]),
+}));
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 
+const planDocument = {
+  id: "document-1",
+  companyId,
+  issueId,
+  key: "plan",
+  title: "Plan",
+  format: "markdown",
+  body: "# Plan",
+  latestRevisionId: "revision-2",
+  latestRevisionNumber: 2,
+  createdByAgentId: null,
+  createdByUserId: "board-user",
+  updatedByAgentId: null,
+  updatedByUserId: "board-user",
+  createdAt: new Date("2026-03-26T12:00:00.000Z"),
+  updatedAt: new Date("2026-03-26T12:10:00.000Z"),
+};
+
+const systemDocument = {
+  ...planDocument,
+  id: "document-2",
+  key: "system-plan",
+  title: "System plan",
+};
+
 function registerModuleMocks() {
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/documents.js", () => ({
+    documentService: () => mockDocumentsService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/routines.js", () => ({
+    routineService: () => mockRoutineService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -72,14 +114,8 @@ function registerModuleMocks() {
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
     goalService: () => ({}),
-    heartbeatService: () => ({
-      wakeup: vi.fn(async () => undefined),
-      reportRunActivity: vi.fn(async () => undefined),
-    }),
-    instanceSettingsService: () => ({
-      getExperimental: vi.fn(async () => ({})),
-      getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
-    }),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
@@ -95,11 +131,10 @@ function registerModuleMocks() {
       syncIssue: async () => undefined,
     }),
     issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
+    routineService: () => mockRoutineService,
     workProductService: () => ({}),
   }));
 }
@@ -129,8 +164,17 @@ async function createApp() {
 describe("issue document revision routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/documents.js");
+    vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/issues.js");
     vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
@@ -141,25 +185,10 @@ describe("issue document revision routes", () => {
       title: "Document revisions",
       status: "in_progress",
     });
-    mockDocumentsService.listIssueDocuments.mockResolvedValue([
-      {
-        id: "document-1",
-        companyId,
-        issueId,
-        key: "plan",
-        title: "Plan",
-        format: "markdown",
-        body: "# Plan",
-        latestRevisionId: "revision-2",
-        latestRevisionNumber: 2,
-        createdByAgentId: null,
-        createdByUserId: "board-user",
-        updatedByAgentId: null,
-        updatedByUserId: "board-user",
-        createdAt: new Date("2026-03-26T12:00:00.000Z"),
-        updatedAt: new Date("2026-03-26T12:10:00.000Z"),
-      },
-    ]);
+    mockDocumentsService.listIssueDocuments.mockImplementation(
+      async (_issueId, options: { includeSystem?: boolean } | undefined) =>
+        options?.includeSystem ? [planDocument, systemDocument] : [planDocument],
+    );
     mockDocumentsService.listIssueDocumentRevisions.mockResolvedValue([
       {
         id: "revision-2",
@@ -198,6 +227,19 @@ describe("issue document revision routes", () => {
         updatedAt: new Date("2026-03-26T12:10:00.000Z"),
       },
     });
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({});
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ feedbackDataSharingPreference: "prompt" });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue([companyId]);
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -219,14 +261,19 @@ describe("issue document revision routes", () => {
     const res = await request(await createApp()).get(`/api/issues/${issueId}/documents`);
 
     expect(res.status).toBe(200);
-    expect(mockDocumentsService.listIssueDocuments).toHaveBeenCalledWith(issueId, { includeSystem: false });
     expect(res.body).toEqual([expect.objectContaining({ key: "plan" })]);
   });
 
   it("passes includeSystem=true through for debug document listing", async () => {
-    await request(await createApp()).get(`/api/issues/${issueId}/documents?includeSystem=true`);
+    const res = await request(await createApp()).get(
+      `/api/issues/${issueId}/documents?includeSystem=true`,
+    );
 
-    expect(mockDocumentsService.listIssueDocuments).toHaveBeenCalledWith(issueId, { includeSystem: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({ key: "plan" }),
+      expect.objectContaining({ key: "system-plan" }),
+    ]);
   });
 
   it("restores a revision through the append-only route and logs the action", async () => {

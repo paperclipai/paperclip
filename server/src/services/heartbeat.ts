@@ -136,6 +136,7 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
@@ -1659,6 +1660,14 @@ function isSameTaskScope(left: string | null, right: string | null) {
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
+}
+
+function isHeartbeatRunTerminalStatus(
+  status: string | null | undefined,
+): status is (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number] {
+  return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+    status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+  );
 }
 
 // A positive liveness check means some process currently owns the PID.
@@ -5533,8 +5542,8 @@ export function heartbeatService(db: Db) {
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
-      if (latestRun?.status === "cancelled") {
-        outcome = "cancelled";
+      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+        outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {

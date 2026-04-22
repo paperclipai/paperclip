@@ -287,6 +287,8 @@ If the issue identifier is available, prefer the document deep link over a plain
 
 If you're asked to make a plan, _do not mark the issue as done_. Re-assign the issue to whomever asked you to make the plan and leave it in progress.
 
+If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, and wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
+
 Recommended API flow:
 
 ```bash
@@ -314,6 +316,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                              |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`            |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                 |
+| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                              |
 | Release task                          | `POST /api/issues/:issueId/release`                                                                  |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                 |

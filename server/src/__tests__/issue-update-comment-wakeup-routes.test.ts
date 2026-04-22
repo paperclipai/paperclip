@@ -21,6 +21,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -67,6 +71,7 @@ vi.mock("../services/index.js", () => ({
     syncIssue: async () => undefined,
   }),
   issueService: () => mockIssueService,
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
   routineService: () => ({
@@ -121,6 +126,7 @@ function registerModuleMocks() {
       syncIssue: async () => undefined,
     }),
     issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
     routineService: () => ({

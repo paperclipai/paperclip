@@ -12,6 +12,10 @@ import {
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
+import type {
+  AskUserQuestionsInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -138,6 +142,78 @@ vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function createSuggestedTasksInteraction(
+  overrides: Partial<SuggestTasksInteraction> = {},
+): SuggestTasksInteraction {
+  return {
+    id: "interaction-suggest-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "suggest_tasks",
+    title: "Suggested follow-up work",
+    summary: "Preview the next issue tree before accepting it.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-06T12:02:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      tasks: [
+        {
+          clientKey: "task-1",
+          title: "Prototype the card",
+        },
+      ],
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
+function createQuestionInteraction(
+  overrides: Partial<AskUserQuestionsInteraction> = {},
+): AskUserQuestionsInteraction {
+  return {
+    id: "interaction-question-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "ask_user_questions",
+    title: "Clarify the phase",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-06T12:03:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      submitLabel: "Submit answers",
+      questions: [
+        {
+          id: "scope",
+          prompt: "Pick one scope",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "phase-1", label: "Phase 1" },
+            { id: "phase-2", label: "Phase 2" },
+          ],
+        },
+      ],
+    },
+    result: null,
+    ...overrides,
+  };
+}
 
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
@@ -294,6 +370,165 @@ describe("IssueChatThread", () => {
 
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
     expect(viewport?.className).toContain("space-y-3");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("invokes the accept callback for pending suggested-task interactions", async () => {
+    const root = createRoot(container);
+    const onAcceptInteraction = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createSuggestedTasksInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onAcceptInteraction={onAcceptInteraction}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const acceptButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Accept drafts"),
+    );
+    expect(acceptButton).toBeTruthy();
+
+    await act(async () => {
+      acceptButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onAcceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-suggest-1",
+        kind: "suggest_tasks",
+      }),
+      ["task-1"],
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("submits only the selected draft subtree when tasks are manually pruned", async () => {
+    const root = createRoot(container);
+    const onAcceptInteraction = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createSuggestedTasksInteraction({
+              payload: {
+                version: 1,
+                tasks: [
+                  {
+                    clientKey: "root",
+                    title: "Root task",
+                  },
+                  {
+                    clientKey: "child",
+                    parentClientKey: "root",
+                    title: "Child task",
+                  },
+                ],
+              },
+            })]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onAcceptInteraction={onAcceptInteraction}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const childCheckbox = container.querySelector('[aria-label="Include Child task"]');
+    expect(childCheckbox).toBeTruthy();
+
+    await act(async () => {
+      childCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const acceptButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Accept selected drafts"),
+    );
+    expect(acceptButton).toBeTruthy();
+    await act(async () => {
+      acceptButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onAcceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-suggest-1",
+        kind: "suggest_tasks",
+      }),
+      ["root"],
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("submits selected answers for pending question interactions", async () => {
+    const root = createRoot(container);
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createQuestionInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const optionButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Phase 1"),
+    );
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Submit answers"),
+    );
+    expect(optionButton).toBeTruthy();
+    expect(submitButton).toBeTruthy();
+
+    await act(async () => {
+      optionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-question-1",
+        kind: "ask_user_questions",
+      }),
+      [{ questionId: "scope", optionIds: ["phase-1"] }],
+    );
 
     act(() => {
       root.unmount();

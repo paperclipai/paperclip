@@ -91,12 +91,12 @@ export function applyLocalQueuedIssueCommentState<T extends IssueComment>(
   comment: T,
   params: {
     queuedTargetRunId?: string | null;
-    hasLiveRuns: boolean;
+    targetRunIsLive: boolean;
     runningRunId?: string | null;
   },
 ): T | LocallyQueuedIssueComment<T> {
   const queuedTargetRunId = params.queuedTargetRunId ?? null;
-  if (!queuedTargetRunId || !params.hasLiveRuns) return comment;
+  if (!queuedTargetRunId || !params.targetRunIsLive) return comment;
   if (params.runningRunId && params.runningRunId !== queuedTargetRunId) return comment;
 
   return {

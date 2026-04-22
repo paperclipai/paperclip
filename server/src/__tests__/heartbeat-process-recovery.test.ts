@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { eq } from "drizzle-orm";
+import { eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -126,6 +126,79 @@ async function waitForValue<T>(
   return latest ?? null;
 }
 
+async function waitForHeartbeatIdle(
+  db: ReturnType<typeof createDb>,
+  timeoutMs = 3_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await db
+      .select({
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns);
+    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function cancelActiveRunsForCleanup(
+  db: ReturnType<typeof createDb>,
+  timeoutMs = 3_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const activeRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        or(
+          eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+
+    if (activeRuns.length === 0) return;
+
+    const now = new Date();
+    const runIds = activeRuns.map((run) => run.id);
+    const wakeupRequestIds = activeRuns
+      .map((run) => run.wakeupRequestId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        updatedAt: now,
+        errorCode: "test_cleanup",
+        error: "Cancelled by heartbeat-process-recovery test cleanup",
+        processPid: null,
+        processGroupId: null,
+      })
+      .where(inArray(heartbeatRuns.id, runIds));
+
+    if (wakeupRequestIds.length > 0) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled by heartbeat-process-recovery test cleanup",
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function spawnOrphanedProcessGroup() {
   const leader = spawn(
     process.execPath,
@@ -201,6 +274,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }
     cleanupPids.clear();
+    await cancelActiveRunsForCleanup(db, 5_000);
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -225,6 +299,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitForHeartbeatIdle(db, 5_000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
@@ -233,7 +309,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issueRelations);
-    await db.delete(issues);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(issueComments);
+      await db.delete(issueDocuments);
+      try {
+        await db.delete(issues);
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -1112,6 +1198,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, String(sourceRunId)))
       .then((rows) => rows[0] ?? null);
+    if (sourceRun?.id) {
+      await waitForRunToSettle(heartbeat, sourceRun.id, 5_000);
+    }
     expect(sourceRun?.id).not.toBe(runId);
     expect(sourceRun?.livenessState).toBe("plan_only");
   });
@@ -1169,7 +1258,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = await waitForValue(async () => {
       const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
       return rows.find((row) => row.id !== runId && row.livenessState === "advanced") ?? null;
-    });
+    }, 5_000);
+    if (retryRun?.id) {
+      await waitForRunToSettle(heartbeat, retryRun.id, 5_000);
+    }
     expect(retryRun?.livenessState).toBe("advanced");
 
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));

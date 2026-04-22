@@ -38,6 +38,8 @@ const mockProjectService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerServiceMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -45,6 +47,30 @@ function registerServiceMocks() {
 
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/projects.js", () => ({
+    projectService: () => mockProjectService,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -152,7 +178,13 @@ describe("closed isolated workspace issue routes", () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/execution-workspaces.js");
+    vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/projects.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");

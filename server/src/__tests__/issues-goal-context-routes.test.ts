@@ -31,59 +31,61 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  documentService: () => mockDocumentsService,
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => mockGoalService,
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => ({
+      canUser: vi.fn(),
+      hasPermission: vi.fn(),
     }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
-}));
+    agentService: () => ({
+      getById: vi.fn(),
+    }),
+    documentService: () => mockDocumentsService,
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    }),
+    goalService: () => mockGoalService,
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+    }),
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueService: () => mockIssueService,
+    logActivity: vi.fn(async () => undefined),
+    projectService: () => mockProjectService,
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({
+      listForIssue: vi.fn(async () => []),
+    }),
+  }));
+}
 
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
@@ -142,9 +144,11 @@ const projectGoal = {
 describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
