@@ -24,7 +24,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -552,6 +552,23 @@ export function normalizeAgentMentionToken(raw: string): string {
     return decoded !== undefined ? decoded : full;
   });
   return s.trim();
+}
+
+/**
+ * Pure matching: checks whether a set of mention tokens matches an agent
+ * by full name, first-name token, or urlKey.
+ */
+export function agentMatchesMentionTokens(
+  tokens: ReadonlySet<string>,
+  agentName: string,
+): boolean {
+  const nameLower = agentName.toLowerCase();
+  if (tokens.has(nameLower)) return true;
+  const firstName = nameLower.split(/\s+/)[0];
+  if (firstName && tokens.has(firstName)) return true;
+  const urlKey = normalizeAgentUrlKey(agentName);
+  if (urlKey && tokens.has(urlKey)) return true;
+  return false;
 }
 
 export function deriveIssueUserContext(
@@ -2720,7 +2737,7 @@ export function issueService(db: Db) {
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
+        if (agentMatchesMentionTokens(tokens, agent.name)) {
           resolved.add(agent.id);
         }
       }
