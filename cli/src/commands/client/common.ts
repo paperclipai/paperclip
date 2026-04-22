@@ -219,3 +219,58 @@ export function handleCommandError(error: unknown): never {
   console.error(pc.red(message));
   process.exit(1);
 }
+
+/**
+ * Known-wrong flag → friendly hint. Emits a guidance line (to stderr) BEFORE
+ * commander renders its generic "unknown option" error, so the user sees the
+ * actionable remediation first.
+ *
+ * This is a best-effort pre-parse sweep: it scans process.argv for a short
+ * allow-list of common mistakes. It does NOT short-circuit commander —
+ * commander still runs and still exits non-zero, which preserves scripted
+ * workflows that rely on a failure exit code.
+ */
+export function emitFlagHintsFromArgv(argv: readonly string[]): void {
+  const joined = argv.join(" ");
+
+  // --project-name / --project-title: not supported; CLI accepts --project-id only.
+  if (/(^|\s)(--project-name|--project-title)(=|\s|$)/.test(joined)) {
+    console.error(
+      pc.yellow(
+        "[paperclipai] Flag hint: --project-name / --project-title are not supported. Use --project-id <uuid>.\n" +
+          "  Resolve a project UUID from its name via REST: curl -u admin:<pw> http://localhost:3100/api/companies/$CID/projects | jq '.[] | {id, name}'",
+      ),
+    );
+  }
+
+  // --parent-issue-id: legacy/expected name, actual flag is --parent-id.
+  if (/(^|\s)--parent-issue-id(=|\s|$)/.test(joined)) {
+    console.error(
+      pc.yellow(
+        "[paperclipai] Flag hint: --parent-issue-id is not a recognized option. Use --parent-id <uuid> on `issue create`.",
+      ),
+    );
+  }
+
+  // `issue update ... -C/--company-id ...` — unsupported on update.
+  const isIssueUpdate = /(^|\s)issue(\s+)update(\s|$)/.test(joined);
+  const hasCompanyFlag = /(^|\s)(-C|--company-id)(=|\s|$)/.test(joined);
+  if (isIssueUpdate && hasCompanyFlag) {
+    console.error(
+      pc.yellow(
+        "[paperclipai] Flag hint: `issue update` does NOT accept -C/--company-id. The issue is resolved from the <issueId> argument alone.\n" +
+          "  Correct usage: paperclipai issue update <issueId> --status in_progress [--comment \"activity log entry\"]",
+      ),
+    );
+  }
+
+  // `issue comment` with --content (expected name is --body).
+  const isIssueComment = /(^|\s)issue(\s+)comment(\s|$)/.test(joined);
+  if (isIssueComment && /(^|\s)--content(=|\s|$)/.test(joined)) {
+    console.error(
+      pc.yellow(
+        "[paperclipai] Flag hint: `issue comment` uses --body <text>, not --content.",
+      ),
+    );
+  }
+}
