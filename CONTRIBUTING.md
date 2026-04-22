@@ -1,109 +1,199 @@
-# Contributing Guide
+# Contributing to Paperclip
 
-Thanks for wanting to contribute!
+Thanks for your interest in contributing. Paperclip is an open-source orchestration platform for multi-agent companies — contributions that improve reliability, extend the adapter ecosystem, or sharpen the developer experience are most welcome.
 
-We really appreciate both small fixes and thoughtful larger changes.
+## Before You Start
 
-## Two Paths to Get Your Pull Request Accepted
+- **Bug fixes, docs, and targeted enhancements** — open a PR directly.
+- **New features** — check [`ROADMAP.md`](ROADMAP.md) first, then discuss in [Discord `#dev`](https://discord.gg/paperclipai) before building. Uncoordinated feature PRs may be closed.
+- **New agent adapters** — welcome without prior discussion; follow the existing adapter pattern in `server/adapters/`.
+- **Core architectural changes** — always discuss first.
 
-### Path 1: Small, Focused Changes (Fastest way to get merged)
+Prefer extending Paperclip via the **plugin system** (`adapter-plugin.md`) over modifying core directly when possible.
 
-- Pick **one** clear thing to fix/improve
-- Touch the **smallest possible number of files**
-- Make sure the change is very targeted and easy to review
-- All tests pass and CI is green
-- Greptile score is 5/5 with all comments addressed
-- Use the [PR template](.github/PULL_REQUEST_TEMPLATE.md)
+---
 
-These almost always get merged quickly when they're clean.
+## Setup
 
-### Path 2: Bigger or Impactful Changes
+**Prerequisites:** Node.js 20+, pnpm 9.15+
 
-- **First** talk about it in Discord → #dev channel  
-  → Describe what you're trying to solve  
-  → Share rough ideas / approach
-- Once there's rough agreement, build it
-- In your PR include:
-  - Before / After screenshots (or short video if UI/behavior change)
-  - Clear description of what & why
-  - Proof it works (manual testing notes)
-  - All tests passing and CI green
-  - Greptile score 5/5 with all comments addressed
-  - [PR template](.github/PULL_REQUEST_TEMPLATE.md) fully filled out
+```sh
+git clone https://github.com/paperclipai/paperclip.git
+cd paperclip
+pnpm install
+pnpm dev
+```
 
-PRs that follow this path are **much** more likely to be accepted, even when they're large.
+- API server: `http://localhost:3100`
+- UI: served by the API server at the same origin in dev mode
 
-## PR Requirements (all PRs)
+No database configuration needed — an embedded PostgreSQL instance starts automatically and persists at `~/.paperclip/instances/default/db`.
 
-### Use the PR Template
+**Useful dev commands:**
 
-Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
+```sh
+pnpm dev:list          # list running dev processes
+pnpm dev:stop          # stop dev processes
+pnpm dev:once          # run once without file watching (applies pending migrations)
+pnpm storybook         # UI component explorer on port 6006
+```
 
-### Model Used (Required)
+**Reset the dev database:**
 
-Every PR must include a **Model Used** section specifying which AI model produced or assisted with the change. Include the provider, exact model ID/version, context window size, and any relevant capability details (e.g., reasoning mode, tool use). If no AI was used, write "None — human-authored". This applies to all contributors — human and AI alike.
+```sh
+rm -rf ~/.paperclip/instances/default/db
+pnpm dev
+```
 
-### Tests Must Pass
+**Worktree-isolated instances** (recommended for PR work):
 
-All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
+```sh
+paperclipai worktree init
+pnpm paperclipai worktree:make paperclip-pr-<number>
+```
 
-### Greptile Review
+---
 
-We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** with **all Greptile comments addressed** before it can be merged. If Greptile leaves comments, fix or respond to each one and request a re-review.
+## Making Changes
 
-## Feature Contributions
+### Branch naming
 
-We actively manage the core Paperclip feature roadmap.
+Use descriptive branch names tied to the change:
 
-Uncoordinated feature PRs against the core product may be closed, even when the implementation is thoughtful and high quality. That is about roadmap ownership, product coherence, and long-term maintenance commitment, not a judgment about the effort.
+```
+fix/heartbeat-status-filter
+feat/ollama-adapter
+docs/contributing-guide
+chore/lockfile-refresh
+```
 
-If you want to contribute a feature:
+### Commit style
 
-- Check [ROADMAP.md](ROADMAP.md) first
-- Start the discussion in Discord -> `#dev` before writing code
-- If the idea fits as an extension, prefer building it with the [plugin system](doc/plugins/PLUGIN_SPEC.md)
-- If you want to show a possible direction, reference implementations are welcome as feedback, but they generally will not be merged directly into core
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-Bugs, docs improvements, and small targeted improvements are still the easiest path to getting merged, and we really do appreciate them.
+```
+feat(adapters): add ollama-local adapter
+fix(heartbeat): respect status filter in heartbeat-runs query
+docs: expand contributing guide
+chore(lockfile): refresh pnpm-lock.yaml
+```
 
-## General Rules (both paths)
+### Lockfile policy
 
-- Write clear commit messages
-- Keep PR title + description meaningful
-- One PR = one logical change (unless it's a small related group)
-- Run tests locally first
-- Be kind in discussions 😄
+**Do not commit `pnpm-lock.yaml`** in your PR. GitHub Actions regenerates it automatically on merge to `master`.
 
-## Writing a Good PR message
+### Keeping contracts in sync
 
-Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.md). All sections are required. The "thinking path" at the top explains from the top of the project down to what you fixed. E.g.:
+If your change touches any of these layers, update **all** of them together:
 
-### Thinking Path Example 1:
+- `packages/db` — database schema and migrations
+- `packages/shared` — shared types
+- `server` — API routes and business logic
+- `ui` — React frontend
 
-> - Paperclip orchestrates ai-agents for zero-human companies
-> - There are many types of adapters for each LLM model provider
-> - But LLM's have a context limit and not all agents can automatically compact their context
-> - So we need to have an adapter-specific configuration for which adapters can and cannot automatically compact their context
-> - This pull request adds per-adapter configuration of compaction, either auto or paperclip managed
-> - That way we can get optimal performance from any adapter/provider in Paperclip
+---
 
-### Thinking Path Example 2:
+## Testing
 
-> - Paperclip orchestrates ai-agents for zero-human companies
-> - But humans want to watch the agents and oversee their work
-> - Human users also operate in teams and so they need their own logins, profiles, views etc.
-> - So we have a multi-user system for humans
-> - But humans want to be able to update their own profile picture and avatar
-> - But the avatar upload form wasn't saving the avatar to the file storage system
-> - So this PR fixes the avatar upload form to use the file storage service
-> - The benefit is we don't have a one-off file storage for just one aspect of the system, which would cause confusion and extra configuration
+Run the full pre-PR check suite before opening a PR:
 
-Then have the rest of your normal PR message after the Thinking Path.
+```sh
+pnpm -r typecheck    # TypeScript type checks across all packages
+pnpm test:run        # Vitest unit tests (non-watch)
+pnpm build           # production build
+```
 
-This should include details about what you did, why you did it, why it matters & the benefits, how we can verify it works, and any risks.
+For end-to-end tests:
 
-Please include screenshots if possible if you have a visible change. (use something like the [agent-browser skill](https://github.com/vercel-labs/agent-browser/blob/main/skills/agent-browser/SKILL.md) or similar to take screenshots). Ideally, you include before and after screenshots.
+```sh
+pnpm test:e2e        # Playwright browser suite
+```
 
-Questions? Just ask in #dev — we're happy to help.
+For interactive development:
 
-Happy hacking!
+```sh
+pnpm test:watch      # Vitest in watch mode
+```
+
+---
+
+## Opening a Pull Request
+
+All PRs must use the [PR template](.github/PULL_REQUEST_TEMPLATE.md). Every section is required — do not delete sections.
+
+Key sections:
+
+| Section | What to write |
+|---|---|
+| **Thinking Path** | Trace your reasoning from Paperclip's core purpose down to this specific change |
+| **What Changed** | Concrete bullet list of what you modified |
+| **Verification** | Commands or manual steps a reviewer can use to confirm it works |
+| **Risks** | What could go wrong; what you ruled out |
+| **Model Used** | AI model that assisted (provider + exact model ID), or `None — human-authored` |
+| **Roadmap Integration** | Note whether this aligns with `ROADMAP.md`; required for feature PRs |
+
+---
+
+## Contribution Paths
+
+### Path 1 — Small, focused change
+
+1. Pick one clear fix or improvement
+2. Touch the minimal set of files needed
+3. Pass `pnpm -r typecheck && pnpm test:run && pnpm build`
+4. Open a PR using the full template
+
+### Path 2 — Larger feature or refactor
+
+1. Discuss in Discord `#dev` and align with `ROADMAP.md`
+2. Build with before/after documentation
+3. Include manual testing notes and, where applicable, screenshots
+4. Open a PR using the full template
+
+---
+
+## Repo Structure
+
+```
+cli/          CLI tool (paperclipai)
+server/       Backend API and agent adapters
+ui/           React frontend
+packages/     Shared monorepo packages (db, shared, etc.)
+skills/       Reusable agent capability definitions
+tests/        Test suites
+doc/          Developer documentation (see doc/DEVELOPING.md)
+docs/         User-facing documentation
+docker/       Dockerfiles and Compose configs
+evals/        Evaluation harnesses
+```
+
+---
+
+## Health Check
+
+Verify your local instance is running correctly:
+
+```sh
+curl http://localhost:3100/api/health    # {"status":"ok"}
+curl http://localhost:3100/api/companies # JSON array of companies
+```
+
+---
+
+## Good First Issues
+
+Look for issues tagged [`good first issue`](https://github.com/paperclipai/paperclip/issues?q=is%3Aopen+label%3A%22good+first+issue%22) on GitHub. Well-scoped bugs with clear reproduction steps are the fastest way to get familiar with the codebase.
+
+---
+
+## Community
+
+- **Discord:** primary place for design discussion and questions
+- **GitHub Issues:** bug reports and well-specified proposals
+- **GitHub Discussions:** open-ended questions and ideas
+
+---
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
