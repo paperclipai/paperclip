@@ -302,7 +302,14 @@ function CollaboratorCandidates({
     .slice(0, 8);
 
   if (agentMatches.length === 0 && userMatches.length === 0) {
-    return <div className="px-2 py-2 text-xs text-muted-foreground">No matches</div>;
+    const activeAgents = agents.filter((a) => a.status !== "terminated");
+    const totalCandidates = users.length + activeAgents.length;
+    const emptyMessage = q
+      ? `No matches for "${q}"`
+      : totalCandidates === 0
+        ? "No users or agents in this company yet"
+        : "Everyone is already a collaborator";
+    return <div className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</div>;
   }
 
   return (
