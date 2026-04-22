@@ -171,3 +171,97 @@ describeEmbeddedPostgres("issuesSvc.update — terminal state guard (POI-166)", 
     expect(result?.status).toBe("cancelled");
   });
 });
+
+describeEmbeddedPostgres("svc.checkout — terminal state guard (POI-251)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  let companyId: string;
+  let agentId: string;
+  let issueId: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-checkout-terminal-guard-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function setupIssueWithStatus(status: "done" | "cancelled" | "todo") {
+    companyId = randomUUID();
+    agentId = randomUUID();
+    issueId = randomUUID();
+    const prefix = `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: prefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CheckoutTestAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout terminal guard test",
+      status,
+      ...(status === "done" ? { completedAt: new Date() } : {}),
+      ...(status === "cancelled" ? { cancelledAt: new Date() } : {}),
+      assigneeAgentId: agentId,
+      priority: "medium",
+      issueNumber: 1,
+      identifier: `${prefix}-1`,
+    });
+  }
+
+  it("throws 422 when checking out a cancelled issue (even with expectedStatuses including cancelled)", async () => {
+    await setupIssueWithStatus("cancelled");
+    const svc = issueService(db);
+
+    await expect(
+      svc.checkout(issueId, agentId, ["cancelled"], null),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("terminal"),
+    });
+  });
+
+  it("throws 422 when checking out a done issue", async () => {
+    await setupIssueWithStatus("done");
+    const svc = issueService(db);
+
+    await expect(
+      svc.checkout(issueId, agentId, ["done", "in_progress"], null),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("terminal"),
+    });
+  });
+
+  it("allows checkout of a non-terminal issue (regression: update path still works separately)", async () => {
+    await setupIssueWithStatus("todo");
+    const svc = issueService(db);
+
+    const result = await svc.checkout(issueId, agentId, ["todo"], null);
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe("in_progress");
+  });
+});
