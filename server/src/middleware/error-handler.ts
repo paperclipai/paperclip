@@ -61,6 +61,46 @@ export function errorHandler(
     return;
   }
 
+  // postgres.js raises with err.code === 'P0403' for the status-transition guard.
+  // Translate to 422 so clients receive an actionable error instead of an opaque 500.
+  if (
+    err &&
+    typeof err === "object" &&
+    (err as { code?: unknown }).code === "P0403" &&
+    typeof (err as { message?: unknown }).message === "string" &&
+    ((err as { message: string }).message).startsWith("Status transition blocked:")
+  ) {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(422).json({
+      error: "status_transition_blocked",
+      message: (err as { message: string }).message,
+      legalPaths: [
+        "POST /functions/v1/policy-engine (preferred)",
+        "PATCH with blockReason to block",
+        "X-Admin-Override: <CEO-scoped JWT> for break-glass",
+      ],
+    });
+    return;
+  }
+
+  // Replay guard for admin-override audit: unique violation on override_jwt_jti
+  // (AKS-1597 §7.3) means the same CEO JWT was presented twice. Map to 422 so
+  // the UI can surface "re-sign required" instead of a 500.
+  if (
+    err &&
+    typeof err === "object" &&
+    (err as { code?: unknown }).code === "23505" &&
+    typeof (err as { constraint_name?: unknown }).constraint_name === "string" &&
+    (err as { constraint_name: string }).constraint_name.includes("override_jwt_jti")
+  ) {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(422).json({
+      error: "admin_override_replay",
+      message: "This admin override JWT has already been consumed. Re-sign a fresh token.",
+    });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,

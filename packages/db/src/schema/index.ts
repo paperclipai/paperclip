@@ -37,6 +37,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
 export { issueExecutionDecisions } from "./issue_execution_decisions.js";
+export { adminOverrideAudit } from "./admin_override_audit.js";
 export { issueInboxArchives } from "./issue_inbox_archives.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
