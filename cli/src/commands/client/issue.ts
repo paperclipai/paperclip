@@ -217,6 +217,11 @@ export function registerIssueCommands(program: Command): void {
           handleCommandError(err);
         }
       }),
+    // `includeCompany: false` is intentional: this subcommand registers its
+    // own `-C/--company-id` option inline (above) as an OPTIONAL flag with
+    // explicit help text describing the profile/env fallback, so the shared
+    // `addCommonClientOptions` helper must NOT re-register it. Keep these two
+    // in sync: if inline `-C` is removed, flip this back to the default.
     { includeCompany: false },
   );
 

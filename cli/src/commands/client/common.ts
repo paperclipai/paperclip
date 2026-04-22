@@ -221,20 +221,73 @@ export function handleCommandError(error: unknown): never {
 }
 
 /**
+ * Tokenize argv so we can reason about flags and the command/subcommand pair
+ * WITHOUT confusing flag names with user-supplied argument values.
+ *
+ * Rules (conservative, sufficient for hint detection):
+ *  - `commandPath` = leading positional tokens (everything before the first
+ *    token that starts with `-`). For `paperclipai issue update <uuid> --status done`
+ *    this yields `["issue", "update", "<uuid>"]`, which is enough to match the
+ *    `issue update` subcommand prefix.
+ *  - `flagTokens` = exact argv entries that start with `-`, split on `=` so
+ *    that `--project-name=gBETA` becomes `--project-name`. Values (the argv
+ *    entry after a flag, or any entry after the first flag that isn't itself
+ *    a flag) are NOT inspected, which is what prevents false positives when a
+ *    value (e.g. a `--title`) contains flag-like substrings.
+ */
+function tokenizeArgvForHints(argv: readonly string[]): {
+  commandPath: string[];
+  flagTokens: Set<string>;
+} {
+  const commandPath: string[] = [];
+  const flagTokens = new Set<string>();
+  let sawFlag = false;
+
+  for (const raw of argv) {
+    if (raw.startsWith("-")) {
+      sawFlag = true;
+      const name = raw.includes("=") ? raw.slice(0, raw.indexOf("=")) : raw;
+      flagTokens.add(name);
+    } else if (!sawFlag) {
+      commandPath.push(raw);
+    }
+    // Once we've seen a flag, any subsequent non-flag token is treated as a
+    // value and deliberately ignored for hint-matching purposes.
+  }
+
+  return { commandPath, flagTokens };
+}
+
+function matchesSubcommand(
+  commandPath: readonly string[],
+  expected: readonly string[],
+): boolean {
+  if (commandPath.length < expected.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (commandPath[i] !== expected[i]) return false;
+  }
+  return true;
+}
+
+/**
  * Known-wrong flag → friendly hint. Emits a guidance line (to stderr) BEFORE
  * commander renders its generic "unknown option" error, so the user sees the
  * actionable remediation first.
  *
- * This is a best-effort pre-parse sweep: it scans process.argv for a short
- * allow-list of common mistakes. It does NOT short-circuit commander —
- * commander still runs and still exits non-zero, which preserves scripted
- * workflows that rely on a failure exit code.
+ * This is a best-effort pre-parse sweep over argv. It scans flag NAMES (not
+ * argument values) for a short allow-list of common mistakes, and it does NOT
+ * short-circuit commander — commander still runs and still exits non-zero,
+ * which preserves scripted workflows that rely on a failure exit code.
+ *
+ * Scanning flag names rather than the joined argv string avoids false
+ * positives when a user-supplied value (e.g. an `--title` containing the
+ * literal text "issue update -C") accidentally matches a hint pattern.
  */
 export function emitFlagHintsFromArgv(argv: readonly string[]): void {
-  const joined = argv.join(" ");
+  const { commandPath, flagTokens } = tokenizeArgvForHints(argv);
 
   // --project-name / --project-title: not supported; CLI accepts --project-id only.
-  if (/(^|\s)(--project-name|--project-title)(=|\s|$)/.test(joined)) {
+  if (flagTokens.has("--project-name") || flagTokens.has("--project-title")) {
     console.error(
       pc.yellow(
         "[paperclipai] Flag hint: --project-name / --project-title are not supported. Use --project-id <uuid>.\n" +
@@ -244,7 +297,7 @@ export function emitFlagHintsFromArgv(argv: readonly string[]): void {
   }
 
   // --parent-issue-id: legacy/expected name, actual flag is --parent-id.
-  if (/(^|\s)--parent-issue-id(=|\s|$)/.test(joined)) {
+  if (flagTokens.has("--parent-issue-id")) {
     console.error(
       pc.yellow(
         "[paperclipai] Flag hint: --parent-issue-id is not a recognized option. Use --parent-id <uuid> on `issue create`.",
@@ -253,8 +306,9 @@ export function emitFlagHintsFromArgv(argv: readonly string[]): void {
   }
 
   // `issue update ... -C/--company-id ...` — unsupported on update.
-  const isIssueUpdate = /(^|\s)issue(\s+)update(\s|$)/.test(joined);
-  const hasCompanyFlag = /(^|\s)(-C|--company-id)(=|\s|$)/.test(joined);
+  const isIssueUpdate = matchesSubcommand(commandPath, ["issue", "update"]);
+  const hasCompanyFlag =
+    flagTokens.has("-C") || flagTokens.has("--company-id");
   if (isIssueUpdate && hasCompanyFlag) {
     console.error(
       pc.yellow(
@@ -265,8 +319,8 @@ export function emitFlagHintsFromArgv(argv: readonly string[]): void {
   }
 
   // `issue comment` with --content (expected name is --body).
-  const isIssueComment = /(^|\s)issue(\s+)comment(\s|$)/.test(joined);
-  if (isIssueComment && /(^|\s)--content(=|\s|$)/.test(joined)) {
+  const isIssueComment = matchesSubcommand(commandPath, ["issue", "comment"]);
+  if (isIssueComment && flagTokens.has("--content")) {
     console.error(
       pc.yellow(
         "[paperclipai] Flag hint: `issue comment` uses --body <text>, not --content.",
