@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
+  listLinks: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listAttachments: vi.fn(),
@@ -154,6 +155,7 @@ describe("issue goal context routes", () => {
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
+    mockIssueService.listLinks.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
       latestCommentId: null,
