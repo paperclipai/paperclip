@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, MailPlus, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, MailPlus, Server, Settings, Shield, SlidersHorizontal } from "lucide-react";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
@@ -62,6 +62,7 @@ export function CompanySettingsSidebar() {
             end
           />
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
+          <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} end />
         </div>
       </nav>
     </aside>

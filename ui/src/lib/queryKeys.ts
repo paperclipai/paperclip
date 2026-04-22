@@ -120,6 +120,12 @@ export const queryKeys = {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
   },
+  mcpServers: {
+    list: (companyId: string) => ["mcp-servers", companyId] as const,
+    detail: (id: string) => ["mcp-servers", "detail", id] as const,
+    latestSnapshot: (id: string) => ["mcp-servers", "latest-snapshot", id] as const,
+    agentBindings: (agentId: string) => ["mcp-servers", "agent-bindings", agentId] as const,
+  },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,

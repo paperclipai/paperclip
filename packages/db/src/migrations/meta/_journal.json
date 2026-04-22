@@ -421,6 +421,27 @@
       "when": 1776542246000,
       "tag": "0059_plugin_database_namespaces",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1776794527177,
+      "tag": "0060_certain_snowbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1776794789884,
+      "tag": "0061_goofy_ben_parker",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1776795060110,
+      "tag": "0062_steep_magneto",
+      "breakpoints": true
     }
   ]
 }
