@@ -42,23 +42,44 @@ export interface RunPostDoneCleanupOpts {
   db: Db;
   issueId: string;
   issueIdentifier: string;
+  /**
+   * When set, clean up only this specific workspace row. When omitted, clean
+   * up every workspace row whose `sourceIssueId` equals `issueId`.
+   */
+  workspaceId?: string;
   /** Defaults to ["~/Documents/Projects/"]. Must be absolute paths or ~/ prefixes. */
   allowedRoots?: string[];
 }
 
+type WorkspaceRow = typeof executionWorkspaces.$inferSelect;
+
 export async function runPostDoneCleanup(opts: RunPostDoneCleanupOpts): Promise<void> {
-  const { db, issueId, issueIdentifier } = opts;
+  const { db, issueId, issueIdentifier, workspaceId } = opts;
   const allowedRoots = opts.allowedRoots ?? DEFAULT_ALLOWED_ROOTS;
 
-  const rows = await db
-    .select()
-    .from(executionWorkspaces)
-    .where(eq(executionWorkspaces.sourceIssueId, issueId))
-    .limit(1);
+  const rows = workspaceId
+    ? await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspaceId))
+    : await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.sourceIssueId, issueId));
 
-  const workspace = rows[0];
-  if (!workspace) return;
+  if (rows.length === 0) return;
 
+  for (const workspace of rows) {
+    await cleanupOneWorkspace(db, workspace, issueIdentifier, allowedRoots);
+  }
+}
+
+async function cleanupOneWorkspace(
+  db: Db,
+  workspace: WorkspaceRow,
+  issueIdentifier: string,
+  allowedRoots: string[],
+): Promise<void> {
   const now = new Date();
 
   // Gate: only local_fs workspaces get shell-level cleanup.
@@ -113,11 +134,7 @@ export async function runPostDoneCleanup(opts: RunPostDoneCleanupOpts): Promise<
   try {
     const { stdout } = await execFileAsync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {});
     const gitCommonDir = stdout.trim();
-    // When inside a worktree, git-common-dir returns an absolute path to
-    // .git/worktrees/<n>/../.. — i.e., the main repo's .git dir parent.
-    // When in the main repo, it returns ".git" (relative).
     if (path.isAbsolute(gitCommonDir)) {
-      // strip the trailing .git if present
       mainRepoCwd = gitCommonDir.endsWith(".git") ? path.dirname(gitCommonDir) : path.dirname(path.dirname(gitCommonDir));
     } else {
       mainRepoCwd = cwd;
@@ -127,11 +144,7 @@ export async function runPostDoneCleanup(opts: RunPostDoneCleanupOpts): Promise<
     skippedReason = "git_common_dir_failed";
   }
 
-  // Re-validate mainRepoCwd against the allowlist. cwd passing the allowlist
-  // does not imply mainRepoCwd passes: a linked worktree's cwd can be under
-  // an allowed root while the main repo (.git dir parent) lives elsewhere,
-  // which would cause `git worktree remove` / `git branch -d` to run against
-  // an out-of-scope repository. Gate on mainRepoCwd as well.
+  // Re-validate mainRepoCwd against the allowlist. See PR #3924 security note.
   if (mainRepoCwd && !isUnderAllowedRoot(mainRepoCwd, allowedRoots)) {
     logger.warn(
       { issueIdentifier, cwd, mainRepoCwd },

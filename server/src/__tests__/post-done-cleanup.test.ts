@@ -56,15 +56,19 @@ type MockDbResult = {
   updateSetWhere: ReturnType<typeof vi.fn>;
   updateSet: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
+  selectWhere: ReturnType<typeof vi.fn>;
 };
 
-function makeMockDb(workspaceRow: WorkspaceRow | undefined): MockDbResult {
+function makeMockDb(workspaceRows: WorkspaceRow | WorkspaceRow[] | undefined): MockDbResult {
+  const rows = workspaceRows === undefined ? [] : Array.isArray(workspaceRows) ? workspaceRows : [workspaceRows];
+
   const updateSetWhere = vi.fn().mockResolvedValue({ rowCount: 1 });
   const updateSet = vi.fn().mockReturnValue({ where: updateSetWhere });
   const update = vi.fn().mockReturnValue({ set: updateSet });
 
-  const selectLimit = vi.fn().mockResolvedValue(workspaceRow ? [workspaceRow] : []);
-  const selectWhere = vi.fn().mockReturnValue({ limit: selectLimit });
+  // `where` is the final awaited node of the select chain (no `.limit()`
+  // anymore). Returning a resolved promise matches the drizzle call shape.
+  const selectWhere = vi.fn().mockResolvedValue(rows);
   const selectFrom = vi.fn().mockReturnValue({ where: selectWhere });
   const select = vi.fn().mockReturnValue({ from: selectFrom });
 
@@ -73,6 +77,7 @@ function makeMockDb(workspaceRow: WorkspaceRow | undefined): MockDbResult {
     updateSetWhere,
     updateSet,
     update,
+    selectWhere,
   };
 }
 
@@ -458,5 +463,88 @@ describe("runPostDoneCleanup — allowed-roots normalization", () => {
 
     // If it didn't skip, execFile should have been called (rev-parse at minimum)
     expect(mockExecFile).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-workspace-per-issue coverage (POI-222 regression)
+// ---------------------------------------------------------------------------
+
+describe("runPostDoneCleanup — multi-workspace rows for the same issue", () => {
+  beforeEach(() => {
+    mockExecFile.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("iterates every workspace row matching sourceIssueId when workspaceId is not provided", async () => {
+    // Two rows sharing the same sourceIssueId but with distinct ids. A naive
+    // `.limit(1)` implementation would only close the first row; the fix
+    // must close both.
+    const wsA = makeWorkspace({
+      id: "ws-A",
+      providerType: "remote_provider",
+      branchName: "agent/feature/a",
+    });
+    const wsB = makeWorkspace({
+      id: "ws-B",
+      providerType: "remote_provider",
+      branchName: "agent/feature/b",
+    });
+    const { db, updateSetWhere } = makeMockDb([wsA, wsB]);
+
+    await runPostDoneCleanup({
+      db,
+      issueId: "issue-1",
+      issueIdentifier: "POI-1",
+      allowedRoots: ALLOWED_ROOTS,
+    });
+
+    // One UPDATE per row — both rows must receive the closed write. The
+    // drizzle `where(eq(...))` arg is a circular SQL object, so we can't
+    // easily deep-compare it; call count + per-row updateSet calls is enough
+    // to prove the loop iterated both rows.
+    expect(updateSetWhere).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT stop at the first row (regression: no silent .limit(1))", async () => {
+    // Three non-local workspaces so every row takes the fast non_local_provider
+    // branch. If the service regressed to `.limit(1)`, only one update would
+    // fire — the assertion below would catch it.
+    const rows = [
+      makeWorkspace({ id: "ws-1", providerType: "remote" }),
+      makeWorkspace({ id: "ws-2", providerType: "remote" }),
+      makeWorkspace({ id: "ws-3", providerType: "remote" }),
+    ];
+    const { db, updateSetWhere } = makeMockDb(rows);
+
+    await runPostDoneCleanup({
+      db,
+      issueId: "issue-1",
+      issueIdentifier: "POI-1",
+      allowedRoots: ALLOWED_ROOTS,
+    });
+
+    expect(updateSetWhere).toHaveBeenCalledTimes(3);
+  });
+
+  it("targets only the specified workspace row when workspaceId is provided (legacy-script path)", async () => {
+    const wsA = makeWorkspace({ id: "ws-A", providerType: "remote_provider" });
+    const { db, selectWhere, updateSetWhere } = makeMockDb([wsA]);
+
+    await runPostDoneCleanup({
+      db,
+      workspaceId: "ws-A",
+      issueId: "issue-1",
+      issueIdentifier: "POI-1",
+      allowedRoots: ALLOWED_ROOTS,
+    });
+
+    // The select must have been called exactly once, keyed on workspace id
+    // rather than issue id. The resulting update closes the one row.
+    expect(selectWhere).toHaveBeenCalledTimes(1);
+    expect(updateSetWhere).toHaveBeenCalledTimes(1);
   });
 });

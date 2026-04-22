@@ -12,9 +12,8 @@
  *   PAPERCLIP_POSTDONE_CLEANUP_ALLOWED_ROOTS=/home/user/projects/ npx tsx scripts/cleanup-legacy-branches.ts --apply
  */
 
-import path from "node:path";
 import { createDb, executionWorkspaces, issues } from "@paperclipai/db";
-import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, eq, isNotNull, ne } from "drizzle-orm";
 import { runPostDoneCleanup } from "../server/src/services/post-done-cleanup.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -73,6 +72,7 @@ for (const candidate of candidates) {
   try {
     await runPostDoneCleanup({
       db,
+      workspaceId: candidate.workspaceId,
       issueId: candidate.issueId!,
       issueIdentifier: candidate.issueIdentifier ?? candidate.issueId!,
       allowedRoots,
