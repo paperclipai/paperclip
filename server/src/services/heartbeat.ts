@@ -4232,8 +4232,8 @@ export function heartbeatService(db: Db) {
     };
     type PromotionResult =
       | null
-      | { run: null; skippedTerminalWakes: TerminalSkipEntry[] }
-      | { run: typeof heartbeatRuns.$inferSelect; skippedTerminalWakes: TerminalSkipEntry[] };
+      | { run: null; skippedTerminalWakes: TerminalSkipEntry[]; reopenedActivity: LogActivityInput | null }
+      | { run: typeof heartbeatRuns.$inferSelect; skippedTerminalWakes: TerminalSkipEntry[]; reopenedActivity: LogActivityInput | null };
 
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -4297,7 +4297,7 @@ export function heartbeatService(db: Db) {
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (!deferred) return terminalSkipWakes.length > 0 ? { run: null, skippedTerminalWakes: terminalSkipWakes } : null;
+        if (!deferred) return terminalSkipWakes.length > 0 ? { run: null, skippedTerminalWakes: terminalSkipWakes, reopenedActivity: null } : null;
 
         const deferredAgent = await tx
           .select()
@@ -4390,6 +4390,42 @@ export function heartbeatService(db: Db) {
           // No audit entry — lenient fallback: treat as fresh and proceed with promotion.
         }
 
+        // Fresh comment on a terminal issue: reopen to "todo" so the agent
+        // receives it in an actionable state. Activity log entry is emitted
+        // after the transaction so it uses the outer db (not the tx snapshot).
+        let reopenedActivity: LogActivityInput | null = null;
+        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+          const reopenedFromStatus = issue.status;
+          const reopenedIssue = await issuesSvc.update(
+            issue.id,
+            { status: "todo", executionState: null, allowTerminalReopen: true },
+            tx,
+          );
+          if (reopenedIssue) {
+            issue = { ...issue, identifier: reopenedIssue.identifier, status: reopenedIssue.status, executionRunId: reopenedIssue.executionRunId };
+            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
+              promotedContextSeed.reopenedFrom = reopenedFromStatus;
+            }
+            reopenedActivity = {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "heartbeat",
+              agentId: deferred.agentId,
+              runId: run.id,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                status: "todo",
+                reopened: true,
+                reopenedFrom: reopenedFromStatus,
+                source: "deferred_comment_wake",
+                identifier: issue.identifier,
+              },
+            };
+          }
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
@@ -4454,6 +4490,7 @@ export function heartbeatService(db: Db) {
         return {
           run: newRun,
           skippedTerminalWakes: terminalSkipWakes,
+          reopenedActivity,
         };
       }
     });
@@ -4479,6 +4516,10 @@ export function heartbeatService(db: Db) {
           identifier: skip.identifier,
         },
       });
+    }
+
+    if (promotionResult?.reopenedActivity) {
+      await logActivity(db, promotionResult.reopenedActivity);
     }
 
     const promotedRun = promotionResult?.run ?? null;
