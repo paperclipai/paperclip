@@ -47,6 +47,8 @@ Read tools:
 - `paperclipListDocumentRevisions`
 - `paperclipListProjects`
 - `paperclipGetProject`
+- `paperclipGetIssueWorkspaceRuntime`
+- `paperclipWaitForIssueWorkspaceService`
 - `paperclipListGoals`
 - `paperclipGetGoal`
 - `paperclipListApprovals`
@@ -63,6 +65,7 @@ Write tools:
 - `paperclipAddComment`
 - `paperclipUpsertIssueDocument`
 - `paperclipRestoreIssueDocumentRevision`
+- `paperclipControlIssueWorkspaceServices`
 - `paperclipCreateApproval`
 - `paperclipLinkIssueApproval`
 - `paperclipUnlinkIssueApproval`

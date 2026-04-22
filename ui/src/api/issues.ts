@@ -32,6 +32,7 @@ export const issuesApi = {
       inboxArchivedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      workspaceId?: string;
       executionWorkspaceId?: string;
       originKind?: string;
       originId?: string;
@@ -51,6 +52,7 @@ export const issuesApi = {
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
     if (filters?.originId) params.set("originId", filters.originId);
@@ -130,7 +132,10 @@ export const issuesApi = {
     ),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
-  listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
+  listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
+    api.get<IssueDocument[]>(
+      `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
+    ),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),

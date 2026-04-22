@@ -321,30 +321,32 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
   it("refreshes visible issue run queries when the displayed run changes status", () => {
     const invalidations: unknown[] = [];
+    const cache = new Map<string, unknown>([
+      [JSON.stringify(queryKeys.issues.detail("PAP-759")), {
+        id: "issue-1",
+        identifier: "PAP-759",
+        assigneeAgentId: "agent-1",
+        executionRunId: "run-1",
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date("2026-04-08T21:00:00.000Z"),
+      }],
+      [JSON.stringify(queryKeys.issues.activeRun("PAP-759")), {
+        id: "run-1",
+      }],
+      [JSON.stringify(queryKeys.issues.liveRuns("PAP-759")), [{ id: "run-1" }]],
+      [JSON.stringify(queryKeys.issues.runs("PAP-759")), [{ runId: "run-1" }]],
+    ]);
     const queryClient = {
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
       getQueryData: (key: unknown) => {
-        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
-          return {
-            id: "issue-1",
-            identifier: "PAP-759",
-            assigneeAgentId: "agent-1",
-          };
-        }
-        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) {
-          return {
-            id: "run-1",
-          };
-        }
-        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.liveRuns("PAP-759"))) {
-          return [{ id: "run-1" }];
-        }
-        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.runs("PAP-759"))) {
-          return [{ runId: "run-1" }];
-        }
-        return undefined;
+        return cache.get(JSON.stringify(key));
+      },
+      setQueryData: (key: unknown, updater: unknown) => {
+        const cacheKey = JSON.stringify(key);
+        const current = cache.get(cacheKey);
+        cache.set(cacheKey, typeof updater === "function" ? updater(current) : updater);
       },
     };
 
@@ -375,6 +377,13 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.activeRun("PAP-759"),
     });
+    expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
+    expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
+    expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
   });
 
   it("ignores run status events for other issues", () => {
@@ -404,6 +413,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
         }
         return undefined;
       },
+      setQueryData: vi.fn(),
     };
 
     const invalidated = __liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(

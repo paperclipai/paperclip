@@ -83,11 +83,12 @@ describe("adapter routes", () => {
 
     const res = await request(app).get("/api/adapters");
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBeGreaterThan(0);
+    const adapters = Array.isArray(res.body) ? res.body : JSON.parse(res.text);
+    expect(Array.isArray(adapters)).toBe(true);
+    expect(adapters.length).toBeGreaterThan(0);
 
     // Every adapter should have a capabilities object
-    for (const adapter of res.body) {
+    for (const adapter of adapters) {
       expect(adapter.capabilities).toBeDefined();
       expect(typeof adapter.capabilities.supportsInstructionsBundle).toBe("boolean");
       expect(typeof adapter.capabilities.supportsSkills).toBe("boolean");
@@ -128,6 +129,18 @@ describe("adapter routes", () => {
     expect(cursorAdapter).toBeDefined();
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
+
+    // hermes_local currently supports skills + local JWT, but not the managed
+    // instructions bundle flow because the bundled adapter does not consume
+    // instructionsFilePath at runtime.
+    const hermesAdapter = res.body.find((a: any) => a.type === "hermes_local");
+    expect(hermesAdapter).toBeDefined();
+    expect(hermesAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: false,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+    });
   });
 
   it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {

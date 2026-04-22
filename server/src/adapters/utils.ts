@@ -24,6 +24,7 @@ export const asBoolean = serverUtils.asBoolean;
 export const asStringArray = serverUtils.asStringArray;
 export const parseJson = serverUtils.parseJson;
 export const appendWithCap = serverUtils.appendWithCap;
+export const appendWithByteCap = serverUtils.appendWithByteCap;
 export const resolvePathValue = serverUtils.resolvePathValue;
 export const renderTemplate = serverUtils.renderTemplate;
 export const redactEnvForLogs = serverUtils.redactEnvForLogs;

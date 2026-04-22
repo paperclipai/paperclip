@@ -100,11 +100,18 @@ export interface InboxGroupedSection {
 
 export interface InboxKeyboardGroupSection {
   key: string;
+  label?: string | null;
   displayItems: InboxWorkItem[];
   childrenByIssueId: ReadonlyMap<string, Issue[]>;
 }
 
 export type InboxKeyboardNavEntry =
+  | {
+      type: "group";
+      groupKey: string;
+      label: string;
+      collapsed: boolean;
+    }
   | {
       type: "top";
       itemKey: string;
@@ -706,11 +713,7 @@ export function getApprovalsForTab(
   );
 
   if (tab === "mine") {
-    if (!currentUserId) return [];
-    return sortedApprovals.filter(
-      (approval) =>
-        approval.requestedByUserId === currentUserId || approval.decidedByUserId === currentUserId,
-    );
+    return sortedApprovals.filter((approval) => isApprovalVisibleInMine(approval, currentUserId));
   }
   if (tab === "recent") return sortedApprovals;
   if (tab === "unread") {
@@ -722,6 +725,15 @@ export function getApprovalsForTab(
     const isActionable = ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
     return filter === "actionable" ? isActionable : !isActionable;
   });
+}
+
+export function isApprovalVisibleInMine(
+  approval: Approval,
+  currentUserId?: string | null,
+): boolean {
+  if (ACTIONABLE_APPROVAL_STATUSES.has(approval.status)) return true;
+  if (!currentUserId) return false;
+  return approval.requestedByUserId === currentUserId || approval.decidedByUserId === currentUserId;
 }
 
 export function approvalActivityTimestamp(approval: Approval): number {
@@ -960,7 +972,16 @@ export function buildInboxKeyboardNavEntries(
   const entries: InboxKeyboardNavEntry[] = [];
 
   for (const group of groupedSections) {
-    if (collapsedGroupKeys.has(group.key)) continue;
+    const isCollapsed = collapsedGroupKeys.has(group.key);
+    if (group.label) {
+      entries.push({
+        type: "group",
+        groupKey: group.key,
+        label: group.label,
+        collapsed: isCollapsed,
+      });
+    }
+    if (isCollapsed) continue;
 
     for (const item of group.displayItems) {
       entries.push({
@@ -1030,8 +1051,7 @@ export function computeInboxBadgeData({
 }): InboxBadgeData {
   const actionableApprovals = approvals.filter(
     (approval) =>
-      !!currentUserId &&
-      (approval.requestedByUserId === currentUserId || approval.decidedByUserId === currentUserId) &&
+      isApprovalVisibleInMine(approval, currentUserId) &&
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;

@@ -659,6 +659,42 @@ describe("IssuesList", () => {
     });
   });
 
+  it("applies an initial workspace filter from the issues URL state", async () => {
+    const alphaIssue = createIssue({
+      id: "issue-alpha",
+      identifier: "PAP-30",
+      title: "Alpha issue",
+      executionWorkspaceId: "workspace-alpha",
+    });
+    const betaIssue = createIssue({
+      id: "issue-beta",
+      identifier: "PAP-31",
+      title: "Beta issue",
+      executionWorkspaceId: "workspace-beta",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[alphaIssue, betaIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialWorkspaces={["workspace-alpha"]}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Alpha issue");
+      expect(container.textContent).not.toContain("Beta issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows routine-backed issues by default and hides them when the routine filter is toggled off", async () => {
     const manualIssue = createIssue({
       id: "issue-manual",

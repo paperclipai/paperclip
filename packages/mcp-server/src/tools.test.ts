@@ -107,6 +107,81 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("controls issue workspace services through the current execution workspace", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({
+        currentExecutionWorkspace: {
+          id: "44444444-4444-4444-8444-444444444444",
+          runtimeServices: [],
+        },
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        operation: { id: "operation-1" },
+        workspace: {
+          id: "44444444-4444-4444-8444-444444444444",
+          runtimeServices: [
+            {
+              id: "55555555-5555-4555-8555-555555555555",
+              serviceName: "web",
+              status: "running",
+              url: "http://127.0.0.1:5173",
+            },
+          ],
+        },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipControlIssueWorkspaceServices");
+    await tool.execute({
+      issueId: "PAP-1135",
+      action: "restart",
+      workspaceCommandId: "web",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [lookupUrl, lookupInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(lookupUrl)).toBe("http://localhost:3100/api/issues/PAP-1135/heartbeat-context");
+    expect(lookupInit.method).toBe("GET");
+
+    const [controlUrl, controlInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(controlUrl)).toBe(
+      "http://localhost:3100/api/execution-workspaces/44444444-4444-4444-8444-444444444444/runtime-services/restart",
+    );
+    expect(controlInit.method).toBe("POST");
+    expect(JSON.parse(String(controlInit.body))).toEqual({
+      workspaceCommandId: "web",
+    });
+  });
+
+  it("waits for an issue workspace runtime service URL", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({
+        currentExecutionWorkspace: {
+          id: "44444444-4444-4444-8444-444444444444",
+          runtimeServices: [
+            {
+              id: "55555555-5555-4555-8555-555555555555",
+              serviceName: "web",
+              status: "running",
+              healthStatus: "healthy",
+              url: "http://127.0.0.1:5173",
+            },
+          ],
+        },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipWaitForIssueWorkspaceService");
+    const response = await tool.execute({
+      issueId: "PAP-1135",
+      serviceName: "web",
+      timeoutSeconds: 1,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.content[0]?.text).toContain("http://127.0.0.1:5173");
+  });
+
   it("creates approvals with the expected company-scoped payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "approval-1" }),

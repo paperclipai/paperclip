@@ -102,6 +102,9 @@ export type {
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueReferenceSource,
+  IssueRelatedWorkItem,
+  IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,
@@ -167,8 +170,18 @@ export type {
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
-export type { DashboardSummary } from "./dashboard.js";
+export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";
+export type {
+  UserProfileActivitySummary,
+  UserProfileAgentUsage,
+  UserProfileDailyPoint,
+  UserProfileIdentity,
+  UserProfileIssueSummary,
+  UserProfileProviderUsage,
+  UserProfileResponse,
+  UserProfileWindowStats,
+} from "./user-profile.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type { SidebarOrderPreference } from "./sidebar-preferences.js";
 export type { InboxDismissal } from "./inbox-dismissal.js";
@@ -176,6 +189,7 @@ export type {
   AccessUserProfile,
   CompanyMemberRecord,
   CompanyMembersResponse,
+  ArchiveCompanyMemberResponse,
   CompanyMembership,
   CompanyInviteListResponse,
   CompanyInviteRecord,
@@ -233,8 +247,13 @@ export type {
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
   PluginUiDeclaration,
+  PluginDatabaseDeclaration,
+  PluginApiRouteCompanyResolution,
+  PluginApiRouteDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
+  PluginDatabaseNamespaceRecord,
+  PluginMigrationRecord,
   PluginStateRecord,
   PluginConfig,
   PluginEntityRecord,
@@ -242,4 +261,8 @@ export type {
   PluginJobRecord,
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
 } from "./plugin.js";

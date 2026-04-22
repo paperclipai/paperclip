@@ -124,6 +124,66 @@ const apiRequestSchema = z.object({
   jsonBody: z.string().optional(),
 });
 
+const workspaceRuntimeControlTargetSchema = z.object({
+  workspaceCommandId: z.string().min(1).optional().nullable(),
+  runtimeServiceId: z.string().uuid().optional().nullable(),
+  serviceIndex: z.number().int().nonnegative().optional().nullable(),
+});
+
+const issueWorkspaceRuntimeControlSchema = z.object({
+  issueId: issueIdSchema,
+  action: z.enum(["start", "stop", "restart"]),
+}).merge(workspaceRuntimeControlTargetSchema);
+
+const waitForIssueWorkspaceServiceSchema = z.object({
+  issueId: issueIdSchema,
+  runtimeServiceId: z.string().uuid().optional().nullable(),
+  serviceName: z.string().min(1).optional().nullable(),
+  timeoutSeconds: z.number().int().positive().max(300).optional(),
+});
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readCurrentExecutionWorkspace(context: unknown): Record<string, unknown> | null {
+  if (!context || typeof context !== "object") return null;
+  const workspace = (context as { currentExecutionWorkspace?: unknown }).currentExecutionWorkspace;
+  return workspace && typeof workspace === "object" ? workspace as Record<string, unknown> : null;
+}
+
+function readWorkspaceRuntimeServices(workspace: Record<string, unknown> | null): Array<Record<string, unknown>> {
+  const raw = workspace?.runtimeServices;
+  return Array.isArray(raw)
+    ? raw.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    : [];
+}
+
+function selectRuntimeService(
+  services: Array<Record<string, unknown>>,
+  input: { runtimeServiceId?: string | null; serviceName?: string | null },
+) {
+  if (input.runtimeServiceId) {
+    return services.find((service) => service.id === input.runtimeServiceId) ?? null;
+  }
+  if (input.serviceName) {
+    return services.find((service) => service.serviceName === input.serviceName) ?? null;
+  }
+  return services.find((service) => service.status === "running" || service.status === "starting")
+    ?? services[0]
+    ?? null;
+}
+
+async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: string) {
+  const context = await client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/heartbeat-context`);
+  const workspace = readCurrentExecutionWorkspace(context);
+  return {
+    context,
+    workspace,
+    runtimeServices: readWorkspaceRuntimeServices(workspace),
+  };
+}
+
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
     makeTool(
@@ -245,6 +305,55 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async ({ projectId, companyId }) => {
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
         return client.requestJson("GET", `/projects/${encodeURIComponent(projectId)}${qs}`);
+      },
+    ),
+    makeTool(
+      "paperclipGetIssueWorkspaceRuntime",
+      "Get the current execution workspace and runtime services for an issue, including service URLs",
+      z.object({ issueId: issueIdSchema }),
+      async ({ issueId }) => getIssueWorkspaceRuntime(client, issueId),
+    ),
+    makeTool(
+      "paperclipControlIssueWorkspaceServices",
+      "Start, stop, or restart the current issue execution workspace runtime services",
+      issueWorkspaceRuntimeControlSchema,
+      async ({ issueId, action, ...target }) => {
+        const runtime = await getIssueWorkspaceRuntime(client, issueId);
+        const workspaceId = typeof runtime.workspace?.id === "string" ? runtime.workspace.id : null;
+        if (!workspaceId) {
+          throw new Error("Issue has no current execution workspace");
+        }
+        return client.requestJson(
+          "POST",
+          `/execution-workspaces/${encodeURIComponent(workspaceId)}/runtime-services/${action}`,
+          { body: target },
+        );
+      },
+    ),
+    makeTool(
+      "paperclipWaitForIssueWorkspaceService",
+      "Wait until an issue execution workspace runtime service is running and has a URL when one is exposed",
+      waitForIssueWorkspaceServiceSchema,
+      async ({ issueId, runtimeServiceId, serviceName, timeoutSeconds }) => {
+        const deadline = Date.now() + (timeoutSeconds ?? 60) * 1000;
+        let latest: Awaited<ReturnType<typeof getIssueWorkspaceRuntime>> | null = null;
+        while (Date.now() <= deadline) {
+          latest = await getIssueWorkspaceRuntime(client, issueId);
+          const service = selectRuntimeService(latest.runtimeServices, { runtimeServiceId, serviceName });
+          if (service?.status === "running" && service.healthStatus !== "unhealthy") {
+            return {
+              workspace: latest.workspace,
+              service,
+            };
+          }
+          await sleep(1000);
+        }
+
+        return {
+          timedOut: true,
+          latestWorkspace: latest?.workspace ?? null,
+          latestRuntimeServices: latest?.runtimeServices ?? [],
+        };
       },
     ),
     makeTool(

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -14,6 +15,17 @@ function shouldExposeFullHealthDetails(
 ) {
   if (deploymentMode !== "authenticated") return true;
   return actorType === "board" || actorType === "agent";
+}
+
+function hasDevServerStatusToken(providedToken: string | undefined) {
+  const expectedToken = process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN?.trim();
+  const token = providedToken?.trim();
+  if (!expectedToken || !token) return false;
+
+  const expected = Buffer.from(expectedToken);
+  const provided = Buffer.from(token);
+  if (expected.length !== provided.length) return false;
+  return timingSafeEqual(expected, provided);
 }
 
 export function healthRoutes(
@@ -38,6 +50,8 @@ export function healthRoutes(
       actorType,
       opts.deploymentMode,
     );
+    const exposeDevServerDetails =
+      exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
     if (!db) {
       res.json(
@@ -90,7 +104,7 @@ export function healthRoutes(
 
     const persistedDevServerStatus = readPersistedDevServerStatus();
     let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
-    if (persistedDevServerStatus && typeof (db as { select?: unknown }).select === "function") {
+    if (exposeDevServerDetails && persistedDevServerStatus && typeof (db as { select?: unknown }).select === "function") {
       const instanceSettings = instanceSettingsService(db);
       const experimentalSettings = await instanceSettings.getExperimental();
       const activeRunCount = await db
@@ -111,6 +125,7 @@ export function healthRoutes(
         deploymentMode: opts.deploymentMode,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...(devServer ? { devServer } : {}),
       });
       return;
     }
