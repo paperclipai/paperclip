@@ -15,7 +15,7 @@
     <key>DPO_MAPPING_DB</key><string>/var/paperclip/dpo/mappings.db</string>
     <key>DPO_AUDIT_DIR</key><string>/var/paperclip/dpo/audit</string>
     <key>DPO_CLASSIFIER_URL</key><string>http://localhost:1234</string>
-    <key>DPO_CLASSIFIER_MODEL</key><string>gemma-4-26b</string>
+    <key>DPO_CLASSIFIER_MODEL</key><string>google/gemma-4-26b-a4b</string>
   </dict>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
