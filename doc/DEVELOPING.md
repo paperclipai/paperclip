@@ -93,6 +93,11 @@ pnpm test
 pnpm test:watch
 ```
 
+The default `pnpm test:run` runner strips inherited `PAPERCLIP_*` runtime
+environment variables and gives each Vitest child process an isolated home
+directory. This keeps heartbeat/runtime state from leaking into route and auth
+tests when the suite is run by a Paperclip agent.
+
 Browser suites stay separate:
 
 ```sh

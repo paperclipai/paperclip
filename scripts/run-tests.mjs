@@ -108,6 +108,49 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+function cleanupLeakedRuntimeTestServers() {
+  if (process.platform === "win32") return;
+
+  const result = spawnSync(
+    "pgrep",
+    ["-f", String.raw`node -e require\('node:http'\)\.createServer\(\(req,res\)=>res\.end`],
+    {
+      encoding: "utf8",
+    },
+  );
+  if (result.status !== 0 || !result.stdout.trim()) return;
+
+  const pids = result.stdout
+    .split("\n")
+    .map((line) => Number.parseInt(line.trim(), 10))
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  if (pids.length === 0) return;
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Ignore stale process races.
+    }
+  }
+  sleep(250);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Ignore stale process races.
+    }
+  }
+  console.log(`[paperclip:test] Cleaned up ${pids.length} stale runtime test server process(es).`);
+}
+
+cleanupLeakedRuntimeTestServers();
+
 const serverMockTests = discoverServerMockTests();
 const requestedTestFilters = cliArgs.filter(isLikelyTestFilter);
 const nonFilterCliArgs = cliArgs.filter((arg) => !isLikelyTestFilter(arg));
@@ -119,19 +162,11 @@ const serverMockTestsToRun = requestedTestFilters.length === 0
 const failures = [];
 
 for (const filePath of serverMockTestsToRun) {
-  let status = runVitest(
+  const status = runVitest(
     `isolated server mock test without Vitest cache: ${filePath}`,
     [filePath, ...nonFilterCliArgs],
     { noCache: true },
   );
-  for (let attempt = 1; status !== 0 && attempt <= 2; attempt += 1) {
-    sleep(250);
-    status = runVitest(
-      `retry ${attempt} without Vitest cache: ${filePath}`,
-      [filePath, ...nonFilterCliArgs],
-      { noCache: true },
-    );
-  }
   if (status !== 0) {
     failures.push(filePath);
   }

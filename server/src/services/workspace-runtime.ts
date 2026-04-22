@@ -124,9 +124,27 @@ type ProcessOutputAccumulator = {
   finish(): ProcessOutputCapture;
 };
 
-export async function resetRuntimeServicesForTests() {
-  for (const record of runtimeServicesById.values()) {
+export async function resetRuntimeServicesForTests(opts?: { preserveLocalServices?: boolean }) {
+  const records = Array.from(runtimeServicesById.values());
+  for (const record of records) {
     clearIdleTimer(record);
+    if (!opts?.preserveLocalServices) {
+      if (record.child?.pid) {
+        await terminateLocalService({
+          pid: record.child.pid,
+          processGroupId: record.processGroupId ?? record.child.pid,
+        });
+      } else if (record.providerRef) {
+        const pid = Number.parseInt(record.providerRef, 10);
+        if (Number.isInteger(pid) && pid > 0) {
+          await terminateLocalService({
+            pid,
+            processGroupId: record.processGroupId,
+          });
+        }
+      }
+      await removeLocalServiceRegistryRecord(record.serviceKey);
+    }
   }
   runtimeServicesById.clear();
   runtimeServicesByReuseKey.clear();
