@@ -205,7 +205,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
-  dueDate: string | null;
+  dueDate?: string | null;
   status: IssueStatus;
   priority: IssuePriority;
   assigneeAgentId: string | null;

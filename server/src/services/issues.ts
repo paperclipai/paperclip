@@ -705,6 +705,7 @@ const issueListSelect = {
       )
     END
   `,
+  dueDate: issues.dueDate,
   status: issues.status,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
