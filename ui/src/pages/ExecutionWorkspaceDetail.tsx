@@ -44,6 +44,19 @@ type WorkspaceFormState = {
 
 type ExecutionWorkspaceTab = "configuration" | "runtime_logs" | "issues";
 
+const MCP_RUNTIME_EXAMPLE = `{
+  "mcpServers": [
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "cwd": ".",
+      "enabled": true
+    }
+  ]
+}`;
+
 function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceTab | null {
   const segments = pathname.split("/").filter(Boolean);
   const executionWorkspacesIndex = segments.indexOf("execution-workspaces");
@@ -91,10 +104,10 @@ function parseWorkspaceRuntimeJson(value: string) {
   try {
     const parsed = JSON.parse(trimmed);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {
-        ok: false as const,
-        error: "Workspace commands JSON must be a JSON object.",
-      };
+        return {
+          ok: false as const,
+          error: "Workspace runtime JSON must be a JSON object.",
+        };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
   } catch (error) {
@@ -747,7 +760,7 @@ export function ExecutionWorkspaceDetail() {
                       Override the inherited workspace command model only when this execution workspace truly needs different service or job behavior.
                     </p>
                     <div className="mt-3">
-                      <Field label="Workspace commands JSON" hint="Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                      <Field label="Workspace runtime JSON" hint="Legacy `services` arrays still work, `commands` supports services/jobs, and `mcpServers` defines MCP endpoints for this execution workspace.">
                         <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
                           <input
                             id="inherit-runtime-config"
@@ -772,7 +785,7 @@ export function ExecutionWorkspaceDetail() {
                           value={form.workspaceRuntime}
                           onChange={(event) => setForm((current) => current ? { ...current, workspaceRuntime: event.target.value } : current)}
                           disabled={form.inheritRuntime}
-                          placeholder={'{\n  "commands": [\n    {\n      "id": "web",\n      "name": "web",\n      "kind": "service",\n      "command": "pnpm dev",\n      "cwd": ".",\n      "port": { "type": "auto" }\n    },\n    {\n      "id": "db-migrate",\n      "name": "db:migrate",\n      "kind": "job",\n      "command": "pnpm db:migrate",\n      "cwd": "."\n    }\n  ]\n}'}
+                          placeholder={MCP_RUNTIME_EXAMPLE}
                         />
                       </Field>
                     </div>

@@ -18,6 +18,7 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  buildPaperclipMcpPrompt,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
   runChildProcess,
@@ -494,6 +495,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const mcpPrompt = buildPaperclipMcpPrompt(context);
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
@@ -564,6 +566,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    mcpPrompt,
     codexFallbackHandoffNote,
     sessionHandoffNote,
     renderedPrompt,
@@ -573,6 +576,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
+    mcpPromptChars: mcpPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

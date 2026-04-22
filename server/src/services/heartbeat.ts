@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  listWorkspaceMcpServers,
   type BillingType,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -54,6 +55,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { agentMcpToolService } from "./agent-mcp-tools.js";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
@@ -1829,6 +1831,7 @@ export function heartbeatService(db: Db) {
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const agentMcpTools = agentMcpToolService(db, { secrets: secretsSvc });
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
@@ -5227,6 +5230,22 @@ export function heartbeatService(db: Db) {
       context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
     } else {
       delete context.paperclipRuntimeServiceIntents;
+    }
+    const workspaceMcpServers = listWorkspaceMcpServers(parseObject(resolvedConfig.workspaceRuntime));
+    if (workspaceMcpServers.length > 0) {
+      context.paperclipMcpServers = workspaceMcpServers;
+      context.paperclipMcpPrimaryServerName = workspaceMcpServers[0]?.name ?? null;
+    } else {
+      delete context.paperclipMcpServers;
+      delete context.paperclipMcpPrimaryServerName;
+    }
+    const availableAgentMcpTools = await agentMcpTools.listForAgent(agent.id);
+    if (availableAgentMcpTools.servers.length > 0) {
+      context.paperclipAgentMcpServers = availableAgentMcpTools.servers;
+      context.paperclipAvailableMcpTools = availableAgentMcpTools.tools;
+    } else {
+      delete context.paperclipAgentMcpServers;
+      delete context.paperclipAvailableMcpTools;
     }
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
