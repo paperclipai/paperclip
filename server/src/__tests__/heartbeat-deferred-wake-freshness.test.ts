@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -8,7 +8,6 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -243,15 +242,21 @@ describeEmbeddedPostgres("deferred-wake freshness guard (POI-237 Option 1)", () 
   afterEach(async () => {
     vi.clearAllMocks();
     runningProcesses.clear();
-    await db.delete(activityLog);
-    await db.delete(issueComments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companies);
+    // Wait for any background void executeRun() calls to finish before truncating.
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      const hasActiveRun = runs.some((r) => r.status === "queued" || r.status === "running");
+      if (!hasActiveRun) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
   });
 
   afterAll(async () => {
