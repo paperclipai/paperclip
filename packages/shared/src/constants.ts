@@ -568,6 +568,18 @@ export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
+export const MCP_SERVER_TRANSPORTS = ["stdio", "http"] as const;
+export type McpServerTransport = (typeof MCP_SERVER_TRANSPORTS)[number];
+
+export const MCP_SERVER_HEALTH_STATUSES = ["unknown", "healthy", "degraded", "error"] as const;
+export type McpServerHealthStatus = (typeof MCP_SERVER_HEALTH_STATUSES)[number];
+
+export const MCP_SERVER_BINDING_MODES = ["allowed", "preferred", "required"] as const;
+export type McpServerBindingMode = (typeof MCP_SERVER_BINDING_MODES)[number];
+
+export const MCP_SERVER_DISCOVERY_STATUSES = ["succeeded", "failed"] as const;
+export type McpServerDiscoveryStatus = (typeof MCP_SERVER_DISCOVERY_STATUSES)[number];
+
 export const BILLING_TYPES = [
   "metered_api",
   "subscription_included",

@@ -17,6 +17,7 @@ import {
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
+  executeAgentMcpToolSchema,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
@@ -46,6 +47,8 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  agentMcpToolService,
+  secretService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -186,6 +189,9 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const agentMcpTools = agentMcpToolService(db, {
+    secrets: secretsSvc,
+  });
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -1841,6 +1847,36 @@ export function agentRoutes(
       return;
     }
     res.json(await buildAgentDetail(agent));
+  });
+
+  router.get("/agents/me/mcp-tools", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    res.json(await agentMcpTools.listForAgent(req.actor.agentId));
+  });
+
+  router.post("/agents/me/mcp-tools/execute", validate(executeAgentMcpToolSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+      res.status(401).json({ error: "Run-scoped agent authentication required" });
+      return;
+    }
+
+    const run = await heartbeat.getRun(req.actor.runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+
+    const result = await agentMcpTools.executeForRun(
+      {
+        agentId: req.actor.agentId,
+      },
+      req.body,
+    );
+    res.json(result);
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {

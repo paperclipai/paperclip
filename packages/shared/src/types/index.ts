@@ -212,6 +212,41 @@ export type {
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";
 export type {
+  WorkspaceMcpServerTransport,
+  WorkspaceMcpServerEnvValue,
+  WorkspaceMcpServerEnv,
+  WorkspaceMcpServerConfig,
+  WorkspaceMcpRuntimeConfig,
+} from "./mcp-runtime.js";
+export type {
+  McpServer,
+  CreateMcpServerRequest,
+  UpdateMcpServerRequest,
+} from "./mcp-server.js";
+export type {
+  AgentMcpServerBinding,
+  AgentMcpServerBindingDetail,
+  BindAgentMcpServerRequest,
+  UpdateAgentMcpServerBindingRequest,
+} from "./agent-mcp-server.js";
+export type {
+  McpServerCatalogTool,
+  McpServerCatalogResource,
+  McpServerCatalogPrompt,
+  McpServerCatalogSnapshot,
+} from "./mcp-server-catalog.js";
+export type {
+  TestMcpServerRequest,
+  McpServerDiscoveryResult,
+} from "./mcp-server-discovery.js";
+export type {
+  AgentMcpToolDescriptor,
+  AgentMcpServerToolCatalog,
+  AgentMcpToolListResponse,
+  ExecuteAgentMcpToolRequest,
+  ExecuteAgentMcpToolResponse,
+} from "./agent-mcp-tool.js";
+export type {
   WorkspaceOperation,
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,

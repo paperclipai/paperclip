@@ -202,6 +202,51 @@ export {
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
+export {
+  workspaceMcpServerTransportSchema,
+  workspaceMcpServerEnvValueSchema,
+  workspaceMcpServerEnvSchema,
+  workspaceMcpServerConfigSchema,
+  workspaceMcpRuntimeConfigSchema,
+  type WorkspaceMcpServerTransport,
+  type WorkspaceMcpServerConfig,
+  type WorkspaceMcpRuntimeConfig,
+} from "./mcp-runtime.js";
+export {
+  mcpServerTransportSchema,
+  mcpServerHealthStatusSchema,
+  mcpServerSchema,
+  createMcpServerSchema,
+  updateMcpServerSchema,
+  type CreateMcpServer,
+  type UpdateMcpServer,
+} from "./mcp-server.js";
+export {
+  mcpServerBindingModeSchema,
+  agentMcpServerBindingSchema,
+  bindAgentMcpServerSchema,
+  updateAgentMcpServerBindingSchema,
+  type BindAgentMcpServer,
+  type UpdateAgentMcpServerBinding,
+} from "./agent-mcp-server.js";
+export {
+  mcpServerDiscoveryStatusSchema,
+  mcpServerCatalogToolSchema,
+  mcpServerCatalogResourceSchema,
+  mcpServerCatalogPromptSchema,
+  mcpServerCatalogSnapshotSchema,
+} from "./mcp-server-catalog.js";
+export {
+  testMcpServerSchema,
+  type TestMcpServer,
+} from "./mcp-server-discovery.js";
+export {
+  agentMcpToolDescriptorSchema,
+  agentMcpServerToolCatalogSchema,
+  agentMcpToolListResponseSchema,
+  executeAgentMcpToolSchema,
+  type ExecuteAgentMcpTool,
+} from "./agent-mcp-tool.js";
 
 export {
   createDocumentAnnotationCommentSchema,

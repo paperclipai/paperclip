@@ -216,3 +216,27 @@ pnpm secrets:migrate-inline-env --apply
 ```
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
+
+## MCP server registry
+
+Paperclip can store MCP registry data in PostgreSQL using three company-scoped tables:
+
+- `mcp_servers`
+- `agent_mcp_servers`
+- `mcp_server_catalog_snapshots`
+
+What goes where:
+
+- MCP connection metadata such as `transport`, `command`, `args`, `cwd`, `url`, `headers`, and health/discovery fields live in the database.
+- Agent bindings and tool allowlists also live in the database.
+- Discovery results (`tools`, `resources`, `prompts`, `serverInfo`, summary/error state) are stored as catalog snapshots.
+
+Sensitive values follow the normal Paperclip secret model:
+
+- `stdio` environment bindings use the same secret-aware env binding format used elsewhere in Paperclip.
+- Secret material is stored through `company_secrets` and `company_secret_versions`, not as loose plaintext in registry records.
+
+Current transport note:
+
+- `stdio` discovery is implemented.
+- `http` MCP settings can be stored already, but HTTP transport discovery/execution is not implemented yet.

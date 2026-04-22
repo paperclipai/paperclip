@@ -147,6 +147,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
 | **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
 | **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |
+| **MCP tool registry.**            | Companies can register MCP servers, test and snapshot their catalogs, then bind them to agents as tools.     |
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
@@ -384,6 +385,10 @@ This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.
 ## Community & Plugins
 
 Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
+
+## MCP Servers
+
+Paperclip supports a company-scoped MCP server registry for agent tool access. See [doc/MCP-SERVERS.md](doc/MCP-SERVERS.md).
 
 ## Telemetry
 

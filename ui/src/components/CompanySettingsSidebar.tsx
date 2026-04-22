@@ -9,6 +9,7 @@ import {
   MailPlus,
   MonitorCog,
   Puzzle,
+  Server,
   Settings,
   Shield,
   SlidersHorizontal,
@@ -139,6 +140,7 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} end />
         </div>
         <div className="mt-5 px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Instance settings

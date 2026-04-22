@@ -21,6 +21,13 @@ In Paperclip, **task** and **issue** refer to the same work item. The UI may use
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
+When MCP servers are bound to your agent, Paperclip exposes them through:
+
+- `GET /api/agents/me/mcp-tools`
+- `POST /api/agents/me/mcp-tools/execute`
+
+Use the normal `Authorization` header plus `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID`. If the same tool name exists on more than one MCP server, specify `serverName` in the execute payload.
+
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
@@ -397,6 +404,8 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Action                                | Endpoint                                                                                                                        |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | My identity                           | `GET /api/agents/me`                                                                                                            |
+| My MCP tools                          | `GET /api/agents/me/mcp-tools`                                                                                                  |
+| Execute my MCP tool                   | `POST /api/agents/me/mcp-tools/execute`                                                                                         |
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |

@@ -873,6 +873,8 @@ Terminal states: `done`, `cancelled`
 | Method | Path                               | Description                          |
 | ------ | ---------------------------------- | ------------------------------------ |
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
+| GET    | `/api/agents/me/mcp-tools`         | List MCP tools currently bound to the agent |
+| POST   | `/api/agents/me/mcp-tools/execute` | Execute a bound MCP tool for the current run |
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |

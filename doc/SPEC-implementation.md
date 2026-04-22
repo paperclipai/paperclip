@@ -66,6 +66,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Company lifecycle (create/list/get/update/archive)
 - Goal hierarchy linked to company mission
 - Agent lifecycle with org structure and adapter configuration
+- Company-scoped MCP server registry plus agent MCP bindings
 - Task lifecycle with parent/child hierarchy and comments
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
@@ -73,6 +74,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
+- Board web UI for MCP server registration, discovery, and agent bindings
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -84,6 +86,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Public marketplace (ClipHub)
 - Multi-board governance or role-based human permission granularity
 - Automatic self-healing orchestration (auto-reassign/retry planners)
+- Full HTTP MCP streaming discovery/runtime support beyond persisted configuration
 
 ## 6. Architecture
 
@@ -354,6 +357,20 @@ Operational policy:
 - Activity and approval payloads must not persist raw sensitive values.
 - Config revisions may include redacted placeholders; such revisions are non-restorable for redacted fields.
 
+### MCP server registry
+
+V1 may also register and bind MCP servers at the company level:
+
+- `mcp_servers` stores the canonical MCP connection definition (`stdio` or `http`) plus health/discovery metadata.
+- `agent_mcp_servers` binds allowed MCP servers to a specific agent with `allowed | preferred | required` mode and optional tool allowlists.
+- `mcp_server_catalog_snapshots` stores discovery snapshots (`tools`, `resources`, `prompts`, server info, health result).
+
+Operational notes:
+
+- Sensitive stdio env values use the same secret-aware env binding model as agent/project config.
+- `stdio` discovery is supported in V1.
+- `http` MCP settings can be persisted in V1, but runtime discovery/execution remains deferred until HTTP transport support lands.
+
 ## 7.14 Required Indexes
 
 - `agents(company_id, status)`
@@ -612,6 +629,15 @@ All endpoints are under `/api` and return JSON.
 - `POST /agents/:agentId/terminate`
 - `POST /agents/:agentId/keys` (create API key)
 - `POST /agents/:agentId/heartbeat/invoke`
+- `GET /agents/:agentId/mcp-servers`
+- `POST /agents/:agentId/mcp-servers`
+- `PATCH /agents/:agentId/mcp-servers/:mcpServerId`
+- `DELETE /agents/:agentId/mcp-servers/:mcpServerId`
+
+### 10.3.1 Agent MCP tool access
+
+- `GET /agents/me/mcp-tools`
+- `POST /agents/me/mcp-tools/execute`
 
 ## 10.4 Tasks (Issues)
 
@@ -713,6 +739,16 @@ Dashboard payload must include:
 - `409` state conflict (checkout conflict, invalid transition)
 - `422` semantic rule violation
 - `500` server error
+
+## 10.12 MCP Servers
+
+- `GET /companies/:companyId/mcp-servers`
+- `POST /companies/:companyId/mcp-servers`
+- `GET /mcp-servers/:id`
+- `PATCH /mcp-servers/:id`
+- `DELETE /mcp-servers/:id`
+- `POST /mcp-servers/:id/test`
+- `GET /mcp-servers/:id/catalog-snapshots/latest`
 
 ## 10.11 Current Implementation API Addenda
 
@@ -897,6 +933,7 @@ Required UX behaviors:
 
 - global company selector
 - quick actions: pause/resume agent, create task, approve/reject request
+- company settings page for MCP server registration/test and agent detail bindings for MCP access
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
 

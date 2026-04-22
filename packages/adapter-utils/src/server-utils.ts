@@ -338,6 +338,43 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export function buildPaperclipMcpPrompt(context: Record<string, unknown>): string {
+  const tools = Array.isArray(context.paperclipAvailableMcpTools)
+    ? context.paperclipAvailableMcpTools.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
+  if (tools.length === 0) return "";
+
+  const lines = [
+    "## Paperclip MCP Tools",
+    "",
+    "This run has MCP tools bound through the Paperclip control plane.",
+    "List them with `GET /api/agents/me/mcp-tools`.",
+    "Execute one with `POST /api/agents/me/mcp-tools/execute` using:",
+    "- `Authorization: Bearer $PAPERCLIP_API_KEY`",
+    "- `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID`",
+    "- JSON body: `{ \"serverName\": \"...\", \"toolName\": \"...\", \"arguments\": { ... } }`",
+    "If more than one MCP server exposes the same tool, always send `serverName`.",
+    "",
+    "Available MCP tools for this run:",
+    ...tools.slice(0, 25).map((tool) => {
+      const serverName = asString(tool.serverName, "unknown-server");
+      const toolName = asString(tool.toolName, "unknown-tool");
+      const description = asString(tool.description, "").trim();
+      return description
+        ? `- ${serverName} :: ${toolName} - ${description}`
+        : `- ${serverName} :: ${toolName}`;
+    }),
+  ];
+
+  if (tools.length > 25) {
+    lines.push(`- ... and ${tools.length - 25} more (call the list endpoint for the full catalog)`);
+  }
+
+  return lines.join("\n");
+}
+
 type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;

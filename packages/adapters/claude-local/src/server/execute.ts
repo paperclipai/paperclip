@@ -43,6 +43,7 @@ import {
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
+  buildPaperclipMcpPrompt,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -652,6 +653,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const mcpPrompt = buildPaperclipMcpPrompt(context);
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -659,6 +661,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
+    mcpPrompt,
     sessionHandoffNote,
     taskContextNote,
     renderedPrompt,
@@ -667,6 +670,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptChars: prompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
+    mcpPromptChars: mcpPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,

@@ -70,6 +70,19 @@ function orderProjectWorkspaceTabItems(items: OrderedProjectWorkspaceTabItem[]) 
     .map(({ item }) => item);
 }
 
+const MCP_RUNTIME_EXAMPLE = `{
+  "mcpServers": [
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "cwd": ".",
+      "enabled": true
+    }
+  ]
+}`;
+
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
   { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
   { value: "non_git_path", label: "Local non-git path", description: "A local folder without git semantics." },
@@ -135,10 +148,10 @@ function parseRuntimeConfigJson(value: string) {
   try {
     const parsed = JSON.parse(trimmed);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {
-        ok: false as const,
-        error: "Workspace commands JSON must be a JSON object.",
-      };
+        return {
+          ok: false as const,
+          error: "Workspace runtime JSON must be a JSON object.",
+        };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
   } catch (error) {
@@ -627,12 +640,12 @@ export function ProjectWorkspaceDetail() {
                   Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
                 </p>
                 <div className="mt-3">
-                  <Field label="Workspace commands JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                  <Field label="Workspace runtime JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, `commands` supports services/jobs, and `mcpServers` defines MCP endpoints for workspace-aware agents.">
                     <textarea
                       className="min-h-96 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                       value={form.runtimeConfig}
                       onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
-                      placeholder={"{\n  \"commands\": [\n    {\n      \"id\": \"web\",\n      \"name\": \"web\",\n      \"kind\": \"service\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    },\n    {\n      \"id\": \"db-migrate\",\n      \"name\": \"db:migrate\",\n      \"kind\": \"job\",\n      \"command\": \"pnpm db:migrate\",\n      \"cwd\": \".\"\n    }\n  ]\n}"}
+                      placeholder={MCP_RUNTIME_EXAMPLE}
                     />
                   </Field>
                 </div>
