@@ -1,5 +1,6 @@
 import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -42,7 +43,11 @@ function MarkdownIssueLink({
   });
 
   return (
-    <Link to={href} className="inline-flex items-center gap-1.5 align-baseline">
+    <Link
+      to={href}
+      className="inline-flex items-center gap-1 align-baseline font-medium"
+      data-mention-kind="issue"
+    >
       {data ? <StatusIcon status={data.status} className="h-3.5 w-3.5" /> : null}
       <span>{children}</span>
     </Link>
@@ -97,6 +102,28 @@ function extractMermaidSource(children: ReactNode): string | null {
 
 function safeMarkdownUrlTransform(url: string): string {
   return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+}
+
+function isGitHubUrl(href: string | null | undefined): boolean {
+  if (!href) return false;
+  try {
+    const url = new URL(href);
+    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname === "www.github.com");
+  } catch {
+    return false;
+  }
+}
+
+function isExternalHttpUrl(href: string | null | undefined): boolean {
+  if (!href) return false;
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (typeof window === "undefined") return true;
+    return url.origin !== window.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
@@ -223,6 +250,8 @@ export function MarkdownBody({
       if (parsed) {
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
+          : parsed.kind === "issue"
+            ? `/issues/${parsed.identifier}`
           : parsed.kind === "skill"
             ? `/skills/${parsed.skillId}`
             : parsed.kind === "user"
@@ -243,8 +272,17 @@ export function MarkdownBody({
           </a>
         );
       }
+      const isGitHubLink = isGitHubUrl(href);
+      const isExternal = isExternalHttpUrl(href);
       return (
-        <a href={href} rel="noreferrer" style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
+        <a
+          href={href}
+          {...(isExternal
+            ? { target: "_blank", rel: "noopener noreferrer" }
+            : { rel: "noreferrer" })}
+          style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+        >
+          {isGitHubLink ? <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" /> : null}
           {linkChildren}
         </a>
       );

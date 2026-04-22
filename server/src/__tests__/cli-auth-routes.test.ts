@@ -35,6 +35,8 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -72,6 +74,8 @@ async function createApp(actor: any, db: any = {} as any) {
 describe("cli auth routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../routes/access.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();

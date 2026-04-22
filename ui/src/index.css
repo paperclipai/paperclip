@@ -355,9 +355,16 @@
   --accentBgActive: color-mix(in oklab, var(--accent) 72%, var(--background));
   --accentText: var(--accent-foreground);
   font-family: inherit;
-  font-size: 0.875rem;
+  font-size: 1rem;
   line-height: 1.5;
   color: var(--foreground);
+}
+
+@media (min-width: 768px) {
+  .paperclip-mdxeditor-scope,
+  .paperclip-mdxeditor {
+    font-size: 0.875rem;
+  }
 }
 
 .paperclip-mdxeditor-scope [class*="_iconButton_"],
@@ -385,7 +392,7 @@
 }
 
 .paperclip-mdxeditor [class*="_placeholder_"] {
-  font-size: 0.875rem;
+  font-size: inherit;
   line-height: 1.5;
   color: var(--muted-foreground);
 }
@@ -754,6 +761,11 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown a.paperclip-mention-chip {
   text-decoration: none;
+}
+
+.paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"] {
+  border-color: color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
+  background: color-mix(in oklab, var(--accent) 42%, transparent);
 }
 
 .dark .paperclip-markdown a {

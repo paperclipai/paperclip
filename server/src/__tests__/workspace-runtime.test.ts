@@ -897,7 +897,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["commit", "-m", "Add worktree provision script"]);
 
     try {
-      const workspace = await realizeExecutionWorkspace({
+      const workspaceInput = {
         base: {
           baseCwd: repoRoot,
           source: "project_primary",
@@ -923,7 +923,8 @@ describe("realizeExecutionWorkspace", () => {
           name: "Codex Coder",
           companyId: "company-1",
         },
-      });
+      } satisfies Parameters<typeof realizeExecutionWorkspace>[0];
+      const workspace = await realizeExecutionWorkspace(workspaceInput);
 
       const configPath = path.join(workspace.cwd, ".paperclip", "config.json");
       const envPath = path.join(workspace.cwd, ".paperclip", ".env");
@@ -954,6 +955,34 @@ describe("realizeExecutionWorkspace", () => {
 
       process.chdir(workspace.cwd);
       expect(resolvePaperclipConfigPath()).toBe(configPath);
+
+      const preservedPort = 39999;
+      await fs.writeFile(
+        configPath,
+        JSON.stringify(
+          {
+            ...configContents,
+            server: {
+              ...configContents.server,
+              port: preservedPort,
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+      await fs.writeFile(envPath, `${envContents}PAPERCLIP_WORKTREE_COLOR="#112233"\n`, "utf8");
+
+      const reusedWorkspace = await realizeExecutionWorkspace(workspaceInput);
+      const reusedConfigContents = JSON.parse(await fs.readFile(configPath, "utf8"));
+      const reusedEnvContents = await fs.readFile(envPath, "utf8");
+
+      expect(reusedWorkspace.cwd).toBe(workspace.cwd);
+      expect(reusedWorkspace.created).toBe(false);
+      expect(reusedConfigContents.server.port).toBe(preservedPort);
+      expect(reusedConfigContents.database.embeddedPostgresDataDir).toBe(path.join(expectedInstanceRoot, "db"));
+      expect(reusedEnvContents).toContain('PAPERCLIP_WORKTREE_COLOR="#112233"');
     } finally {
       process.chdir(previousCwd);
     }
@@ -2006,6 +2035,37 @@ describe("realizeExecutionWorkspace", () => {
 });
 
 describe("ensureRuntimeServicesForRun", () => {
+  it("leaves manual runtime services untouched during agent runs", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-manual-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const services = await ensureRuntimeServicesForRun({
+      runId: "run-manual",
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      config: {
+        desiredState: "manual",
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"throw new Error('should not start')\"",
+              port: { type: "auto" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services).toEqual([]);
+  });
+
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -2572,6 +2632,41 @@ describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
       serviceStates: {
         "0": "running",
         "1": "stopped",
+      },
+    });
+  });
+
+  it("preserves manual service state when manually starting or stopping services", () => {
+    const baseInput = {
+      config: {
+        workspaceRuntime: {
+          services: [
+            { name: "web", command: "pnpm dev" },
+          ],
+        },
+      },
+      currentDesiredState: "manual" as const,
+      currentServiceStates: null,
+      serviceIndex: 0,
+    };
+
+    expect(buildWorkspaceRuntimeDesiredStatePatch({
+      ...baseInput,
+      action: "start",
+    })).toEqual({
+      desiredState: "manual",
+      serviceStates: {
+        "0": "manual",
+      },
+    });
+
+    expect(buildWorkspaceRuntimeDesiredStatePatch({
+      ...baseInput,
+      action: "stop",
+    })).toEqual({
+      desiredState: "manual",
+      serviceStates: {
+        "0": "manual",
       },
     });
   });

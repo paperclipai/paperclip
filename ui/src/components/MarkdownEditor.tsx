@@ -73,6 +73,8 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  /** Render the rich editor without allowing edits. */
+  readOnly?: boolean;
 }
 
 export interface MarkdownEditorRef {
@@ -492,6 +494,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   bordered = true,
   mentions,
   onSubmit,
+  readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
@@ -727,7 +730,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
-      if (parsed.kind === "user") {
+      if (parsed.kind === "user" || parsed.kind === "issue") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }
@@ -944,7 +947,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           ref={fallbackTextareaRef}
           value={value}
           placeholder={placeholder}
+          readOnly={readOnly}
           onChange={(event) => {
+            if (readOnly) return;
             onChange(event.target.value);
             autoSizeFallbackTextarea(event.target);
           }}
@@ -974,6 +979,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         className,
       )}
       onKeyDownCapture={(e) => {
+        if (readOnly) return;
         // Cmd/Ctrl+Enter to submit
         if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -1031,21 +1037,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onDragEnter={(evt) => {
+        if (readOnly) return;
         if (!canDropFile || !hasFilePayload(evt)) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(evt) => {
+        if (readOnly) return;
         if (!canDropFile || !hasFilePayload(evt)) return;
         evt.preventDefault();
         evt.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={() => {
+        if (readOnly) return;
         if (!canDropFile) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
       onDrop={(evt) => {
+        if (readOnly) return;
         dragDepthRef.current = 0;
         setIsDragOver(false);
         if (!onDropFile) return;
@@ -1073,7 +1083,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         ref={setEditorRef}
         markdown={editorValue}
         placeholder={placeholder}
+        readOnly={readOnly}
         onChange={(next) => {
+          if (readOnly) return;
           const echo = echoIgnoreMarkdownRef.current;
           if (echo !== null && next === echo) {
             echoIgnoreMarkdownRef.current = null;
