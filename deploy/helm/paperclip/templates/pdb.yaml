@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "paperclip.labels" . | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.pdb.minAvailable }}
+  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
   selector:
     matchLabels:
       {{- include "paperclip.selectorLabels" . | nindent 6 }}
