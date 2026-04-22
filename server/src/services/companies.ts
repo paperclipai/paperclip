@@ -28,7 +28,53 @@ import {
   companyMemberships,
   companySkills,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
+
+type CompanyStateSnapshot = Pick<typeof companies.$inferSelect, "status" | "pauseReason" | "pausedAt">;
+
+type CompanyUpdateInput = Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null };
+
+export function resolveCompanyStateUpdatePatch(
+  existing: CompanyStateSnapshot,
+  data: CompanyUpdateInput,
+  now: Date = new Date(),
+): CompanyUpdateInput {
+  if (data.status === undefined) return data;
+
+  if (existing.status === "archived" && data.status !== "archived") {
+    throw conflict("Archived companies cannot be resumed");
+  }
+
+  if (data.status === "paused") {
+    return {
+      ...data,
+      pauseReason: data.pauseReason ?? (existing.pauseReason === "budget" ? "budget" : "manual"),
+      pausedAt: data.pausedAt ?? existing.pausedAt ?? now,
+    };
+  }
+
+  if (data.status === "active") {
+    if (existing.pauseReason === "budget") {
+      throw conflict("Budget-paused companies must be resumed from Costs");
+    }
+
+    return {
+      ...data,
+      pauseReason: null,
+      pausedAt: null,
+    };
+  }
+
+  if (data.status === "archived") {
+    return {
+      ...data,
+      pauseReason: null,
+      pausedAt: null,
+    };
+  }
+
+  return data;
+}
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -38,6 +84,8 @@ export function companyService(db: Db) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -180,7 +228,7 @@ export function companyService(db: Db) {
 
     update: (
       id: string,
-      data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
+      data: CompanyUpdateInput,
     ) =>
       db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
@@ -188,7 +236,8 @@ export function companyService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        const { logoAssetId, ...companyPatch } = data;
+        const normalizedData = resolveCompanyStateUpdatePatch(existing, data);
+        const { logoAssetId, ...companyPatch } = normalizedData;
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx

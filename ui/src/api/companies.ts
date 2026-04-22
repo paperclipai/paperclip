@@ -23,6 +23,8 @@ export const companiesApi = {
     budgetMonthlyCents?: number;
   }) =>
     api.post<Company>("/companies", data),
+  pause: (companyId: string) => api.patch<Company>(`/companies/${companyId}`, { status: "paused" }),
+  resume: (companyId: string) => api.patch<Company>(`/companies/${companyId}`, { status: "active" }),
   update: (
     companyId: string,
     data: Partial<

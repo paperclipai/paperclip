@@ -10,7 +10,7 @@ import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Pause, Play, Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -99,6 +99,35 @@ export function CompanySettings() {
     onError: (err) => {
       pushToast({
         title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const companyExecutionMutation = useMutation({
+    mutationFn: (action: "pause" | "resume") =>
+      action === "pause"
+        ? companiesApi.pause(selectedCompanyId!)
+        : companiesApi.resume(selectedCompanyId!),
+    onSuccess: async (company, action) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
+      }
+      pushToast({
+        title: action === "pause" ? "Company paused" : "Company resumed",
+        body:
+          action === "pause"
+            ? `${company.name} will not start new heartbeat work until you resume it.`
+            : `${company.name} can start new heartbeat work again.`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update company execution",
         body: err instanceof Error ? err.message : "Unknown error",
         tone: "error",
       });
@@ -400,6 +429,72 @@ export function CompanySettings() {
           )}
         </div>
       )}
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Execution
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Company execution</div>
+              <p className="text-sm text-muted-foreground">
+                {selectedCompany.status === "paused"
+                  ? selectedCompany.pauseReason === "budget"
+                    ? "This company is paused by a budget hard-stop. New heartbeat work stays blocked until the budget incident is resolved."
+                    : "This company is paused. New heartbeat work will not start until you resume it."
+                  : selectedCompany.status === "archived"
+                    ? "Archived companies stay read-only in the sidebar and cannot be resumed from here."
+                    : "This company is active. Agents can keep starting new heartbeat work on schedule and on demand."}
+              </p>
+              {selectedCompany.pausedAt ? (
+                <p className="text-xs text-muted-foreground">
+                  Paused {new Date(selectedCompany.pausedAt).toLocaleString()}
+                  {selectedCompany.pauseReason ? ` • reason: ${selectedCompany.pauseReason}` : ""}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2">
+              {selectedCompany.status === "paused" && selectedCompany.pauseReason === "budget" ? (
+                <Button size="sm" variant="outline" asChild>
+                  <Link to="/costs">
+                    <Play className="mr-1.5 h-3.5 w-3.5" />
+                    Open Costs
+                  </Link>
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant={selectedCompany.status === "paused" ? "default" : "outline"}
+                  disabled={companyExecutionMutation.isPending || selectedCompany.status === "archived"}
+                  onClick={() =>
+                    companyExecutionMutation.mutate(
+                      selectedCompany.status === "paused" ? "resume" : "pause",
+                    )
+                  }
+                >
+                  {selectedCompany.status === "paused" ? (
+                    <>
+                      <Play className="mr-1.5 h-3.5 w-3.5" />
+                      {companyExecutionMutation.isPending ? "Resuming..." : "Resume company"}
+                    </>
+                  ) : (
+                    <>
+                      <Pause className="mr-1.5 h-3.5 w-3.5" />
+                      {companyExecutionMutation.isPending ? "Pausing..." : "Pause company"}
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+          {selectedCompany.status === "paused" && selectedCompany.pauseReason === "budget" ? (
+            <p className="text-xs text-muted-foreground">
+              Budget-owned pauses should be resumed from the Costs page so the hard-stop incident is resolved at the same time.
+            </p>
+          ) : null}
+        </div>
+      </div>
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">

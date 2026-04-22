@@ -109,6 +109,12 @@ import { extractSkillMentionIds, AGENT_DEFAULT_MAX_CONCURRENT_RUNS, ISSUE_CONTIN
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
+
+function isCompanyBudgetConflict(error: unknown): error is HttpError {
+  if (!(error instanceof HttpError) || error.status !== 409) return false;
+  if (typeof error.details !== "object" || error.details === null) return false;
+  return "scopeType" in error.details && (error.details as { scopeType?: unknown }).scopeType === "company";
+}
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
@@ -7355,20 +7361,28 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        try {
+          const run = await enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+            },
+          });
+          if (run) enqueued += 1;
+          else skipped += 1;
+        } catch (error) {
+          if (isCompanyBudgetConflict(error)) {
+            skipped += 1;
+            continue;
+          }
+          throw error;
+        }
       }
 
       return { checked, enqueued, skipped };
