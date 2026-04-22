@@ -6,6 +6,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } fro
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentTaskSessions,
