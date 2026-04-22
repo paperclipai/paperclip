@@ -548,7 +548,7 @@ export function ExecutionWorkspaceDetail() {
           </p>
         </div>
 
-        <Card>
+        <Card className="rounded-none">
           <CardHeader>
             <CardTitle>Services and jobs</CardTitle>
             <CardDescription>
@@ -597,7 +597,7 @@ export function ExecutionWorkspaceDetail() {
 
         {activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
-            <Card>
+            <Card className="rounded-none">
               <CardHeader>
                 <CardTitle>Workspace settings</CardTitle>
                 <CardDescription>
@@ -607,7 +607,7 @@ export function ExecutionWorkspaceDetail() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="w-full sm:w-auto"
+                    className="w-full rounded-none sm:w-auto"
                     onClick={() => setCloseDialogOpen(true)}
                     disabled={workspace.status === "archived"}
                   >
@@ -817,7 +817,7 @@ export function ExecutionWorkspaceDetail() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="rounded-none">
               <CardHeader>
                 <CardTitle>Workspace context</CardTitle>
                 <CardDescription>Linked objects and relationships</CardDescription>
@@ -863,7 +863,7 @@ export function ExecutionWorkspaceDetail() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="rounded-none">
               <CardHeader>
                 <CardTitle>Concrete location</CardTitle>
                 <CardDescription>Paths and refs</CardDescription>
@@ -909,7 +909,7 @@ export function ExecutionWorkspaceDetail() {
             </Card>
           </div>
         ) : activeTab === "runtime_logs" ? (
-          <Card>
+          <Card className="rounded-none">
             <CardHeader>
               <CardTitle>Runtime and cleanup logs</CardTitle>
               <CardDescription>Recent operations</CardDescription>
@@ -926,7 +926,7 @@ export function ExecutionWorkspaceDetail() {
             ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
               <div className="space-y-3">
                 {workspaceOperationsQuery.data.map((operation) => (
-                  <div key={operation.id} className="rounded-md border border-border/80 bg-background px-4 py-3">
+                  <div key={operation.id} className="rounded-none border border-border/80 bg-background px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
                         <div className="text-sm font-medium">{operation.command ?? operation.phase}</div>

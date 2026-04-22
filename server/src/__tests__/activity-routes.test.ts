@@ -21,6 +21,10 @@ const mockIssueService = vi.hoisted(() => ({
 
 vi.mock("../services/activity.js", () => ({
   activityService: () => mockActivityService,
+  normalizeActivityLimit: (limit: number | undefined) => {
+    if (!Number.isFinite(limit)) return 100;
+    return Math.max(1, Math.min(500, Math.floor(limit ?? 100)));
+  },
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -56,6 +60,38 @@ describe("activity routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+  });
+
+  it("limits company activity lists by default", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/activity");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: undefined,
+      entityId: undefined,
+      limit: 100,
+    });
+  });
+
+  it("caps requested company activity list limits", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/activity?limit=5000&entityType=issue");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: "issue",
+      entityId: undefined,
+      limit: 500,
+    });
   });
 
   it("resolves issue identifiers before loading runs", async () => {

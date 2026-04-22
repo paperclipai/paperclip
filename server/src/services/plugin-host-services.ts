@@ -21,11 +21,12 @@ import type {
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
 } from "@paperclipai/plugin-sdk";
-import type { IssueDocumentSummary } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -1505,6 +1506,29 @@ export function buildHostServices(
           },
         });
         return comment;
+      },
+      async createInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const interaction = await issueThreadInteractionService(db).create(issue, params.interaction as CreateIssueThreadInteraction, {
+          agentId: params.authorAgentId ?? null,
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.thread_interaction_created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: params.authorAgentId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            continuationPolicy: interaction.continuationPolicy,
+          },
+        });
+        return interaction as any;
       },
     },
 

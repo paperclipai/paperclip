@@ -26,6 +26,8 @@ const DOCS_URL = "https://docs.paperclip.ing/";
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
   instanceSettingsTarget: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   version?: string | null;
 }
 
@@ -102,12 +104,16 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
 export function SidebarAccountMenu({
   deploymentMode,
   instanceSettingsTarget,
+  open: controlledOpen,
+  onOpenChange,
   version,
 }: SidebarAccountMenuProps) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { theme, toggleTheme } = useTheme();
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),

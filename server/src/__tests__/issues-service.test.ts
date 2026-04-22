@@ -469,6 +469,88 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([linkedIssueId]);
   });
 
+  it("filters issues by generic workspace id across execution and project workspace links", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const executionLinkedIssueId = randomUUID();
+    const projectLinkedIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Feature workspace",
+      sourceType: "local_path",
+      visibility: "default",
+      isPrimary: false,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Execution workspace",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values([
+      {
+        id: executionLinkedIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Execution linked issue",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId,
+      },
+      {
+        id: projectLinkedIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Project linked issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        projectId,
+        title: "Other issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const executionResult = await svc.list(companyId, { workspaceId: executionWorkspaceId });
+    const projectResult = await svc.list(companyId, { workspaceId: projectWorkspaceId });
+
+    expect(executionResult.map((issue) => issue.id)).toEqual([executionLinkedIssueId]);
+    expect(projectResult.map((issue) => issue.id).sort()).toEqual([executionLinkedIssueId, projectLinkedIssueId].sort());
+  });
+
   it("hides archived inbox issues until new external activity arrives", async () => {
     const companyId = randomUUID();
     const userId = "user-1";
@@ -739,6 +821,33 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.executionPolicy).toBeNull();
     expect(result?.executionState).toBeNull();
     expect(result?.executionWorkspaceSettings).toBeNull();
+  });
+
+  it("does not let description preview truncation split multibyte characters", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const description = `${"x".repeat(1199)}— still valid after truncation`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Multibyte boundary issue",
+      description,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId);
+
+    expect(result?.description).toHaveLength(1200);
+    expect(result?.description?.endsWith("—")).toBe(true);
   });
 });
 
@@ -1260,6 +1369,89 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
       }),
     ]);
+  });
+
+  it("reports dependency readiness for blocked issue chains", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked", status: "todo", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      issueId: blockedId,
+      blockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [blockerId],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    await svc.update(blockerId, { status: "done" });
+
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      issueId: blockedId,
+      blockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+  });
+
+  it("rejects execution when unresolved blockers remain", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    await expect(
+      svc.update(blockedId, { status: "in_progress" }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    await expect(
+      svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
+    ).rejects.toMatchObject({ status: 422 });
   });
 
   it("wakes parents only when all direct children are terminal", async () => {

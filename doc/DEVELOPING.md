@@ -43,6 +43,17 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+## Storybook
+
+The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
+
+```sh
+pnpm storybook
+pnpm build-storybook
+```
+
+These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
+
 Inspect or stop the current repo's managed dev runner:
 
 ```sh

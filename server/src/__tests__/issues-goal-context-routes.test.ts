@@ -27,48 +27,65 @@ const mockDocumentsService = vi.hoisted(() => ({
   getIssueDocumentByKey: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  documentService: () => mockDocumentsService,
-  executionWorkspaceService: () => ({
-    getById: vi.fn(),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => mockGoalService,
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getById: vi.fn(),
 }));
+
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => ({
+      canUser: vi.fn(),
+      hasPermission: vi.fn(),
+    }),
+    agentService: () => ({
+      getById: vi.fn(),
+    }),
+    documentService: () => mockDocumentsService,
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    }),
+    goalService: () => mockGoalService,
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+    }),
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueService: () => mockIssueService,
+    logActivity: vi.fn(async () => undefined),
+    projectService: () => mockProjectService,
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({
+      listForIssue: vi.fn(async () => []),
+    }),
+  }));
+}
 
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
@@ -127,9 +144,11 @@ const projectGoal = {
 describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
@@ -144,6 +163,7 @@ describe("issue goal context routes", () => {
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
       companyId: "company-1",
@@ -271,5 +291,45 @@ describe("issue goal context routes", () => {
         identifier: "PAP-580",
       }),
     ]);
+  });
+
+  it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "55555555-5555-4555-8555-555555555555",
+      name: "PAP-581 workspace",
+      mode: "isolated_workspace",
+      status: "active",
+      cwd: "/tmp/pap-581",
+      runtimeServices: [
+        {
+          id: "service-1",
+          serviceName: "web",
+          status: "running",
+          url: "http://127.0.0.1:5173",
+          healthStatus: "healthy",
+        },
+      ],
+    });
+
+    const res = await request(await createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
+    expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
+      id: "55555555-5555-4555-8555-555555555555",
+      mode: "isolated_workspace",
+      runtimeServices: [
+        expect.objectContaining({
+          serviceName: "web",
+          url: "http://127.0.0.1:5173",
+        }),
+      ],
+    }));
   });
 });

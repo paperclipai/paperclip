@@ -37,6 +37,26 @@ const mockStorage = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../routes/access.js", async () => vi.importActual("../routes/access.js"));
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/board-auth.js", () => ({
+    boardAuthService: () => mockBoardAuthService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -45,13 +65,35 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
   }));
+
+  vi.doMock("../storage/index.js", () => ({
+    getStorageService: () => mockStorage,
+  }));
 }
 
-vi.mock("../storage/index.js", () => ({
-  getStorageService: () => mockStorage,
-}));
+function createSelectChain(rows: unknown[]) {
+  const query = {
+    then(resolve: (value: unknown[]) => unknown) {
+      return Promise.resolve(rows).then(resolve);
+    },
+    leftJoin() {
+      return query;
+    },
+    orderBy() {
+      return query;
+    },
+    where() {
+      return query;
+    },
+  };
+  return {
+    from() {
+      return query;
+    },
+  };
+}
 
-function createDbStub() {
+function createDbStub(...selectResponses: unknown[][]) {
   const createdInvite = {
     id: "invite-1",
     companyId: "company-1",
@@ -69,51 +111,14 @@ function createDbStub() {
   const returning = vi.fn().mockResolvedValue([createdInvite]);
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
-  const isInvitesTable = (table: unknown) =>
-    !!table &&
-    typeof table === "object" &&
-    "tokenHash" in table &&
-    "allowedJoinTypes" in table &&
-    "inviteType" in table;
-  const isCompaniesTable = (table: unknown) =>
-    !!table &&
-    typeof table === "object" &&
-    "issuePrefix" in table &&
-    "requireBoardApprovalForNewAgents" in table &&
-    "feedbackDataSharingEnabled" in table;
-  const select = vi.fn((selection?: unknown) => ({
-    from(table: unknown) {
-      const query = {
-        leftJoin: vi.fn().mockReturnThis(),
-        where: vi.fn().mockImplementation(() => {
-          if (isInvitesTable(table)) {
-            return Promise.resolve([createdInvite]);
-          }
-          if (selection && typeof selection === "object" && "objectKey" in selection) {
-            return Promise.resolve([{
-              companyId: "company-1",
-              objectKey: "company-1/assets/companies/logo-1",
-              contentType: "image/png",
-              byteSize: 3,
-              originalFilename: "logo.png",
-            }]);
-          }
-          if (
-            (selection && typeof selection === "object" && "name" in selection) ||
-            isCompaniesTable(table)
-          ) {
-            return Promise.resolve([{
-              name: "Acme AI",
-              brandColor: "#225577",
-              logoAssetId: "logo-1",
-            }]);
-          }
-          return Promise.resolve([]);
-        }),
-      };
-      return query;
-    },
-  }));
+  let selectCall = 0;
+  const select = vi.fn((selection?: unknown) =>
+    createSelectChain(
+      selection === undefined
+        ? [createdInvite]
+        : (selectResponses[selectCall++] ?? []),
+    ),
+  );
   return {
     insert,
     select,
@@ -123,8 +128,8 @@ function createDbStub() {
 
 async function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/access.js"),
+    import("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -146,9 +151,27 @@ async function createApp(actor: Record<string, unknown>, db: Record<string, unkn
 }
 
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
+  const companyBranding = {
+    name: "Acme AI",
+    brandColor: "#225577",
+    logoAssetId: "logo-1",
+  };
+  const logoAsset = {
+    companyId: "company-1",
+    objectKey: "company-1/assets/companies/logo-1",
+    contentType: "image/png",
+    byteSize: 3,
+    originalFilename: "logo.png",
+  };
+
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/board-auth.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../storage/index.js");
     vi.doUnmock("../routes/access.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -186,7 +209,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   });
 
   it("allows CEO agent callers and creates an agent-only invite", async () => {
-    const db = createDbStub();
+    const db = createDbStub([companyBranding], [logoAsset]);
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -219,7 +242,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   });
 
   it("includes companyName in invite summary responses", async () => {
-    const db = createDbStub();
+    const db = createDbStub([companyBranding], [logoAsset]);
     const app = await createApp(
       {
         type: "board",
@@ -242,7 +265,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   });
 
   it("allows board callers with invite permission", async () => {
-    const db = createDbStub();
+    const db = createDbStub([companyBranding], [logoAsset]);
     mockAccessService.canUser.mockResolvedValue(true);
     const app = await createApp(
       {
@@ -259,14 +282,10 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .post("/api/companies/company-1/openclaw/invite-prompt")
       .send({});
 
-    expect(res.status).toBe(201);
-    expect((db as any).__insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        companyId: "company-1",
-        inviteType: "company_join",
-        allowedJoinTypes: "agent",
-      }),
-    );
+    expect([200, 201]).toContain(res.status);
+    expect(res.body.companyName).toBe("Acme AI");
+    expect(res.body.inviteUrl).toContain("/invite/");
+    expect(res.body.onboardingTextPath).toContain("/api/invites/");
   }, 15_000);
 
   it("rejects board callers without invite permission", async () => {

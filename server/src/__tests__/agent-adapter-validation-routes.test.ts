@@ -131,7 +131,19 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [
+          {
+            id: "company-1",
+            requireBoardApprovalForNewAgents: false,
+          },
+        ]),
+      })),
+    })),
+  };
+  app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
 }

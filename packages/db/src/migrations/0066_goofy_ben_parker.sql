@@ -1,4 +1,4 @@
-CREATE TABLE "agent_mcp_servers" (
+﻿CREATE TABLE "agent_mcp_servers" (
 	"company_id" uuid NOT NULL,
 	"agent_id" uuid NOT NULL,
 	"mcp_server_id" uuid NOT NULL,

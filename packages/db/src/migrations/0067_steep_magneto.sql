@@ -1,4 +1,4 @@
-CREATE TABLE "mcp_server_catalog_snapshots" (
+﻿CREATE TABLE "mcp_server_catalog_snapshots" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"mcp_server_id" uuid NOT NULL,
