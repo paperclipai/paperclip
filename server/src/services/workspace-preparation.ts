@@ -12,16 +12,21 @@ export type WorkspacePreparationResult = {
 };
 
 class WorkspacePreparationService {
+  private isPathWithin(parentPath: string, candidatePath: string): boolean {
+    const relative = path.relative(parentPath, candidatePath);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  }
+
   /**
    * Sanitizes a path segment to be alphanumeric + dash/underscore, lowercase.
    */
-    private sanitizeSlugPart(part: string | null | undefined): string {
-      const normalized = part ?? "";
-      return normalized
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]/g, "-")
-        .replace(/^-+|-+$/g, "");
-    }
+  private sanitizeSlugPart(part: string | null | undefined): string {
+    const normalized = part ?? "";
+    return normalized
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
 
   /**
    * Prepares the execution workspace directory.
@@ -39,10 +44,10 @@ class WorkspacePreparationService {
     const safeCompanyId = this.sanitizeSlugPart(companyId);
     const safeAgentId = this.sanitizeSlugPart(agentId);
     const safeRunId = runId; // runId (ULID/UUID) is already safe
+    const workspaceRoot = path.resolve(instanceRoot, "workspaces");
 
     const expectedPath = path.resolve(
-      instanceRoot,
-      "workspaces",
+      workspaceRoot,
       safeCompanyId,
       safeAgentId,
       safeRunId,
@@ -64,23 +69,25 @@ class WorkspacePreparationService {
       }
     }
 
+    const desiredWorkspacePath = executionWorkspaceCwd
+      && this.isPathWithin(workspaceRoot, path.resolve(executionWorkspaceCwd))
+      ? path.resolve(executionWorkspaceCwd)
+      : expectedPath;
+
     // 2. Path Resolution & Creation (WSPC-02)
     try {
-      // Guard against creating workspace inside project workspace tree (security/overlap)
-      // This check is simplified: we ensure the path doesn't overlap with a common 
-      // project root if we had one passed in. Since we only have instanceRoot, 
-      // we ensure the workspace is indeed under the instanceRoot/workspaces tree.
-      if (!expectedPath.startsWith(path.resolve(instanceRoot, "workspaces"))) {
+      // Only auto-create managed fallback workspaces under the instance workspace root.
+      if (!this.isPathWithin(workspaceRoot, desiredWorkspacePath)) {
         return {
-          workspacePath: expectedPath,
+          workspacePath: desiredWorkspacePath,
           wasCreated: false,
           sentinelVerified: false,
           fatalError: "Computed workspace path is outside the allowed instance workspace root.",
         };
       }
 
-      await fs.mkdir(expectedPath, { recursive: true });
-      const result = await this.verifyWritability(expectedPath);
+      await fs.mkdir(desiredWorkspacePath, { recursive: true });
+      const result = await this.verifyWritability(desiredWorkspacePath);
       return {
         ...result,
         wasCreated: true,
@@ -89,9 +96,9 @@ class WorkspacePreparationService {
       if (error.code === "EEXIST") {
         // Handle race condition where mkdir failed but it's actually a directory
         try {
-          const stats = await fs.stat(expectedPath);
+          const stats = await fs.stat(desiredWorkspacePath);
           if (stats.isDirectory()) {
-            return this.verifyWritability(expectedPath);
+            return this.verifyWritability(desiredWorkspacePath);
           }
         } catch {
           // ignore
@@ -99,7 +106,7 @@ class WorkspacePreparationService {
       }
       
       return {
-        workspacePath: expectedPath,
+        workspacePath: desiredWorkspacePath,
         wasCreated: false,
         sentinelVerified: false,
         fatalError: `Failed to create workspace directory: ${error.message}`,

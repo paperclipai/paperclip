@@ -63,6 +63,46 @@ describe("WorkspacePreparationService", () => {
     expect(stats.isDirectory()).toBe(true);
   });
 
+  it("creates the requested fallback workspace path when it is inside the workspace root", async () => {
+    const fallbackCwd = path.join(tempRoot, "workspaces", "agent-1");
+
+    const result = await workspacePreparationService.prepareWorkspace({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      instanceRoot: tempRoot,
+      executionWorkspaceCwd: fallbackCwd,
+    });
+
+    expect(result.wasCreated).toBe(true);
+    expect(result.sentinelVerified).toBe(true);
+    expect(result.workspacePath).toBe(fallbackCwd);
+
+    const stats = await fs.stat(fallbackCwd);
+    expect(stats.isDirectory()).toBe(true);
+  });
+
+  it("does not auto-create missing external project workspace paths", async () => {
+    const missingProjectCwd = path.join(tempRoot, "data", "test-workspace");
+
+    const result = await workspacePreparationService.prepareWorkspace({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      instanceRoot: tempRoot,
+      executionWorkspaceCwd: missingProjectCwd,
+    });
+
+    const expectedManagedPath = path.join(tempRoot, "workspaces", "company-1", "agent-1", "run-1");
+    expect(result.wasCreated).toBe(true);
+    expect(result.sentinelVerified).toBe(true);
+    expect(result.workspacePath).toBe(expectedManagedPath);
+
+    await expect(fs.stat(missingProjectCwd)).rejects.toThrow();
+    const stats = await fs.stat(expectedManagedPath);
+    expect(stats.isDirectory()).toBe(true);
+  });
+
   it("validates writability via sentinel file", async () => {
     const companyId = "c1";
     const agentId = "a1";
