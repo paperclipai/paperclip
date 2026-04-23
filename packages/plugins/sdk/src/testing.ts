@@ -8,6 +8,8 @@ import type {
   Project,
   Issue,
   IssueComment,
+  IssueThreadInteraction,
+  CreateIssueThreadInteraction,
   IssueDocument,
   Agent,
   Goal,
@@ -149,6 +151,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issues = new Map<string, Issue>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
+  const issueInteractions = new Map<string, IssueThreadInteraction[]>();
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
@@ -546,6 +549,50 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         current.push(comment);
         issueComments.set(issueId, current);
         return comment;
+      },
+      async createInteraction(issueId, interaction, companyId, options) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.create");
+        const parentIssue = issues.get(issueId);
+        if (!isInCompany(parentIssue, companyId)) {
+          throw new Error(`Issue not found: ${issueId}`);
+        }
+        const now = new Date();
+        const current = issueInteractions.get(issueId) ?? [];
+        if (interaction.idempotencyKey) {
+          const existing = current.find((entry) => entry.idempotencyKey === interaction.idempotencyKey);
+          if (existing) return existing;
+        }
+        const created: IssueThreadInteraction = {
+          id: randomUUID(),
+          companyId: parentIssue.companyId,
+          issueId,
+          kind: interaction.kind,
+          status: "pending",
+          continuationPolicy: interaction.continuationPolicy ?? "wake_assignee",
+          idempotencyKey: interaction.idempotencyKey ?? null,
+          sourceCommentId: interaction.sourceCommentId ?? null,
+          sourceRunId: interaction.sourceRunId ?? null,
+          title: interaction.title ?? null,
+          summary: interaction.summary ?? null,
+          createdByAgentId: options?.authorAgentId ?? null,
+          createdByUserId: null,
+          payload: interaction.payload,
+          result: null,
+          createdAt: now,
+          updatedAt: now,
+        } as IssueThreadInteraction;
+        current.push(created);
+        issueInteractions.set(issueId, current);
+        return created;
+      },
+      async suggestTasks(issueId, interaction, companyId, options) {
+        return this.createInteraction(issueId, { ...interaction, kind: "suggest_tasks" }, companyId, options) as Promise<any>;
+      },
+      async askUserQuestions(issueId, interaction, companyId, options) {
+        return this.createInteraction(issueId, { ...interaction, kind: "ask_user_questions" }, companyId, options) as Promise<any>;
+      },
+      async requestConfirmation(issueId, interaction, companyId, options) {
+        return this.createInteraction(issueId, { ...interaction, kind: "request_confirmation" }, companyId, options) as Promise<any>;
       },
       documents: {
         async list(issueId, companyId) {

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -21,6 +21,15 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  limit?: number;
+}
+
+const DEFAULT_ACTIVITY_LIMIT = 100;
+const MAX_ACTIVITY_LIMIT = 500;
+
+export function normalizeActivityLimit(limit: number | undefined) {
+  if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
+  return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
 }
 
 export function activityService(db: Db) {
@@ -316,6 +325,7 @@ export function activityService(db: Db) {
   return {
     list: (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId)];
+      const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {
         conditions.push(eq(activityLog.agentId, filters.agentId));
@@ -347,6 +357,7 @@ export function activityService(db: Db) {
           ),
         )
         .orderBy(desc(activityLog.createdAt))
+        .limit(limit)
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
@@ -364,7 +375,7 @@ export function activityService(db: Db) {
 
     runsForIssue: async (companyId: string, issueId: string) => {
       scheduleRunLivenessBackfill(companyId, issueId);
-      return db
+      const runs = await db
         .select({
           runId: heartbeatRuns.id,
           status: heartbeatRuns.status,
@@ -377,6 +388,10 @@ export function activityService(db: Db) {
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+          scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+          scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
           livenessState: heartbeatRuns.livenessState,
           livenessReason: heartbeatRuns.livenessReason,
           continuationAttempt: heartbeatRuns.continuationAttempt,
@@ -408,6 +423,34 @@ export function activityService(db: Db) {
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
+
+      if (runs.length === 0) return runs;
+
+      const exhaustionRows = await db
+        .select({
+          runId: heartbeatRunEvents.runId,
+          message: heartbeatRunEvents.message,
+        })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            inArray(heartbeatRunEvents.runId, runs.map((run) => run.runId)),
+            eq(heartbeatRunEvents.eventType, "lifecycle"),
+            sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+          ),
+        )
+        .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id));
+
+      const retryExhaustedReasonByRunId = new Map<string, string>();
+      for (const row of exhaustionRows) {
+        if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
+        retryExhaustedReasonByRunId.set(row.runId, row.message);
+      }
+
+      return runs.map((run) => ({
+        ...run,
+        retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+      }));
     },
 
     issuesForRun: async (runId: string) => {

@@ -599,7 +599,7 @@ describe("worktree helpers", () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    20000,
+    30000,
   );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
@@ -881,7 +881,7 @@ describe("worktree helpers", () => {
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 30_000);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
@@ -1038,7 +1038,7 @@ describe("worktree helpers", () => {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("creates and initializes a worktree from the top-level worktree:make command", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-"));

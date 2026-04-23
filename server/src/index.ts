@@ -663,15 +663,26 @@ export async function startServer(): Promise<StartedServer> {
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
-      .then(() => heartbeat.resumeQueuedRuns())
-      .then(async () => {
+      .then(() => heartbeat.promoteDueScheduledRetries())
+      .then(async (promotion) => {
+        await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
+          promotion.promoted > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.escalated > 0
         ) {
-          logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
+          logger.warn(
+            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+            "startup heartbeat recovery changed assigned issue state",
+          );
+        }
+      })
+      .then(async () => {
+        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+        if (reconciled.escalationsCreated > 0) {
+          logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
         }
       })
       .catch((err) => {
@@ -704,15 +715,26 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.resumeQueuedRuns())
-        .then(async () => {
+        .then(() => heartbeat.promoteDueScheduledRetries())
+        .then(async (promotion) => {
+          await heartbeat.resumeQueuedRuns();
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
           if (
+            promotion.promoted > 0 ||
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
             reconciled.escalated > 0
           ) {
-            logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+            logger.warn(
+              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              "periodic heartbeat recovery changed assigned issue state",
+            );
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+          if (reconciled.escalationsCreated > 0) {
+            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
           }
         })
         .catch((err) => {

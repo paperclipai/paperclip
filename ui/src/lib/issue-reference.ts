@@ -16,7 +16,9 @@ export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): 
 
   if (/^https?:\/\//i.test(pathname)) {
     try {
-      pathname = new URL(pathname).pathname;
+      const url = new URL(pathname);
+      if (url.hostname === "github.com" || url.hostname === "www.github.com") return null;
+      pathname = url.pathname;
     } catch {
       return null;
     }

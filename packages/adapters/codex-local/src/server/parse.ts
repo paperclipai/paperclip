@@ -1,5 +1,9 @@
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
+const CODEX_TRANSIENT_UPSTREAM_RE =
+  /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
+const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
@@ -70,4 +74,26 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
   return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|no rollout found for thread id/i.test(
     haystack,
   );
+}
+
+export function isCodexTransientUpstreamError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = [
+    input.errorMessage ?? "",
+    input.stdout ?? "",
+    input.stderr ?? "",
+  ]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
+  // Keep automatic retries scoped to the observed remote-compaction/high-demand
+  // failure shape; broader 429s may be caused by user or account limits.
+  return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
 }

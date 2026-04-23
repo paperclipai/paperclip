@@ -192,7 +192,13 @@ describe("cost routes", () => {
       .get("/api/companies/company-1/costs/finance-summary")
       .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
     expect(res.status).toBe(200);
-    expect(mockFinanceService.summary).toHaveBeenCalled();
+    expect(res.body).toEqual({
+      debitCents: 0,
+      creditCents: 0,
+      netCents: 0,
+      estimatedDebitCents: 0,
+      eventCount: 0,
+    });
   });
 
   it("returns 400 for invalid finance event list limits", async () => {

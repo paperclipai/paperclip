@@ -19,7 +19,9 @@ export {
   issueService,
   type IssueFilters,
 } from "./issues.js";
+export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueApprovalService } from "./issue-approvals.js";
+export { issueReferenceService } from "./issue-references.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
@@ -29,6 +31,7 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./issue-liveness.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";

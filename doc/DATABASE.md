@@ -27,6 +27,18 @@ pnpm db:migrate
 
 When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
 
+Issue reference mentions follow the normal migration path: the schema migration creates the tracking table, but it does not backfill historical issue titles, descriptions, comments, or documents automatically.
+
+To backfill existing content manually after migrating, run:
+
+```sh
+pnpm issue-references:backfill
+# optional: limit to one company
+pnpm issue-references:backfill -- --company <company-id>
+```
+
+Future issue, comment, and document writes sync references automatically without running the backfill command.
+
 This mode is ideal for local development and one-command installs.
 
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).

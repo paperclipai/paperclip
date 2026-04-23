@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -56,6 +57,7 @@ describeEmbeddedPostgres("activity service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -68,6 +70,51 @@ describeEmbeddedPostgres("activity service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("limits company activity lists", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.oldest",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-04-21T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.middle",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-04-21T11:00:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.newest",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-04-21T12:00:00.000Z"),
+      },
+    ]);
+
+    const result = await activityService(db).list({ companyId, limit: 2 });
+
+    expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
   });
 
   it("returns compact usage and result summaries for issue runs", async () => {

@@ -11,11 +11,6 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-  logActivity: mockLogActivity,
-}));
-
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
@@ -42,6 +37,7 @@ async function createApp(actor: any) {
 describe("instance settings routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/instance-settings.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
