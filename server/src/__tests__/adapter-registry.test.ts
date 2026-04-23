@@ -32,7 +32,10 @@ import {
   requireServerAdapter,
   unregisterServerAdapter,
 } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
+import {
+  resolveExternalAdapterRegistration,
+  setOverridePaused,
+} from "../adapters/registry.js";
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -382,5 +385,73 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+});
+
+describe("resolveExternalAdapterRegistration", () => {
+  it("preserves module-provided sessionManagement", () => {
+    const sessionManagement = {
+      supportsSessionResume: true,
+      nativeContextManagement: "unknown" as const,
+      defaultSessionCompaction: {
+        enabled: true,
+        maxSessionRuns: 200,
+        maxRawInputTokens: 2_000_000,
+        maxSessionAgeHours: 72,
+      },
+    };
+    const adapter: ServerAdapterModule = {
+      type: "external_session_test",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "external_session_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      sessionManagement,
+    };
+
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved.sessionManagement).toBe(sessionManagement);
+  });
+
+  it("falls back to the hardcoded registry when the module omits sessionManagement", () => {
+    // An external that overrides a built-in type should inherit the built-in's
+    // sessionManagement when it does not provide its own.
+    const adapter: ServerAdapterModule = {
+      type: "claude_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    };
+
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved.sessionManagement).toBeDefined();
+    expect(resolved.sessionManagement?.supportsSessionResume).toBe(true);
+    expect(resolved.sessionManagement?.nativeContextManagement).toBe("confirmed");
+  });
+
+  it("leaves sessionManagement undefined when neither module nor registry provides one", () => {
+    const adapter: ServerAdapterModule = {
+      type: "external_unknown_test",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "external_unknown_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    };
+
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved.sessionManagement).toBeUndefined();
   });
 });
