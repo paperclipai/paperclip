@@ -68,14 +68,16 @@ function resolveConversationKey(input: {
   runId: string;
   issueId: string | null;
 }) {
-  const fallback = input.configuredSessionKey ?? `paperclip:agent:${input.agentId}`;
   if (input.strategy === "run") {
     return `paperclip:agent:${input.agentId}:run:${input.runId}`;
   }
   if (input.strategy === "issue" && input.issueId) {
     return `paperclip:agent:${input.agentId}:issue:${input.issueId}`;
   }
-  return fallback;
+  if (input.strategy === "fixed" && input.configuredSessionKey) {
+    return input.configuredSessionKey;
+  }
+  return `paperclip:agent:${input.agentId}`;
 }
 
 function resolveApiMode(config: Record<string, unknown>, url: string): HermesApiMode {
@@ -288,6 +290,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const startTime = Date.now();
+    if (apiMode === "responses" && sessionKeyStrategy === "fixed" && !configuredSessionKey) {
+      await onLog(
+        "stderr",
+        `[paperclip] Hermes fixed session strategy requires adapterConfig.sessionKey; falling back to paperclip:agent:${ctx.agent.id}\n`,
+      );
+    }
     await onLog(
       "stdout",
       `[paperclip] Invoking Hermes Agent via ${apiMode} at ${requestUrl}${

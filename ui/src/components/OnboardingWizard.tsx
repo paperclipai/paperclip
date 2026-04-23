@@ -129,7 +129,7 @@ export function OnboardingWizard() {
   const [hermesTimeoutSec, setHermesTimeoutSec] = useState("300");
   const [hermesApiMode, setHermesApiMode] = useState<
     "chat_completions" | "responses"
-  >("responses");
+  >("chat_completions");
   const [hermesSessionKeyStrategy, setHermesSessionKeyStrategy] = useState<
     "issue" | "run" | "fixed"
   >("issue");
@@ -394,13 +394,18 @@ export function OnboardingWizard() {
       defaultSecretName(`${agentName || "hermes"}_api_key`) || "secret";
     const name = window.prompt("Secret name", suggested)?.trim();
     if (!name) return;
-    const created = await createSecret.mutateAsync({
-      name,
-      value: hermesApiKey.trim(),
-    });
-    setHermesApiKey("");
-    setHermesApiKeyMode("secret");
-    setHermesApiKeySecretId(created.id);
+    try {
+      setError(null);
+      const created = await createSecret.mutateAsync({
+        name,
+        value: hermesApiKey.trim(),
+      });
+      setHermesApiKey("");
+      setHermesApiKeyMode("secret");
+      setHermesApiKeySecretId(created.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create secret");
+    }
   }
 
   function buildAdapterConfig(): Record<string, unknown> {

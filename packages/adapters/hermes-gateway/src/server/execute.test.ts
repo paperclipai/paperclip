@@ -208,6 +208,49 @@ describe("hermes_gateway execute", () => {
     expect(result.sessionDisplayId).toBe("paperclip:agent:abner");
   });
 
+  it("warns when fixed session strategy is selected without a session key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "resp-4",
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "warned" }],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { ctx, logs } = createContext({
+      config: {
+        url: "http://hermes-service:8642/v1",
+        apiMode: "responses",
+        sessionKeyStrategy: "fixed",
+        sessionKey: "",
+      },
+    });
+
+    const result = await execute(ctx);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.conversation).toBe("paperclip:agent:agent-1");
+    expect(result.sessionDisplayId).toBe("paperclip:agent:agent-1");
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stream: "stderr",
+          chunk: expect.stringContaining("fixed session strategy requires adapterConfig.sessionKey"),
+        }),
+      ]),
+    );
+  });
+
   it("omits the model field when no override is configured", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

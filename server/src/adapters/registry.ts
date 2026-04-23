@@ -212,6 +212,8 @@ const hermesGatewayAdapter: ServerAdapterModule = {
   testEnvironment: hermesGatewayTestEnvironment,
   models: hermesGatewayModels,
   supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesGatewayAgentConfigurationDoc,
 };
 
