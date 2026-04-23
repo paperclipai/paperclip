@@ -104,7 +104,15 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, AGENT_DEFAULT_MAX_CONCURRENT_RUNS, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import {
+  extractSkillMentionIds,
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  type BillingType,
+  type ExecutionWorkspace,
+  type ExecutionWorkspaceConfig,
+  type RunLivenessState,
+} from "@paperclipai/shared";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -3773,7 +3781,25 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      // For local child-process adapters, the OS is the source of truth for liveness.
+      // For remote adapters (no local PID), the in-memory Set is the only signal we have,
+      // so treat them as alive when tracked to preserve existing behavior.
+      const processActuallyAlive = !tracksLocalChild || Boolean(processPidAlive) || Boolean(processGroupAlive);
+
+      // Skip only when in-memory tracks AND the process is believed alive.
+      // If tracksLocalChild is true but the OS says the PID/PGID is dead, the
+      // in-memory Set has leaked (SIGKILL/OOM/crash with no cleanup handler) —
+      // proceed to reap instead of short-circuiting forever.
+      if ((runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) && processActuallyAlive) {
+        continue;
+      }
+
+      // Proactively drop leaked in-memory entries so subsequent ticks do not re-block on them.
+      runningProcesses.delete(run.id);
+      activeRunExecutions.delete(run.id);
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
