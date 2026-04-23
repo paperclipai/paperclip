@@ -89,6 +89,16 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  execute as zaiExecute,
+  testEnvironment as zaiTestEnvironment,
+  listZaiModels,
+  getConfigSchema as zaiGetConfigSchema,
+} from "@paperclipai/adapter-zai/server";
+import {
+  agentConfigurationDoc as zaiAgentConfigurationDoc,
+  models as zaiModels,
+} from "@paperclipai/adapter-zai";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -334,6 +344,32 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+// Z.AI (GLM) adapter — OpenAI-compatible HTTP adapter. Registered alongside
+// built-ins but intentionally not added to BUILTIN_ADAPTER_TYPES so that
+// upstream syncs stay merge-clean and external overrides remain possible.
+const zaiAdapter: ServerAdapterModule = {
+  type: "zai",
+  execute: zaiExecute,
+  testEnvironment: zaiTestEnvironment,
+  models: zaiModels,
+  listModels: listZaiModels,
+  getConfigSchema: zaiGetConfigSchema,
+  sessionManagement: {
+    supportsSessionResume: false,
+    nativeContextManagement: "none",
+    defaultSessionCompaction: {
+      enabled: true,
+      maxSessionRuns: 200,
+      maxRawInputTokens: 2_000_000,
+      maxSessionAgeHours: 72,
+    },
+  },
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: zaiAgentConfigurationDoc,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -461,6 +497,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    zaiAdapter,
     processAdapter,
     httpAdapter,
   ]) {

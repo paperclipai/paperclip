@@ -105,6 +105,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     comingSoon: true,
     disabledLabel: "Configure OpenClaw within the App",
   },
+  zai: {
+    label: "Z.AI (GLM)",
+    description: "GLM models via Z.AI OpenAI-compatible API",
+    icon: Sparkles,
+  },
   process: {
     label: "Process",
     description: "Internal process adapter",
