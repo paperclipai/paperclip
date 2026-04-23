@@ -27,7 +27,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
     throw new ApiError(
-      (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
+      (errorBody as { error?: string } | null)?.error ??
+        `Request failed: ${res.status}`,
       res.status,
       errorBody,
     );
@@ -46,5 +47,9 @@ export const api = {
     request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  delete: <T>(path: string, body?: unknown) =>
+    request<T>(path, {
+      method: "DELETE",
+      body: body ? JSON.stringify(body) : undefined,
+    }),
 };

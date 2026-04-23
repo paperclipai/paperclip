@@ -236,8 +236,20 @@ export const portabilityAdapterOverrideSchema = z.object({
   adapterConfig: z.record(z.unknown()).optional(),
 });
 
+export const portabilityDefaultAgentConfigSchema = z.object({
+  adapterType: z.string().optional(),
+  model: z.string().optional(),
+  command: z.string().optional(),
+  extraArgs: z.array(z.string()).optional(),
+  parameters: z.record(z.unknown()).optional(),
+  maxTurnsPerRun: z.number().optional(),
+  heartbeatEnabled: z.boolean().optional(),
+  intervalSec: z.number().optional(),
+});
+
 export const companyPortabilityImportSchema = companyPortabilityPreviewSchema.extend({
   adapterOverrides: z.record(z.string().min(1), portabilityAdapterOverrideSchema).optional(),
+  defaultAgentConfig: portabilityDefaultAgentConfigSchema.optional(),
 });
 
 export type CompanyPortabilityImport = z.infer<typeof companyPortabilityImportSchema>;

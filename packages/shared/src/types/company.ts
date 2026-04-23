@@ -22,3 +22,24 @@ export interface Company {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface CompanyResetRequest {
+  confirmCompanyName: string;
+}
+
+export interface CompanyResetDeletedCounts {
+  agents: number;
+  projects: number;
+  goals: number;
+  issues: number;
+  routines: number;
+  skills: number;
+  labels: number;
+  budgets: number;
+  secrets: number;
+}
+
+export interface CompanyResetResult {
+  company: Company;
+  deletedCounts: CompanyResetDeletedCounts;
+}

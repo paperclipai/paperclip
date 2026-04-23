@@ -23,6 +23,18 @@ const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
 }));
 
+const localStorageMock = {
+  data: {} as Record<string, string>,
+  clear: vi.fn(() => { localStorageMock.data = {}; }),
+  getItem: vi.fn((key: string) => localStorageMock.data[key] ?? null),
+  setItem: vi.fn((key: string, value: string) => { localStorageMock.data[key] = value; }),
+  removeItem: vi.fn((key: string) => { delete localStorageMock.data[key]; }),
+  key: vi.fn(),
+  get length() { return Object.keys(localStorageMock.data).length; },
+};
+
+Object.defineProperty(window, "localStorage", { value: localStorageMock, writable: true });
+
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));

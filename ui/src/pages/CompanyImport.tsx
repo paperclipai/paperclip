@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  AdapterEnvironmentTestResult,
   CompanyPortabilityCollisionStrategy,
+  CompanyPortabilityDefaultAgentConfig,
   CompanyPortabilityFileEntry,
   CompanyPortabilityPreviewResult,
   CompanyPortabilitySource,
@@ -26,11 +28,12 @@ import {
   Check,
   ChevronRight,
   Download,
+  FolderOpen,
   Github,
   Package,
   Upload,
 } from "lucide-react";
-import { Field, adapterLabels } from "../components/agent-config-primitives";
+import { Field, CollapsibleSection, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
@@ -319,7 +322,12 @@ function deriveSourcePrefix(
   importUrl: string,
   localPackageName: string | null,
   localRootPath: string | null,
+  localDirName: string | null,
 ): string | null {
+  if (sourceMode === "directory") {
+    if (localRootPath) return localRootPath.split("/").pop() ?? null;
+    return localDirName ?? null;
+  }
   if (sourceMode === "local") {
     if (localRootPath) return localRootPath.split("/").pop() ?? null;
     if (!localPackageName) return null;
@@ -623,6 +631,124 @@ function AdapterPickerList({
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function inferContentType(fileName: string): string | null {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  if (!ext) return null;
+  const map: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    svg: "image/svg+xml",
+    webp: "image/webp",
+    pdf: "application/pdf",
+    zip: "application/zip",
+    txt: "text/plain",
+    md: "text/markdown",
+    json: "application/json",
+    yaml: "application/yaml",
+    yml: "application/yaml",
+    html: "text/html",
+    htm: "text/html",
+    css: "text/css",
+    js: "application/javascript",
+    ts: "application/typescript",
+  };
+  return map[ext] ?? null;
+}
+
+async function readLocalDirectory(): Promise<{
+  name: string;
+  rootPath: string | null;
+  files: Record<string, CompanyPortabilityFileEntry>;
+  warnings: string[];
+}> {
+  const dirHandle = await window.showDirectoryPicker();
+  const files: Record<string, CompanyPortabilityFileEntry> = {};
+  const warnings: string[] = [];
+  const textDecoder = new TextDecoder();
+
+  async function* walkDir(
+    handle: FileSystemDirectoryHandle,
+    dirPath: string,
+  ): AsyncGenerator<{ path: string; file: File }> {
+    for await (const entry of handle.values()) {
+      if (entry.kind === "directory") {
+        if (entry.name === "._" || entry.name === ".DS_Store") continue;
+        const subDir = await handle.getDirectoryHandle(entry.name);
+        yield* walkDir(subDir, `${dirPath}/${entry.name}`);
+      } else if (entry.kind === "file") {
+        if (entry.name.startsWith("._") || entry.name === ".DS_Store") continue;
+        const file = await entry.getFile();
+        yield { path: `${dirPath}/${entry.name}`, file };
+      }
+    }
+  }
+
+  const rootName = dirHandle.name;
+  let entryCount = 0;
+
+  for await (const { path, file } of walkDir(dirHandle, "")) {
+    const normalizedPath = path.replace(/\\/g, "/").replace(/^\//, "");
+
+    try {
+      const contentType = file.type || inferContentType(file.name);
+      const isBinary =
+        contentType &&
+        !contentType.startsWith("text/") &&
+        contentType !== "image/svg+xml";
+
+      if (isBinary) {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        files[normalizedPath] = {
+          encoding: "base64",
+          data: bytesToBase64(bytes),
+          contentType: contentType || "application/octet-stream",
+        };
+      } else {
+        files[normalizedPath] = await file.text();
+      }
+      entryCount++;
+    } catch (err) {
+      warnings.push(
+        `Failed to read "${normalizedPath}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  if (entryCount === 0 && warnings.length === 0) {
+    warnings.push("The selected directory contains no readable files.");
+  }
+
+  const segments = Object.keys(files)
+    .map((p) => p.split("/").filter(Boolean))
+    .filter((parts) => parts.length > 0);
+  let rootPath: string | null = null;
+  if (segments.length > 0) {
+    const firstSegments = segments[0]!;
+    const allShareRoot = segments.every(
+      (parts) => parts.length > 1 && parts[0] === firstSegments[0],
+    );
+    if (allShareRoot) {
+      rootPath = firstSegments[0];
+    }
+  }
+
+  return {
+    name: rootName,
+    rootPath,
+    files,
+    warnings,
+  };
+}
+
 async function readLocalPackageZip(file: File): Promise<{
   name: string;
   rootPath: string | null;
@@ -661,12 +787,18 @@ export function CompanyImport() {
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   // Source state
-  const [sourceMode, setSourceMode] = useState<"github" | "local">("github");
+  const [sourceMode, setSourceMode] = useState<"github" | "local" | "directory">("github");
   const [importUrl, setImportUrl] = useState("");
   const [localPackage, setLocalPackage] = useState<{
     name: string;
     rootPath: string | null;
     files: Record<string, CompanyPortabilityFileEntry>;
+  } | null>(null);
+  const [localDir, setLocalDir] = useState<{
+    name: string;
+    rootPath: string | null;
+    files: Record<string, CompanyPortabilityFileEntry>;
+    warnings: string[];
   } | null>(null);
 
   // Target state
@@ -691,6 +823,50 @@ export function CompanyImport() {
   const [adapterExpandedSlugs, setAdapterExpandedSlugs] = useState<Set<string>>(new Set());
   const [adapterConfigValues, setAdapterConfigValues] = useState<Record<string, CreateConfigValues>>({});
 
+  // Global agent default config applied to all imported agents
+  const [defaultAgentConfig, setDefaultAgentConfig] =
+    useState<CompanyPortabilityDefaultAgentConfig>({
+      adapterType: "",
+      model: "",
+      command: "",
+      extraArgs: [],
+      maxTurnsPerRun: undefined,
+      heartbeatEnabled: undefined,
+      intervalSec: undefined,
+    });
+  const [globalDefaultsExpanded, setGlobalDefaultsExpanded] = useState(false);
+
+  // Test environment for global defaults
+  const [globalTestResult, setGlobalTestResult] =
+    useState<AdapterEnvironmentTestResult | null>(null);
+  const [globalTestError, setGlobalTestError] = useState<string | null>(null);
+
+  const globalTestEnvironment = useMutation({
+    mutationFn: async () => {
+      if (!selectedCompanyId) {
+        throw new Error("Select a company to test adapter environment");
+      }
+      const adapterType = defaultAgentConfig.adapterType || "claude_local";
+      const config: Record<string, unknown> = {};
+      if (defaultAgentConfig.model) config.model = defaultAgentConfig.model;
+      if (defaultAgentConfig.command)
+        config.command = defaultAgentConfig.command;
+      if (defaultAgentConfig.extraArgs?.length)
+        config.extraArgs = defaultAgentConfig.extraArgs;
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
+        adapterConfig: config,
+      });
+    },
+    onSuccess: (data) => {
+      setGlobalTestResult(data);
+      setGlobalTestError(null);
+    },
+    onError: (err: Error) => {
+      setGlobalTestError(err.message);
+      setGlobalTestResult(null);
+    },
+  });
+
   // Fetch current company agents to find CEO adapter type
   const { data: companyAgents } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
@@ -714,6 +890,10 @@ export function CompanyImport() {
   }, [setBreadcrumbs]);
 
   function buildSource(): CompanyPortabilitySource | null {
+    if (sourceMode === "directory") {
+      if (!localDir) return null;
+      return { type: "inline", rootPath: localDir.rootPath, files: localDir.files };
+    }
     if (sourceMode === "local") {
       if (!localPackage) return null;
       return { type: "inline", rootPath: localPackage.rootPath, files: localPackage.files };
@@ -748,6 +928,7 @@ export function CompanyImport() {
         importUrl,
         localPackage?.name ?? null,
         localPackage?.rootPath ?? null,
+        localDir?.name ?? null,
       );
       const defaultOverrides: Record<string, string> = {};
 
@@ -843,6 +1024,17 @@ export function CompanyImport() {
         nameOverrides: buildFinalNameOverrides(),
         selectedFiles: buildSelectedFiles(),
         adapterOverrides: buildFinalAdapterOverrides(),
+        defaultAgentConfig: {
+          adapterType: defaultAgentConfig.adapterType || undefined,
+          model: defaultAgentConfig.model || undefined,
+          command: defaultAgentConfig.command || undefined,
+          extraArgs: defaultAgentConfig.extraArgs?.length
+            ? defaultAgentConfig.extraArgs
+            : undefined,
+          maxTurnsPerRun: defaultAgentConfig.maxTurnsPerRun,
+          heartbeatEnabled: defaultAgentConfig.heartbeatEnabled,
+          intervalSec: defaultAgentConfig.intervalSec,
+        },
       });
     },
     onSuccess: async (result) => {
@@ -884,12 +1076,42 @@ export function CompanyImport() {
     try {
       const pkg = await readLocalPackageZip(fileList[0]!);
       setLocalPackage(pkg);
+      setLocalDir(null);
       setImportPreview(null);
     } catch (err) {
       pushToast({
         tone: "error",
         title: "Package read failed",
         body: err instanceof Error ? err.message : "Failed to read folder.",
+      });
+    }
+  }
+
+  async function handleChooseLocalDirectory() {
+    try {
+      const dir = await readLocalDirectory();
+      if (dir.warnings.length > 0) {
+        pushToast({
+          tone: "warn",
+          title: "Directory read with warnings",
+          body: dir.warnings[0]!,
+        });
+      }
+      if (Object.keys(dir.files).length === 0) {
+        throw new Error(
+          dir.warnings[0] ??
+            "No readable files found in the selected directory.",
+        );
+      }
+      setLocalDir(dir);
+      setLocalPackage(null);
+      setImportPreview(null);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      pushToast({
+        tone: "error",
+        title: "Directory read failed",
+        body: err instanceof Error ? err.message : "Failed to read directory.",
       });
     }
   }
@@ -1075,6 +1297,7 @@ export function CompanyImport() {
   }
 
   const hasSource =
+    sourceMode === "directory" ? !!localDir :
     sourceMode === "local" ? !!localPackage : importUrl.trim().length > 0;
   const hasErrors = importPreview ? importPreview.errors.length > 0 : false;
 
@@ -1100,11 +1323,12 @@ export function CompanyImport() {
           </p>
         </div>
 
-        <div className="grid gap-2 md:grid-cols-2">
+        <div className="grid gap-2 md:grid-cols-3">
           {(
             [
               { key: "github", icon: Github, label: "GitHub repo" },
               { key: "local", icon: Upload, label: "Local zip" },
+              { key: "directory", icon: FolderOpen, label: "Import folder" },
             ] as const
           ).map(({ key, icon: Icon, label }) => (
             <button
@@ -1129,7 +1353,31 @@ export function CompanyImport() {
           ))}
         </div>
 
-        {sourceMode === "local" ? (
+        {sourceMode === "directory" ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleChooseLocalDirectory}
+              >
+                Choose folder
+              </Button>
+              {localDir && (
+                <span className="text-xs text-muted-foreground">
+                  {localDir.name} with{" "}
+                  {Object.keys(localDir.files).length} file
+                  {Object.keys(localDir.files).length === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+            {!localDir && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Select a local directory. Files will be imported as-is.
+              </p>
+            )}
+          </div>
+        ) : sourceMode === "local" ? (
           <div className="rounded-md border border-dashed border-border px-3 py-3">
             <input
               ref={packageInputRef}
@@ -1226,6 +1474,129 @@ export function CompanyImport() {
             <option value="replace">Replace existing</option>
           </select>
         </Field>
+
+        <CollapsibleSection
+          title="Global Agent Defaults"
+          open={globalDefaultsExpanded}
+          onToggle={() => setGlobalDefaultsExpanded((v) => !v)}
+        >
+          <p className="text-xs text-muted-foreground mb-3">
+            Apply default adapter type, model, command, and CLI args to all
+            imported agents. Per-agent adapter overrides take precedence.
+          </p>
+          <div className="space-y-4">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-foreground">Adapter</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2.5 text-xs"
+                  onClick={() => globalTestEnvironment.mutate()}
+                  disabled={
+                    globalTestEnvironment.isPending || !selectedCompanyId
+                  }
+                >
+                  {globalTestEnvironment.isPending
+                    ? "Testing..."
+                    : "Test environment"}
+                </Button>
+              </div>
+              <div className="space-y-3">
+                <Field
+                  label="Agent Type"
+                  hint="Default adapter type for all imported agents."
+                >
+                  <select
+                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                    value={defaultAgentConfig.adapterType}
+                    onChange={(e) =>
+                      setDefaultAgentConfig(
+                        (prev: CompanyPortabilityDefaultAgentConfig) => ({
+                          ...prev,
+                          adapterType: e.target.value,
+                        }),
+                      )
+                    }
+                  >
+                    <option value="">Use manifest default</option>
+                    {IMPORT_ADAPTER_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {globalTestError && (
+                  <p className="text-xs text-destructive">{globalTestError}</p>
+                )}
+                {globalTestResult && (
+                  <p className="text-xs text-emerald-500">
+                    Environment OK — {globalTestResult.status}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field
+                label="Model"
+                hint="Default model for claude_local adapter."
+              >
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  type="text"
+                  value={defaultAgentConfig.model}
+                  placeholder="e.g. claude-opus-4-6"
+                  onChange={(e) =>
+                    setDefaultAgentConfig((prev) => ({
+                      ...prev,
+                      model: e.target.value,
+                    }))
+                  }
+                />
+              </Field>
+              <Field
+                label="Command"
+                hint="Default command (e.g. claude, codex)."
+              >
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  type="text"
+                  value={defaultAgentConfig.command}
+                  placeholder="e.g. claude"
+                  onChange={(e) =>
+                    setDefaultAgentConfig((prev) => ({
+                      ...prev,
+                      command: e.target.value,
+                    }))
+                  }
+                />
+              </Field>
+            </div>
+
+            <Field
+              label="Extra CLI Args"
+              hint="Space-separated CLI arguments applied to all agents."
+            >
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                type="text"
+                value={(defaultAgentConfig.extraArgs ?? []).join(" ")}
+                placeholder="--no-cache --verbose"
+                onChange={(e) =>
+                  setDefaultAgentConfig((prev) => ({
+                    ...prev,
+                    extraArgs: e.target.value.trim()
+                      ? e.target.value.trim().split(/\s+/)
+                      : [],
+                  }))
+                }
+              />
+            </Field>
+          </div>
+        </CollapsibleSection>
 
         <div className="flex items-center gap-2">
           <Button

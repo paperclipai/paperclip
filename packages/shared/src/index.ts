@@ -200,6 +200,9 @@ export {
 
 export type {
   Company,
+  CompanyResetDeletedCounts,
+  CompanyResetRequest,
+  CompanyResetResult,
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,
@@ -420,6 +423,7 @@ export type {
   CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityAdapterOverride,
+  CompanyPortabilityDefaultAgentConfig,
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
@@ -525,6 +529,8 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companyResetRequestSchema,
+  deleteCompanyRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,

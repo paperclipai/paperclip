@@ -1,4 +1,9 @@
-export type { Company } from "./company.js";
+export type {
+  Company,
+  CompanyResetDeletedCounts,
+  CompanyResetRequest,
+  CompanyResetResult,
+} from "./company.js";
 export type {
   FeedbackVote,
   FeedbackDataSharingPreference,
@@ -253,6 +258,7 @@ export type {
   CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityAdapterOverride,
+  CompanyPortabilityDefaultAgentConfig,
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
