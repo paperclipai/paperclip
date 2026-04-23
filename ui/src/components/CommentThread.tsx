@@ -822,7 +822,8 @@ export function CommentThread({
       if (imageUploadHandler) {
         const url = await imageUploadHandler(file);
         const safeName = file.name.replace(/[[\]]/g, "\\$&");
-        const markdown = `![${safeName}](${url})`;
+        const isImage = file.type.startsWith("image/");
+        const markdown = isImage ? `![${safeName}](${url})` : `[${safeName}](${url})`;
         setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
       } else if (onAttachImage) {
         await onAttachImage(file);
@@ -928,7 +929,7 @@ export function CommentThread({
                 <input
                   ref={attachInputRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv,text/html,application/json"
                   className="hidden"
                   onChange={handleAttachFile}
                 />
@@ -937,7 +938,7 @@ export function CommentThread({
                   size="icon-sm"
                   onClick={() => attachInputRef.current?.click()}
                   disabled={attaching}
-                  title="Attach image"
+                  title="Attach file"
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
