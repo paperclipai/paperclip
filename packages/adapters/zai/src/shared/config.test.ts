@@ -35,8 +35,13 @@ describe("resolveZaiConfig", () => {
     expect(resolved.baseUrl).toBe("https://api.z.ai/api/paas/v4");
   });
 
-  it("applies default baseUrl when empty", () => {
+  it("applies default baseUrl (Coding Plan endpoint) when empty", () => {
     const resolved = resolveZaiConfig({});
+    expect(resolved.baseUrl).toBe("https://api.z.ai/api/coding/paas/v4");
+  });
+
+  it("respects general pay-as-you-go baseUrl override", () => {
+    const resolved = resolveZaiConfig({ baseUrl: "https://api.z.ai/api/paas/v4" });
     expect(resolved.baseUrl).toBe("https://api.z.ai/api/paas/v4");
   });
 

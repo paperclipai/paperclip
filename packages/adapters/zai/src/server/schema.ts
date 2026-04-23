@@ -23,7 +23,9 @@ export function getConfigSchema(): AdapterConfigSchema {
         required: false,
         default: DEFAULT_ZAI_BASE_URL,
         group: "auth",
-        hint: "Z.AI API base URL. Default: https://api.z.ai/api/paas/v4",
+        hint:
+          "Z.AI API base URL. Default: https://api.z.ai/api/coding/paas/v4 (Coding Plan). " +
+          "For pay-as-you-go credits billing use https://api.z.ai/api/paas/v4 instead.",
       },
       {
         key: "systemPrompt",

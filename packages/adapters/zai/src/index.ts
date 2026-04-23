@@ -23,7 +23,20 @@ export const models: { id: string; label: string }[] = [
 ];
 
 export const DEFAULT_ZAI_MODEL = "glm-5.1";
-export const DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
+
+// Coding Plan endpoint — the dedicated OpenAI-compatible URL for Z.AI
+// GLM Coding Plan subscriptions (Max / Pro / Lite). Billing on this
+// endpoint is bound to the subscription's quota instead of pay-as-you-go
+// credits. Paperclip's usage is overwhelmingly agent/coding work, so this
+// is the right default: subscribed accounts Just Work out of the box.
+//
+// Pay-as-you-go users (no Coding Plan) should override baseUrl explicitly
+// to GENERAL_ZAI_BASE_URL, via the agent form's "Base URL" field or the
+// ZAI_BASE_URL env var.
+//
+// ref: https://docs.z.ai/scenario-example/develop-tools/cline
+export const DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+export const GENERAL_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
 
 export const agentConfigurationDoc = `# zai adapter configuration
 
@@ -39,7 +52,9 @@ Don't use when:
 Core fields:
 - model (string, required): GLM model id (e.g. glm-5.1). See models list.
 - apiKey (string, optional): Z.AI API key. Falls back to process.env.ZAI_API_KEY.
-- baseUrl (string, optional): API base URL. Default: ${"https://api.z.ai/api/paas/v4"}.
+- baseUrl (string, optional): API base URL.
+    - Default: https://api.z.ai/api/coding/paas/v4  (Coding Plan — Max/Pro/Lite subscription)
+    - Override with https://api.z.ai/api/paas/v4 for pay-as-you-go credits billing.
 - temperature (number, optional): sampling temperature.
 - maxTokens (number, optional): max output tokens.
 - timeoutMs (number, optional): request timeout in ms (default 60000).
