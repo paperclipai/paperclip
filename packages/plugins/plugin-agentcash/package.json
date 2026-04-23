@@ -1,0 +1,28 @@
+{
+  "name": "@paperclipai/plugin-agentcash",
+  "version": "0.1.0",
+  "description": "AgentCash plugin — gives agents access to paid APIs via x402 micropayments and SIWX authentication",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "agentcash": "^0.13.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3"
+  }
+}
