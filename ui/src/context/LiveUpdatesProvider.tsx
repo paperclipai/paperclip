@@ -10,6 +10,7 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
+import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
@@ -19,6 +20,7 @@ const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -274,6 +276,22 @@ function invalidateVisibleIssueRunQueries(
     (runId !== null && context.runIds.has(runId)) ||
     (!!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId);
   if (!matchesVisibleIssue) return false;
+
+  const status = readString(payload.status);
+  if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {
+    queryClient.setQueryData(
+      queryKeys.issues.liveRuns(context.routeIssueRef),
+      (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+    );
+    queryClient.setQueryData(
+      queryKeys.issues.activeRun(context.routeIssueRef),
+      (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+    );
+    queryClient.setQueryData(
+      queryKeys.issues.detail(context.routeIssueRef),
+      (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
+    );
+  }
 
   queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(context.routeIssueRef) });
   queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(context.routeIssueRef) });
@@ -662,6 +680,9 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action?.startsWith("issue.thread_interaction_")) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
       }
     }

@@ -30,6 +30,7 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -44,6 +45,14 @@ import {
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
+import { isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -66,6 +75,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
@@ -75,6 +85,7 @@ import {
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { CompanyUserProfile } from "../lib/company-members";
+import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { timeAgo } from "../lib/timeAgo";
 import {
   describeToolInput,
@@ -89,7 +100,8 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -111,6 +123,18 @@ interface IssueChatMessageContext {
   onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -208,6 +232,7 @@ interface IssueChatComposerProps {
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -215,6 +240,7 @@ interface IssueChatThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
+  blockedBy?: IssueRelationIssueSummary[];
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -252,6 +278,18 @@ interface IssueChatThreadProps {
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
 
@@ -299,6 +337,75 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
     }
     return this.props.children;
   }
+}
+
+function IssueBlockedNotice({
+  issueStatus,
+  blockers,
+}: {
+  issueStatus?: string;
+  blockers: IssueRelationIssueSummary[];
+}) {
+  if (blockers.length === 0 && issueStatus !== "blocked") return null;
+
+  const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+
+  return (
+    <div className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+        <div className="min-w-0 space-y-1.5">
+          <p className="leading-5">
+            {blockers.length > 0
+              ? <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
+              : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+          </p>
+          {blockers.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {blockers.map((blocker) => {
+                const issuePathId = blocker.identifier ?? blocker.id;
+                return (
+                  <IssueLinkQuicklook
+                    key={blocker.id}
+                    issuePathId={issuePathId}
+                    to={createIssueDetailPath(issuePathId)}
+                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+                  >
+                    <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+                    <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+                      {blocker.title}
+                    </span>
+                  </IssueLinkQuicklook>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+  if (!agent || agent.status !== "paused") return null;
+
+  const pauseDetail =
+    agent.pauseReason === "budget"
+      ? "It was paused by a budget hard stop."
+      : agent.pauseReason === "system"
+        ? "It was paused by the system."
+        : "It was paused manually.";
+
+  return (
+    <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
+      <div className="flex items-start gap-2">
+        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
+        <p className="min-w-0 leading-5">
+          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function fallbackAuthorLabel(message: ThreadMessage) {
@@ -446,8 +553,8 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
 }
 
 function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
-  return isClosed && assigneeValue.startsWith("agent:");
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1625,7 +1732,14 @@ function IssueChatFeedbackButtons({
 }
 
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
-  const { agentMap, currentUserId, userLabelMap } = useContext(IssueChatCtx);
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+  } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -1644,6 +1758,27 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         to: IssueTimelineAssignee;
       }
     : null;
+  const interaction = isIssueThreadInteraction(custom.interaction)
+    ? custom.interaction
+    : null;
+
+  if (custom.kind === "interaction" && interaction) {
+    return (
+      <div id={anchorId}>
+        <div className="py-1.5">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (custom.kind === "event" && actorName) {
     const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
@@ -2004,6 +2139,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
 export function IssueChatThread({
   comments,
+  interactions = [],
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -2011,6 +2147,7 @@ export function IssueChatThread({
   timelineEvents = [],
   liveRuns = [],
   activeRun = null,
+  blockedBy = [],
   companyId,
   projectId,
   issueStatus,
@@ -2044,6 +2181,9 @@ export function IssueChatThread({
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onSubmitInteractionAnswers,
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
@@ -2099,6 +2239,7 @@ export function IssueChatThread({
     () =>
       buildIssueChatMessages({
         comments,
+        interactions,
         timelineEvents,
         linkedRuns,
         liveRuns,
@@ -2114,6 +2255,7 @@ export function IssueChatThread({
       }),
     [
       comments,
+      interactions,
       timelineEvents,
       linkedRuns,
       liveRuns,
@@ -2142,6 +2284,15 @@ export function IssueChatThread({
   }, [rawMessages]);
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
+  const unresolvedBlockers = useMemo(
+    () => blockedBy.filter((blocker) => blocker.status !== "done" && blocker.status !== "cancelled"),
+    [blockedBy],
+  );
+  const assignedAgent = useMemo(() => {
+    if (!currentAssigneeValue.startsWith("agent:")) return null;
+    const assigneeAgentId = currentAssigneeValue.slice("agent:".length);
+    return agentMap?.get(assigneeAgentId) ?? null;
+  }, [agentMap, currentAssigneeValue]);
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
     for (const feedbackVote of feedbackVotes) {
@@ -2173,7 +2324,14 @@ export function IssueChatThread({
 
   useEffect(() => {
     const hash = location.hash;
-    if (!(hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
+    if (
+      !(
+        hash.startsWith("#comment-")
+        || hash.startsWith("#activity-")
+        || hash.startsWith("#run-")
+        || hash.startsWith("#interaction-")
+      )
+    ) return;
     if (messages.length === 0 || hasScrolledRef.current) return;
     const targetId = hash.slice(1);
     const element = document.getElementById(targetId);
@@ -2203,6 +2361,9 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     }),
     [
       feedbackVoteByTargetId,
@@ -2220,6 +2381,9 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     ],
   );
 
@@ -2290,6 +2454,8 @@ export function IssueChatThread({
 
         {showComposer ? (
           <div ref={composerViewportAnchorRef}>
+            <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
+            <IssueAssigneePausedNotice agent={assignedAgent} />
             <IssueChatComposer
               ref={composerRef}
               onImageUpload={imageUploadHandler}

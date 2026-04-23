@@ -225,6 +225,51 @@ describe("MarkdownBody", () => {
     expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
   });
 
+  it("opens external links in a new tab with safe rel attributes", () => {
+    const html = renderMarkdown("[docs](https://example.com/docs)");
+
+    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("opens GitHub links in a new tab", () => {
+    const html = renderMarkdown("[pr](https://github.com/paperclipai/paperclip/pull/4099)");
+
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("does not set target on relative internal links", () => {
+    const html = renderMarkdown("[settings](/company/settings)");
+
+    expect(html).toContain('href="/company/settings"');
+    expect(html).not.toContain('target="_blank"');
+    expect(html).toContain('rel="noreferrer"');
+  });
+
+  it("prefixes GitHub markdown links with the GitHub icon", () => {
+    const html = renderMarkdown("[https://github.com/paperclipai/paperclip/pull/4099](https://github.com/paperclipai/paperclip/pull/4099)");
+
+    expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/pull/4099"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+    expect(html).toContain(">https://github.com/paperclipai/paperclip/pull/4099</a>");
+  });
+
+  it("prefixes GitHub autolinks with the GitHub icon", () => {
+    const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778");
+
+    expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/issues/1778"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+  });
+
+  it("does not prefix non-GitHub markdown links with the GitHub icon", () => {
+    const html = renderMarkdown("[docs](https://example.com/docs)");
+
+    expect(html).toContain('<a href="https://example.com/docs"');
+    expect(html).not.toContain("lucide-github");
+  });
+
   it("keeps fenced code blocks width-bounded and horizontally scrollable", () => {
     const html = renderMarkdown("```text\nGET /heartbeat-runs/ca5d23fc-c15b-4826-8ff1-2b6dd11be096/log?offset=2062357&limitBytes=256000\n```");
 

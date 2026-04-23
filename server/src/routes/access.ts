@@ -2299,6 +2299,35 @@ async function resolveInviteResolutionTarget(
   url: URL
 ): Promise<ResolvedInviteResolutionTarget> {
   const hostname = hostnameForResolution(url);
+  if (parseIpv4Address(hostname)) {
+    if (!isPublicIpAddress(hostname)) {
+      throw badRequest(
+        "url resolves to a private, local, multicast, or reserved address"
+      );
+    }
+    return {
+      url,
+      resolvedAddress: hostname,
+      resolvedAddresses: [hostname],
+      hostHeader: url.host,
+      tlsServername: undefined,
+    };
+  }
+  const literalIpVersion = isIP(hostname);
+  if (literalIpVersion !== 0) {
+    if (!isPublicIpAddress(hostname)) {
+      throw badRequest(
+        "url resolves to a private, local, multicast, or reserved address"
+      );
+    }
+    return {
+      url,
+      resolvedAddress: hostname,
+      resolvedAddresses: [hostname],
+      hostHeader: url.host,
+      tlsServername: undefined,
+    };
+  }
   const results = await lookupInviteResolutionHostname(hostname);
   if (results.length === 0) {
     throw badRequest("url hostname did not resolve to any addresses");

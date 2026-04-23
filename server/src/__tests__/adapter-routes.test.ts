@@ -4,6 +4,24 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
+const mockAdapterPluginStore = vi.hoisted(() => ({
+  listAdapterPlugins: vi.fn(),
+  addAdapterPlugin: vi.fn(),
+  removeAdapterPlugin: vi.fn(),
+  getAdapterPluginByType: vi.fn(),
+  getAdapterPluginsDir: vi.fn(),
+  getDisabledAdapterTypes: vi.fn(),
+  setAdapterDisabled: vi.fn(),
+}));
+
+const mockPluginLoader = vi.hoisted(() => ({
+  buildExternalAdapters: vi.fn(),
+  loadExternalAdapterPackage: vi.fn(),
+  getUiParserSource: vi.fn(),
+  getOrExtractUiParserSource: vi.fn(),
+  reloadExternalAdapter: vi.fn(),
+}));
+
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
@@ -25,11 +43,20 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
   }),
 };
 
-let registerServerAdapter: typeof import("../adapters/index.js").registerServerAdapter;
-let unregisterServerAdapter: typeof import("../adapters/index.js").unregisterServerAdapter;
+let registerServerAdapter: typeof import("../adapters/registry.js").registerServerAdapter;
+let unregisterServerAdapter: typeof import("../adapters/registry.js").unregisterServerAdapter;
 let setOverridePaused: typeof import("../adapters/registry.js").setOverridePaused;
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
+function registerModuleMocks() {
+  vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
+  vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
+  vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
+  vi.doMock("../routes/adapters.js", async () => vi.importActual("../routes/adapters.js"));
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
+}
 
 function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
   const app = express();
@@ -53,18 +80,33 @@ function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
 describe("adapter routes", () => {
   beforeEach(async () => {
     vi.resetModules();
-    vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("node:child_process");
     vi.doUnmock("../adapters/registry.js");
+    vi.doUnmock("../adapters/plugin-loader.js");
+    vi.doUnmock("../services/adapter-plugin-store.js");
     vi.doUnmock("../routes/adapters.js");
+    vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
-    const [adapters, registry, routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js"),
+    registerModuleMocks();
+    mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
+    mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
+    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
+    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
+    mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
+    mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
+    mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
+    mockPluginLoader.getUiParserSource.mockResolvedValue(null);
+    mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
+    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
+    const [registry, routes, middleware] = await Promise.all([
       vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
-      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      import("../routes/adapters.js"),
+      import("../middleware/index.js"),
     ]);
-    registerServerAdapter = adapters.registerServerAdapter;
-    unregisterServerAdapter = adapters.unregisterServerAdapter;
+    registerServerAdapter = registry.registerServerAdapter;
+    unregisterServerAdapter = registry.unregisterServerAdapter;
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;

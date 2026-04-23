@@ -254,7 +254,6 @@ describe("ProjectWorkspaceSummaryCard", () => {
       root.unmount();
     });
   });
-
   it("colors live service urls green", () => {
     const root = createRoot(container);
 

@@ -19,6 +19,7 @@ export {
   issueService,
   type IssueFilters,
 } from "./issues.js";
+export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { goalService } from "./goals.js";
@@ -40,6 +41,7 @@ export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
+export { environmentService } from "./environments.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";

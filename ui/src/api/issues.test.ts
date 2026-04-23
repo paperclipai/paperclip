@@ -23,4 +23,12 @@ describe("issuesApi.list", () => {
       "/companies/company-1/issues?parentId=issue-parent-1&limit=25",
     );
   });
+
+  it("passes generic workspaceId filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { workspaceId: "workspace-1", limit: 1000 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?workspaceId=workspace-1&limit=1000",
+    );
+  });
 });

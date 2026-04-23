@@ -331,12 +331,41 @@ registerBuiltInAdapters();
 // Load external adapter plugins (e.g. droid_local)
 //
 // External adapter packages export createServerAdapter() which returns a
-// ServerAdapterModule. The host fills in sessionManagement.
+// ServerAdapterModule. When the module provides its own sessionManagement
+// it is preserved; otherwise the host falls back to the built-in registry
+// lookup (so externals that override a built-in type inherit the builtin's
+// policy). This brings init-time registration to at-least-as-good behavior
+// as the hot-install path (routes/adapters.ts:179 -> registerServerAdapter):
+// both preserve module-provided sessionManagement, and init-time additionally
+// applies the registry fallback for externals overriding a built-in type.
 // ---------------------------------------------------------------------------
 
 /** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
 function getDisabledAdapterTypesFromStore(): string[] {
   return getDisabledAdapterTypes();
+}
+
+/**
+ * Merge an external adapter module with host-provided session management.
+ *
+ * Module-provided `sessionManagement` takes precedence. When absent, fall
+ * back to the hardcoded registry keyed by adapter type (so externals that
+ * override a built-in — same `type` — inherit the builtin's policy). If
+ * neither is available, `sessionManagement` remains `undefined`.
+ *
+ * Exported for unit tests; runtime callers use the IIFE below, which
+ * applies this transformation during the external-adapter load pass.
+ */
+export function resolveExternalAdapterRegistration(
+  externalAdapter: ServerAdapterModule,
+): ServerAdapterModule {
+  return {
+    ...externalAdapter,
+    sessionManagement:
+      externalAdapter.sessionManagement
+        ?? getAdapterSessionManagement(externalAdapter.type)
+        ?? undefined,
+  };
 }
 
 /**
@@ -362,10 +391,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       }
       adaptersByType.set(
         externalAdapter.type,
-        {
-          ...externalAdapter,
-          sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
-        },
+        resolveExternalAdapterRegistration(externalAdapter),
       );
     }
   } catch (err) {

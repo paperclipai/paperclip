@@ -83,6 +83,10 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products with a clear next action.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
+  "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
+  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
@@ -313,10 +317,21 @@ type PaperclipWakeChildIssueSummary = {
   summary: string | null;
 };
 
+type PaperclipWakeBlockerSummary = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
+  dependencyBlockedInteraction: boolean;
+  unresolvedBlockerIssueIds: string[];
+  unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
@@ -409,6 +424,17 @@ function normalizePaperclipWakeChildIssueSummary(value: unknown): PaperclipWakeC
   return { id, identifier, title, status, priority, summary };
 }
 
+function normalizePaperclipWakeBlockerSummary(value: unknown): PaperclipWakeBlockerSummary | null {
+  const blocker = parseObject(value);
+  const id = asString(blocker.id, "").trim() || null;
+  const identifier = asString(blocker.identifier, "").trim() || null;
+  const title = asString(blocker.title, "").trim() || null;
+  const status = asString(blocker.status, "").trim() || null;
+  const priority = asString(blocker.priority, "").trim() || null;
+  if (!id && !identifier && !title && !status) return null;
+  return { id, identifier, title, status, priority };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -474,8 +500,18 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
         .filter((entry): entry is PaperclipWakeChildIssueSummary => Boolean(entry))
     : [];
+  const unresolvedBlockerIssueIds = Array.isArray(payload.unresolvedBlockerIssueIds)
+    ? payload.unresolvedBlockerIssueIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  const unresolvedBlockerSummaries = Array.isArray(payload.unresolvedBlockerSummaries)
+    ? payload.unresolvedBlockerSummaries
+        .map((entry) => normalizePaperclipWakeBlockerSummary(entry))
+        .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
+    : [];
 
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -483,6 +519,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
+    unresolvedBlockerIssueIds,
+    unresolvedBlockerSummaries,
     executionStage,
     continuationSummary,
     livenessContinuation,
@@ -562,6 +601,18 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (normalized.dependencyBlockedInteraction) {
+    lines.push("- dependency-blocked interaction: yes");
+    lines.push("- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked");
+    if (normalized.unresolvedBlockerSummaries.length > 0) {
+      const blockers = normalized.unresolvedBlockerSummaries
+        .map((blocker) => `${blocker.identifier ?? blocker.id ?? "unknown"}${blocker.title ? ` ${blocker.title}` : ""}${blocker.status ? ` (${blocker.status})` : ""}`)
+        .join("; ");
+      lines.push(`- unresolved blockers: ${blockers}`);
+    } else if (normalized.unresolvedBlockerIssueIds.length > 0) {
+      lines.push(`- unresolved blocker issue ids: ${normalized.unresolvedBlockerIssueIds.join(", ")}`);
+    }
   }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
@@ -1297,7 +1348,6 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
-        let childExited = false;
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
@@ -1331,7 +1381,7 @@ export async function runChildProcess(
               onLogError(err, runId, "failed to inspect terminal adapter output");
             }
           }
-          if (!terminalResultSeen || !childExited) return;
+          if (!terminalResultSeen) return;
 
           if (terminalCleanupTimer) return;
           const graceMs = Math.max(0, terminalCleanup.graceMs ?? 5_000);
@@ -1414,7 +1464,6 @@ export async function runChildProcess(
         });
 
         child.on("exit", () => {
-          childExited = true;
           maybeArmTerminalResultCleanup();
         });
 

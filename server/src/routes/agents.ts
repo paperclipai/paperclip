@@ -2155,7 +2155,6 @@ export function agentRoutes(db: Db) {
       res.status(409).json({ error: "Only pending approval agents can be approved" });
       return;
     }
-
     const approval = await svc.activatePendingApproval(id);
     if (!approval) {
       res.status(404).json({ error: "Agent not found" });
@@ -2515,7 +2514,13 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    res.json(redactCurrentUserValue(run, await getCurrentUserRedactionOptions()));
+    const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
+    res.json(
+      redactCurrentUserValue(
+        { ...run, retryExhaustedReason },
+        await getCurrentUserRedactionOptions(),
+      ),
+    );
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {

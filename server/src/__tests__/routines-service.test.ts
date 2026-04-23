@@ -349,6 +349,60 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it("does not coalesce live routine runs with different resolved variables", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "pre-pr for {{branch}}",
+        description: "Create a pre-PR from {{branch}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "branch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    const first = await svc.runRoutine(variableRoutine.id, {
+      source: "manual",
+      variables: { branch: "feature/a" },
+    });
+    const second = await svc.runRoutine(variableRoutine.id, {
+      source: "manual",
+      variables: { branch: "feature/b" },
+    });
+
+    expect(first.status).toBe("issue_created");
+    expect(second.status).toBe("issue_created");
+    expect(first.linkedIssueId).toBeTruthy();
+    expect(second.linkedIssueId).toBeTruthy();
+    expect(first.linkedIssueId).not.toBe(second.linkedIssueId);
+
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        title: issues.title,
+        originFingerprint: issues.originFingerprint,
+      })
+      .from(issues)
+      .where(eq(issues.originId, variableRoutine.id));
+
+    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues.map((issue) => issue.title).sort()).toEqual([
+      "pre-pr for feature/a",
+      "pre-pr for feature/b",
+    ]);
+    expect(new Set(routineIssues.map((issue) => issue.originFingerprint)).size).toBe(2);
+  });
+
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const variableRoutine = await svc.create(

@@ -39,17 +39,37 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  feedbackService: () => mockFeedbackService,
-  logActivity: mockLogActivity,
-}));
-
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/budgets.js", () => ({
+    budgetService: () => mockBudgetService,
+  }));
+
+  vi.doMock("../services/companies.js", () => ({
+    companyService: () => mockCompanyService,
+  }));
+
+  vi.doMock("../services/company-portability.js", () => ({
+    companyPortabilityService: () => mockCompanyPortabilityService,
+  }));
+
+  vi.doMock("../services/feedback.js", () => ({
+    feedbackService: () => mockFeedbackService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -106,6 +126,14 @@ function createExportResult() {
 describe("company portability routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/budgets.js");
+    vi.doUnmock("../services/companies.js");
+    vi.doUnmock("../services/company-portability.js");
+    vi.doUnmock("../services/feedback.js");
+    vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/companies.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
