@@ -39,12 +39,7 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 const COPILOT_AUTH_REQUIRED_RE =
   /(?:auth(?:entication)?\s+required|not\s+logged\s+in|please\s+run\s+copilot\s+(?:auth|login)|unauthorized|forbidden|token\s+expired)/i;
 
-function applyCopilotAuthEnvAliases(env: Record<string, string>): void {
-  const token = env.COPILOT_GITHUB_TOKEN?.trim();
-  if (!token) return;
-  if (!env.GH_TOKEN?.trim()) env.GH_TOKEN = token;
-  if (!env.GITHUB_TOKEN?.trim()) env.GITHUB_TOKEN = token;
-}
+import { applyCopilotAuthEnvAliases } from "./auth-env.js";
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,

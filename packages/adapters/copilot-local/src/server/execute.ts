@@ -29,12 +29,7 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function applyCopilotAuthEnvAliases(env: Record<string, string>): void {
-  const token = env.COPILOT_GITHUB_TOKEN?.trim();
-  if (!token) return;
-  if (!env.GH_TOKEN?.trim()) env.GH_TOKEN = token;
-  if (!env.GITHUB_TOKEN?.trim()) env.GITHUB_TOKEN = token;
-}
+import { applyCopilotAuthEnvAliases } from "./auth-env.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;

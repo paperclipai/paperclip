@@ -298,7 +298,7 @@ export function parseCopilotJsonOutput(stdout: string, stderr = "") {
 
     const first = firstNonEmptyLine(trimmed);
     const looksLikeError =
-      /(error|failed|not\s+logged\s+in|unauthorized|forbidden|invalid|resume|session)/i.test(first);
+      /(error|failed|not\s+logged\s+in|unauthorized|forbidden|invalid|resume\s+failed|invalid\s+resume|session\s+not\s+found|unknown\s+session|no\s+such\s+session)/i.test(first);
     return {
       sessionId,
       summary: looksLikeError ? "" : trimmed,

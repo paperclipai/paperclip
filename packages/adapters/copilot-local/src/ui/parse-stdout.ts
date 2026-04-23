@@ -31,7 +31,7 @@ function normalizeText(value: unknown): string {
 
 function asPayload(record: Record<string, unknown>): Record<string, unknown> {
   const payload = asRecord(record.data);
-  return payload ?? record;
+  return payload && Object.keys(payload).length > 0 ? payload : record;
 }
 
 function eventType(record: Record<string, unknown>, payload: Record<string, unknown>): string {
