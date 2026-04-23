@@ -353,8 +353,10 @@ function getDisabledAdapterTypesFromStore(): string[] {
  * override a built-in — same `type` — inherit the builtin's policy). If
  * neither is available, `sessionManagement` remains `undefined`.
  *
- * Exported for unit tests; runtime callers use the IIFE below, which
- * applies this transformation during the external-adapter load pass.
+ * Used by both the init-time IIFE below (external-adapter load pass on
+ * server start) and the hot-install path in `routes/adapters.ts`
+ * (`registerWithSessionManagement`), so the two load paths resolve
+ * `sessionManagement` identically.
  */
 export function resolveExternalAdapterRegistration(
   externalAdapter: ServerAdapterModule,
