@@ -560,12 +560,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionPrompt = asString(context.sessionPrompt, "").trim();
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     codexFallbackHandoffNote,
     sessionHandoffNote,
+    sessionPrompt,
     renderedPrompt,
   ]);
   const promptMetrics = {
