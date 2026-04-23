@@ -81,12 +81,22 @@ function resolveAgentJwtSecretStatus(
   }
 
   if (existsSync(envFilePath)) {
-    const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
-    const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
-    if (fileValue) {
+    try {
+      const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
+      const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
+      if (fileValue) {
+        return {
+          status: "warn",
+          message: `found in ${envFilePath} but not loaded`,
+        };
+      }
+    } catch (err) {
+      // The banner is cosmetic; surfacing a readable warning is preferable to
+      // crashing the server because of a permissions/IO issue on a side file.
+      const reason = err instanceof Error ? err.message : String(err);
       return {
         status: "warn",
-        message: `found in ${envFilePath} but not loaded`,
+        message: `unreadable at ${envFilePath} (${reason})`,
       };
     }
   }
