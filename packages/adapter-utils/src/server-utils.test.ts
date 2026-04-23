@@ -585,5 +585,3 @@ describe("filterPreparedAgentQmdEnvOverrides", () => {
     });
   });
 });
-  });
-});
