@@ -672,6 +672,8 @@ function handleLiveEvent(
       queryClient.invalidateQueries({ queryKey: queryKeys.chats.detail(agentId, chatId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.chats.messages(agentId, chatId) });
     }
+    // Also invalidate any open quick chat panels (keyed by commentId prefix)
+    queryClient.invalidateQueries({ queryKey: ["quickChat"] });
   }
 }
 

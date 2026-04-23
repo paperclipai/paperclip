@@ -2,6 +2,8 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { agentChats } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -23,6 +25,7 @@ import {
   executionWorkspaceService,
   goalService,
   heartbeatService,
+  chatService,
   issueApprovalService,
   issueService,
   documentService,
@@ -33,7 +36,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -56,6 +59,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const chats = chatService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -1770,6 +1774,143 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json({ ok: true });
+  });
+
+  // Quick chat routes — /issues/:id/comments/:commentId/quick-chat
+
+  router.get("/issues/:id/comments/:commentId/quick-chat", async (req, res) => {
+    const issueId = req.params.id as string;
+    const commentId = req.params.commentId as string;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : null;
+
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    if (!agentId) {
+      res.status(422).json({ error: "agentId query param required" });
+      return;
+    }
+
+    const [chat] = await db
+      .select()
+      .from(agentChats)
+      .where(
+        and(
+          eq(agentChats.agentId, agentId),
+          eq(agentChats.anchorCommentId, commentId),
+        ),
+      );
+
+    if (!chat) {
+      res.status(404).json({ error: "Quick chat not found" });
+      return;
+    }
+
+    const messages = await chats.getMessages(chat.id, chat.companyId);
+    res.json({ chat, messages });
+  });
+
+  router.post("/issues/:id/comments/:commentId/quick-chat", async (req, res) => {
+    const issueId = req.params.id as string;
+    const commentId = req.params.commentId as string;
+
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    assertBoard(req);
+
+    const agentId = typeof req.body.agentId === "string" ? req.body.agentId.trim() : "";
+    if (!agentId) {
+      res.status(422).json({ error: "agentId is required" });
+      return;
+    }
+
+    const comment = await svc.getComment(commentId);
+    if (!comment || comment.issueId !== issueId) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+
+    const userId = req.actor.type === "board" ? (req.actor.userId ?? "unknown") : "unknown";
+
+    const chat = await chats.getOrCreateQuickChat({
+      companyId: issue.companyId,
+      agentId,
+      issueId,
+      anchorCommentId: commentId,
+      initiatedByUserId: userId,
+    });
+
+    const messages = await chats.getMessages(chat.id, chat.companyId);
+    res.json({ chat, messages });
+  });
+
+  router.post("/issues/:id/comments/:commentId/quick-chat/messages", async (req, res) => {
+    const issueId = req.params.id as string;
+    const commentId = req.params.commentId as string;
+
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    assertBoard(req);
+
+    const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
+    if (!body) {
+      res.status(422).json({ error: "Message body is required" });
+      return;
+    }
+
+    const agentId = typeof req.body.agentId === "string" ? req.body.agentId.trim() : "";
+    if (!agentId) {
+      res.status(422).json({ error: "agentId is required" });
+      return;
+    }
+
+    // Get or ensure quick chat exists
+    const userId = req.actor.type === "board" ? (req.actor.userId ?? "unknown") : "unknown";
+    const chat = await chats.getOrCreateQuickChat({
+      companyId: issue.companyId,
+      agentId,
+      issueId,
+      anchorCommentId: commentId,
+      initiatedByUserId: userId,
+    });
+
+    const msg = await chats.addUserMessage({
+      companyId: issue.companyId,
+      chatId: chat.id,
+      body,
+    });
+
+    // Trigger agent wakeup
+    const contextMessages = await chats.getContextMessages(chat.id);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "direct_chat",
+      payload: { chatId: chat.id, messageId: msg.id, message: body },
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        wakeReason: "direct_chat",
+        chatId: chat.id,
+        chatMessageId: msg.id,
+        chatMessage: body,
+        chatContext: contextMessages.map((m) => ({ role: m.role, body: m.body })),
+      },
+    });
+
+    res.json({ message: msg, runId: run?.id ?? null });
   });
 
   return router;

@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
-import { agentChats, agentChatMessages } from "@paperclipai/db";
-import { and, asc, desc, eq, count } from "drizzle-orm";
+import { agentChats, agentChatMessages, issues, issueComments } from "@paperclipai/db";
+import { and, asc, desc, eq, lte, or, count } from "drizzle-orm";
 import { publishLiveEvent } from "./live-events.js";
 
 const CHAT_CONTEXT_WINDOW = 50;
@@ -163,6 +163,99 @@ export function chatService(db: Db) {
     return msg;
   }
 
+  async function buildIssueContext(issueId: string, upToCommentId: string): Promise<string> {
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    if (!issue) return "";
+
+    // Find the anchor comment's createdAt so we can fetch all comments up to and including it
+    const [anchor] = await db
+      .select({ createdAt: issueComments.createdAt })
+      .from(issueComments)
+      .where(eq(issueComments.id, upToCommentId));
+
+    const comments = anchor
+      ? await db
+          .select()
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.issueId, issueId),
+              or(
+                lte(issueComments.createdAt, anchor.createdAt),
+              ),
+            ),
+          )
+          .orderBy(asc(issueComments.createdAt))
+      : [];
+
+    const lines: string[] = [
+      `# Issue: ${issue.title}`,
+      "",
+      issue.description ? issue.description : "(no description)",
+      "",
+      "## Comments",
+      "",
+    ];
+
+    for (const c of comments) {
+      const author = c.authorAgentId ? `agent:${c.authorAgentId}` : `user:${c.authorUserId ?? "unknown"}`;
+      lines.push(`**${author}:**`);
+      lines.push(c.body);
+      lines.push("");
+    }
+
+    return lines.join("\n");
+  }
+
+  async function getOrCreateQuickChat(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    anchorCommentId: string;
+    initiatedByUserId: string;
+  }) {
+    // Try to find an existing quick chat for this (agent, comment) pair
+    const [existing] = await db
+      .select()
+      .from(agentChats)
+      .where(
+        and(
+          eq(agentChats.agentId, input.agentId),
+          eq(agentChats.anchorCommentId, input.anchorCommentId),
+        ),
+      );
+
+    if (existing) return existing;
+
+    // Build issue context for the system message
+    const contextBody = await buildIssueContext(input.issueId, input.anchorCommentId);
+
+    // Create the quick chat
+    const [chat] = await db
+      .insert(agentChats)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        initiatedByUserId: input.initiatedByUserId,
+        issueId: input.issueId,
+        anchorCommentId: input.anchorCommentId,
+        status: "active",
+      })
+      .returning();
+
+    // Seed with issue context as a system message
+    if (contextBody) {
+      await db.insert(agentChatMessages).values({
+        companyId: input.companyId,
+        chatId: chat.id,
+        role: "system",
+        body: contextBody,
+      });
+    }
+
+    return chat;
+  }
+
   return {
     createChat,
     listChats,
@@ -172,5 +265,7 @@ export function chatService(db: Db) {
     getContextMessages,
     addUserMessage,
     addAgentMessage,
+    buildIssueContext,
+    getOrCreateQuickChat,
   };
 }

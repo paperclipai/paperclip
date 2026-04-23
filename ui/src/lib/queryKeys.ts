@@ -138,6 +138,10 @@ export const queryKeys = {
     detail: (agentId: string, chatId: string) => ["chats", agentId, chatId] as const,
     messages: (agentId: string, chatId: string) => ["chats", agentId, chatId, "messages"] as const,
   },
+  quickChat: {
+    detail: (commentId: string) => ["quickChat", commentId] as const,
+    messages: (commentId: string) => ["quickChat", commentId, "messages"] as const,
+  },
   voice: {
     list: (companyId: string) => ["voice", companyId] as const,
     stats: (companyId: string) => ["voice", "stats", companyId] as const,

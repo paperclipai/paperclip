@@ -7,6 +7,8 @@ export interface AgentChat {
   initiatedByUserId: string;
   title: string | null;
   status: "active" | "archived";
+  issueId: string | null;
+  anchorCommentId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -15,7 +17,7 @@ export interface AgentChatMessage {
   id: string;
   companyId: string;
   chatId: string;
-  role: "user" | "agent";
+  role: "user" | "agent" | "system";
   body: string;
   runId: string | null;
   createdAt: string;
@@ -51,4 +53,24 @@ export const chatsApi = {
 
   sendMessage: (agentId: string, chatId: string, body: string) =>
     api.post<SendMessageResult>(`${chatBasePath(agentId)}/${encodeURIComponent(chatId)}/messages`, { body }),
+};
+
+export interface QuickChatResponse {
+  chat: AgentChat;
+  messages: AgentChatMessage[];
+}
+
+function quickChatBasePath(issueId: string, commentId: string) {
+  return `/issues/${encodeURIComponent(issueId)}/comments/${encodeURIComponent(commentId)}/quick-chat`;
+}
+
+export const quickChatsApi = {
+  get: (issueId: string, commentId: string, agentId: string) =>
+    api.get<QuickChatResponse>(`${quickChatBasePath(issueId, commentId)}?agentId=${encodeURIComponent(agentId)}`),
+
+  createOrGet: (issueId: string, commentId: string, agentId: string) =>
+    api.post<QuickChatResponse>(quickChatBasePath(issueId, commentId), { agentId }),
+
+  sendMessage: (issueId: string, commentId: string, agentId: string, body: string) =>
+    api.post<SendMessageResult>(`${quickChatBasePath(issueId, commentId)}/messages`, { agentId, body }),
 };

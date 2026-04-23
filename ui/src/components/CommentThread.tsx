@@ -2,13 +2,14 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { Check, Copy, MessageSquare, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
+import { QuickChatPanel } from "./QuickChatPanel";
 import { formatDateTime } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -38,6 +39,7 @@ interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   queuedComments?: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
+  issueId?: string;
   companyId?: string | null;
   projectId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
@@ -128,6 +130,7 @@ function CommentCard({
   projectId,
   highlightCommentId,
   queued = false,
+  onOpenQuickChat,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
@@ -135,6 +138,7 @@ function CommentCard({
   projectId?: string | null;
   highlightCommentId?: string | null;
   queued?: boolean;
+  onOpenQuickChat?: (commentId: string, agentId: string) => void;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
@@ -196,6 +200,16 @@ function CommentCard({
             </a>
           )}
           <CopyMarkdownButton text={comment.body} />
+          {comment.authorAgentId && onOpenQuickChat && !isPending ? (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              title="Quick chat"
+              onClick={() => onOpenQuickChat(comment.id, comment.authorAgentId!)}
+            >
+              <MessageSquare className="h-3 w-3" />
+            </button>
+          ) : null}
         </span>
       </div>
       <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
@@ -247,12 +261,14 @@ const TimelineList = memo(function TimelineList({
   companyId,
   projectId,
   highlightCommentId,
+  onOpenQuickChat,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
   highlightCommentId?: string | null;
+  onOpenQuickChat?: (commentId: string, agentId: string) => void;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
@@ -299,6 +315,7 @@ const TimelineList = memo(function TimelineList({
             companyId={companyId}
             projectId={projectId}
             highlightCommentId={highlightCommentId}
+            onOpenQuickChat={onOpenQuickChat}
           />
         );
       })}
@@ -310,6 +327,7 @@ export function CommentThread({
   comments,
   queuedComments = [],
   linkedRuns = [],
+  issueId,
   companyId,
   projectId,
   onAdd,
@@ -330,6 +348,15 @@ export function CommentThread({
   const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [quickChatState, setQuickChatState] = useState<{ commentId: string; agentId: string } | null>(null);
+
+  const handleOpenQuickChat = issueId
+    ? (commentId: string, agentId: string) => {
+        setQuickChatState((prev) =>
+          prev?.commentId === commentId && prev?.agentId === agentId ? null : { commentId, agentId },
+        );
+      }
+    : undefined;
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
@@ -471,6 +498,7 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
+    <>
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
 
@@ -481,6 +509,7 @@ export function CommentThread({
           companyId={companyId}
           projectId={projectId}
           highlightCommentId={highlightCommentId}
+          onOpenQuickChat={handleOpenQuickChat}
         />
       ) : null}
 
@@ -605,5 +634,15 @@ export function CommentThread({
         </div>
       </div>
     </div>
+
+      {quickChatState && issueId && agentMap?.get(quickChatState.agentId) ? (
+        <QuickChatPanel
+          issueId={issueId}
+          commentId={quickChatState.commentId}
+          agent={agentMap.get(quickChatState.agentId)!}
+          onClose={() => setQuickChatState(null)}
+        />
+      ) : null}
+    </>
   );
 }
