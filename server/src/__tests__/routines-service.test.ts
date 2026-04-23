@@ -794,6 +794,49 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(1);
   });
 
+  it("coalesces against a stale open issue with no executionRunId (no running heartbeat)", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousIssue = await issueSvc.create({
+      data: {
+        agentId,
+        companyId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originFingerprint: "test-fingerprint",
+        status: "done", // closed — would not match OPEN_ISSUE_STATUSES in Path A or B
+        priority: "medium",
+        title: "Previous completed issue",
+        assigneeAgentId: null,
+      },
+    });
+    // Simulate an issue stuck in "open" because the heartbeat never stamped executionRunId
+    const staleOpenIssue = await issueSvc.create({
+      data: {
+        agentId,
+        companyId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originFingerprint: "test-fingerprint",
+        status: "in_progress", // open, but no executionRunId and no running heartbeat
+        priority: "medium",
+        title: "Stale open issue (no heartbeat)",
+        assigneeAgentId: null,
+        executionRunId: null, // explicitly null — the bug scenario
+      },
+    });
+
+    // No running heartbeat exists for this issue
+    const run = await svc.createNextScheduledRun({ routineId: routine.id });
+    const dispatched = await svc.dispatchRoutineRun({
+      runId: run.id,
+      fingerprint: "test-fingerprint",
+    });
+
+    // Should coalesce against the stale open issue instead of creating a new one
+    expect(dispatched.status).toBe("coalesced");
+    expect(dispatched.coalescedIssueId).toBe(staleOpenIssue.id);
+  });
+
   it("fails the run and cleans up the execution issue when wakeup queueing fails", async () => {
     const { routine, svc } = await seedFixture({
       wakeup: async () => {
