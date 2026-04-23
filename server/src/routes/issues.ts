@@ -71,6 +71,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { scheduleAutoMergeOnIssueMarkedDone } from "../services/issue-github-pr-auto-merge.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -2135,6 +2136,24 @@ export function issueRoutes(
           });
         }
       }
+      scheduleAutoMergeOnIssueMarkedDone({
+        issue: {
+          id: issue.id,
+          projectId: issue.projectId,
+          title: issue.title,
+          description: issue.description,
+          identifier: issue.identifier,
+        },
+        getContext: async () => ({
+          workProducts: await workProductsSvc.listForIssue(issue.id),
+          project: issue.projectId ? await projectsSvc.getById(issue.projectId) : null,
+        }),
+        addSystemComment: async (body) => {
+          const created = await svc.addComment(issue.id, body, {});
+          await issueReferencesSvc.syncComment(created.id);
+        },
+        workProductUpdate: (id, patch) => workProductsSvc.update(id, patch),
+      });
     }
 
     let comment = null;
