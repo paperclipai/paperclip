@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -62,7 +63,20 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+async function resolvePersistedHeartbeatRunId(db: Db, runId?: string | null): Promise<string | null> {
+  if (!runId) return null;
+
+  const persistedRun = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+
+  return persistedRun?.id ?? null;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
+  const persistedRunId = await resolvePersistedHeartbeatRunId(db, input.runId);
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
@@ -78,7 +92,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: persistedRunId,
     details: redactedDetails,
   });
 
@@ -92,7 +106,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId: persistedRunId,
       details: redactedDetails,
     },
   });
@@ -111,7 +125,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId: persistedRunId,
       },
     };
     publishPluginDomainEvent(event);
