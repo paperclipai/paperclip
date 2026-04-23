@@ -60,23 +60,26 @@ export interface LogActivityInput {
   entityId: string;
   agentId?: string | null;
   runId?: string | null;
+  runIdVerified?: boolean;
   details?: Record<string, unknown> | null;
 }
 
 async function resolvePersistedHeartbeatRunId(db: Db, runId?: string | null): Promise<string | null> {
   if (!runId) return null;
 
-  const persistedRun = await db
+  const rows = await db
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId))
-    .then((rows) => rows[0] ?? null);
+    .limit(1);
 
-  return persistedRun?.id ?? null;
+  return rows[0]?.id ?? null;
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
-  const persistedRunId = await resolvePersistedHeartbeatRunId(db, input.runId);
+  const persistedRunId = input.runIdVerified
+    ? input.runId ?? null
+    : await resolvePersistedHeartbeatRunId(db, input.runId);
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };

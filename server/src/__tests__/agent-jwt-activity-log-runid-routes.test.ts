@@ -132,4 +132,42 @@ describeEmbeddedPostgres("agent JWT activity log run_id handling", () => {
       runId: persistedRunId,
     });
   });
+
+  it("skips the heartbeat lookup when callers mark the run id as verified", async () => {
+    const { companyId, agentId } = await seedActorAgent();
+    const persistedRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: persistedRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "queued",
+      triggerDetail: "manual",
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: persistedRunId,
+      runIdVerified: true,
+      action: "heartbeat.invoked",
+      entityType: "heartbeat_run",
+      entityId: persistedRunId,
+      details: { source: "verified_run" },
+    });
+
+    const rows = await db.select().from(activityLog);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      action: "heartbeat.invoked",
+      runId: persistedRunId,
+    });
+  });
 });
