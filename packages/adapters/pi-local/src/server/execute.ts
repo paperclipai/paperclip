@@ -207,10 +207,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Prepend installed skill `bin/` dirs to PATH so an agent's bash tool can
   // invoke skill binaries (e.g. `paperclip-get-issue`) by name. Without this,
   // any pi_local agent whose AGENTS.md calls a skill command via bash hits
-  // exit 127 "command not found".
+  // exit 127 "command not found". Only include skills that ensurePiSkillsInjected
+  // actually linked — otherwise non-injected skills' binaries would be reachable
+  // to the agent.
+  const injectedSkillKeys = new Set(desiredPiSkillNames);
   const skillBinDirs = piSkillEntries
-    .map((entry) => path.join(entry.source, "bin"))
-    .filter((binDir) => binDir.length > 0);
+    .filter((entry) => injectedSkillKeys.has(entry.key) && entry.source.length > 0)
+    .map((entry) => path.join(entry.source, "bin"));
   const mergedEnv = ensurePathInEnv({ ...process.env, ...env });
   const pathKey =
     typeof mergedEnv.Path === "string" && mergedEnv.Path.length > 0 && !mergedEnv.PATH

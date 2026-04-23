@@ -130,7 +130,7 @@ describe("pi_local execute", () => {
           model: "google/gemini-3-flash-preview",
           promptTemplate: "Keep working.",
           paperclipRuntimeSkills: [
-            { key: "demo-skill", runtimeName: "demo-skill", source: skillDir },
+            { key: "demo-skill", runtimeName: "demo-skill", source: skillDir, required: true },
           ],
         },
         context: {},
@@ -142,6 +142,62 @@ describe("pi_local execute", () => {
       const entries = capturedPath.split(path.delimiter);
       expect(entries[0]).toBe(skillBinDir);
       expect(entries.filter((entry) => entry === skillBinDir)).toHaveLength(1);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose bin/ dirs from skills that are not injected", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-path-neg-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    const nonInjectedSkillDir = path.join(root, "skills", "not-injected");
+    const nonInjectedBinDir = path.join(nonInjectedSkillDir, "bin");
+    const envDumpPath = path.join(root, "captured-path.txt");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(nonInjectedBinDir, { recursive: true });
+    await fs.writeFile(path.join(nonInjectedSkillDir, "SKILL.md"), "# not-injected\n", "utf8");
+    await writeEnvDumpPiCommand(commandPath, envDumpPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      await execute({
+        runId: "run-pi-skill-path-neg",
+        agent: {
+          id: "agent-skill-path-neg",
+          companyId: "company-skill-path-neg",
+          name: "Pi Agent",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "google/gemini-3-flash-preview",
+          promptTemplate: "Keep working.",
+          // required:false with no explicit paperclipSkillSync preference →
+          // resolvePaperclipDesiredSkillNames returns [] → skill is not injected.
+          paperclipRuntimeSkills: [
+            { key: "not-injected", runtimeName: "not-injected", source: nonInjectedSkillDir, required: false },
+          ],
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const capturedPath = await fs.readFile(envDumpPath, "utf8");
+      expect(capturedPath.split(path.delimiter)).not.toContain(nonInjectedBinDir);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
