@@ -14,7 +14,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
           code: "hermes_api_url_missing",
           level: "warn",
           message: "No URL configured for Hermes Gateway adapter.",
-          hint: "Set adapterConfig.url to the Hermes API endpoint, for example http://hermes-service:8642/v1/chat/completions",
+          hint: "Set adapterConfig.url to the Hermes API base URL, for example http://hermes-service:8642/v1",
         },
       ],
       testedAt: new Date().toISOString(),
@@ -33,7 +33,23 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
           code: "hermes_api_url_invalid",
           level: "error",
           message: `Invalid Hermes Gateway URL: ${url}`,
-          hint: "Use a full http:// or https:// URL ending in the Hermes chat completions endpoint.",
+          hint: "Use a full http:// or https:// Hermes API URL, preferably ending in /v1.",
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    };
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    return {
+      adapterType: ctx.adapterType,
+      status: "fail",
+      checks: [
+        {
+          code: "hermes_api_url_invalid",
+          level: "error",
+          message: `Invalid Hermes Gateway URL: ${url}`,
+          hint: "Use a full http:// or https:// Hermes API URL, preferably ending in /v1.",
         },
       ],
       testedAt: new Date().toISOString(),
