@@ -65,6 +65,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { approvalService } from "./approvals.js";
 import { secretService } from "./secrets.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
@@ -2762,6 +2763,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const approvals = approvalService(db);
   const secrets = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -4220,7 +4222,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           continue;
         }
 
-        const createdStatus = "idle";
+        const requiresApproval = targetCompany.requireBoardApprovalForNewAgents;
+        const createdStatus = requiresApproval ? "pending_approval" : "idle";
         let created = await agents.create(targetCompany.id, {
           ...patch,
           status: createdStatus,
@@ -4242,6 +4245,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (requiresApproval) {
+          await approvals.create(targetCompany.id, {
+            type: "hire_agent",
+            requestedByAgentId: null,
+            requestedByUserId: actorUserId ?? null,
+            status: "pending",
+            payload: {
+              agentId: created.id,
+              name: created.name,
+              role: created.role,
+              title: created.title,
+              summary: `Approve imported ${created.name} agent`,
+              recommendedAction: `Approve to activate the ${created.name} agent.`,
+            },
+          });
         }
         agentStatusById.set(created.id, created.status ?? createdStatus);
         importedSlugToAgentId.set(planAgent.slug, created.id);
