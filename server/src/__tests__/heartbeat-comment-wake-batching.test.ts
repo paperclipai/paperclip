@@ -1150,7 +1150,6 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
         const runs = await db
           .select()
@@ -1159,6 +1158,7 @@ describe("heartbeat comment wake batching", () => {
           .orderBy(asc(heartbeatRuns.createdAt));
         return runs.length === 1 && runs[0]?.status === "succeeded";
       }, 90_000);
+      expect(gateway.getAgentPayloads().length).toBeGreaterThanOrEqual(2);
 
       const mentionedRuns = await db
         .select()
@@ -1171,6 +1171,28 @@ describe("heartbeat comment wake batching", () => {
         issueId,
         wakeReason: "issue_comment_mentioned",
       });
+
+      const primaryRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, primaryAgentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(primaryRuns).toHaveLength(2);
+      expect(primaryRuns[0]?.issueCommentStatus).toBe("retry_queued");
+      expect(primaryRuns[1]?.retryOfRunId).toBe(primaryRuns[0]?.id);
+      expect(primaryRuns[1]?.issueCommentStatus).toBe("retry_exhausted");
+
+      const missingCommentRetries = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, primaryAgentId),
+            eq(agentWakeupRequests.reason, "missing_issue_comment"),
+          ),
+        );
+      expect(missingCommentRetries).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

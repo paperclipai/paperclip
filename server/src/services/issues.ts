@@ -36,6 +36,11 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import {
+  ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  issueTreeControlService,
+  type ActiveIssueTreePauseHoldGate,
+} from "./issue-tree-control.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -45,7 +50,6 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
-
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -69,6 +73,24 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function readStringFromRecord(record: unknown, key: string) {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readLatestWakeCommentId(record: unknown) {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>).wakeCommentIds;
+  if (Array.isArray(value)) {
+    const latest = value
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .at(-1);
+    if (latest) return latest.trim();
+  }
+  return readStringFromRecord(record, "wakeCommentId") ?? readStringFromRecord(record, "commentId");
 }
 
 export interface IssueFilters {
@@ -871,6 +893,7 @@ async function lastActivityStatsForIssues(
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+  const treeControlSvc = issueTreeControlService(db);
 
   async function getIssueByUuid(id: string) {
     const row = await db
@@ -922,6 +945,27 @@ export function issueService(db: Db) {
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
     }
+  }
+
+  async function isTreeHoldInteractionCheckoutAllowed(
+    companyId: string,
+    checkoutRunId: string | null,
+    _gate: ActiveIssueTreePauseHoldGate,
+  ) {
+    if (!checkoutRunId) return false;
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, checkoutRunId), eq(heartbeatRuns.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    const wakeReason =
+      readStringFromRecord(run?.contextSnapshot, "wakeReason") ??
+      readStringFromRecord(run?.contextSnapshot, "reason");
+    return Boolean(
+      wakeReason &&
+      ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason) &&
+      readLatestWakeCommentId(run?.contextSnapshot),
+    );
   }
 
   async function assertAssignableUser(companyId: string, userId: string) {
@@ -2191,6 +2235,19 @@ export function issueService(db: Db) {
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
       const now = new Date();
+      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
+      if (
+        activePauseHold &&
+        !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, checkoutRunId, activePauseHold))
+      ) {
+        throw conflict("Issue checkout blocked by active subtree pause hold", {
+          issueId: id,
+          holdId: activePauseHold.holdId,
+          rootIssueId: activePauseHold.rootIssueId,
+          mode: activePauseHold.mode,
+          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+        });
+      }
 
       await clearExecutionRunIfTerminal(id);
 

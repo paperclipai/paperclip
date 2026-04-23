@@ -227,6 +227,7 @@ interface IssueChatComposerProps {
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
   composerDisabledReason?: string | null;
+  composerHint?: string | null;
   issueStatus?: string;
 }
 
@@ -265,6 +266,7 @@ interface IssueChatThreadProps {
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
+  composerHint?: string | null;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
@@ -1153,6 +1155,8 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
+  const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
@@ -1189,7 +1193,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-              Queued
+              {queueBadgeLabel}
             </span>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
@@ -1910,6 +1914,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   mentions = [],
   agentMap,
   composerDisabledReason = null,
+  composerHint = null,
   issueStatus,
 }, forwardedRef) {
   const api = useAui();
@@ -2068,6 +2073,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
       />
 
+      {composerHint ? (
+        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+          {composerHint}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-end gap-3">
         {(onImageUpload || onAttachImage) ? (
           <div className="mr-auto flex items-center gap-3">
@@ -2168,6 +2179,7 @@ export function IssueChatThread({
   suggestedAssigneeValue,
   mentions = [],
   composerDisabledReason = null,
+  composerHint = null,
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
@@ -2468,6 +2480,7 @@ export function IssueChatThread({
               mentions={mentions}
               agentMap={agentMap}
               composerDisabledReason={composerDisabledReason}
+              composerHint={composerHint}
               issueStatus={issueStatus}
             />
           </div>

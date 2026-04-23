@@ -204,8 +204,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   
+  // Prepend installed skill `bin/` dirs to PATH so an agent's bash tool can
+  // invoke skill binaries (e.g. `paperclip-get-issue`) by name. Without this,
+  // any pi_local agent whose AGENTS.md calls a skill command via bash hits
+  // exit 127 "command not found". Only include skills that ensurePiSkillsInjected
+  // actually linked — otherwise non-injected skills' binaries would be reachable
+  // to the agent.
+  const injectedSkillKeys = new Set(desiredPiSkillNames);
+  const skillBinDirs = piSkillEntries
+    .filter((entry) => injectedSkillKeys.has(entry.key) && entry.source.length > 0)
+    .map((entry) => path.join(entry.source, "bin"));
+  const mergedEnv = ensurePathInEnv({ ...process.env, ...env });
+  const pathKey =
+    typeof mergedEnv.Path === "string" && mergedEnv.Path.length > 0 && !mergedEnv.PATH
+      ? "Path"
+      : "PATH";
+  const basePath = mergedEnv[pathKey] ?? "";
+  if (skillBinDirs.length > 0) {
+    const existing = basePath.split(path.delimiter).filter(Boolean);
+    const additions = skillBinDirs.filter((dir) => !existing.includes(dir));
+    if (additions.length > 0) {
+      mergedEnv[pathKey] = [...additions, basePath].filter(Boolean).join(path.delimiter);
+    }
+  }
   const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+    Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
