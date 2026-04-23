@@ -710,7 +710,7 @@ export function accessService(db: Db) {
               g.principalType === m.principalType &&
               g.principalId === m.principalId,
           )
-          .map((g) => g.permissionKey),
+          .map((g) => ({ permissionKey: g.permissionKey })),
       };
     });
   }
