@@ -10,6 +10,9 @@ import {
   issueLabels,
   labels,
   issues,
+  routineRuns,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -36,6 +39,9 @@ describeEmbeddedPostgres("company service remove", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(routineRuns);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     await db.delete(issueLabels);
     await db.delete(labels);
     await db.delete(financeEvents);
@@ -49,13 +55,16 @@ describeEmbeddedPostgres("company service remove", () => {
     await tempDb?.cleanup();
   });
 
-  it("deletes finance and cost rows before heartbeat runs", async () => {
+  it("deletes finance, label, and routine rows before parent company records", async () => {
     const companyId = randomUUID();
     const labelId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
     const costEventId = randomUUID();
+    const routineId = randomUUID();
+    const triggerId = randomUUID();
+    const routineRunId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -129,6 +138,32 @@ describeEmbeddedPostgres("company service remove", () => {
       companyId,
     });
 
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Cleanup routine",
+      description: "Routine dependent on a company issue",
+      parentIssueId: issueId,
+    });
+
+    await db.insert(routineTriggers).values({
+      id: triggerId,
+      companyId,
+      routineId,
+      kind: "manual",
+      enabled: true,
+    });
+
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      triggerId,
+      source: "manual",
+      status: "received",
+      linkedIssueId: issueId,
+    });
+
     const removed = await companyService(db).remove(companyId);
 
     expect(removed?.id).toBe(companyId);
@@ -137,5 +172,8 @@ describeEmbeddedPostgres("company service remove", () => {
     await expect(db.select().from(heartbeatRuns)).resolves.toHaveLength(0);
     await expect(db.select().from(costEvents)).resolves.toHaveLength(0);
     await expect(db.select().from(financeEvents)).resolves.toHaveLength(0);
+    await expect(db.select().from(routines)).resolves.toHaveLength(0);
+    await expect(db.select().from(routineTriggers)).resolves.toHaveLength(0);
+    await expect(db.select().from(routineRuns)).resolves.toHaveLength(0);
   });
 });

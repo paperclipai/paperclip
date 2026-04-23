@@ -22,6 +22,9 @@ import {
   issueWorkProducts,
   issueLabels,
   labels,
+  routines,
+  routineTriggers,
+  routineRuns,
   inboxDismissals,
   feedbackExports,
   feedbackVotes,
@@ -323,6 +326,9 @@ export function companyService(db: Db) {
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
+        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
+        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
+        await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
         await tx.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, id));
