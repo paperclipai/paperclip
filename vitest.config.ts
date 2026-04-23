@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     projects: [
       "packages/db",
+      "packages/adapters/copilot-local",
       "packages/adapters/codex-local",
       "packages/adapters/opencode-local",
       "server",
