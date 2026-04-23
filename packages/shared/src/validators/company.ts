@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { COMPANY_STATUSES } from "../constants.js";
+import { SUPPORTED_LOCALES } from "../types/locale.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
+const localeOverrideSchema = z.enum(SUPPORTED_LOCALES).nullable().optional();
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -23,6 +25,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
+    localeOverride: localeOverrideSchema,
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
   });

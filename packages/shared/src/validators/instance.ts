@@ -7,6 +7,7 @@ import {
   DEFAULT_BACKUP_RETENTION,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
+import { SUPPORTED_LOCALES } from "../types/locale.js";
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -21,7 +22,10 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+export const supportedLocaleSchema = z.enum(SUPPORTED_LOCALES);
+
 export const instanceGeneralSettingsSchema = z.object({
+  locale: supportedLocaleSchema.default("en"),
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(

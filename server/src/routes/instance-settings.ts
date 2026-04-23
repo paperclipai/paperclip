@@ -2,23 +2,32 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
+import type { LocalizedRequest } from "../i18n/types.js";
+import { t } from "../i18n/t.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService, logActivity } from "../services/index.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
+  const locale = (req as LocalizedRequest).locale ?? "en";
   if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
+    throw forbidden(t(locale, "errors.auth.board_required"));
   }
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;
   }
-  throw forbidden("Instance admin access required");
+  throw forbidden(t(locale, "errors.auth.instance_admin_required"));
 }
 
 export function instanceSettingsRoutes(db: Db) {
   const router = Router();
   const svc = instanceSettingsService(db);
+
+  router.use(async (req, _res, next) => {
+    const general = await svc.getGeneral();
+    (req as LocalizedRequest).locale = general.locale ?? "en";
+    next();
+  });
 
   router.get("/instance/settings/general", async (req, res) => {
     // General settings (e.g. keyboardShortcuts) are readable by any

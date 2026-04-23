@@ -50,9 +50,15 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockLogActivity.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      locale: "en",
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -61,9 +67,15 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",
       general: {
+        locale: "en",
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
+        backupRetention: {
+          dailyDays: 7,
+          weeklyWeeks: 4,
+          monthlyMonths: 1,
+        },
       },
     });
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
@@ -131,14 +143,21 @@ describe("instance settings routes", () => {
     const getRes = await request(app).get("/api/instance/settings/general");
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
+      locale: "en",
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
     });
 
     const patchRes = await request(app)
       .patch("/api/instance/settings/general")
       .send({
+        locale: "en",
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
@@ -146,11 +165,30 @@ describe("instance settings routes", () => {
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+      locale: "en",
       censorUsernameInLogs: true,
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows local board users to update locale in general settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({ locale: "zh-CN" });
+
+    expect(patchRes.status).toBe(200);
+    expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+      locale: "zh-CN",
+    });
   });
 
   it("allows non-admin board users to read general settings", async () => {
@@ -166,13 +204,30 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
+      locale: "en",
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
     });
   });
 
-  it("rejects signed-in users without company access from reading general settings", async () => {
+  it("returns localized read auth errors when the locale is zh-CN", async () => {
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      locale: "zh-CN",
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    });
     const app = await createApp({
       type: "board",
       userId: "user-2",
@@ -185,7 +240,8 @@ describe("instance settings routes", () => {
     const res = await request(app).get("/api/instance/settings/general");
 
     expect(res.status).toBe(403);
-    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+    expect(res.body.error).toBe("需要公司成员身份或实例管理员权限");
+    expect(mockInstanceSettingsService.getGeneral).toHaveBeenCalledTimes(1);
   });
 
   it("rejects non-admin board users from updating general settings", async () => {

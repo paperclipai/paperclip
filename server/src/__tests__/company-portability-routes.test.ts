@@ -38,6 +38,9 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -77,6 +80,7 @@ function registerModuleMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
 }
@@ -139,6 +143,17 @@ describe("company portability routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      locale: "en",
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    });
   });
 
   it("rejects non-CEO agents from CEO-safe export preview routes", async () => {

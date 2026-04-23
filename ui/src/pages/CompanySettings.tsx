@@ -1,10 +1,12 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { Link } from "@/lib/router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION, type SupportedLocale } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/I18nContext";
 import { useToastActions } from "../context/ToastContext";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
@@ -34,11 +36,13 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
+  const [localeOverride, setLocaleOverride] = useState<SupportedLocale | null>(null);
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
@@ -48,9 +52,15 @@ export function CompanySettings() {
     if (!selectedCompany) return;
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
+    setLocaleOverride(selectedCompany.localeOverride ?? null);
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
+
+  const instanceGeneralQuery = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  });
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -61,12 +71,14 @@ export function CompanySettings() {
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
       description !== (selectedCompany.description ?? "") ||
+      localeOverride !== (selectedCompany.localeOverride ?? null) ||
       brandColor !== (selectedCompany.brandColor ?? ""));
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
+      localeOverride: SupportedLocale | null;
       brandColor: string | null;
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
@@ -92,14 +104,14 @@ export function CompanySettings() {
     onSuccess: (_company, enabled) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({
-        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        title: enabled ? t("settings.company.feedback.enabled") : t("settings.company.feedback.disabled"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Failed to update feedback sharing",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("settings.company.feedback.update_failed"),
+        body: err instanceof Error ? err.message : t("settings.company.feedback.unknown_error"),
         tone: "error",
       });
     },
@@ -153,7 +165,7 @@ export function CompanySettings() {
     },
     onError: (err) => {
       setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
+        err instanceof Error ? err.message : t("settings.company.invites.create_failed")
       );
     }
   });
@@ -225,14 +237,14 @@ export function CompanySettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: t("settings.company.breadcrumb.settings") }
     ]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        {t("settings.company.no_company_selected")}
       </div>
     );
   }
@@ -241,24 +253,30 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
+      localeOverride,
       brandColor: brandColor || null
     });
   }
+
+  const effectiveLocale = localeOverride ?? instanceGeneralQuery.data?.locale ?? "en";
+  const effectiveLanguageLabel = effectiveLocale === "zh-CN"
+    ? t("settings.company.language.simplified_chinese")
+    : t("settings.company.language.english");
 
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="text-lg font-semibold">{t("settings.company.header.title")}</h1>
       </div>
 
       {/* General */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
+          {t("settings.company.section.general")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field label={t("settings.company.name.label")} hint={t("settings.company.name.hint")}>
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -267,16 +285,33 @@ export function CompanySettings() {
             />
           </Field>
           <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
+            label={t("settings.company.description.label")}
+            hint={t("settings.company.description.hint")}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder={t("settings.company.description.placeholder")}
               onChange={(e) => setDescription(e.target.value)}
             />
+          </Field>
+          <Field
+            label={t("settings.company.language.title")}
+            hint={`${t("settings.company.language.hint")} ${t("settings.company.language.effective_label", { language: effectiveLanguageLabel })}`}
+          >
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={localeOverride ?? "__inherit__"}
+              onChange={(e) => {
+                const nextValue = e.target.value === "__inherit__" ? null : (e.target.value as SupportedLocale);
+                setLocaleOverride(nextValue);
+              }}
+            >
+              <option value="__inherit__">{t("settings.company.language.follow_instance")}</option>
+              <option value="en">{t("settings.company.language.english")}</option>
+              <option value="zh-CN">{t("settings.company.language.simplified_chinese")}</option>
+            </select>
           </Field>
         </div>
       </div>
@@ -284,7 +319,7 @@ export function CompanySettings() {
       {/* Appearance */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
+          {t("settings.company.section.appearance")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
@@ -298,8 +333,8 @@ export function CompanySettings() {
             </div>
             <div className="flex-1 space-y-3">
               <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+                label={t("settings.company.logo.label")}
+                hint={t("settings.company.logo.hint")}
               >
                 <div className="space-y-2">
                   <input
@@ -316,7 +351,7 @@ export function CompanySettings() {
                         onClick={handleClearLogo}
                         disabled={clearLogoMutation.isPending}
                       >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                        {clearLogoMutation.isPending ? t("settings.company.logo.removing") : t("settings.company.logo.remove")}
                       </Button>
                     </div>
                   )}
@@ -325,7 +360,7 @@ export function CompanySettings() {
                       {logoUploadError ??
                         (logoUploadMutation.error instanceof Error
                           ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
+                          : t("settings.company.logo.upload_failed"))}
                     </span>
                   )}
                   {clearLogoMutation.isError && (
@@ -334,13 +369,13 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">{t("settings.company.logo.uploading")}</span>
                   )}
                 </div>
               </Field>
               <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                label={t("settings.company.brand_color.label")}
+                hint={t("settings.company.brand_color.hint")}
               >
                 <div className="flex items-center gap-2">
                   <input
@@ -358,7 +393,7 @@ export function CompanySettings() {
                         setBrandColor(v);
                       }
                     }}
-                    placeholder="Auto"
+                    placeholder={t("settings.company.brand_color.placeholder")}
                     className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                   />
                   {brandColor && (
@@ -368,7 +403,7 @@ export function CompanySettings() {
                       onClick={() => setBrandColor("")}
                       className="text-xs text-muted-foreground"
                     >
-                      Clear
+                      {t("settings.company.brand_color.clear")}
                     </Button>
                   )}
                 </div>
@@ -386,16 +421,16 @@ export function CompanySettings() {
             onClick={handleSaveGeneral}
             disabled={generalMutation.isPending || !companyName.trim()}
           >
-            {generalMutation.isPending ? "Saving..." : "Save changes"}
+            {generalMutation.isPending ? t("settings.company.save.pending") : t("settings.company.save.action")}
           </Button>
           {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
+            <span className="text-xs text-muted-foreground">{t("settings.company.save.saved")}</span>
           )}
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
                   ? generalMutation.error.message
-                  : "Failed to save"}
+                  : t("settings.company.save.failed")}
             </span>
           )}
         </div>
@@ -404,12 +439,12 @@ export function CompanySettings() {
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
+          {t("settings.company.section.hiring")}
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label={t("settings.company.hiring.label")}
+            hint={t("settings.company.hiring.hint")}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
@@ -419,31 +454,37 @@ export function CompanySettings() {
 
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Feedback Sharing
+          {t("settings.company.section.feedback")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <ToggleField
-            label="Allow sharing voted AI outputs with Paperclip Labs"
-            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            label={t("settings.company.feedback.label")}
+            hint={t("settings.company.feedback.hint")}
             checked={!!selectedCompany.feedbackDataSharingEnabled}
             onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
           />
           <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+            {t("settings.company.feedback.description")}
           </p>
           <div className="space-y-1 text-xs text-muted-foreground">
             <div>
-              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+              {t("settings.company.feedback.terms_version", {
+                version: selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+              })}
             </div>
             {selectedCompany.feedbackDataSharingConsentAt ? (
               <div>
-                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
-                {selectedCompany.feedbackDataSharingConsentByUserId
-                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
-                  : ""}
+                {t("settings.company.feedback.enabled_at", {
+                  timestamp: new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString(),
+                  suffix: selectedCompany.feedbackDataSharingConsentByUserId
+                    ? t("settings.company.feedback.by_user_suffix", {
+                      userId: selectedCompany.feedbackDataSharingConsentByUserId,
+                    })
+                    : "",
+                })}
               </div>
             ) : (
-              <div>Sharing is currently disabled.</div>
+              <div>{t("settings.company.feedback.disabled_state")}</div>
             )}
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -452,7 +493,7 @@ export function CompanySettings() {
                 rel="noreferrer"
                 className="inline-flex text-foreground underline underline-offset-4"
               >
-                Read our terms of service
+                {t("settings.company.feedback.read_terms")}
               </a>
             ) : null}
           </div>
@@ -462,14 +503,14 @@ export function CompanySettings() {
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
+          {t("settings.company.section.invites")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
+              {t("settings.company.invites.description")}
             </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
+            <HintIcon text={t("settings.company.invites.hint")} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -479,8 +520,8 @@ export function CompanySettings() {
               disabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
+                ? t("settings.company.invites.generating")
+                : t("settings.company.invites.generate")}
             </Button>
           </div>
           {inviteError && (
@@ -493,7 +534,7 @@ export function CompanySettings() {
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
+                  {t("settings.company.invites.prompt_title")}
                 </div>
                 {snippetCopied && (
                   <span
@@ -501,7 +542,7 @@ export function CompanySettings() {
                     className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
                   >
                     <Check className="h-3 w-3" />
-                    Copied
+                    {t("settings.company.invites.copied")}
                   </span>
                 )}
               </div>
@@ -528,7 +569,7 @@ export function CompanySettings() {
                       }
                     }}
                   >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
+                    {snippetCopied ? t("settings.company.invites.copy_done") : t("settings.company.invites.copy")}
                   </Button>
                 </div>
               </div>
@@ -540,24 +581,25 @@ export function CompanySettings() {
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
+          {t("settings.company.section.packages")}
         </div>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            {t("settings.company.packages.description_before_link")}
+            <a href="/org" className="underline hover:text-foreground">{t("settings.company.packages.org_chart")}</a>
+            {t("settings.company.packages.description_after_link")}
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
+                {t("settings.company.packages.export")}
               </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
+                {t("settings.company.packages.import")}
               </Link>
             </Button>
           </div>
@@ -567,12 +609,11 @@ export function CompanySettings() {
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+          {t("settings.company.section.danger")}
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            {t("settings.company.danger.description")}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -585,7 +626,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  t("settings.company.danger.confirm_archive", { name: selectedCompany.name })
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
@@ -601,16 +642,16 @@ export function CompanySettings() {
               }}
             >
               {archiveMutation.isPending
-                ? "Archiving..."
+                ? t("settings.company.danger.archiving")
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                ? t("settings.company.danger.already_archived")
+                : t("settings.company.danger.archive")}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : t("settings.company.danger.failed")}
               </span>
             )}
           </div>

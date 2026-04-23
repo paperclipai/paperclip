@@ -21,14 +21,18 @@ import {
   companyPortabilityService,
   companyService,
   feedbackService,
+  instanceSettingsService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
+import type { LocalizedRequest } from "../i18n/types.js";
+import { t } from "../i18n/t.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
   const svc = companyService(db);
+  const instanceSettings = instanceSettingsService(db);
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
@@ -37,6 +41,10 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
+  }
+
+  function requestLocale(req: Request) {
+    return (req as LocalizedRequest).locale ?? "en";
   }
 
   function parseDateQuery(value: unknown, field: string) {
@@ -69,7 +77,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw forbidden("Agent key cannot access another company");
     }
     if (actorAgent.role !== "ceo") {
-      throw forbidden("Only CEO agents can update company branding");
+      throw forbidden(t(requestLocale(req), "errors.company.ceo_or_board_required"));
     }
   }
 
@@ -86,6 +94,21 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw forbidden(`Only CEO agents can manage company ${capability}`);
     }
   }
+
+  router.use(async (req, _res, next) => {
+    const general = await instanceSettings.getGeneral();
+    (req as LocalizedRequest).locale = general.locale ?? "en";
+    next();
+  });
+
+  router.use("/:companyId", async (req, _res, next) => {
+    const company = await svc.getById(req.params.companyId as string);
+    const localeOverride = company?.localeOverride;
+    (req as LocalizedRequest).locale = localeOverride === "en" || localeOverride === "zh-CN"
+      ? localeOverride
+      : (req as LocalizedRequest).locale ?? "en";
+    next();
+  });
 
   router.get("/", async (req, res) => {
     assertBoard(req);
@@ -128,7 +151,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     const company = await svc.getById(companyId);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
+      res.status(404).json({ error: t(requestLocale(req), "errors.company.not_found") });
       return;
     }
     res.json(company);
@@ -302,7 +325,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const actor = getActorInfo(req);
     const existingCompany = await svc.getById(companyId);
     if (!existingCompany) {
-      res.status(404).json({ error: "Company not found" });
+      res.status(404).json({ error: t(requestLocale(req), "errors.company.not_found") });
       return;
     }
     let body: Record<string, unknown>;
@@ -312,7 +335,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       const agentSvc = agentService(db);
       const actorAgent = req.actor.agentId ? await agentSvc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.role !== "ceo") {
-        throw forbidden("Only CEO agents or board users may update company settings");
+        throw forbidden(t(requestLocale(req), "errors.company.ceo_or_board_required"));
       }
       if (actorAgent.companyId !== companyId) {
         throw forbidden("Agent key cannot access another company");
@@ -337,7 +360,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
     const company = await svc.update(companyId, body);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
+      res.status(404).json({ error: t(requestLocale(req), "errors.company.not_found") });
       return;
     }
     await logActivity(db, {
@@ -359,7 +382,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     await assertCanUpdateBranding(req, companyId);
     const company = await svc.update(companyId, req.body);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
+      res.status(404).json({ error: t(requestLocale(req), "errors.company.not_found") });
       return;
     }
     const actor = getActorInfo(req);
@@ -383,7 +406,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertCompanyAccess(req, companyId);
     const company = await svc.archive(companyId);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
+      res.status(404).json({ error: t(requestLocale(req), "errors.company.not_found") });
       return;
     }
     await logActivity(db, {
@@ -403,7 +426,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertCompanyAccess(req, companyId);
     const company = await svc.remove(companyId);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
+      res.status(404).json({ error: t(requestLocale(req), "errors.company.not_found") });
       return;
     }
     res.json({ ok: true });

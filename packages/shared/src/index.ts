@@ -501,6 +501,11 @@ export {
 } from "./types/feedback.js";
 
 export {
+  SUPPORTED_LOCALES,
+  type SupportedLocale,
+} from "./types/locale.js";
+
+export {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
@@ -513,6 +518,7 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  supportedLocaleSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,

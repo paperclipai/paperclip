@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -49,5 +50,17 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+  });
+
+  it("localizes zod validation errors when the request locale is zh-CN", () => {
+    const req = { ...makeReq(), locale: "zh-CN" } as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new z.ZodError([]);
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ error: "验证错误", details: [] });
   });
 });

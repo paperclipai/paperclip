@@ -38,6 +38,9 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -46,6 +49,7 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
 }));
 
@@ -61,6 +65,7 @@ function createCompany() {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    localeOverride: null,
     brandColor: "#123456",
     logoAssetId: "11111111-1111-4111-8111-111111111111",
     logoUrl: "/api/assets/11111111-1111-4111-8111-111111111111/content",
@@ -92,6 +97,17 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.resetAllMocks();
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      locale: "en",
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    });
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -115,6 +131,40 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");
     expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns localized company settings auth errors when the locale is zh-CN", async () => {
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      locale: "zh-CN",
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    });
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ localeOverride: "zh-CN" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("只有 CEO 代理");
   });
 
   it("allows CEO agent callers to update branding fields", async () => {
@@ -203,5 +253,28 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Validation error");
     expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows board callers to update a company locale override", async () => {
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+    mockCompanyService.update.mockResolvedValue({
+      ...createCompany(),
+      localeOverride: "zh-CN",
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ localeOverride: "zh-CN" });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", {
+      localeOverride: "zh-CN",
+    });
   });
 });

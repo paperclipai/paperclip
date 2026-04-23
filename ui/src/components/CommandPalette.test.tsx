@@ -45,6 +45,32 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => sidebarState,
 }));
 
+vi.mock("../context/I18nContext", () => ({
+  useI18n: () => ({
+    locale: "zh-CN",
+    t: (key: string) =>
+      ({
+        "command_palette.empty": "没有找到结果。",
+        "command_palette.group.actions": "操作",
+        "command_palette.group.pages": "页面",
+        "command_palette.action.new_issue": "新建事项",
+        "command_palette.action.new_agent": "新建代理",
+        "command_palette.action.new_project": "新建项目",
+        "command_palette.page.dashboard": "仪表盘",
+        "command_palette.page.inbox": "收件箱",
+        "command_palette.page.issues": "事项",
+        "command_palette.page.projects": "项目",
+        "command_palette.page.goals": "目标",
+        "command_palette.page.agents": "代理",
+        "command_palette.page.costs": "成本",
+        "command_palette.page.activity": "活动",
+        "command_palette.group.issues": "事项",
+        "command_palette.group.agents": "代理",
+        "command_palette.group.projects": "项目",
+      })[key] ?? key,
+  }),
+}));
+
 vi.mock("@/lib/router", () => ({
   useNavigate: () => vi.fn(),
 }));
@@ -182,6 +208,9 @@ describe("CommandPalette", () => {
         includeRoutineExecutions: true,
       });
     });
+
+    expect(container.textContent).toContain("仪表盘");
+    expect(container.textContent).toContain("新建事项");
 
     act(() => {
       root.unmount();

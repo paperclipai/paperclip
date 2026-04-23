@@ -1,3 +1,4 @@
+export { SUPPORTED_LOCALES, type SupportedLocale } from "./locale.js";
 export type { Company } from "./company.js";
 export type {
   FeedbackVote,

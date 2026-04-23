@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
+import type { LocalizedRequest } from "../i18n/types.js";
+import { t, translateKnownErrorMessage } from "../i18n/t.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 
@@ -38,26 +40,29 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ) {
+  const locale = (req as LocalizedRequest).locale ?? "en";
+
   if (err instanceof HttpError) {
+    const localizedMessage = translateKnownErrorMessage(locale, err.message);
     if (err.status >= 500) {
       attachErrorContext(
         req,
         res,
-        { message: err.message, stack: err.stack, name: err.name, details: err.details },
+        { message: localizedMessage, stack: err.stack, name: err.name, details: err.details },
         err,
       );
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
     }
     res.status(err.status).json({
-      error: err.message,
+      error: localizedMessage,
       ...(err.details ? { details: err.details } : {}),
     });
     return;
   }
 
   if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation error", details: err.errors });
+    res.status(400).json({ error: t(locale, "errors.validation"), details: err.errors });
     return;
   }
 
@@ -74,5 +79,5 @@ export function errorHandler(
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
 
-  res.status(500).json({ error: "Internal server error" });
+  res.status(500).json({ error: t(locale, "errors.internal") });
 }
