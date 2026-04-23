@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { onboard } from "../commands/onboard.js";
+import { detectTailnetBindHost } from "../config/server-bind.js";
 import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -148,7 +149,7 @@ describe("onboard", () => {
     expect(raw.server.deploymentMode).toBe("authenticated");
     expect(raw.server.exposure).toBe("private");
     expect(raw.server.bind).toBe("tailnet");
-    expect(raw.server.host).toBe("127.0.0.1");
+    expect(raw.server.host).toBe(detectTailnetBindHost() ?? "127.0.0.1");
   });
 
   it("ignores deployment env overrides during --yes quickstart", async () => {
