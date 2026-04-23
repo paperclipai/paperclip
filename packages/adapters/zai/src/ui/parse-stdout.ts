@@ -36,6 +36,10 @@ function parseZaiEvent(rawJson: string): ZaiStdoutEvent | null {
         inputTokens: typeof parsed.inputTokens === "number" ? parsed.inputTokens : 0,
         outputTokens: typeof parsed.outputTokens === "number" ? parsed.outputTokens : 0,
         ...(typeof parsed.cachedTokens === "number" ? { cachedTokens: parsed.cachedTokens } : {}),
+        ...(typeof parsed.costUsd === "number" ? { costUsd: parsed.costUsd } : {}),
+        ...(parsed.billingType === "api" || parsed.billingType === "subscription_included"
+          ? { billingType: parsed.billingType }
+          : {}),
       };
     case "model":
       if (typeof parsed.model === "string" && typeof parsed.sessionId === "string") {
@@ -82,11 +86,15 @@ function renderEvent(event: ZaiStdoutEvent, ts: string): TranscriptEntry[] {
         {
           kind: "result",
           ts,
+          // costUsd here is the Z.AI pay-as-you-go reference cost; the run
+          // may have been billed via Coding Plan subscription (see
+          // event.billingType). Paperclip aggregates costUsd across runs
+          // for management reporting regardless of the actual billing channel.
           text: "",
           inputTokens: event.inputTokens,
           outputTokens: event.outputTokens,
           cachedTokens: event.cachedTokens ?? 0,
-          costUsd: 0,
+          costUsd: event.costUsd ?? 0,
           subtype: "usage",
           isError: false,
           errors: [],

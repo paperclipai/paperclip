@@ -61,7 +61,16 @@ export type ZaiStdoutEvent =
   | { kind: "assistant_delta"; text: string }
   | { kind: "assistant_final"; text: string }
   | { kind: "tool_call"; id: string; name: string; input: unknown }
-  | { kind: "usage"; inputTokens: number; outputTokens: number; cachedTokens?: number }
+  | {
+      kind: "usage";
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens?: number;
+      /** USD cost at Z.AI pay-as-you-go rates (reference even on Coding Plan). Undefined when model not priced. */
+      costUsd?: number;
+      /** "api" for pay-as-you-go; "subscription_included" when hitting the Coding Plan endpoint. */
+      billingType?: "api" | "subscription_included";
+    }
   | { kind: "model"; model: string; sessionId: string }
   | { kind: "error"; message: string };
 

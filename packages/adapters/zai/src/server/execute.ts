@@ -1,6 +1,7 @@
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { AdapterBillingType, AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { resolveZaiConfig } from "../shared/config.js";
 import type { ZaiChatRequest, ZaiChatResponse, ZaiStdoutEvent } from "../shared/types.js";
+import { computeZaiCostUsd, isCodingPlanEndpoint } from "../shared/pricing.js";
 import { encodeEvent, consumeSseStream } from "./streaming.js";
 import { buildMessages } from "./prompt.js";
 
@@ -164,6 +165,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const usage = buildUsage(response);
   const model = response.model ?? resolved.model;
 
+  // Cost reference — always computed at Z.AI pay-as-you-go rates so that
+  // management reporting has a consistent USD figure regardless of whether
+  // the run was billed through the Coding Plan subscription or the general
+  // credits API. billingType tells downstream consumers which of the two
+  // actually paid for this run.
+  const codingPlan = isCodingPlanEndpoint(resolved.baseUrl);
+  const billingType: AdapterBillingType = codingPlan ? "subscription_included" : "api";
+  const costUsd = usage ? computeZaiCostUsd(model, usage) : null;
+
   if (response.id) {
     await onEvent({ kind: "model", model, sessionId: response.id });
   }
@@ -173,22 +183,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       ...(usage.cachedInputTokens ? { cachedTokens: usage.cachedInputTokens } : {}),
+      ...(costUsd !== null ? { costUsd } : {}),
+      billingType,
     });
   }
   if (summary) {
     await onEvent({ kind: "assistant_final", text: summary });
   }
 
-  await ctx.onLog("stdout", `[zai] done model=${model}\n`);
+  await ctx.onLog(
+    "stdout",
+    `[zai] done model=${model} billing=${billingType}${costUsd !== null ? ` cost_usd_ref=${costUsd}` : ""}\n`,
+  );
 
   return {
     exitCode: 0,
     signal: null,
     timedOut: false,
     provider: "z.ai",
+    biller: "z.ai",
     model,
-    billingType: "api",
+    billingType,
     ...(usage ? { usage } : {}),
+    ...(costUsd !== null ? { costUsd } : {}),
     ...(summary ? { summary } : {}),
     resultJson: asRecord(response as unknown),
   };
