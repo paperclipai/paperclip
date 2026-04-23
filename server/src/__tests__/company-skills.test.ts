@@ -5,9 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
+  getCurrentRuntimeSkillMaterializedPath,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  resolveRuntimeSkillMaterializedPath,
+  runtimeSkillMaterializationVersion,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -225,5 +228,65 @@ describe("missing local skill reconciliation", () => {
     ]);
 
     expect(missingIds).toEqual(["skill-1"]);
+  });
+});
+
+
+describe("runtime skill materialization cache", () => {
+  it("reuses an up-to-date materialized runtime skill directory", async () => {
+    const paperclipHome = await makeTempDir("paperclip-runtime-skills-home-");
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+
+    try {
+      const skill = {
+        key: "company/test/runtime-skill",
+        slug: "runtime-skill",
+        updatedAt: new Date("2026-04-14T15:00:00.000Z"),
+        sourceRef: "sha-1",
+      };
+      const skillDir = resolveRuntimeSkillMaterializedPath("company-1", skill as any);
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), "# runtime skill\n", "utf8");
+      await fs.writeFile(
+        path.join(skillDir, ".paperclip-runtime-meta.json"),
+        runtimeSkillMaterializationVersion(skill as any),
+        "utf8",
+      );
+
+      await expect(getCurrentRuntimeSkillMaterializedPath("company-1", skill as any)).resolves.toBe(skillDir);
+      await expect(getCurrentRuntimeSkillMaterializedPath("company-1", {
+        ...skill,
+        updatedAt: new Date("2026-04-14T15:00:01.000Z"),
+      } as any)).resolves.toBeNull();
+
+      const nullFreshnessSkill = {
+        ...skill,
+        updatedAt: null,
+        sourceRef: null,
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      };
+      const nullFreshnessMetaPath = path.join(skillDir, ".paperclip-runtime-meta.json");
+      await fs.writeFile(
+        nullFreshnessMetaPath,
+        runtimeSkillMaterializationVersion(nullFreshnessSkill as any),
+        "utf8",
+      );
+      await expect(getCurrentRuntimeSkillMaterializedPath("company-1", nullFreshnessSkill as any)).resolves.toBe(skillDir);
+      await expect(getCurrentRuntimeSkillMaterializedPath("company-1", {
+        ...nullFreshnessSkill,
+        fileInventory: [
+          { path: "README.md", kind: "other" },
+          { path: "SKILL.md", kind: "skill" },
+        ],
+      } as any)).resolves.toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
+    }
   });
 });
