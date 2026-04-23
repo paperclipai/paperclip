@@ -364,7 +364,11 @@ const zaiAdapter: ServerAdapterModule = {
       maxSessionAgeHours: 72,
     },
   },
-  supportsLocalAgentJwt: false,
+  // Declared true so the UI's isLocal capability check in AgentConfigForm
+  // renders the model dropdown and adapter-config section for zai agents.
+  // The zai adapter itself ignores the injected JWT (it talks directly to
+  // api.z.ai, not back to Paperclip), so this is purely a UI-visibility knob.
+  supportsLocalAgentJwt: true,
   supportsInstructionsBundle: false,
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: zaiAgentConfigurationDoc,
