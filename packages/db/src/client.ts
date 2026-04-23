@@ -51,6 +51,8 @@ export function createDb(url: string) {
   // timestamptz columns reach the wire as raw Date instances and trip
   // `ERR_INVALID_ARG_TYPE: Received an instance of Date` at bytes.js:22.
   // Register an explicit `date` type handler that serializes Date → ISO.
+  // Cast trims the `types` generic (which would leak as `Sql<{date: Date}>`)
+  // back to the base `Sql<{}>` that drizzle's postgres-js adapter expects.
   const sql = postgres(url, {
     types: {
       date: {
@@ -61,7 +63,7 @@ export function createDb(url: string) {
         parse: (x: string) => new Date(x),
       },
     },
-  });
+  }) as unknown as ReturnType<typeof postgres>;
   return drizzlePg(sql, { schema });
 }
 
