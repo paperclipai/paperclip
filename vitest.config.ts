@@ -8,6 +8,7 @@ export default defineConfig({
       "packages/adapter-utils",
       "packages/adapters/codex-local",
       "packages/adapters/opencode-local",
+      "packages/plugins/aws-file-store",
       "server",
       "ui",
       "cli",
