@@ -87,7 +87,7 @@ function resolveApiMode(config: Record<string, unknown>, url: string): HermesApi
   if (url.endsWith("/v1/chat/completions") || url.endsWith("/chat/completions")) {
     return "chat_completions";
   }
-  if (url.endsWith("/v1/responses")) return "responses";
+  if (url.endsWith("/v1/responses") || url.endsWith("/responses")) return "responses";
   return "chat_completions";
 }
 
