@@ -6,7 +6,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const url = asString(config.url, "http://localhost:8080/v1/chat/completions");
   const apiKey = asString(config.apiKey, "");
-  const model = asString(config.model, "anthropic/claude-3-5-sonnet-20241022");
+  const model = asString(config.model, "").trim();
   const timeoutMs = asNumber(config.timeoutSec, 300) * 1000;
 
   const promptTemplate = asString(
@@ -31,7 +31,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await onMeta({
       adapterType: "hermes_gateway",
       command: `fetch ${url}`,
-      commandArgs: ["--model", model],
+      commandArgs: model ? ["--model", model] : [],
       prompt,
     });
   }
@@ -40,14 +40,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const startTime = Date.now();
     await onLog("stdout", `[paperclip] Invoking Hermes Agent at ${url}\n`);
 
-    const requestBody = {
-      model,
+    const requestBody: Record<string, unknown> = {
       messages: [
         { role: "system", content: "You are an autonomous agent orchestrated by Paperclip." },
         { role: "user", content: prompt }
       ],
       stream: false
     };
+    if (model) {
+      requestBody.model = model;
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -90,7 +92,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: null,
       errorCode: null,
       provider: "hermes",
-      model: data.model || model,
+      model: data.model || model || null,
       resultJson: data,
       summary,
       costUsd,

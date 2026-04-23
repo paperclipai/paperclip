@@ -13,4 +13,5 @@ Use when:
 Core fields:
 - url (string, required): Hermes agent API URL (e.g., http://hermes-agent.railway.internal:8080/v1/chat/completions)
 - apiKey (string, optional): Auth key setup in Hermes
+- model (string, optional): Model override to send to Hermes. Leave blank to let Hermes use its own default model.
 `;
