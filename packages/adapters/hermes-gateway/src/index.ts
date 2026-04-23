@@ -14,4 +14,14 @@ Core fields:
 - url (string, required): Hermes agent API URL (e.g., http://hermes-agent.railway.internal:8080/v1/chat/completions)
 - apiKey (string, optional): Auth key setup in Hermes
 - model (string, optional): Model override to send to Hermes. Leave blank to let Hermes use its own default model.
+- apiMode (string, optional): \`chat_completions\` or \`responses\`. Defaults to \`chat_completions\` unless the configured URL already points at \`/v1/responses\`.
+- timeoutSec (number, optional): Request timeout in seconds. Default 300.
+- sessionKeyStrategy (string, optional): \`issue\`, \`run\`, or \`fixed\`. Used with Hermes Responses API conversation continuity. Default \`issue\`.
+- sessionKey (string, optional): Fixed conversation key override when \`sessionKeyStrategy=fixed\`.
+- storeResponses (boolean, optional): When using Responses API, keep Hermes server-side response history. Default true.
+
+Behavior notes:
+- This adapter stays within Hermes' OpenAI-compatible API surface.
+- It prefers the Hermes Responses API when configured so Paperclip can get issue-scoped conversation continuity via \`conversation\`.
+- When Hermes has the \`hermes-paperclip-plugin\` installed, the adapter prompt instructs Hermes to prefer first-class \`paperclip_*\` tools over raw HTTP.
 `;

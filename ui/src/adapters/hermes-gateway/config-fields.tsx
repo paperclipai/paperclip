@@ -187,6 +187,18 @@ export function HermesGatewayConfigFields({
   const currentTimeout = isCreate
     ? Number(values!.adapterSchemaValues?.timeoutSec ?? 300)
     : Number(eff("adapterConfig", "timeoutSec", Number(config.timeoutSec ?? 300)));
+  const currentApiMode = isCreate
+    ? String(values!.adapterSchemaValues?.apiMode ?? "chat_completions")
+    : String(eff("adapterConfig", "apiMode", String(config.apiMode ?? "chat_completions")));
+  const currentSessionStrategy = isCreate
+    ? String(values!.adapterSchemaValues?.sessionKeyStrategy ?? "issue")
+    : String(eff("adapterConfig", "sessionKeyStrategy", String(config.sessionKeyStrategy ?? "issue")));
+  const currentSessionKey = isCreate
+    ? String(values!.adapterSchemaValues?.sessionKey ?? "")
+    : String(eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "")));
+  const currentStoreResponses = isCreate
+    ? values!.adapterSchemaValues?.storeResponses !== false
+    : Boolean(eff("adapterConfig", "storeResponses", config.storeResponses ?? true));
 
   const setCreateField = (key: string, value: unknown) => {
     set?.({
@@ -247,6 +259,56 @@ export function HermesGatewayConfigFields({
           className={inputClass}
         />
       </Field>
+
+      <Field label="API mode">
+        <select
+          className={inputClass + " bg-background"}
+          value={currentApiMode}
+          onChange={(event) => commitField("apiMode", event.target.value)}
+        >
+          <option value="chat_completions">Chat Completions</option>
+          <option value="responses">Responses</option>
+        </select>
+      </Field>
+
+      <Field label="Session strategy">
+        <select
+          className={inputClass + " bg-background"}
+          value={currentSessionStrategy}
+          onChange={(event) => commitField("sessionKeyStrategy", event.target.value)}
+        >
+          <option value="issue">Per issue</option>
+          <option value="run">Per run</option>
+          <option value="fixed">Fixed</option>
+        </select>
+      </Field>
+
+      {currentSessionStrategy === "fixed" && (
+        <Field label="Fixed session key">
+          <DraftInput
+            value={String(currentSessionKey)}
+            onCommit={(value) => commitField("sessionKey", value || undefined)}
+            immediate
+            className={inputClass}
+            placeholder="paperclip"
+          />
+        </Field>
+      )}
+
+      {currentApiMode === "responses" && (
+        <Field label="Store responses">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={currentStoreResponses}
+              onChange={(event) => commitField("storeResponses", event.target.checked)}
+            />
+            <span className="text-muted-foreground">
+              Keep Hermes server-side conversation history for this conversation key
+            </span>
+          </label>
+        </Field>
+      )}
     </>
   );
 }

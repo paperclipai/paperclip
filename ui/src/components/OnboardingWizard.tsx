@@ -120,6 +120,14 @@ export function OnboardingWizard() {
   const [hermesApiKey, setHermesApiKey] = useState("");
   const [hermesApiKeySecretId, setHermesApiKeySecretId] = useState("");
   const [hermesTimeoutSec, setHermesTimeoutSec] = useState("300");
+  const [hermesApiMode, setHermesApiMode] = useState<
+    "chat_completions" | "responses"
+  >("responses");
+  const [hermesSessionKeyStrategy, setHermesSessionKeyStrategy] = useState<
+    "issue" | "run" | "fixed"
+  >("issue");
+  const [hermesSessionKey, setHermesSessionKey] = useState("");
+  const [hermesStoreResponses, setHermesStoreResponses] = useState(true);
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -272,6 +280,10 @@ export function OnboardingWizard() {
     hermesApiKeyMode,
     hermesApiKeySecretId,
     hermesTimeoutSec,
+    hermesApiMode,
+    hermesSessionKeyStrategy,
+    hermesSessionKey,
+    hermesStoreResponses,
   ]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
@@ -336,6 +348,10 @@ export function OnboardingWizard() {
     setHermesApiKey("");
     setHermesApiKeySecretId("");
     setHermesTimeoutSec("300");
+    setHermesApiMode("responses");
+    setHermesSessionKeyStrategy("issue");
+    setHermesSessionKey("");
+    setHermesStoreResponses(true);
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -389,6 +405,14 @@ export function OnboardingWizard() {
       const timeoutSec = Number(hermesTimeoutSec);
       if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
         adapterSchemaValues.timeoutSec = timeoutSec;
+      }
+      adapterSchemaValues.apiMode = hermesApiMode;
+      adapterSchemaValues.sessionKeyStrategy = hermesSessionKeyStrategy;
+      if (hermesSessionKeyStrategy === "fixed" && hermesSessionKey.trim()) {
+        adapterSchemaValues.sessionKey = hermesSessionKey.trim();
+      }
+      if (hermesApiMode === "responses") {
+        adapterSchemaValues.storeResponses = hermesStoreResponses;
       }
       if (hermesApiKeyMode === "secret" && hermesApiKeySecretId) {
         adapterSchemaValues.apiKey = {
@@ -866,6 +890,10 @@ export function OnboardingWizard() {
                             setHermesApiKey("");
                             setHermesApiKeySecretId("");
                             setHermesTimeoutSec("300");
+                            setHermesApiMode("responses");
+                            setHermesSessionKeyStrategy("issue");
+                            setHermesSessionKey("");
+                            setHermesStoreResponses(true);
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
                             }
@@ -924,6 +952,10 @@ export function OnboardingWizard() {
                               setHermesApiKey("");
                               setHermesApiKeySecretId("");
                               setHermesTimeoutSec("300");
+                              setHermesApiMode("responses");
+                              setHermesSessionKeyStrategy("issue");
+                              setHermesSessionKey("");
+                              setHermesStoreResponses(true);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                 return;
@@ -1267,6 +1299,78 @@ export function OnboardingWizard() {
                           onChange={(e) => setHermesTimeoutSec(e.target.value)}
                         />
                       </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          API mode
+                        </label>
+                        <select
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                          value={hermesApiMode}
+                          onChange={(e) =>
+                            setHermesApiMode(
+                              e.target.value === "chat_completions"
+                                ? "chat_completions"
+                                : "responses"
+                            )
+                          }
+                        >
+                          <option value="responses">
+                            Responses API (recommended)
+                          </option>
+                          <option value="chat_completions">
+                            Chat Completions
+                          </option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Session strategy
+                        </label>
+                        <select
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                          value={hermesSessionKeyStrategy}
+                          onChange={(e) =>
+                            setHermesSessionKeyStrategy(
+                              e.target.value === "run"
+                                ? "run"
+                                : e.target.value === "fixed"
+                                  ? "fixed"
+                                  : "issue"
+                            )
+                          }
+                        >
+                          <option value="issue">
+                            Issue scoped (recommended)
+                          </option>
+                          <option value="run">Run scoped</option>
+                          <option value="fixed">Fixed session key</option>
+                        </select>
+                      </div>
+                      {hermesSessionKeyStrategy === "fixed" && (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            Fixed session key
+                          </label>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="paperclip:agent:ceo"
+                            value={hermesSessionKey}
+                            onChange={(e) => setHermesSessionKey(e.target.value)}
+                          />
+                        </div>
+                      )}
+                      {hermesApiMode === "responses" && (
+                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            checked={hermesStoreResponses}
+                            onChange={(e) =>
+                              setHermesStoreResponses(e.target.checked)
+                            }
+                          />
+                          Store responses on the Hermes side
+                        </label>
+                      )}
                     </div>
                   )}
                 </div>

@@ -10,12 +10,21 @@ function buildHermesGatewayConfig(values: import("@paperclipai/adapter-utils").C
   const model = typeof schemaValues.model === "string" ? schemaValues.model.trim() : values.model?.trim();
   const timeoutSec = schemaValues.timeoutSec;
   const apiKey = schemaValues.apiKey;
+  const apiMode = typeof schemaValues.apiMode === "string" ? schemaValues.apiMode.trim() : "";
+  const sessionKeyStrategy =
+    typeof schemaValues.sessionKeyStrategy === "string" ? schemaValues.sessionKeyStrategy.trim() : "";
+  const sessionKey = typeof schemaValues.sessionKey === "string" ? schemaValues.sessionKey.trim() : "";
+  const storeResponses = schemaValues.storeResponses;
 
   if (url) config.url = url;
   if (model) config.model = model;
   if (typeof timeoutSec === "number" && Number.isFinite(timeoutSec) && timeoutSec > 0) {
     config.timeoutSec = timeoutSec;
   }
+  if (apiMode) config.apiMode = apiMode;
+  if (sessionKeyStrategy) config.sessionKeyStrategy = sessionKeyStrategy;
+  if (sessionKey) config.sessionKey = sessionKey;
+  if (typeof storeResponses === "boolean") config.storeResponses = storeResponses;
   if (apiKey !== undefined && apiKey !== null && apiKey !== "") {
     config.apiKey = apiKey;
   }
