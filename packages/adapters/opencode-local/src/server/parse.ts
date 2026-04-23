@@ -29,6 +29,7 @@ export function parseOpenCodeJsonl(stdout: string) {
     outputTokens: 0,
   };
   let costUsd = 0;
+  let hasBackgroundDelegation = false;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -67,6 +68,15 @@ export function parseOpenCodeJsonl(stdout: string) {
         const text = asString(state.error, "").trim();
         if (text) errors.push(text);
       }
+      // Detect background delegation: tool named "task" with run_in_background=true.
+      // When the agent delegates asynchronously, the tool returns immediately and
+      // the agent may produce a final response, causing the process to exit before
+      // the delegated work completes.
+      const toolName = asString(part.name, "").trim();
+      const input = parseObject(part.input);
+      if (toolName === "task" && input.run_in_background === true) {
+        hasBackgroundDelegation = true;
+      }
       continue;
     }
 
@@ -83,6 +93,7 @@ export function parseOpenCodeJsonl(stdout: string) {
     usage,
     costUsd,
     errorMessage: errors.length > 0 ? errors.join("\n") : null,
+    hasBackgroundDelegation,
   };
 }
 
