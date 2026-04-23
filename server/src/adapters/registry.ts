@@ -334,8 +334,10 @@ registerBuiltInAdapters();
 // ServerAdapterModule. When the module provides its own sessionManagement
 // it is preserved; otherwise the host falls back to the built-in registry
 // lookup (so externals that override a built-in type inherit the builtin's
-// policy). This matches the hot-install path in routes/adapters.ts, which
-// also preserves module-provided sessionManagement via registerServerAdapter.
+// policy). This brings init-time registration to at-least-as-good behavior
+// as the hot-install path (routes/adapters.ts:179 -> registerServerAdapter):
+// both preserve module-provided sessionManagement, and init-time additionally
+// applies the registry fallback for externals overriding a built-in type.
 // ---------------------------------------------------------------------------
 
 /** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
