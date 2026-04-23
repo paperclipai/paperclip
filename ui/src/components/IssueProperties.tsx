@@ -401,6 +401,8 @@ export function IssueProperties({
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const issueReference = issue.identifier ?? issue.id.slice(0, 8);
+  const issueHref = `/issues/${issue.identifier ?? issue.id}`;
   const selectedAssigneeValue = issue.assigneeAgentId
     ? `agent:${issue.assigneeAgentId}`
     : issue.assigneeUserId
@@ -1056,6 +1058,15 @@ export function IssueProperties({
   return (
     <div className="space-y-4">
       <div className="space-y-1">
+        <PropertyRow label="Issue">
+          <Link
+            to={issueHref}
+            className="inline-flex items-center gap-1 text-sm font-mono hover:underline"
+          >
+            {issueReference}
+          </Link>
+        </PropertyRow>
+
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
