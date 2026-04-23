@@ -11,7 +11,7 @@ Use when:
 - You want Paperclip to connect to a standalone Hermes Agent running on the network (e.g. Railway)
 
 Core fields:
-- url (string, required): Hermes agent API URL (e.g., http://hermes-agent.railway.internal:8080/v1/chat/completions)
+- url (string, required): Hermes API base URL. Prefer a base ending in \`/v1\` (e.g., \`http://hermes-agent.internal:8642/v1\`). Legacy full endpoint URLs still work.
 - apiKey (string, optional): Auth key setup in Hermes
 - model (string, optional): Model override to send to Hermes. Leave blank to let Hermes use its own default model.
 - apiMode (string, optional): \`chat_completions\` or \`responses\`. Defaults to \`chat_completions\` unless the configured URL already points at \`/v1/responses\`.

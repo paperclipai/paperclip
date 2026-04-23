@@ -14,6 +14,13 @@ import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger
@@ -1215,7 +1222,7 @@ export function OnboardingWizard() {
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
                           : adapterType === "hermes_gateway"
-                            ? "Hermes API URL"
+                            ? "Hermes API Base URL"
                           : "Webhook URL"}
                       </label>
                       <input
@@ -1224,7 +1231,7 @@ export function OnboardingWizard() {
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
                             : adapterType === "hermes_gateway"
-                              ? "https://hermes-gateway.example.internal/v1/chat/completions"
+                              ? "https://hermes-gateway.example.internal/v1"
                             : "https://..."
                         }
                         value={url}
@@ -1239,31 +1246,38 @@ export function OnboardingWizard() {
                           API key
                         </label>
                         <div className="flex items-center gap-2">
-                          <select
-                            className="rounded-md border border-border bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                          <Select
                             value={hermesApiKeyMode}
-                            onChange={(e) =>
+                            onValueChange={(value) =>
                               setHermesApiKeyMode(
-                                e.target.value === "secret" ? "secret" : "plain"
+                                value === "secret" ? "secret" : "plain"
                               )
                             }
                           >
-                            <option value="plain">Plain</option>
-                            <option value="secret">Secret</option>
-                          </select>
+                            <SelectTrigger className="max-w-[120px] bg-background text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="plain">Plain</SelectItem>
+                              <SelectItem value="secret">Secret</SelectItem>
+                            </SelectContent>
+                          </Select>
                           {hermesApiKeyMode === "secret" ? (
-                            <select
-                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
-                              value={hermesApiKeySecretId}
-                              onChange={(e) => setHermesApiKeySecretId(e.target.value)}
+                            <Select
+                              value={hermesApiKeySecretId || undefined}
+                              onValueChange={(value) => setHermesApiKeySecretId(value)}
                             >
-                              <option value="">Select secret...</option>
-                              {companySecrets.map((secret) => (
-                                <option key={secret.id} value={secret.id}>
-                                  {secret.name}
-                                </option>
-                              ))}
-                            </select>
+                              <SelectTrigger className="w-full bg-background text-sm">
+                                <SelectValue placeholder="Select secret..." />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {companySecrets.map((secret) => (
+                                  <SelectItem key={secret.id} value={secret.id}>
+                                    {secret.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           ) : (
                             <>
                               <input
@@ -1303,48 +1317,56 @@ export function OnboardingWizard() {
                         <label className="text-xs text-muted-foreground mb-1 block">
                           API mode
                         </label>
-                        <select
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                        <Select
                           value={hermesApiMode}
-                          onChange={(e) =>
+                          onValueChange={(value) =>
                             setHermesApiMode(
-                              e.target.value === "chat_completions"
+                              value === "chat_completions"
                                 ? "chat_completions"
                                 : "responses"
                             )
                           }
                         >
-                          <option value="responses">
-                            Responses API (recommended)
-                          </option>
-                          <option value="chat_completions">
-                            Chat Completions
-                          </option>
-                        </select>
+                          <SelectTrigger className="w-full bg-background text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="responses">
+                              Responses API (recommended)
+                            </SelectItem>
+                            <SelectItem value="chat_completions">
+                              Chat Completions
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
                           Session strategy
                         </label>
-                        <select
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                        <Select
                           value={hermesSessionKeyStrategy}
-                          onChange={(e) =>
+                          onValueChange={(value) =>
                             setHermesSessionKeyStrategy(
-                              e.target.value === "run"
+                              value === "run"
                                 ? "run"
-                                : e.target.value === "fixed"
+                                : value === "fixed"
                                   ? "fixed"
                                   : "issue"
                             )
                           }
                         >
-                          <option value="issue">
-                            Issue scoped (recommended)
-                          </option>
-                          <option value="run">Run scoped</option>
-                          <option value="fixed">Fixed session key</option>
-                        </select>
+                          <SelectTrigger className="w-full bg-background text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="issue">
+                              Issue scoped (recommended)
+                            </SelectItem>
+                            <SelectItem value="run">Run scoped</SelectItem>
+                            <SelectItem value="fixed">Fixed session key</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                       {hermesSessionKeyStrategy === "fixed" && (
                         <div>

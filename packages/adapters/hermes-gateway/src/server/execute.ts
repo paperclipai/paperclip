@@ -82,19 +82,48 @@ function resolveApiMode(config: Record<string, unknown>, url: string): HermesApi
   const explicit = asString(config.apiMode, "").trim().toLowerCase();
   if (explicit === "responses") return "responses";
   if (explicit === "chat" || explicit === "chat_completions") return "chat_completions";
+  if (url.endsWith("/v1/chat/completions") || url.endsWith("/chat/completions")) {
+    return "chat_completions";
+  }
   if (url.endsWith("/v1/responses")) return "responses";
   return "chat_completions";
 }
 
-function deriveResponsesUrl(url: string): string {
-  if (url.endsWith("/v1/responses")) return url;
-  if (url.endsWith("/v1/chat/completions")) {
-    return `${url.slice(0, -"/chat/completions".length)}/responses`;
+function normalizeUrl(url: string): string {
+  const trimmed = url.trim();
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+function deriveRequestUrl(url: string, apiMode: HermesApiMode): string {
+  const normalized = normalizeUrl(url);
+  if (normalized.endsWith("/v1")) {
+    return apiMode === "responses"
+      ? `${normalized}/responses`
+      : `${normalized}/chat/completions`;
   }
-  if (url.endsWith("/chat/completions")) {
-    return `${url.slice(0, -"/chat/completions".length)}/responses`;
+  if (normalized.endsWith("/v1/responses")) {
+    return apiMode === "responses"
+      ? normalized
+      : `${normalized.slice(0, -"/responses".length)}/chat/completions`;
   }
-  return url;
+  if (normalized.endsWith("/v1/chat/completions")) {
+    return apiMode === "responses"
+      ? `${normalized.slice(0, -"/chat/completions".length)}/responses`
+      : normalized;
+  }
+  if (normalized.endsWith("/responses")) {
+    return apiMode === "responses"
+      ? normalized
+      : `${normalized.slice(0, -"/responses".length)}/chat/completions`;
+  }
+  if (normalized.endsWith("/chat/completions")) {
+    return apiMode === "responses"
+      ? `${normalized.slice(0, -"/chat/completions".length)}/responses`
+      : normalized;
+  }
+  return apiMode === "responses"
+    ? `${normalized}/v1/responses`
+    : `${normalized}/v1/chat/completions`;
 }
 
 function buildPaperclipContextPrompt(ctx: AdapterExecutionContext, wakePayload: WakePayload): string {
@@ -197,9 +226,9 @@ function extractResponsesModel(data: any): string | null {
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, onLog, onMeta } = ctx;
 
-  const configuredUrl = asString(config.url, "http://localhost:8080/v1/chat/completions");
+  const configuredUrl = asString(config.url, "http://localhost:8080/v1");
   const apiMode = resolveApiMode(config, configuredUrl);
-  const requestUrl = apiMode === "responses" ? deriveResponsesUrl(configuredUrl) : configuredUrl;
+  const requestUrl = deriveRequestUrl(configuredUrl, apiMode);
   const apiKey = asString(config.apiKey, "");
   const model = asString(config.model, "").trim();
   const timeoutMs = asNumber(config.timeoutSec, 300) * 1000;

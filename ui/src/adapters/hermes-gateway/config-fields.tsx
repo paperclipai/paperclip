@@ -10,6 +10,13 @@ import {
   DraftInput,
   DraftNumberInput,
 } from "../../components/agent-config-primitives";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -84,11 +91,10 @@ function SecretValueField({
     <Field label={label}>
       <div className="space-y-1.5">
         <div className="flex items-center gap-1.5">
-          <select
-            className={inputClass + " max-w-[120px] bg-background"}
+          <Select
             value={current.mode}
-            onChange={(event) => {
-              const nextMode = event.target.value === "secret" ? "secret" : "plain";
+            onValueChange={(value) => {
+              const nextMode = value === "secret" ? "secret" : "plain";
               if (nextMode === "secret") {
                 onChange(
                   current.secretId
@@ -100,26 +106,33 @@ function SecretValueField({
               }
             }}
           >
-            <option value="plain">Plain</option>
-            <option value="secret">Secret</option>
-          </select>
+            <SelectTrigger className="max-w-[120px] bg-background text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="plain">Plain</SelectItem>
+              <SelectItem value="secret">Secret</SelectItem>
+            </SelectContent>
+          </Select>
 
           {current.mode === "secret" ? (
-            <select
-              className={inputClass + " flex-1 bg-background"}
-              value={current.secretId}
-              onChange={(event) => {
-                const secretId = event.target.value;
+            <Select
+              value={current.secretId || undefined}
+              onValueChange={(secretId) => {
                 onChange(secretId ? { type: "secret_ref", secretId, version: "latest" } : undefined);
               }}
             >
-              <option value="">Select secret...</option>
-              {secrets.map((secret) => (
-                <option key={secret.id} value={secret.id}>
-                  {secret.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="flex-1 bg-background text-sm">
+                <SelectValue placeholder="Select secret..." />
+              </SelectTrigger>
+              <SelectContent>
+                {secrets.map((secret) => (
+                  <SelectItem key={secret.id} value={secret.id}>
+                    {secret.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           ) : (
             <input
               className={inputClass + " flex-1"}
@@ -223,13 +236,13 @@ export function HermesGatewayConfigFields({
 
   return (
     <>
-      <Field label="Hermes API URL">
+      <Field label="Hermes API Base URL">
         <DraftInput
           value={String(currentUrl)}
           onCommit={(value) => commitField("url", value || undefined)}
           immediate
           className={inputClass}
-          placeholder="https://hermes-gateway.example.internal/v1/chat/completions"
+          placeholder="https://hermes-gateway.example.internal/v1"
         />
       </Field>
 
@@ -261,26 +274,34 @@ export function HermesGatewayConfigFields({
       </Field>
 
       <Field label="API mode">
-        <select
-          className={inputClass + " bg-background"}
+        <Select
           value={currentApiMode}
-          onChange={(event) => commitField("apiMode", event.target.value)}
+          onValueChange={(value) => commitField("apiMode", value)}
         >
-          <option value="chat_completions">Chat Completions</option>
-          <option value="responses">Responses</option>
-        </select>
+          <SelectTrigger className="w-full bg-background text-sm font-mono">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="chat_completions">Chat Completions</SelectItem>
+            <SelectItem value="responses">Responses</SelectItem>
+          </SelectContent>
+        </Select>
       </Field>
 
       <Field label="Session strategy">
-        <select
-          className={inputClass + " bg-background"}
+        <Select
           value={currentSessionStrategy}
-          onChange={(event) => commitField("sessionKeyStrategy", event.target.value)}
+          onValueChange={(value) => commitField("sessionKeyStrategy", value)}
         >
-          <option value="issue">Per issue</option>
-          <option value="run">Per run</option>
-          <option value="fixed">Fixed</option>
-        </select>
+          <SelectTrigger className="w-full bg-background text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="issue">Per issue</SelectItem>
+            <SelectItem value="run">Per run</SelectItem>
+            <SelectItem value="fixed">Fixed</SelectItem>
+          </SelectContent>
+        </Select>
       </Field>
 
       {currentSessionStrategy === "fixed" && (
