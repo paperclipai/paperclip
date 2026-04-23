@@ -1054,7 +1054,7 @@ export function OnboardingWizard() {
                                    {adapterType === "cursor"
                                      ? "CURSOR_API_KEY"
                                    : adapterType === "copilot_local"
-                                       ? "COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN"
+                                       ? "COPILOT_GITHUB_TOKEN, GH_TOKEN, then GITHUB_TOKEN (in that order)"
                                     : adapterType === "gemini_local"
                                       ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
