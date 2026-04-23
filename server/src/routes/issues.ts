@@ -63,6 +63,7 @@ import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
+import { shouldWakeAssigneeOnAssignment } from "./issues-assignment-wakeup.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
@@ -1672,15 +1673,22 @@ export function issueRoutes(
       },
     });
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (shouldWakeAssigneeOnAssignment({
+      actorType: req.actor.type,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      actorRunId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
+      assignmentAgentId: issue.assigneeAgentId,
+    })) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
 
     res.status(201).json({
       ...issue,
@@ -1732,15 +1740,22 @@ export function issueRoutes(
       },
     });
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (shouldWakeAssigneeOnAssignment({
+      actorType: req.actor.type,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      actorRunId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
+      assignmentAgentId: issue.assigneeAgentId,
+    })) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.child_create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
 
     res.status(201).json(issue);
   });
@@ -2245,7 +2260,17 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (
+        assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        shouldWakeAssigneeOnAssignment({
+          actorType: req.actor.type,
+          actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+          actorRunId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
+          assignmentAgentId: issue.assigneeAgentId,
+        })
+      ) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",

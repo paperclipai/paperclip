@@ -71,15 +71,11 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
-export async function prepareManagedCodexHome(
-  env: NodeJS.ProcessEnv,
-  onLog: AdapterExecutionContext["onLog"],
-  companyId?: string,
-): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
-
-  const sourceHome = resolveSharedCodexHomeDir(env);
-  if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
+async function seedCodexHomeFromSource(
+  targetHome: string,
+  sourceHome: string,
+): Promise<void> {
+  if (path.resolve(sourceHome) === path.resolve(targetHome)) return;
 
   await fs.mkdir(targetHome, { recursive: true });
 
@@ -94,10 +90,36 @@ export async function prepareManagedCodexHome(
     if (!(await pathExists(source))) continue;
     await ensureCopiedFile(path.join(targetHome, name), source);
   }
+}
+
+export async function seedCodexHomeFromShared(
+  targetHome: string,
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  label: string,
+): Promise<string> {
+  const sourceHome = resolveSharedCodexHomeDir(env);
+  await seedCodexHomeFromSource(targetHome, sourceHome);
+
+  if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
 
   await onLog(
     "stdout",
-    `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+    `[paperclip] Using ${label} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
   );
   return targetHome;
+}
+
+export async function prepareManagedCodexHome(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId?: string,
+): Promise<string> {
+  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  return seedCodexHomeFromShared(
+    targetHome,
+    env,
+    onLog,
+    isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed",
+  );
 }
