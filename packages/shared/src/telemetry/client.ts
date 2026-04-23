@@ -29,16 +29,23 @@ export class TelemetryClient {
 
   track(eventName: TelemetryEventName, dimensions?: Record<string, string | number | boolean>): void {
     if (!this.config.enabled) return;
-    this.getState(); // ensure state is initialised (side-effect: creates state file on first call)
+    // Telemetry must never propagate failures into request handling. State
+    // loading can throw (e.g. EACCES writing the state file), and flush
+    // scheduling can throw in exotic runtime conditions — swallow both.
+    try {
+      this.getState(); // ensure state is initialised (side-effect: creates state file on first call)
 
-    this.queue.push({
-      name: eventName,
-      occurredAt: new Date().toISOString(),
-      dimensions: dimensions ?? {},
-    });
+      this.queue.push({
+        name: eventName,
+        occurredAt: new Date().toISOString(),
+        dimensions: dimensions ?? {},
+      });
 
-    if (this.queue.length >= BATCH_SIZE) {
-      void this.flush();
+      if (this.queue.length >= BATCH_SIZE) {
+        void this.flush();
+      }
+    } catch {
+      // Drop the event; do not leak telemetry errors into the call stack.
     }
   }
 
@@ -98,11 +105,17 @@ export class TelemetryClient {
   }
 
   hashPrivateRef(value: string): string {
-    const state = this.getState();
-    return createHash("sha256")
-      .update(state.salt + value)
-      .digest("hex")
-      .slice(0, 16);
+    try {
+      const state = this.getState();
+      return createHash("sha256")
+        .update(state.salt + value)
+        .digest("hex")
+        .slice(0, 16);
+    } catch {
+      // If state can't be loaded, return an empty ref rather than crashing
+      // the caller. Downstream telemetry events simply lose the hashed ref.
+      return "";
+    }
   }
 
   private getState(): TelemetryState {
