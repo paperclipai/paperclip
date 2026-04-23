@@ -1,6 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared";
-import { buildPresetServerConfig } from "../config/server-bind.js";
+
+async function loadServerBindWithExecFileSync(mockImplementation: () => string): Promise<
+  typeof import("../config/server-bind.js")
+> {
+  vi.resetModules();
+  vi.doMock("node:child_process", () => ({
+    execFileSync: vi.fn(mockImplementation),
+  }));
+  return import("../config/server-bind.js");
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.doUnmock("node:child_process");
+  delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+});
 
 describe("network bind helpers", () => {
   it("rejects non-loopback bind modes in local_trusted", () => {
@@ -34,24 +49,24 @@ describe("network bind helpers", () => {
     expect(resolved.errors).toContain("server.customBindHost is required when server.bind=custom");
   });
 
-  it("stores the detected tailscale address for tailnet presets", () => {
-    process.env.PAPERCLIP_TAILNET_BIND_HOST = "100.64.0.8";
+  it("stores the detected tailscale address for tailnet presets", async () => {
+    const serverBind = await loadServerBindWithExecFileSync(() => "100.64.0.8\n");
 
-    const preset = buildPresetServerConfig("tailnet", {
+    const preset = serverBind.buildPresetServerConfig("tailnet", {
       port: 3100,
       allowedHostnames: [],
       serveUi: true,
     });
 
     expect(preset.server.host).toBe("100.64.0.8");
-
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
   });
 
-  it("falls back to loopback when no tailscale address is available for tailnet presets", () => {
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+  it("falls back to loopback when no tailscale address is available for tailnet presets", async () => {
+    const serverBind = await loadServerBindWithExecFileSync(() => {
+      throw new Error("tailscale unavailable");
+    });
 
-    const preset = buildPresetServerConfig("tailnet", {
+    const preset = serverBind.buildPresetServerConfig("tailnet", {
       port: 3100,
       allowedHostnames: [],
       serveUi: true,
