@@ -6007,6 +6007,11 @@ export function heartbeatService(db: Db) {
             // than a silent drop, and the separate code lets observability split
             // this case from the ordinary stale-wake path.
             const allDeleted = commentRows.length === 0;
+            // `anyFresh` is tautologically false when `allDeleted` is true
+            // (`some` on an empty array returns false). `allDeleted` is checked
+            // first as a ternary selector to emit a distinct observability
+            // error code (`..._all_comments_deleted`) instead of collapsing
+            // the hard-delete case into the generic stale-wake path.
             const anyFresh = commentRows.some(
               (row) => row.createdAt.getTime() > closedAt.getTime(),
             );
