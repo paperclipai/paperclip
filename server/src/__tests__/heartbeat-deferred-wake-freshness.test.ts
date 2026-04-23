@@ -453,4 +453,37 @@ describeEmbeddedPostgres("deferred-wake freshness guard (POI-237 Option 1)", () 
     expect(promoted?.reason).toBe("issue_execution_promoted");
     expect(promoted?.runId).not.toBeNull();
   });
+
+  // ── Case 6: all deferred comment ids deleted → drop with distinct code ───
+  it("drops a deferred comment wake when every referenced comment has been deleted", async () => {
+    // POI-247: when all deferred wakeCommentIds have been hard-deleted since
+    // the wake was enqueued, commentRows is empty. The guard must drop the wake
+    // under a distinct error code so observability can split this from the
+    // ordinary stale-comment skip path.
+    const closedAt = new Date("2026-04-01T11:00:00.000Z");
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent(db);
+    const { issueId, runId } = await seedTerminalIssueWithRunningExec(db, companyId, agentId, issuePrefix);
+
+    await seedCloseActivityLog(db, companyId, issueId, closedAt);
+    // No comment rows seeded — the deferred wake references ids that do not
+    // exist in issue_comments, simulating deletion after enqueue.
+    const deletedCommentId = randomUUID();
+    await seedDeferredCommentWake(db, companyId, agentId, issueId, [deletedCommentId]);
+
+    await heartbeat.cancelRun(runId);
+
+    const [issue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("done");
+
+    const [deferredWake] = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "failed"),
+        ),
+      );
+    expect(deferredWake?.error).toBe("deferred_comment_wake_all_comments_deleted");
+  });
 });

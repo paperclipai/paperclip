@@ -6000,16 +6000,25 @@ export function heartbeatService(db: Db) {
                   inArray(issueComments.id, deferredCommentIds),
                 ),
               );
+            // POI-247 — explicit branch: if every deferred comment id has been
+            // hard-deleted since the wake was enqueued, `commentRows` is empty and
+            // freshness cannot be verified. Drop the wake under a distinct error
+            // code. Reopening a terminal issue on unverifiable evidence is worse
+            // than a silent drop, and the separate code lets observability split
+            // this case from the ordinary stale-wake path.
+            const allDeleted = commentRows.length === 0;
             const anyFresh = commentRows.some(
               (row) => row.createdAt.getTime() > closedAt.getTime(),
             );
-            if (!anyFresh) {
+            if (allDeleted || !anyFresh) {
               await tx
                 .update(agentWakeupRequests)
                 .set({
                   status: "failed",
                   finishedAt: new Date(),
-                  error: "deferred_comment_wake_terminal_skipped",
+                  error: allDeleted
+                    ? "deferred_comment_wake_all_comments_deleted"
+                    : "deferred_comment_wake_terminal_skipped",
                   updatedAt: new Date(),
                 })
                 .where(eq(agentWakeupRequests.id, deferred.id));
