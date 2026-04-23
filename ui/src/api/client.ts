@@ -25,12 +25,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    // Session expired or invalidated — redirect to login
+    // Session expired or invalidated — redirect to login, but only when we're
+    // on a gated route. Redirecting while already on a public route (e.g. /auth)
+    // creates an infinite reload loop because providers fire queries on every mount.
     if (res.status === 401) {
-      const next = encodeURIComponent(window.location.pathname + window.location.search);
-      window.location.href = `/auth?next=${next}`;
-      // Return a never-resolving promise so callers don't see an error flash
-      return new Promise<T>(() => {});
+      const currentPath = window.location.pathname;
+      const PUBLIC_PATHS = ["/auth", "/invite", "/cli-auth", "/board-claim"];
+      const onPublicPath = PUBLIC_PATHS.some(
+        (p) => currentPath === p || currentPath.startsWith(p + "/"),
+      );
+      if (!onPublicPath) {
+        const next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/auth?next=${next}`;
+        // Return a never-resolving promise so callers don't see an error flash
+        return new Promise<T>(() => {});
+      }
     }
     const errorBody = await res.json().catch(() => null);
     throw new ApiError(
