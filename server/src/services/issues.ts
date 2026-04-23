@@ -2369,7 +2369,7 @@ export function issueService(db: Db) {
             issueId: id,
             actorAgentId,
             actorRunId,
-            expectedExecutionRunId: current.executionRunId,
+            expectedExecutionRunId: staleExecutionRunId,
           });
 
           if (adopted) {
