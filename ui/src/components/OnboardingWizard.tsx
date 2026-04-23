@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -113,6 +114,12 @@ export function OnboardingWizard() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [hermesApiKeyMode, setHermesApiKeyMode] = useState<"plain" | "secret">(
+    "plain"
+  );
+  const [hermesApiKey, setHermesApiKey] = useState("");
+  const [hermesApiKeySecretId, setHermesApiKeySecretId] = useState("");
+  const [hermesTimeoutSec, setHermesTimeoutSec] = useState("300");
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -200,6 +207,27 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+  const { data: companySecrets = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.secrets.list(createdCompanyId)
+      : ["secrets", "none"],
+    queryFn: () => secretsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!createdCompanyId) {
+        throw new Error("Create or select a company before creating secrets.");
+      }
+      return secretsApi.create(createdCompanyId, input);
+    },
+    onSuccess: () => {
+      if (!createdCompanyId) return;
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.secrets.list(createdCompanyId)
+      });
+    }
+  });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
@@ -233,7 +261,18 @@ export function OnboardingWizard() {
     if (step !== 2) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
+  }, [
+    step,
+    adapterType,
+    model,
+    command,
+    args,
+    url,
+    hermesApiKey,
+    hermesApiKeyMode,
+    hermesApiKeySecretId,
+    hermesTimeoutSec,
+  ]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -293,6 +332,10 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setHermesApiKeyMode("plain");
+    setHermesApiKey("");
+    setHermesApiKeySecretId("");
+    setHermesTimeoutSec("300");
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -313,8 +356,50 @@ export function OnboardingWizard() {
     closeOnboarding();
   }
 
+  function defaultSecretName(label: string) {
+    return label
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 64);
+  }
+
+  async function sealHermesApiKey() {
+    if (!hermesApiKey.trim()) return;
+    const suggested =
+      defaultSecretName(`${agentName || "hermes"}_api_key`) || "secret";
+    const name = window.prompt("Secret name", suggested)?.trim();
+    if (!name) return;
+    const created = await createSecret.mutateAsync({
+      name,
+      value: hermesApiKey.trim(),
+    });
+    setHermesApiKey("");
+    setHermesApiKeyMode("secret");
+    setHermesApiKeySecretId(created.id);
+  }
+
   function buildAdapterConfig(): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
+    const adapterSchemaValues: Record<string, unknown> = {};
+    if (adapterType === "hermes_gateway") {
+      if (url.trim()) adapterSchemaValues.url = url.trim();
+      if (model.trim()) adapterSchemaValues.model = model.trim();
+      const timeoutSec = Number(hermesTimeoutSec);
+      if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
+        adapterSchemaValues.timeoutSec = timeoutSec;
+      }
+      if (hermesApiKeyMode === "secret" && hermesApiKeySecretId) {
+        adapterSchemaValues.apiKey = {
+          type: "secret_ref",
+          secretId: hermesApiKeySecretId,
+          version: "latest",
+        };
+      } else if (hermesApiKey.trim()) {
+        adapterSchemaValues.apiKey = hermesApiKey.trim();
+      }
+    }
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
@@ -329,6 +414,10 @@ export function OnboardingWizard() {
       command,
       args,
       url,
+      adapterSchemaValues:
+        Object.keys(adapterSchemaValues).length > 0
+          ? adapterSchemaValues
+          : undefined,
       dangerouslySkipPermissions:
         adapterType === "claude_local" || adapterType === "opencode_local",
       dangerouslyBypassSandbox:
@@ -772,6 +861,11 @@ export function OnboardingWizard() {
                           onClick={() => {
                             const nextType = opt.type;
                             setAdapterType(nextType);
+                            setUrl("");
+                            setHermesApiKeyMode("plain");
+                            setHermesApiKey("");
+                            setHermesApiKeySecretId("");
+                            setHermesTimeoutSec("300");
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
                             }
@@ -825,6 +919,11 @@ export function OnboardingWizard() {
                                if (opt.comingSoon) return;
                                const nextType = opt.type;
                               setAdapterType(nextType);
+                              setUrl("");
+                              setHermesApiKeyMode("plain");
+                              setHermesApiKey("");
+                              setHermesApiKeySecretId("");
+                              setHermesTimeoutSec("300");
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                 return;
@@ -856,7 +955,7 @@ export function OnboardingWizard() {
                   </div>
 
                   {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {(isLocalAdapter || adapterType === "hermes_gateway") && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1077,11 +1176,14 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" ||
-                    adapterType === "openclaw_gateway") && (
+                    adapterType === "openclaw_gateway" ||
+                    adapterType === "hermes_gateway") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
+                          : adapterType === "hermes_gateway"
+                            ? "Hermes API URL"
                           : "Webhook URL"}
                       </label>
                       <input
@@ -1089,11 +1191,82 @@ export function OnboardingWizard() {
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
+                            : adapterType === "hermes_gateway"
+                              ? "https://hermes-gateway.example.internal/v1/chat/completions"
                             : "https://..."
                         }
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
                       />
+                    </div>
+                  )}
+                  {adapterType === "hermes_gateway" && (
+                    <div className="space-y-3 rounded-md border border-border p-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          API key
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <select
+                            className="rounded-md border border-border bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                            value={hermesApiKeyMode}
+                            onChange={(e) =>
+                              setHermesApiKeyMode(
+                                e.target.value === "secret" ? "secret" : "plain"
+                              )
+                            }
+                          >
+                            <option value="plain">Plain</option>
+                            <option value="secret">Secret</option>
+                          </select>
+                          {hermesApiKeyMode === "secret" ? (
+                            <select
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                              value={hermesApiKeySecretId}
+                              onChange={(e) => setHermesApiKeySecretId(e.target.value)}
+                            >
+                              <option value="">Select secret...</option>
+                              {companySecrets.map((secret) => (
+                                <option key={secret.id} value={secret.id}>
+                                  {secret.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <>
+                              <input
+                                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                                placeholder="Bearer token"
+                                value={hermesApiKey}
+                                onChange={(e) => setHermesApiKey(e.target.value)}
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="shrink-0"
+                                disabled={!hermesApiKey.trim() || createSecret.isPending}
+                                onClick={() => void sealHermesApiKey()}
+                              >
+                                Seal
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Timeout (seconds)
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={hermesTimeoutSec}
+                          onChange={(e) => setHermesTimeoutSec(e.target.value)}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>

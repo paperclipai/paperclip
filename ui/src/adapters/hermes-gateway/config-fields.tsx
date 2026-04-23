@@ -217,7 +217,7 @@ export function HermesGatewayConfigFields({
           onCommit={(value) => commitField("url", value || undefined)}
           immediate
           className={inputClass}
-          placeholder="http://hermes-abner-service.hermes-crew.svc.cluster.local:8642/v1/chat/completions"
+          placeholder="https://hermes-gateway.example.internal/v1/chat/completions"
         />
       </Field>
 
