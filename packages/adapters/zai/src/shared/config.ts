@@ -1,6 +1,6 @@
 import { asBoolean, asNumber, asString, asStringArray, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import type { ZaiMessage, ZaiToolDefinition } from "./types.js";
-import { DEFAULT_ZAI_BASE_URL } from "../index.js";
+import { DEFAULT_ZAI_BASE_URL, DEFAULT_ZAI_MODEL } from "../index.js";
 
 export interface ResolvedZaiConfig {
   apiKey: string | null;
@@ -94,7 +94,7 @@ export function resolveZaiConfig(input: Record<string, unknown>): ResolvedZaiCon
     nonEmpty(process.env.ZAI_BASE_URL) ??
     DEFAULT_ZAI_BASE_URL;
 
-  const model = nonEmpty(config.model) ?? "glm-4.6";
+  const model = nonEmpty(config.model) ?? DEFAULT_ZAI_MODEL;
   const temperature =
     typeof config.temperature === "number" && Number.isFinite(config.temperature)
       ? config.temperature

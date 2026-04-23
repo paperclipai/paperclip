@@ -1,19 +1,12 @@
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
-import { models, DEFAULT_ZAI_BASE_URL } from "../index.js";
+import { DEFAULT_ZAI_BASE_URL } from "../index.js";
 
+// The "model" field is intentionally NOT declared here — the agent form's
+// main ModelDropdown already renders it (populated from listZaiModels()).
+// Adding it again in the schema would produce a duplicate selector.
 export function getConfigSchema(): AdapterConfigSchema {
   return {
     fields: [
-      {
-        key: "model",
-        label: "Model",
-        type: "select",
-        required: true,
-        default: "glm-4.6",
-        options: models.map((model) => ({ label: model.label, value: model.id })),
-        group: "model",
-        hint: "GLM model id. GLM-4.6 is recommended for agent/tool workloads.",
-      },
       {
         key: "apiKey",
         label: "API key",
