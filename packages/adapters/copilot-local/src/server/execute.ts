@@ -134,11 +134,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
   let instructionsPrefix = "";
   if (resolvedInstructionsFilePath) {
-    const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
-    instructionsPrefix =
-      `${instructionsContents}\n\n` +
-      `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-      `Resolve any relative file references from ${instructionsDir}.\n\n`;
+    try {
+      const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+      instructionsPrefix =
+        `${instructionsContents}\n\n` +
+        `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
+      );
+    }
   }
 
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
