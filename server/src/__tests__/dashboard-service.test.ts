@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, budgetIncidents, budgetPolicies, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { dashboardService, getUtcMonthStart } from "../services/dashboard.ts";
+import { budgetService } from "../services/budgets.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -47,6 +48,8 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(budgetIncidents);
+    await db.delete(budgetPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -164,6 +167,65 @@ describeEmbeddedPostgres("dashboard service", () => {
       failed: 2,
       other: 1,
       total: 3,
+    });
+  });
+
+  it("degrades gracefully when budget rows reference a deleted agent", async () => {
+    const companyId = randomUUID();
+    const danglingAgentId = randomUUID();
+    const policyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(budgetPolicies).values({
+      id: policyId,
+      companyId,
+      scopeType: "agent",
+      scopeId: danglingAgentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 5000,
+    });
+
+    await db.insert(budgetIncidents).values({
+      id: randomUUID(),
+      companyId,
+      policyId,
+      scopeType: "agent",
+      scopeId: danglingAgentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      windowStart: new Date(Date.UTC(2026, 3, 1, 0, 0, 0, 0)),
+      windowEnd: new Date(Date.UTC(2026, 4, 1, 0, 0, 0, 0)),
+      thresholdType: "hard",
+      amountLimit: 5000,
+      amountObserved: 5100,
+      status: "open",
+      approvalId: null,
+    });
+
+    await expect(budgetService(db).overview(companyId)).resolves.toMatchObject({
+      companyId,
+      policies: [],
+      activeIncidents: [],
+      pausedAgentCount: 0,
+      pausedProjectCount: 0,
+      pendingApprovalCount: 0,
+    });
+
+    await expect(dashboardService(db).summary(companyId)).resolves.toMatchObject({
+      companyId,
+      budgets: {
+        activeIncidents: 0,
+        pendingApprovals: 0,
+        pausedAgents: 0,
+        pausedProjects: 0,
+      },
     });
   });
 });

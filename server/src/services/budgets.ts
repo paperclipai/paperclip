@@ -21,7 +21,7 @@ import type {
   BudgetThresholdType,
   BudgetWindowKind,
 } from "@paperclipai/shared";
-import { notFound, unprocessable } from "../errors.js";
+import { HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 
 type ScopeRecord = {
@@ -76,6 +76,12 @@ function budgetStatusFromObserved(
 function normalizeScopeName(scopeType: BudgetScopeType, name: string) {
   if (scopeType === "company") return name;
   return name.trim().length > 0 ? name : scopeType;
+}
+
+function isDanglingScopeError(error: unknown) {
+  return error instanceof HttpError
+    && error.status === 404
+    && (error.message === "Agent not found" || error.message === "Project not found");
 }
 
 async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
@@ -627,13 +633,28 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
-      const policies = await Promise.all(rows.map((row) => buildPolicySummary(row)));
+      const policies: BudgetPolicySummary[] = [];
+      for (const row of rows) {
+        try {
+          policies.push(await buildPolicySummary(row));
+        } catch (error) {
+          if (!isDanglingScopeError(error)) throw error;
+        }
+      }
       const activeIncidentRows = await db
         .select()
         .from(budgetIncidents)
         .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
         .orderBy(desc(budgetIncidents.createdAt));
-      const activeIncidents = await hydrateIncidentRows(activeIncidentRows);
+      const activeIncidents: BudgetIncident[] = [];
+      for (const row of activeIncidentRows) {
+        try {
+          const [hydrated] = await hydrateIncidentRows([row]);
+          if (hydrated) activeIncidents.push(hydrated);
+        } catch (error) {
+          if (!isDanglingScopeError(error)) throw error;
+        }
+      }
       return {
         companyId,
         policies,

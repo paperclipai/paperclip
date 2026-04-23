@@ -4,6 +4,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  budgetIncidents,
+  budgetPolicies,
   companies,
   companySkills,
   createDb,
@@ -43,6 +45,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(issueReadStates);
     await db.delete(issueComments);
     await db.delete(issueExecutionDecisions);
+    await db.delete(budgetIncidents);
+    await db.delete(budgetPolicies);
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -184,5 +188,43 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes agent-scoped budget rows when deleting an agent", async () => {
+    const { agentId, companyId } = await seedFixture();
+    const policyId = randomUUID();
+
+    await db.insert(budgetPolicies).values({
+      id: policyId,
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 5000,
+    });
+
+    await db.insert(budgetIncidents).values({
+      id: randomUUID(),
+      companyId,
+      policyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      windowStart: new Date(Date.UTC(2026, 3, 1, 0, 0, 0, 0)),
+      windowEnd: new Date(Date.UTC(2026, 4, 1, 0, 0, 0, 0)),
+      thresholdType: "hard",
+      amountLimit: 5000,
+      amountObserved: 5100,
+      status: "open",
+      approvalId: null,
+    });
+
+    const removed = await agentService(db).remove(agentId);
+
+    expect(removed?.id).toBe(agentId);
+    await expect(db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(budgetIncidents).where(eq(budgetIncidents.scopeId, agentId))).resolves.toHaveLength(0);
   });
 });
