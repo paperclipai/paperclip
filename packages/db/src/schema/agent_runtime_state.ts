@@ -16,6 +16,13 @@ export const agentRuntimeState = pgTable(
     totalOutputTokens: bigint("total_output_tokens", { mode: "number" }).notNull().default(0),
     totalCachedInputTokens: bigint("total_cached_input_tokens", { mode: "number" }).notNull().default(0),
     totalCostCents: bigint("total_cost_cents", { mode: "number" }).notNull().default(0),
+    /**
+     * Pay-as-you-go reference total. Equal to totalCostCents for "api"
+     * billing; for "subscription_included" runs it carries the hypothetical
+     * pay-as-you-go cost so management dashboards can show "what this would
+     * have cost on the metered plan" independently of the actual ledger.
+     */
+    totalReferenceCostCents: bigint("total_reference_cost_cents", { mode: "number" }).notNull().default(0),
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

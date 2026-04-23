@@ -16,7 +16,14 @@ export interface CostEvent {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** Actually billed cost (0 for subscription-included runs). */
   costCents: number;
+  /**
+   * Pay-as-you-go reference cost. Equal to costCents for metered billing
+   * ("api"); for "subscription_included" runs it carries the computed
+   * metered-equivalent figure so management dashboards can compare plans.
+   */
+  referenceCostCents: number;
   occurredAt: Date;
   createdAt: Date;
 }
@@ -24,6 +31,7 @@ export interface CostEvent {
 export interface CostSummary {
   companyId: string;
   spendCents: number;
+  referenceSpendCents: number;
   budgetCents: number;
   utilizationPercent: number;
 }
@@ -48,6 +56,7 @@ export interface CostByAgent {
   agentName: string | null;
   agentStatus: string | null;
   costCents: number;
+  referenceCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -64,6 +73,7 @@ export interface CostByProviderModel {
   billingType: BillingType;
   model: string;
   costCents: number;
+  referenceCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -77,6 +87,7 @@ export interface CostByProviderModel {
 export interface CostByBiller {
   biller: string;
   costCents: number;
+  referenceCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -98,6 +109,7 @@ export interface CostByAgentModel {
   billingType: BillingType;
   model: string;
   costCents: number;
+  referenceCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -112,6 +124,7 @@ export interface CostWindowSpendRow {
   /** rolling window duration in hours */
   windowHours: number;
   costCents: number;
+  referenceCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -122,6 +135,7 @@ export interface CostByProject {
   projectId: string | null;
   projectName: string | null;
   costCents: number;
+  referenceCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

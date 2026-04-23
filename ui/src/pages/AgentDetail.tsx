@@ -1380,6 +1380,18 @@ function CostsSection({
             <div>
               <span className="text-xs text-muted-foreground block">Total cost</span>
               <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
+              {/* Reference cost = pay-as-you-go equivalent. Shown when it differs
+                  from the billed total (subscription-included runs contribute 0
+                  to totalCostCents but still report referenceCostCents). */}
+              {runtimeState.totalReferenceCostCents != null &&
+                runtimeState.totalReferenceCostCents !== runtimeState.totalCostCents && (
+                  <span
+                    className="block text-xs text-muted-foreground mt-0.5"
+                    title="What this would have cost on Z.AI / provider pay-as-you-go pricing. Runs billed via subscription (e.g. Z.AI Coding Plan, Claude Pro) report 0 in the actual ledger but carry a reference value here for management comparison."
+                  >
+                    ref (pay-as-you-go): {formatCents(runtimeState.totalReferenceCostCents)}
+                  </span>
+                )}
             </div>
           </div>
         </div>

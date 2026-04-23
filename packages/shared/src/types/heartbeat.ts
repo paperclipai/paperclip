@@ -120,7 +120,14 @@ export interface AgentRuntimeState {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCachedInputTokens: number;
+  /** Actually billed cost (0 contribution from subscription_included runs). */
   totalCostCents: number;
+  /**
+   * Pay-as-you-go reference total. Equal to totalCostCents for metered runs;
+   * for subscription_included runs it carries the pay-as-you-go equivalent
+   * so management views can show "what this would have cost on the metered plan".
+   */
+  totalReferenceCostCents: number;
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;
