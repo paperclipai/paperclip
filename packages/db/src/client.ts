@@ -46,7 +46,22 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url, { prepare: false });
+  // drizzle's postgres-js adapter calls `client.unsafe(query, params)`,
+  // which skips postgres.js default type inference — so Date bindings for
+  // timestamptz columns reach the wire as raw Date instances and trip
+  // `ERR_INVALID_ARG_TYPE: Received an instance of Date` at bytes.js:22.
+  // Register an explicit `date` type handler that serializes Date → ISO.
+  const sql = postgres(url, {
+    types: {
+      date: {
+        to: 1184,
+        from: [1082, 1114, 1184],
+        serialize: (x: Date | string) =>
+          x instanceof Date ? x.toISOString() : String(x),
+        parse: (x: string) => new Date(x),
+      },
+    },
+  });
   return drizzlePg(sql, { schema });
 }
 
