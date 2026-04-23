@@ -46,7 +46,7 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  const sql = postgres(url, { prepare: false });
   return drizzlePg(sql, { schema });
 }
 
