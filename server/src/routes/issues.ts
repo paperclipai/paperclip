@@ -102,6 +102,7 @@ type ExecutionStageWakeContext = {
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
 };
+type UnknownFields = { [key: string]: unknown };
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -109,6 +110,11 @@ function executionPrincipalsEqual(
 ) {
   if (!left || !right || left.type !== right.type) return false;
   return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
+}
+
+function readUnknownField(value: unknown, key: string) {
+  if (!value || typeof value !== "object") return undefined;
+  return (value as UnknownFields)[key];
 }
 
 function buildExecutionStageWakeContext(input: {
@@ -485,10 +491,10 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
+  function canCreateAgentsLegacy(agent: { permissions: UnknownFields | null | undefined; role: string }) {
     if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+    return Boolean(agent.permissions.canCreateAgents);
   }
 
   async function assertCanAssignTasks(req: Request, companyId: string) {
@@ -615,8 +621,8 @@ export function issueRoutes(
         activeRun &&
         activeRun.contextSnapshot &&
         typeof activeRun.contextSnapshot === "object" &&
-        typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
-          ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+        typeof readUnknownField(activeRun.contextSnapshot, "issueId") === "string"
+          ? (readUnknownField(activeRun.contextSnapshot, "issueId") as string)
           : null;
       if (activeRun && activeRun.status === "running" && activeIssueId === issue.id) {
         runToInterrupt = activeRun;
@@ -2001,10 +2007,12 @@ export function issueRoutes(
     }
 
     // Build activity details with previous values for changed fields
-    const previous: Record<string, unknown> = {};
+    const previous: UnknownFields = {};
+    const existingFields = existing as UnknownFields;
+    const updatedFields = updateFields as UnknownFields;
     for (const key of Object.keys(updateFields)) {
-      if (key in existing && (existing as Record<string, unknown>)[key] !== (updateFields as Record<string, unknown>)[key]) {
-        previous[key] = (existing as Record<string, unknown>)[key];
+      if (key in existing && existingFields[key] !== updatedFields[key]) {
+        previous[key] = existingFields[key];
       }
     }
     if (Array.isArray(req.body.blockedByIssueIds)) {
@@ -2297,7 +2305,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || isClosed || isClosedIssueStatus(issue.status);
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
