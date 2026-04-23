@@ -10,7 +10,7 @@ function createContext(overrides: Partial<any> = {}) {
     agent: {
       id: "agent-1",
       companyId: "company-1",
-      name: "Abner",
+      name: "Remote Agent",
       adapterType: "hermes_gateway",
       adapterConfig: {},
     },
@@ -21,7 +21,7 @@ function createContext(overrides: Partial<any> = {}) {
       taskKey: null,
     },
     config: {
-      url: "http://hermes-service:8642/v1",
+      url: "http://hermes-gateway.local/v1",
     },
     context: {
       issueId: "issue-1",
@@ -61,7 +61,7 @@ describe("hermes_gateway execute", () => {
 
     const { ctx, metas } = createContext({
       config: {
-        url: "http://hermes-service:8642/v1",
+        url: "http://hermes-gateway.local/v1",
         apiMode: "chat_completions",
       },
     });
@@ -70,7 +70,7 @@ describe("hermes_gateway execute", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(String(url)).toBe("http://hermes-service:8642/v1/chat/completions");
+    expect(String(url)).toBe("http://hermes-gateway.local/v1/chat/completions");
     expect(JSON.parse(String(init.body))).toMatchObject({
       stream: false,
       messages: expect.any(Array),
@@ -105,7 +105,7 @@ describe("hermes_gateway execute", () => {
 
     const { ctx, metas } = createContext({
       config: {
-        url: "http://hermes-service:8642/v1",
+        url: "http://hermes-gateway.local/v1",
         apiMode: "responses",
         sessionKeyStrategy: "issue",
       },
@@ -115,7 +115,7 @@ describe("hermes_gateway execute", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(String(url)).toBe("http://hermes-service:8642/v1/responses");
+    expect(String(url)).toBe("http://hermes-gateway.local/v1/responses");
     const body = JSON.parse(String(init.body));
     expect(body).toMatchObject({
       stream: false,
@@ -162,7 +162,7 @@ describe("hermes_gateway execute", () => {
 
     const { ctx } = createContext({
       config: {
-        url: "http://hermes-service:8642/v1/chat/completions",
+        url: "http://hermes-gateway.local/v1/chat/completions",
         apiMode: "responses",
       },
     });
@@ -170,7 +170,7 @@ describe("hermes_gateway execute", () => {
     await execute(ctx);
 
     const [url] = fetchMock.mock.calls[0] as [string];
-    expect(String(url)).toBe("http://hermes-service:8642/v1/responses");
+    expect(String(url)).toBe("http://hermes-gateway.local/v1/responses");
   });
 
   it("supports fixed session keys in responses mode", async () => {
@@ -193,10 +193,10 @@ describe("hermes_gateway execute", () => {
 
     const { ctx } = createContext({
       config: {
-        url: "http://hermes-service:8642/v1",
+        url: "http://hermes-gateway.local/v1",
         apiMode: "responses",
         sessionKeyStrategy: "fixed",
-        sessionKey: "paperclip:agent:abner",
+        sessionKey: "paperclip:agent:leader",
       },
     });
 
@@ -204,8 +204,8 @@ describe("hermes_gateway execute", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body));
-    expect(body.conversation).toBe("paperclip:agent:abner");
-    expect(result.sessionDisplayId).toBe("paperclip:agent:abner");
+    expect(body.conversation).toBe("paperclip:agent:leader");
+    expect(result.sessionDisplayId).toBe("paperclip:agent:leader");
   });
 
   it("warns when fixed session strategy is selected without a session key", async () => {
@@ -228,7 +228,7 @@ describe("hermes_gateway execute", () => {
 
     const { ctx, logs } = createContext({
       config: {
-        url: "http://hermes-service:8642/v1",
+        url: "http://hermes-gateway.local/v1",
         apiMode: "responses",
         sessionKeyStrategy: "fixed",
         sessionKey: "",
@@ -265,7 +265,7 @@ describe("hermes_gateway execute", () => {
 
     const { ctx } = createContext({
       config: {
-        url: "http://hermes-service:8642/v1",
+        url: "http://hermes-gateway.local/v1",
         apiMode: "chat_completions",
         model: "",
       },

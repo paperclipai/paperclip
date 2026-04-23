@@ -14,7 +14,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
           code: "hermes_api_url_missing",
           level: "error",
           message: "No URL configured for Hermes Gateway adapter.",
-          hint: "Set adapterConfig.url to the Hermes API base URL, for example http://hermes-service:8642/v1",
+          hint: "Set adapterConfig.url to the Hermes API base URL, for example http://hermes-gateway.local/v1",
         },
       ],
       testedAt: new Date().toISOString(),
