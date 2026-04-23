@@ -228,7 +228,10 @@ function extractResponsesModel(data: any): string | null {
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, onLog, onMeta } = ctx;
 
-  const configuredUrl = asString(config.url, "http://localhost:8080/v1");
+  const configuredUrl = asString(config.url, "").trim();
+  if (configuredUrl.length === 0) {
+    throw new Error("Hermes gateway adapter requires config.url to be set.");
+  }
   const apiMode = resolveApiMode(config, configuredUrl);
   const requestUrl = deriveRequestUrl(configuredUrl, apiMode);
   const apiKey = asString(config.apiKey, "");
