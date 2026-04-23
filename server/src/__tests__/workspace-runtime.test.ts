@@ -71,6 +71,7 @@ async function createTempRepo(defaultBranch = "main") {
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await runGit(repoRoot, ["config", "core.hooksPath", ".git/hooks"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
   await runGit(repoRoot, ["add", "README.md"]);
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
@@ -100,14 +101,14 @@ function createWorkspaceOperationRecorderDouble() {
     phase: string;
     command: string | null;
     cwd: string | null;
-    metadata: Record<string, unknown> | null;
+    metadata: WorkspaceOperation["metadata"];
     result: {
       status?: string;
       exitCode?: number | null;
       stdout?: string | null;
       stderr?: string | null;
       system?: string | null;
-      metadata?: Record<string, unknown> | null;
+      metadata?: WorkspaceOperation["metadata"];
     };
   }> = [];
   let executionWorkspaceId: string | null = null;
