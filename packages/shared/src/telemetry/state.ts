@@ -33,8 +33,18 @@ export function loadOrCreateState(stateDir: string, version: string): TelemetryS
   try {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(filePath, JSON.stringify(state, null, 2) + "\n", "utf-8");
-  } catch {
+  } catch (err) {
     // Swallow; telemetry must never be load-bearing for request handling.
+    // Emit a single stderr warning so operators can see that persistence is
+    // degraded (e.g. volume UID mismatch) and investigate — silent fallback
+    // would mask legitimate deploy misconfiguration.
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[telemetry] persistence disabled: cannot write state at ${filePath} (${reason}). ` +
+        "installId will regenerate each process start. This does not affect product data " +
+        "(stored in Postgres / volume). Fix by ensuring the runtime user can write to the " +
+        "telemetry directory (typically chown -R <runtime-user>:<group> on the paperclip volume).",
+    );
   }
   return state;
 }
