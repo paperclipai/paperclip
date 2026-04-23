@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySecret } from "@paperclipai/shared";
 import type { AdapterConfigFieldsProps } from "../types";
@@ -71,6 +71,11 @@ function SecretValueField({
 }) {
   const current = useMemo(() => readSecretRef(value), [value]);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"plain" | "secret">(current.mode);
+
+  useEffect(() => {
+    setMode(current.mode);
+  }, [current.mode]);
 
   async function sealValue() {
     if (!current.plainValue.trim()) return;
@@ -92,15 +97,14 @@ function SecretValueField({
       <div className="space-y-1.5">
         <div className="flex items-center gap-1.5">
           <Select
-            value={current.mode}
+            value={mode}
             onValueChange={(value) => {
               const nextMode = value === "secret" ? "secret" : "plain";
+              setMode(nextMode);
               if (nextMode === "secret") {
-                onChange(
-                  current.secretId
-                    ? { type: "secret_ref", secretId: current.secretId, version: "latest" }
-                    : undefined,
-                );
+                if (current.secretId) {
+                  onChange({ type: "secret_ref", secretId: current.secretId, version: "latest" });
+                }
               } else {
                 onChange(current.plainValue || undefined);
               }
@@ -115,7 +119,7 @@ function SecretValueField({
             </SelectContent>
           </Select>
 
-          {current.mode === "secret" ? (
+          {mode === "secret" ? (
             <Select
               value={current.secretId || undefined}
               onValueChange={(secretId) => {
@@ -142,7 +146,7 @@ function SecretValueField({
             />
           )}
 
-          {current.mode === "plain" && (
+          {mode === "plain" && (
             <button
               type="button"
               className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
