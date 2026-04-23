@@ -76,6 +76,32 @@ describe("parseCopilotJsonOutput", () => {
         "Error: invalid value 'task-123' for '--resume [<SESSION_ID>]': value is not a valid uuid",
     });
   });
+
+  it("ignores benign stderr session notices", () => {
+    const stdout = JSON.stringify({
+      type: "result",
+      sessionId: "copilot-session-1",
+      exitCode: 0,
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+      },
+    });
+
+    expect(
+      parseCopilotJsonOutput(stdout, "Session created: copilot-session-1"),
+    ).toEqual({
+      sessionId: "copilot-session-1",
+      summary: "",
+      usage: {
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        outputTokens: 1,
+      },
+      costUsd: null,
+      errorMessage: null,
+    });
+  });
 });
 
 describe("isCopilotUnknownSessionError", () => {

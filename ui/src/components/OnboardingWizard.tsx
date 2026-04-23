@@ -39,6 +39,7 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_COPILOT_LOCAL_MODEL } from "@paperclipai/adapter-copilot-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
@@ -219,6 +220,7 @@ export function OnboardingWizard() {
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
+    copilot_local: "copilot",
     gemini_local: "gemini",
     pi_local: "pi",
     cursor: "agent",
@@ -320,6 +322,8 @@ export function OnboardingWizard() {
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
+          : adapterType === "copilot_local"
+            ? model || DEFAULT_COPILOT_LOCAL_MODEL
           : adapterType === "gemini_local"
             ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "cursor"
@@ -763,8 +767,13 @@ export function OnboardingWizard() {
                             setAdapterType(nextType);
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                              return;
                             }
-                            if (nextType !== "codex_local") {
+                            if (nextType === "copilot_local") {
+                              setModel(DEFAULT_COPILOT_LOCAL_MODEL);
+                              return;
+                            }
+                            if (nextType !== "codex_local" && nextType !== "copilot_local") {
                               setModel("");
                             }
                           }}
@@ -818,13 +827,17 @@ export function OnboardingWizard() {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                 return;
                               }
-                              if (nextType === "cursor" && !model) {
-                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "opencode_local") {
-                                if (!model.includes("/")) {
-                                  setModel("");
+                               if (nextType === "cursor" && !model) {
+                                 setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                                 return;
+                               }
+                                if (nextType === "copilot_local") {
+                                  setModel(DEFAULT_COPILOT_LOCAL_MODEL);
+                                  return;
+                                }
+                               if (nextType === "opencode_local") {
+                                 if (!model.includes("/")) {
+                                   setModel("");
                                 }
                                 return;
                               }
@@ -1017,7 +1030,9 @@ export function OnboardingWizard() {
                             {adapterType === "cursor"
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
                               : adapterType === "codex_local"
-                              ? `${effectiveAdapterCommand} exec --json -`
+                                ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "copilot_local"
+                                ? `${effectiveAdapterCommand} --allow-all-tools --output-format json --stream off -p "Respond with hello."`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "opencode_local"
@@ -1030,26 +1045,31 @@ export function OnboardingWizard() {
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
+                          adapterType === "copilot_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
                               If auth fails, set{" "}
-                              <span className="font-mono">
-                                {adapterType === "cursor"
-                                  ? "CURSOR_API_KEY"
-                                  : adapterType === "gemini_local"
-                                    ? "GEMINI_API_KEY"
+                                <span className="font-mono">
+                                   {adapterType === "cursor"
+                                     ? "CURSOR_API_KEY"
+                                   : adapterType === "copilot_local"
+                                       ? "COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN"
+                                    : adapterType === "gemini_local"
+                                      ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
-                              </span>{" "}
+                                </span>{" "}
                               in env or run{" "}
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
-                                  : adapterType === "codex_local"
-                                    ? "codex login"
-                                    : adapterType === "gemini_local"
-                                      ? "gemini auth"
-                                      : "opencode auth login"}
+                                    : adapterType === "codex_local"
+                                      ? "codex login"
+                                    : adapterType === "copilot_local"
+                                      ? "copilot login"
+                                     : adapterType === "gemini_local"
+                                       ? "gemini auth"
+                                    : "opencode auth login"}
                               </span>
                               .
                             </p>

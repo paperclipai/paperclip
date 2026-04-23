@@ -21,6 +21,15 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+const STDERR_ERROR_RE =
+  /(error|failed|not\s+logged\s+in|unauthorized|forbidden|invalid|resume failed|session not found|unknown session|denied|timed\s*out)/i;
+
+function parseStderrFallback(stderr: string): string | null {
+  const first = firstNonEmptyLine(stderr);
+  if (!first) return null;
+  return STDERR_ERROR_RE.test(first) ? first : null;
+}
+
 function extractPayload(record: Record<string, unknown>): Record<string, unknown> {
   const payload = parseObject(record.data);
   return Object.keys(payload).length > 0 ? payload : record;
@@ -263,7 +272,7 @@ function parseObjects(stdout: string): Record<string, unknown>[] {
   return parsed;
 }
 
-export function parseCopilotJsonOutput(stdout: string) {
+export function parseCopilotJsonOutput(stdout: string, stderr = "") {
   let sessionId: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
@@ -283,7 +292,7 @@ export function parseCopilotJsonOutput(stdout: string) {
         summary: "",
         usage,
         costUsd,
-        errorMessage: null,
+        errorMessage: parseStderrFallback(stderr),
       };
     }
 
@@ -324,7 +333,7 @@ export function parseCopilotJsonOutput(stdout: string) {
     summary: messages.join("\n\n").trim(),
     usage,
     costUsd,
-    errorMessage: errors.length > 0 ? errors.join("\n") : null,
+    errorMessage: errors.length > 0 ? errors.join("\n") : parseStderrFallback(stderr),
   };
 }
 

@@ -37,7 +37,7 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 }
 
 const COPILOT_AUTH_REQUIRED_RE =
-  /(?:auth(?:entication)?\s+required|not\s+logged\s+in|please\s+run\s+copilot\s+auth|unauthorized|forbidden|token\s+expired)/i;
+  /(?:auth(?:entication)?\s+required|not\s+logged\s+in|please\s+run\s+copilot\s+(?:auth|login)|unauthorized|forbidden|token\s+expired)/i;
 
 function applyCopilotAuthEnvAliases(env: Record<string, string>): void {
   const token = env.COPILOT_GITHUB_TOKEN?.trim();
@@ -113,7 +113,7 @@ export async function testEnvironment(
         onLog: async () => {},
       },
     );
-    const parsed = parseCopilotJsonOutput(probe.stdout);
+    const parsed = parseCopilotJsonOutput(probe.stdout, probe.stderr);
     const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
     const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
 
@@ -141,7 +141,7 @@ export async function testEnvironment(
         level: "warn",
         message: "Copilot CLI is installed, but authentication is not ready.",
         ...(detail ? { detail } : {}),
-        hint: "Run `copilot auth login` (or configure credentials) and retry.",
+        hint: "Run `copilot login` (or configure credentials) and retry.",
       });
     } else {
       checks.push({
