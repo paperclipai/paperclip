@@ -2,12 +2,13 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclip
 import { asString, asNumber } from "@paperclipai/adapter-utils/server-utils";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, config, context, onLog, onMeta } = ctx;
+  const { config, onLog, onMeta } = ctx;
 
   const url = asString(config.url, "http://localhost:8080/v1/chat/completions");
   const apiKey = asString(config.apiKey, "");
   const model = asString(config.model, "anthropic/claude-3-5-sonnet-20241022");
-  
+  const timeoutMs = asNumber(config.timeoutSec, 300) * 1000;
+
   const promptTemplate = asString(
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work."
@@ -48,11 +49,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stream: false
     };
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestBody),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -87,13 +97,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSession: false,
     };
   } catch (error: any) {
+    const timedOut = error?.name === "AbortError";
     await onLog("stderr", `[paperclip] Failed to invoke Hermes: ${error.message}\n`);
     return {
       exitCode: 1,
       signal: null,
-      timedOut: false,
+      timedOut,
       errorMessage: `Failed to invoke Hermes: ${error.message}`,
-      errorCode: "hermes_invoke_failed",
+      errorCode: timedOut ? "hermes_timeout" : "hermes_invoke_failed",
       clearSession: true,
     };
   }

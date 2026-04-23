@@ -58,7 +58,6 @@ import {
 import {
   execute as hermesGatewayExecute,
   testEnvironment as hermesGatewayTestEnvironment,
-  sessionCodec as hermesGatewaySessionCodec,
 } from "@paperclipai/adapter-hermes-gateway/server";
 import {
   agentConfigurationDoc as hermesGatewayAgentConfigurationDoc,
@@ -211,7 +210,6 @@ const hermesGatewayAdapter: ServerAdapterModule = {
   type: "hermes_gateway",
   execute: hermesGatewayExecute,
   testEnvironment: hermesGatewayTestEnvironment,
-  sessionCodec: hermesGatewaySessionCodec,
   models: hermesGatewayModels,
   supportsLocalAgentJwt: false,
   agentConfigurationDoc: hermesGatewayAgentConfigurationDoc,
