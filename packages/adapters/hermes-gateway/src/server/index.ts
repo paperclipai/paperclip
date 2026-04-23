@@ -8,11 +8,11 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
   if (!url) {
     return {
       adapterType: ctx.adapterType,
-      status: "warn",
+      status: "fail",
       checks: [
         {
           code: "hermes_api_url_missing",
-          level: "warn",
+          level: "error",
           message: "No URL configured for Hermes Gateway adapter.",
           hint: "Set adapterConfig.url to the Hermes API base URL, for example http://hermes-service:8642/v1",
         },
