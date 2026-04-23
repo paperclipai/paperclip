@@ -2368,7 +2368,7 @@ export function issueService(db: Db) {
           const adopted = await adoptMissingCheckoutRun({
             issueId: id,
             actorAgentId,
-            actorRunId,
+            actorRunId: staleExecutionRunId,
             expectedExecutionRunId: staleExecutionRunId,
           });
 
