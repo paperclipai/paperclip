@@ -31,6 +31,7 @@ type TransitionInput = {
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
   commentBody?: string | null;
+  reviewRequest?: IssueExecutionState["reviewRequest"] | null;
 };
 
 type TransitionResult = {
@@ -168,9 +169,48 @@ function buildCompletedState(previous: IssueExecutionState | null, currentStage:
     currentStageType: null,
     currentParticipant: null,
     returnAssignee: previous?.returnAssignee ?? null,
+    reviewRequest: null,
     completedStageIds,
     lastDecisionId: previous?.lastDecisionId ?? null,
     lastDecisionOutcome: "approved",
+  };
+}
+
+function buildStateWithCompletedStages(input: {
+  previous: IssueExecutionState | null;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}): IssueExecutionState {
+  return {
+    status: input.previous?.status ?? PENDING_STATUS,
+    currentStageId: input.previous?.currentStageId ?? null,
+    currentStageIndex: input.previous?.currentStageIndex ?? null,
+    currentStageType: input.previous?.currentStageType ?? null,
+    currentParticipant: input.previous?.currentParticipant ?? null,
+    returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
+    reviewRequest: input.previous?.reviewRequest ?? null,
+    completedStageIds: input.completedStageIds,
+    lastDecisionId: input.previous?.lastDecisionId ?? null,
+    lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
+  };
+}
+
+function buildSkippedStageCompletedState(input: {
+  previous: IssueExecutionState | null;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}): IssueExecutionState {
+  return {
+    status: COMPLETED_STATUS,
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
+    reviewRequest: null,
+    completedStageIds: input.completedStageIds,
+    lastDecisionId: input.previous?.lastDecisionId ?? null,
+    lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
   };
 }
 
@@ -180,6 +220,7 @@ function buildPendingState(input: {
   stageIndex: number;
   participant: IssueExecutionStagePrincipal;
   returnAssignee: IssueExecutionStagePrincipal | null;
+  reviewRequest?: IssueExecutionState["reviewRequest"] | null;
 }): IssueExecutionState {
   return {
     status: PENDING_STATUS,
@@ -188,6 +229,7 @@ function buildPendingState(input: {
     currentStageType: input.stage.type,
     currentParticipant: input.participant,
     returnAssignee: input.returnAssignee,
+    reviewRequest: input.reviewRequest ?? null,
     completedStageIds: input.previous?.completedStageIds ?? [],
     lastDecisionId: input.previous?.lastDecisionId ?? null,
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
@@ -200,6 +242,7 @@ function buildChangesRequestedState(previous: IssueExecutionState, currentStage:
     status: CHANGES_REQUESTED_STATUS,
     currentStageId: currentStage.id,
     currentStageType: currentStage.type,
+    reviewRequest: null,
     lastDecisionOutcome: "changes_requested",
   };
 }
@@ -211,6 +254,7 @@ function buildPendingStagePatch(input: {
   stage: IssueExecutionStage;
   participant: IssueExecutionStagePrincipal;
   returnAssignee: IssueExecutionStagePrincipal | null;
+  reviewRequest?: IssueExecutionState["reviewRequest"] | null;
 }) {
   input.patch.status = "in_review";
   Object.assign(input.patch, patchForPrincipal(input.participant));
@@ -220,6 +264,7 @@ function buildPendingStagePatch(input: {
     stageIndex: input.policy.stages.findIndex((candidate) => candidate.id === input.stage.id),
     participant: input.participant,
     returnAssignee: input.returnAssignee,
+    reviewRequest: input.reviewRequest,
   });
 }
 
@@ -236,6 +281,18 @@ function clearExecutionStatePatch(input: {
   }
 }
 
+function canAutoSkipPendingStage(input: {
+  stage: IssueExecutionStage;
+  returnAssignee: IssueExecutionStagePrincipal | null;
+  requestedStatus?: string;
+}) {
+  if (input.requestedStatus !== "done" || input.stage.type !== "review" || !input.returnAssignee) {
+    return false;
+  }
+  return input.stage.participants.length > 0 &&
+    input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
+}
+
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -247,6 +304,9 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   const currentStage = input.policy ? findStageById(input.policy, existingState?.currentStageId) : null;
   const requestedStatus = input.requestedStatus;
   const activeStage = currentStage && existingState?.status === PENDING_STATUS ? currentStage : null;
+  const effectiveReviewRequest = input.reviewRequest === undefined
+    ? existingState?.reviewRequest ?? null
+    : input.reviewRequest;
 
   if (!input.policy) {
     if (existingState) {
@@ -311,6 +371,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
         stage: activeStage,
         participant,
         returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        reviewRequest: effectiveReviewRequest,
       });
       return {
         patch,
@@ -357,6 +418,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
           stage: nextStage,
           participant,
           returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          reviewRequest: input.reviewRequest ?? null,
         });
         return {
           patch,
@@ -413,6 +475,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
         stage: activeStage,
         participant: currentParticipant,
         returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        reviewRequest: effectiveReviewRequest,
       });
       return {
         patch,
@@ -431,31 +494,66 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
     return { patch };
   }
 
-  const pendingStage =
+  let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
-  const participant = selectStageParticipant(pendingStage, {
+  const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
+  let participant = selectStageParticipant(pendingStage, {
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
     exclude: returnAssignee,
   });
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
+    skippedStageIds.push(pendingStage.id);
+    pendingStage = nextPendingStage(
+      input.policy,
+      buildStateWithCompletedStages({
+        previous: existingState,
+        completedStageIds: skippedStageIds,
+        returnAssignee,
+      }),
+    );
+    if (!pendingStage) {
+      patch.executionState = buildSkippedStageCompletedState({
+        previous: existingState,
+        completedStageIds: skippedStageIds,
+        returnAssignee,
+      });
+      return { patch };
+    }
+    participant = selectStageParticipant(pendingStage, {
+      preferred:
+        existingState?.status === CHANGES_REQUESTED_STATUS
+          ? explicitAssignee ?? existingState.currentParticipant ?? null
+          : explicitAssignee,
+      exclude: returnAssignee,
+    });
+  }
   if (!participant) {
     throw unprocessable(`No eligible ${pendingStage.type} participant is configured for this issue`);
   }
 
   buildPendingStagePatch({
     patch,
-    previous: existingState,
+    previous:
+      skippedStageIds.length === (existingState?.completedStageIds ?? []).length
+        ? existingState
+        : buildStateWithCompletedStages({
+            previous: existingState,
+            completedStageIds: skippedStageIds,
+            returnAssignee,
+          }),
     policy: input.policy,
     stage: pendingStage,
     participant,
     returnAssignee,
+    reviewRequest: input.reviewRequest ?? null,
   });
   return {
     patch,

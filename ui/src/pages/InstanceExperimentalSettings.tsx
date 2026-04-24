@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical } from "lucide-react";
+import type { PatchInstanceExperimentalSettings } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -24,7 +25,7 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
+    mutationFn: async (patch: PatchInstanceExperimentalSettings) =>
       instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
@@ -52,6 +53,7 @@ export function InstanceExperimentalSettings() {
     );
   }
 
+  const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
 
@@ -72,6 +74,24 @@ export function InstanceExperimentalSettings() {
           {actionError}
         </div>
       )}
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Enable Environments</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show environment management in company settings and allow project and agent environment assignment
+              controls.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableEnvironments}
+            onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle environments experimental setting"
+          />
+        </div>
+      </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
