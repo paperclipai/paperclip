@@ -214,9 +214,9 @@ describe("claude remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "session-123",
+        sessionId: "550e8400-e29b-41d4-a716-446655440000",
         sessionParams: {
-          sessionId: "session-123",
+          sessionId: "550e8400-e29b-41d4-a716-446655440000",
           cwd: "/remote/workspace",
           remoteExecution: {
             transport: "ssh",
@@ -226,7 +226,7 @@ describe("claude remote execution", () => {
             remoteCwd: "/remote/workspace",
           },
         },
-        sessionDisplayId: "session-123",
+        sessionDisplayId: "550e8400-e29b-41d4-a716-446655440000",
         taskKey: null,
       },
       config: {
@@ -256,7 +256,7 @@ describe("claude remote execution", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
-    expect(call?.[2]).toContain("session-123");
+    expect(call?.[2]).toContain("550e8400-e29b-41d4-a716-446655440000");
   });
 
 });

@@ -1,0 +1,871 @@
+[2026-04-21T14:56:00.946Z] [debug] [vite] connecting...
+[2026-04-21T14:56:00.981Z] [debug] [vite] connected.
+[2026-04-21T14:56:01.293Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:56:42.185Z] [debug] [vite] connecting...
+[2026-04-21T14:56:42.210Z] [debug] [vite] connected.
+[2026-04-21T14:56:42.486Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:56:54.657Z] [debug] [vite] connecting...
+[2026-04-21T14:56:54.689Z] [debug] [vite] connected.
+[2026-04-21T14:56:55.064Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:57:06.720Z] [debug] [vite] connecting...
+[2026-04-21T14:57:06.744Z] [debug] [vite] connected.
+[2026-04-21T14:57:07.046Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:57:20.775Z] [debug] [vite] connecting...
+[2026-04-21T14:57:20.817Z] [debug] [vite] connected.
+[2026-04-21T14:57:21.442Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:57:34.834Z] [debug] [vite] connecting...
+[2026-04-21T14:57:34.888Z] [debug] [vite] connected.
+[2026-04-21T14:57:35.413Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:57:48.250Z] [debug] [vite] connecting...
+[2026-04-21T14:57:48.291Z] [debug] [vite] connected.
+[2026-04-21T14:57:48.514Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:58:01.296Z] [debug] [vite] connecting...
+[2026-04-21T14:58:01.307Z] [debug] [vite] connected.
+[2026-04-21T14:58:01.690Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:58:14.691Z] [debug] [vite] connecting...
+[2026-04-21T14:58:14.716Z] [debug] [vite] connected.
+[2026-04-21T14:58:14.925Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:58:28.113Z] [debug] [vite] connecting...
+[2026-04-21T14:58:28.133Z] [debug] [vite] connected.
+[2026-04-21T14:58:28.357Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:58:29.864Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:58:30.884Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:58:32.890Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:58:36.898Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:58:41.346Z] [debug] [vite] connecting...
+[2026-04-21T14:58:41.385Z] [debug] [vite] connected.
+[2026-04-21T14:58:41.616Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:58:54.548Z] [debug] [vite] connecting...
+[2026-04-21T14:58:54.558Z] [debug] [vite] connected.
+[2026-04-21T14:58:54.984Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:59:09.797Z] [debug] [vite] connecting...
+[2026-04-21T14:59:09.827Z] [debug] [vite] connected.
+[2026-04-21T14:59:10.026Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:59:11.351Z] [error] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <a> a 
+
+  ...
+    <div className="flex min-w...">
+      <div>
+      <div className="flex flex-...">
+        <main id="main-content" ref={{...}} tabIndex={-1} className="flex-1 p-4...">
+          <Outlet>
+            <RenderedRoute match={{params:{...}, ...}} routeContext={{outlet:null, ...}}>
+              <AgentDetail>
+                <div className="space-y-6">
+                  <div>
+                  <Tabs>
+                  <div>
+                  <AgentOverview agent={{id:"d7f41c...", ...}} runs={[...]} assignedIssues={[...]} ...>
+                    <div className="space-y-8">
+                      <LatestRunCard runs={[...]} agentId="evidence-c...">
+                        <div className="space-y-3">
+                          <div>
+                          <CompanyLink to="/agents/ev..." className="block bord...">
+                            <LinkWithRef ref={null} to="/SUP/agent..." className="block bord...">
+>                             <a
+>                               className="block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors..."
+>                               href="/SUP/agents/evidence-critic/runs/e5600538-1f91-418e-babe-01cfac36ceda"
+>                               onClick={function handleClick}
+>                               ref={function}
+>                               target={undefined}
+>                               data-discover="true"
+>                             >
+                                <div>
+                                ...
+                                  <Primitive.button.Slot type="button" aria-haspopup="dialog" aria-expanded={false} ...>
+                                    <Primitive.button.SlotClone type="button" aria-haspopup="dialog" ...>
+                                      <LinkWithRef ref={function} to="/SUP/issue..." state={undefined} ...>
+>                                       <a
+>                                         className="inline-flex items-center gap-1.5 align-baseline"
+>                                         onMouseEnter={function}
+>                                         onFocus={function onFocus}
+>                                         onTouchStart={function onTouchStart}
+>                                         onClickCapture={function onClickCapture}
+>                                         type="button"
+>                                         aria-haspopup="dialog"
+>                                         aria-expanded={false}
+>                                         aria-controls="radix-_r_1a_"
+>                                         data-state="closed"
+>                                         data-slot="popover-trigger"
+>                                         onMouseLeave={function onMouseLeave}
+>                                         href="/SUP/issues/SUP-1251"
+>                                         onClick={function handleClick}
+>                                         ref={function}
+>                                         target={undefined}
+>                                         data-discover="true"
+>                                       >
+                      ...
+        ...
+
+[2026-04-21T14:59:11.351Z] [error] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. a <a>
+[2026-04-21T14:59:11.400Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:12.406Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:14.412Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:18.419Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:22.944Z] [debug] [vite] connecting...
+[2026-04-21T14:59:22.970Z] [debug] [vite] connected.
+[2026-04-21T14:59:23.209Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:59:23.595Z] [error] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <a> a 
+
+  ...
+    <div className="flex min-w...">
+      <div>
+      <div className="flex flex-...">
+        <main id="main-content" ref={{...}} tabIndex={-1} className="flex-1 p-4...">
+          <Outlet>
+            <RenderedRoute match={{params:{...}, ...}} routeContext={{outlet:null, ...}}>
+              <AgentDetail>
+                <div className="space-y-6">
+                  <div>
+                  <Tabs>
+                  <div>
+                  <AgentOverview agent={{id:"613ecd...", ...}} runs={[...]} assignedIssues={[...]} ...>
+                    <div className="space-y-8">
+                      <LatestRunCard runs={[...]} agentId="evidence-u...">
+                        <div className="space-y-3">
+                          <div>
+                          <CompanyLink to="/agents/ev..." className="block bord...">
+                            <LinkWithRef ref={null} to="/SUP/agent..." className="block bord...">
+>                             <a
+>                               className="block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors..."
+>                               href="/SUP/agents/evidence-upserter/runs/6f8c45b7-93e0-45c0-9f29-000b4ca7e98f"
+>                               onClick={function handleClick}
+>                               ref={function}
+>                               target={undefined}
+>                               data-discover="true"
+>                             >
+                                <div>
+                                ...
+                                  <Primitive.button.Slot type="button" aria-haspopup="dialog" aria-expanded={false} ...>
+                                    <Primitive.button.SlotClone type="button" aria-haspopup="dialog" ...>
+                                      <LinkWithRef ref={function} to="/SUP/issue..." state={undefined} ...>
+>                                       <a
+>                                         className="inline-flex items-center gap-1.5 align-baseline"
+>                                         onMouseEnter={function}
+>                                         onFocus={function onFocus}
+>                                         onTouchStart={function onTouchStart}
+>                                         onClickCapture={function onClickCapture}
+>                                         type="button"
+>                                         aria-haspopup="dialog"
+>                                         aria-expanded={false}
+>                                         aria-controls="radix-_r_10_"
+>                                         data-state="closed"
+>                                         data-slot="popover-trigger"
+>                                         onMouseLeave={function onMouseLeave}
+>                                         href="/SUP/issues/RESCORE-2026"
+>                                         onClick={function handleClick}
+>                                         ref={function}
+>                                         target={undefined}
+>                                         data-discover="true"
+>                                       >
+                      ...
+        ...
+
+[2026-04-21T14:59:23.595Z] [error] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. a <a>
+[2026-04-21T14:59:23.673Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:24.680Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:26.686Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:30.691Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T14:59:37.478Z] [debug] [vite] connecting...
+[2026-04-21T14:59:37.494Z] [debug] [vite] connected.
+[2026-04-21T14:59:37.821Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T14:59:51.363Z] [debug] [vite] connecting...
+[2026-04-21T14:59:51.390Z] [debug] [vite] connected.
+[2026-04-21T14:59:51.585Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:00:05.085Z] [debug] [vite] connecting...
+[2026-04-21T15:00:05.104Z] [debug] [vite] connected.
+[2026-04-21T15:00:05.381Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:00:22.725Z] [debug] [vite] connecting...
+[2026-04-21T15:00:22.747Z] [debug] [vite] connected.
+[2026-04-21T15:00:22.975Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:00:35.815Z] [debug] [vite] connecting...
+[2026-04-21T15:00:35.821Z] [debug] [vite] connected.
+[2026-04-21T15:00:36.075Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:00:56.351Z] [debug] [vite] connecting...
+[2026-04-21T15:00:56.406Z] [debug] [vite] connected.
+[2026-04-21T15:00:56.580Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:00:56.941Z] [error] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <a> a 
+
+  ...
+    <div className="flex min-w...">
+      <div>
+      <div className="flex flex-...">
+        <main id="main-content" ref={{...}} tabIndex={-1} className="flex-1 p-4...">
+          <Outlet>
+            <RenderedRoute match={{params:{...}, ...}} routeContext={{outlet:null, ...}}>
+              <AgentDetail>
+                <div className="space-y-6">
+                  <div>
+                  <Tabs>
+                  <div>
+                  <AgentOverview agent={{id:"4b4583...", ...}} runs={[...]} assignedIssues={[...]} ...>
+                    <div className="space-y-8">
+                      <LatestRunCard runs={[...]} agentId="seo-geo-op...">
+                        <div className="space-y-3">
+                          <div>
+                          <CompanyLink to="/agents/se..." className="block bord...">
+                            <LinkWithRef ref={null} to="/SUP/agent..." className="block bord...">
+>                             <a
+>                               className="block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors..."
+>                               href="/SUP/agents/seo-geo-optimizer/runs/b8574727-2d54-4c87-a819-3cc5cdabbf98"
+>                               onClick={function handleClick}
+>                               ref={function}
+>                               target={undefined}
+>                               data-discover="true"
+>                             >
+                                <div>
+                                ...
+                                  <Primitive.button.Slot type="button" aria-haspopup="dialog" aria-expanded={false} ...>
+                                    <Primitive.button.SlotClone type="button" aria-haspopup="dialog" ...>
+                                      <LinkWithRef ref={function} to="/SUP/issue..." state={undefined} ...>
+>                                       <a
+>                                         className="inline-flex items-center gap-1.5 align-baseline"
+>                                         onMouseEnter={function}
+>                                         onFocus={function onFocus}
+>                                         onTouchStart={function onTouchStart}
+>                                         onClickCapture={function onClickCapture}
+>                                         type="button"
+>                                         aria-haspopup="dialog"
+>                                         aria-expanded={false}
+>                                         aria-controls="radix-_r_10_"
+>                                         data-state="closed"
+>                                         data-slot="popover-trigger"
+>                                         onMouseLeave={function onMouseLeave}
+>                                         href="/SUP/issues/SUP-1239"
+>                                         onClick={function handleClick}
+>                                         ref={function}
+>                                         target={undefined}
+>                                         data-discover="true"
+>                                       >
+                      ...
+        ...
+
+[2026-04-21T15:00:56.941Z] [error] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. a <a>
+[2026-04-21T15:01:11.860Z] [debug] [vite] connecting...
+[2026-04-21T15:01:11.901Z] [debug] [vite] connected.
+[2026-04-21T15:01:12.203Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:01:51.047Z] [debug] [vite] connecting...
+[2026-04-21T15:01:51.089Z] [debug] [vite] connected.
+[2026-04-21T15:01:51.325Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:02:07.294Z] [debug] [vite] connecting...
+[2026-04-21T15:02:07.310Z] [debug] [vite] connected.
+[2026-04-21T15:02:07.621Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:02:22.230Z] [debug] [vite] connecting...
+[2026-04-21T15:02:22.256Z] [debug] [vite] connected.
+[2026-04-21T15:02:22.485Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:02:36.857Z] [debug] [vite] connecting...
+[2026-04-21T15:02:36.877Z] [debug] [vite] connected.
+[2026-04-21T15:02:37.283Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:02:56.657Z] [debug] [vite] connecting...
+[2026-04-21T15:02:56.699Z] [debug] [vite] connected.
+[2026-04-21T15:02:56.961Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:02:57.333Z] [error] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <a> a 
+
+  ...
+    <div className="flex min-w...">
+      <div>
+      <div className="flex flex-...">
+        <main id="main-content" ref={{...}} tabIndex={-1} className="flex-1 p-4...">
+          <Outlet>
+            <RenderedRoute match={{params:{...}, ...}} routeContext={{outlet:null, ...}}>
+              <AgentDetail>
+                <div className="space-y-6">
+                  <div>
+                  <Tabs>
+                  <div>
+                  <AgentOverview agent={{id:"bf5f74...", ...}} runs={[...]} assignedIssues={[...]} ...>
+                    <div className="space-y-8">
+                      <LatestRunCard runs={[...]} agentId="verificati...">
+                        <div className="space-y-3">
+                          <div>
+                          <CompanyLink to="/agents/ve..." className="block bord...">
+                            <LinkWithRef ref={null} to="/SUP/agent..." className="block bord...">
+>                             <a
+>                               className="block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors..."
+>                               href="/SUP/agents/verification-runner/runs/5d907727-0613-43cc-8a8e-454eb642892d"
+>                               onClick={function handleClick}
+>                               ref={function}
+>                               target={undefined}
+>                               data-discover="true"
+>                             >
+                                <div>
+                                ...
+                                  <Primitive.button.Slot type="button" aria-haspopup="dialog" aria-expanded={false} ...>
+                                    <Primitive.button.SlotClone type="button" aria-haspopup="dialog" ...>
+                                      <LinkWithRef ref={function} to="/SUP/issue..." state={undefined} ...>
+>                                       <a
+>                                         className="inline-flex items-center gap-1.5 align-baseline"
+>                                         onMouseEnter={function}
+>                                         onFocus={function onFocus}
+>                                         onTouchStart={function onTouchStart}
+>                                         onClickCapture={function onClickCapture}
+>                                         type="button"
+>                                         aria-haspopup="dialog"
+>                                         aria-expanded={false}
+>                                         aria-controls="radix-_r_10_"
+>                                         data-state="closed"
+>                                         data-slot="popover-trigger"
+>                                         onMouseLeave={function onMouseLeave}
+>                                         href="/SUP/issues/SUP-1231"
+>                                         onClick={function handleClick}
+>                                         ref={function}
+>                                         target={undefined}
+>                                         data-discover="true"
+>                                       >
+                      ...
+        ...
+
+[2026-04-21T15:02:57.333Z] [error] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. a <a>
+[2026-04-21T15:03:11.865Z] [debug] [vite] connecting...
+[2026-04-21T15:03:11.904Z] [debug] [vite] connected.
+[2026-04-21T15:03:12.116Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:03:24.971Z] [debug] [vite] connecting...
+[2026-04-21T15:03:25.002Z] [debug] [vite] connected.
+[2026-04-21T15:03:25.247Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:03:39.148Z] [debug] [vite] connecting...
+[2026-04-21T15:03:39.168Z] [debug] [vite] connected.
+[2026-04-21T15:03:39.547Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:04:10.624Z] [debug] [vite] connecting...
+[2026-04-21T15:04:10.667Z] [debug] [vite] connected.
+[2026-04-21T15:04:10.871Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:04:29.088Z] [debug] [vite] connecting...
+[2026-04-21T15:04:29.150Z] [debug] [vite] connected.
+[2026-04-21T15:04:29.401Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:05:50.008Z] [debug] [vite] connecting...
+[2026-04-21T15:05:50.051Z] [debug] [vite] connected.
+[2026-04-21T15:05:50.270Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:05:50.597Z] [error] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <a> a 
+
+  ...
+    <div className="flex min-w...">
+      <div>
+      <div className="flex flex-...">
+        <main id="main-content" ref={{...}} tabIndex={-1} className="flex-1 p-4...">
+          <Outlet>
+            <RenderedRoute match={{params:{...}, ...}} routeContext={{outlet:null, ...}}>
+              <AgentDetail>
+                <div className="space-y-6">
+                  <div>
+                  <Tabs>
+                  <div>
+                  <AgentOverview agent={{id:"cdb82a...", ...}} runs={[...]} assignedIssues={[...]} ...>
+                    <div className="space-y-8">
+                      <LatestRunCard runs={[...]} agentId="editorial-...">
+                        <div className="space-y-3">
+                          <div>
+                          <CompanyLink to="/agents/ed..." className="block bord...">
+                            <LinkWithRef ref={null} to="/SUP/agent..." className="block bord...">
+>                             <a
+>                               className="block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors..."
+>                               href="/SUP/agents/editorial-advisor/runs/3c3c5d54-1eb3-4a4d-914d-5009e87aa96c"
+>                               onClick={function handleClick}
+>                               ref={function}
+>                               target={undefined}
+>                               data-discover="true"
+>                             >
+                                <div>
+                                ...
+                                  <Primitive.button.Slot type="button" aria-haspopup="dialog" aria-expanded={false} ...>
+                                    <Primitive.button.SlotClone type="button" aria-haspopup="dialog" ...>
+                                      <LinkWithRef ref={function} to="/SUP/issue..." state={undefined} ...>
+>                                       <a
+>                                         className="inline-flex items-center gap-1.5 align-baseline"
+>                                         onMouseEnter={function}
+>                                         onFocus={function onFocus}
+>                                         onTouchStart={function onTouchStart}
+>                                         onClickCapture={function onClickCapture}
+>                                         type="button"
+>                                         aria-haspopup="dialog"
+>                                         aria-expanded={false}
+>                                         aria-controls="radix-_r_10_"
+>                                         data-state="closed"
+>                                         data-slot="popover-trigger"
+>                                         onMouseLeave={function onMouseLeave}
+>                                         href="/SUP/issues/SUP-779"
+>                                         onClick={function handleClick}
+>                                         ref={function}
+>                                         target={undefined}
+>                                         data-discover="true"
+>                                       >
+                      ...
+        ...
+
+[2026-04-21T15:05:50.597Z] [error] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. a <a>
+[2026-04-21T15:06:04.618Z] [debug] [vite] connecting...
+[2026-04-21T15:06:04.669Z] [debug] [vite] connected.
+[2026-04-21T15:06:04.871Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:06:19.330Z] [debug] [vite] connecting...
+[2026-04-21T15:06:19.369Z] [debug] [vite] connected.
+[2026-04-21T15:06:19.807Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:06:32.949Z] [debug] [vite] connecting...
+[2026-04-21T15:06:32.978Z] [debug] [vite] connected.
+[2026-04-21T15:06:33.219Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:06:46.827Z] [debug] [vite] connecting...
+[2026-04-21T15:06:46.863Z] [debug] [vite] connected.
+[2026-04-21T15:06:47.105Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:06:59.848Z] [debug] [vite] connecting...
+[2026-04-21T15:06:59.860Z] [debug] [vite] connected.
+[2026-04-21T15:07:00.344Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:07:12.170Z] [debug] [vite] connecting...
+[2026-04-21T15:07:12.194Z] [debug] [vite] connected.
+[2026-04-21T15:07:12.505Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:07:25.241Z] [debug] [vite] connecting...
+[2026-04-21T15:07:25.301Z] [debug] [vite] connected.
+[2026-04-21T15:07:25.543Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:07:44.991Z] [debug] [vite] connecting...
+[2026-04-21T15:07:45.025Z] [debug] [vite] connected.
+[2026-04-21T15:07:45.338Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:07:46.092Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:46.167Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:46.285Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:47.101Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:47.169Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:47.288Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:49.105Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:49.174Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:49.294Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:53.116Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:53.181Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:07:53.301Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:00.226Z] [debug] [vite] connecting...
+[2026-04-21T15:08:00.314Z] [debug] [vite] connected.
+[2026-04-21T15:08:00.488Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:08:01.426Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:02.526Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:04.532Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:08.538Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:14.170Z] [debug] [vite] connecting...
+[2026-04-21T15:08:14.195Z] [debug] [vite] connected.
+[2026-04-21T15:08:14.451Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:08:15.474Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:16.556Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:18.562Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:22.566Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:08:30.344Z] [debug] [vite] connecting...
+[2026-04-21T15:08:30.391Z] [debug] [vite] connected.
+[2026-04-21T15:08:30.608Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:08:45.171Z] [debug] [vite] connecting...
+[2026-04-21T15:08:45.195Z] [debug] [vite] connected.
+[2026-04-21T15:08:45.595Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:09:01.184Z] [debug] [vite] connecting...
+[2026-04-21T15:09:01.224Z] [debug] [vite] connected.
+[2026-04-21T15:09:01.442Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:09:18.146Z] [debug] [vite] connecting...
+[2026-04-21T15:09:18.197Z] [debug] [vite] connected.
+[2026-04-21T15:09:18.387Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:09:18.794Z] [warning] WebSocket connection to 'ws://127.0.0.1:3100/api/companies/7cec5ab7-bf5b-43d4-9ec9-6f16b8759c37/events/ws' failed: WebSocket is closed before the connection is established.
+[2026-04-21T15:09:37.815Z] [debug] [vite] connecting...
+[2026-04-21T15:09:37.847Z] [debug] [vite] connected.
+[2026-04-21T15:09:38.299Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:09:39.099Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:39.099Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:39.099Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:39.100Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:40.089Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:40.090Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:40.097Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:40.109Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:42.096Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:42.096Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:42.101Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:42.110Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:46.106Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:46.110Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:46.111Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:46.118Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:51.019Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:51.019Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:51.019Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:51.019Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:52.139Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:52.139Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:52.139Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:52.139Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:54.145Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:54.145Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:54.145Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:54.145Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:58.155Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:58.160Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:58.160Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:09:58.160Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:14.993Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:14.993Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:14.993Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:14.993Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:15.996Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:15.997Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:15.997Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:15.997Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:18.004Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:18.004Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:18.005Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:18.005Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:22.015Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:22.018Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:22.019Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:22.019Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:45.161Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:45.161Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:45.161Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:45.163Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:46.193Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:46.193Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:46.193Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:46.194Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:48.200Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:48.201Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:48.202Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:48.202Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:52.212Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:52.212Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:52.212Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:10:52.212Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:03.495Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:03.496Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:03.496Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:03.496Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:04.500Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:04.501Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:04.501Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:04.501Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:06.507Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:06.507Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:06.507Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:06.508Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:10.737Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:10.737Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:10.738Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:10.738Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:13.724Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:13.724Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:13.724Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:13.724Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:14.731Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:14.733Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:14.733Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:14.733Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:16.740Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:16.741Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:16.741Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:16.741Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:20.752Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:20.753Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:20.762Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:20.762Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:43.734Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:43.734Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:43.735Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:43.735Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:44.742Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:44.742Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:44.743Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:44.743Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:46.752Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:46.752Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:46.753Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:46.753Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:50.815Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:50.815Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:50.817Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:11:50.817Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:21.442Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:21.453Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:21.453Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:21.453Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:22.448Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:22.460Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:22.460Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:22.461Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:24.453Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:24.467Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:24.467Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:24.468Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:28.463Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:28.479Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:28.481Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:28.490Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:29.146Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:29.146Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:29.146Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:29.147Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:30.157Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:30.158Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:30.159Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:30.159Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:32.175Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:32.175Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:32.176Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:32.176Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:36.183Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:36.192Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:36.192Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:36.192Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:37.517Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:37.517Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:37.517Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:37.517Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:38.572Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:38.572Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:38.573Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:38.573Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:40.577Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:40.577Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:40.578Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:40.578Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:44.592Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:44.592Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:44.602Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:12:44.602Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:48.772Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:48.772Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:48.772Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:48.772Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:50.363Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:50.363Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:50.363Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:50.364Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:52.452Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:52.452Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:52.453Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:52.453Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:56.459Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:56.460Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:56.460Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:14:56.460Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:57.249Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:57.249Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:57.249Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:57.249Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:58.389Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:58.401Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:58.401Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:15:58.401Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:00.468Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:00.468Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:00.468Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:00.469Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:04.476Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:04.485Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:04.485Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:04.485Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:15.508Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:15.508Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:15.508Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:15.508Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:16.512Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:16.512Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:16.513Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:16.513Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:18.524Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:18.524Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:18.525Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:18.526Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:22.535Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:22.535Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:22.545Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:16:22.548Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:13.998Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:14.007Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:14.007Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:14.007Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:15.037Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:15.037Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:15.037Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:15.037Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:17.042Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:17.042Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:17.042Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:17.043Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:21.047Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:21.048Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:21.048Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:17:21.048Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:18:33.645Z] [debug] [vite] connecting...
+[2026-04-21T15:18:33.694Z] [debug] [vite] connected.
+[2026-04-21T15:18:33.944Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:18:34.362Z] [warning] WebSocket connection to 'ws://127.0.0.1:3100/api/companies/7cec5ab7-bf5b-43d4-9ec9-6f16b8759c37/events/ws' failed: WebSocket is closed before the connection is established.
+[2026-04-21T15:18:34.420Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:18:34.489Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:18:52.685Z] [debug] [vite] connecting...
+[2026-04-21T15:18:52.722Z] [debug] [vite] connected.
+[2026-04-21T15:18:52.972Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:19:13.050Z] [debug] [vite] connecting...
+[2026-04-21T15:19:13.100Z] [debug] [vite] connected.
+[2026-04-21T15:19:13.340Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:19:32.287Z] [debug] [vite] connecting...
+[2026-04-21T15:19:32.312Z] [debug] [vite] connected.
+[2026-04-21T15:19:32.557Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:19:51.609Z] [debug] [vite] connecting...
+[2026-04-21T15:19:51.639Z] [debug] [vite] connected.
+[2026-04-21T15:19:52.105Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:20:06.135Z] [debug] [vite] connecting...
+[2026-04-21T15:20:06.209Z] [debug] [vite] connected.
+[2026-04-21T15:20:06.412Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:20:22.925Z] [debug] [vite] connecting...
+[2026-04-21T15:20:22.943Z] [debug] [vite] connected.
+[2026-04-21T15:20:23.272Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:20:43.894Z] [debug] [vite] connecting...
+[2026-04-21T15:20:43.929Z] [debug] [vite] connected.
+[2026-04-21T15:20:44.428Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:21:06.280Z] [debug] [vite] connecting...
+[2026-04-21T15:21:06.309Z] [debug] [vite] connected.
+[2026-04-21T15:21:06.606Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:21:26.897Z] [debug] [vite] connecting...
+[2026-04-21T15:21:26.900Z] [debug] [vite] connected.
+[2026-04-21T15:21:27.225Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:22:20.032Z] [debug] [vite] connecting...
+[2026-04-21T15:22:20.057Z] [debug] [vite] connected.
+[2026-04-21T15:22:20.396Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:22:38.377Z] [debug] [vite] connecting...
+[2026-04-21T15:22:38.405Z] [debug] [vite] connected.
+[2026-04-21T15:22:39.004Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:22:42.126Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:22:43.211Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:22:45.215Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:22:49.225Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:22:56.349Z] [debug] [vite] connecting...
+[2026-04-21T15:22:56.374Z] [debug] [vite] connected.
+[2026-04-21T15:22:56.650Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:23:12.766Z] [debug] [vite] connecting...
+[2026-04-21T15:23:12.791Z] [debug] [vite] connected.
+[2026-04-21T15:23:13.082Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:23:13.610Z] [warning] WebSocket connection to 'ws://127.0.0.1:3100/api/companies/7cec5ab7-bf5b-43d4-9ec9-6f16b8759c37/events/ws' failed: WebSocket is closed before the connection is established.
+[2026-04-21T15:23:33.945Z] [debug] [vite] connecting...
+[2026-04-21T15:23:33.988Z] [debug] [vite] connected.
+[2026-04-21T15:23:34.211Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:23:35.384Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:35.384Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:36.395Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:36.399Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:38.398Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:38.403Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:42.401Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:42.408Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:23:54.143Z] [debug] [vite] connecting...
+[2026-04-21T15:23:54.171Z] [debug] [vite] connected.
+[2026-04-21T15:23:54.615Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:24:17.962Z] [debug] [vite] connecting...
+[2026-04-21T15:24:18.018Z] [debug] [vite] connected.
+[2026-04-21T15:24:18.443Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:24:36.097Z] [debug] [vite] connecting...
+[2026-04-21T15:24:36.129Z] [debug] [vite] connected.
+[2026-04-21T15:24:36.519Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:24:37.609Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:24:38.626Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:24:40.632Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:24:44.638Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-04-21T15:25:00.530Z] [debug] [vite] connecting...
+[2026-04-21T15:25:00.583Z] [debug] [vite] connected.
+[2026-04-21T15:25:00.819Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:25:17.707Z] [debug] [vite] connecting...
+[2026-04-21T15:25:17.735Z] [debug] [vite] connected.
+[2026-04-21T15:25:18.131Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:26:08.080Z] [debug] [vite] connecting...
+[2026-04-21T15:26:08.134Z] [debug] [vite] connected.
+[2026-04-21T15:26:08.360Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:26:29.817Z] [debug] [vite] connecting...
+[2026-04-21T15:26:29.843Z] [debug] [vite] connected.
+[2026-04-21T15:26:30.244Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:26:47.294Z] [debug] [vite] connecting...
+[2026-04-21T15:26:47.332Z] [debug] [vite] connected.
+[2026-04-21T15:26:47.585Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:26:47.921Z] [error] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <a> a 
+
+  ...
+    <div className="flex min-w...">
+      <div>
+      <div className="flex flex-...">
+        <main id="main-content" ref={{...}} tabIndex={-1} className="flex-1 p-4...">
+          <Outlet>
+            <RenderedRoute match={{params:{...}, ...}} routeContext={{outlet:null, ...}}>
+              <AgentDetail>
+                <div className="space-y-6">
+                  <div>
+                  <Tabs>
+                  <div>
+                  <AgentOverview agent={{id:"4b4583...", ...}} runs={[...]} assignedIssues={[...]} ...>
+                    <div className="space-y-8">
+                      <LatestRunCard runs={[...]} agentId="seo-geo-op...">
+                        <div className="space-y-3">
+                          <div>
+                          <CompanyLink to="/agents/se..." className="block bord...">
+                            <LinkWithRef ref={null} to="/SUP/agent..." className="block bord...">
+>                             <a
+>                               className="block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors..."
+>                               href="/SUP/agents/seo-geo-optimizer/runs/b8574727-2d54-4c87-a819-3cc5cdabbf98"
+>                               onClick={function handleClick}
+>                               ref={function}
+>                               target={undefined}
+>                               data-discover="true"
+>                             >
+                                <div>
+                                ...
+                                  <Primitive.button.Slot type="button" aria-haspopup="dialog" aria-expanded={false} ...>
+                                    <Primitive.button.SlotClone type="button" aria-haspopup="dialog" ...>
+                                      <LinkWithRef ref={function} to="/SUP/issue..." state={undefined} ...>
+>                                       <a
+>                                         className="inline-flex items-center gap-1.5 align-baseline"
+>                                         onMouseEnter={function}
+>                                         onFocus={function onFocus}
+>                                         onTouchStart={function onTouchStart}
+>                                         onClickCapture={function onClickCapture}
+>                                         type="button"
+>                                         aria-haspopup="dialog"
+>                                         aria-expanded={false}
+>                                         aria-controls="radix-_r_10_"
+>                                         data-state="closed"
+>                                         data-slot="popover-trigger"
+>                                         onMouseLeave={function onMouseLeave}
+>                                         href="/SUP/issues/SUP-1239"
+>                                         onClick={function handleClick}
+>                                         ref={function}
+>                                         target={undefined}
+>                                         data-discover="true"
+>                                       >
+                      ...
+        ...
+
+[2026-04-21T15:26:47.921Z] [error] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. a <a>
+[2026-04-21T15:27:04.321Z] [debug] [vite] connecting...
+[2026-04-21T15:27:04.361Z] [debug] [vite] connected.
+[2026-04-21T15:27:04.627Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:27:21.915Z] [debug] [vite] connecting...
+[2026-04-21T15:27:21.935Z] [debug] [vite] connected.
+[2026-04-21T15:27:22.292Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:27:40.407Z] [debug] [vite] connecting...
+[2026-04-21T15:27:40.449Z] [debug] [vite] connected.
+[2026-04-21T15:27:40.685Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:27:56.925Z] [debug] [vite] connecting...
+[2026-04-21T15:27:56.984Z] [debug] [vite] connected.
+[2026-04-21T15:27:57.202Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:28:20.291Z] [debug] [vite] connecting...
+[2026-04-21T15:28:20.383Z] [debug] [vite] connected.
+[2026-04-21T15:28:20.571Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:28:39.138Z] [debug] [vite] connecting...
+[2026-04-21T15:28:39.161Z] [debug] [vite] connected.
+[2026-04-21T15:28:39.411Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:28:55.016Z] [debug] [vite] connecting...
+[2026-04-21T15:28:55.073Z] [debug] [vite] connected.
+[2026-04-21T15:28:55.302Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:29:13.293Z] [debug] [vite] connecting...
+[2026-04-21T15:29:13.363Z] [debug] [vite] connected.
+[2026-04-21T15:29:14.357Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:29:41.865Z] [debug] [vite] connecting...
+[2026-04-21T15:29:41.904Z] [debug] [vite] connected.
+[2026-04-21T15:29:42.158Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-04-21T15:30:29.737Z] [debug] [vite] connecting...
+[2026-04-21T15:30:29.764Z] [debug] [vite] connected.
+[2026-04-21T15:30:30.004Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold

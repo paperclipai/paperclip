@@ -4396,6 +4396,19 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      // Advisor-specific: if the latest run was itself a continuation retry
+      // and succeeded, the advisory is written and the dossier is in
+      // awaiting-review. Do not loop forever.
+      const latestContext = parseObject(latestRun?.contextSnapshot);
+      if (
+        issue.title?.startsWith("Advise:") &&
+        latestRun?.status === "succeeded" &&
+        readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed"
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,

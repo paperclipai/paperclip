@@ -432,9 +432,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+  const isValidUuidSession = (sessionId: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
+    isValidUuidSession(runtimeSessionId) &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
@@ -455,6 +458,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+    );
+  } else if (runtimeSessionId && !isValidUuidSession(runtimeSessionId)) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" is not a valid UUID and will not be resumed. Starting a fresh session.\n`,
     );
   } else if (runtimeSessionId && !canResumeSession) {
     await onLog(
