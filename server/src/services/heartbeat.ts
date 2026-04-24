@@ -1259,10 +1259,16 @@ const BLOCKED_INTERACTION_WAKE_REASONS = new Set([
 
 function allowsBlockedIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  opts?: { requestedByActorType?: string | null },
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !BLOCKED_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
-  return Boolean(deriveCommentId(contextSnapshot, null));
+  if (!deriveCommentId(contextSnapshot, null)) return false;
+
+  // Blocked issue interaction wakes are intentionally reserved for human
+  // clarification/triage comments. Automation or agent bookkeeping comments
+  // must not turn blocked tickets into implementation runs.
+  return opts?.requestedByActorType === "user";
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -6487,6 +6493,7 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            status: issues.status,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -6582,6 +6589,9 @@ export function heartbeatService(db: Db) {
           [issue.id],
           tx,
         ).then((rows) => rows.get(issue.id) ?? null);
+        const allowedBlockedInteractionWake = allowsBlockedIssueInteractionWake(enrichedContextSnapshot, {
+          requestedByActorType: opts.requestedByActorType ?? null,
+        });
 
         // Blocked descendants should stay idle until the final blocker resolves.
         // Human comment/mention wakes are the exception: they may run in a
@@ -6589,7 +6599,7 @@ export function heartbeatService(db: Db) {
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsBlockedIssueInteractionWake(enrichedContextSnapshot);
+          allowedBlockedInteractionWake;
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
@@ -6614,6 +6624,27 @@ export function heartbeatService(db: Db) {
               ...(payload ?? {}),
               issueId,
               unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+            },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (!activeExecutionRun && issue.status === "blocked" && !allowedBlockedInteractionWake) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_status_blocked",
+            payload: {
+              ...(payload ?? {}),
+              issueId,
+              blockedStatusWithoutReadyWake: true,
             },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,

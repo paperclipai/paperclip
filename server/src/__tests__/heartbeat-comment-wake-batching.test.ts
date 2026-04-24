@@ -1312,4 +1312,193 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("skips automation comment wakes for status-blocked issues without blocker edges", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Blocked without explicit blocker graph",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorUserId: null,
+        body: "Automated blocked-ticket bookkeeping comment.",
+      });
+
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId,
+          source: "automation",
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+      });
+
+      expect(run).toBeNull();
+      expect(gateway.getAgentPayloads()).toHaveLength(0);
+
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+
+      expect(wakeups).toHaveLength(1);
+      expect(wakeups[0]).toMatchObject({
+        status: "skipped",
+        reason: "issue_status_blocked",
+      });
+      expect(wakeups[0]?.payload).toMatchObject({ issueId, commentId });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
+  it("allows user comment wakes for status-blocked issues without blocker edges", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Blocked but asking for clarification",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorUserId: "user-1",
+        body: "Please explain what is still blocked and what input you need.",
+      });
+
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId,
+          source: "automation",
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const payloads = gateway.getAgentPayloads();
+      const firstPayload = payloads[0] ?? {};
+      expect(firstPayload.paperclip).toMatchObject({
+        wake: {
+          reason: "issue_commented",
+          issue: {
+            id: issueId,
+            status: "in_progress",
+          },
+          checkedOutByHarness: true,
+          commentIds: [commentId],
+        },
+      });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
 });
