@@ -38,6 +38,7 @@ import {
   issueWorkProducts,
   projects,
   projectWorkspaces,
+  routines,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -4031,6 +4032,16 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function isStandingRollupIssue(issueId: string) {
+    const row = await db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(and(eq(routines.parentIssueId, issueId), eq(routines.status, "active")))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
+  }
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
     const [run, deferredWake] = await Promise.all([
       db
@@ -4246,6 +4257,33 @@ export function heartbeatService(db: Db) {
     return { assigned, skipped, issueIds };
   }
 
+  async function recordStandingRollupAutoBlockSkip(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier">;
+    previousStatus: "todo" | "in_progress";
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "errorCode"> | null;
+    source: string;
+  }) {
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.auto_block_skipped_standing_rollup",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        previousStatus: input.previousStatus,
+        source: input.source,
+        reason: "standing_rollup_issue",
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+      },
+    });
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -4303,6 +4341,7 @@ export function heartbeatService(db: Db) {
       orphanBlockersAssigned: 0,
       escalated: 0,
       skipped: 0,
+      standingRollupSkipped: 0,
       issueIds: [] as string[],
     };
 
@@ -4336,6 +4375,16 @@ export function heartbeatService(db: Db) {
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (await isStandingRollupIssue(issue.id)) {
+            await recordStandingRollupAutoBlockSkip({
+              issue,
+              previousStatus: "todo",
+              latestRun,
+              source: "heartbeat.reconcile_stranded_assigned_issue",
+            });
+            result.standingRollupSkipped += 1;
+            continue;
+          }
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -4377,6 +4426,16 @@ export function heartbeatService(db: Db) {
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (await isStandingRollupIssue(issue.id)) {
+          await recordStandingRollupAutoBlockSkip({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            source: "heartbeat.reconcile_stranded_assigned_issue",
+          });
+          result.standingRollupSkipped += 1;
+          continue;
+        }
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,
@@ -6415,6 +6474,21 @@ export function heartbeatService(db: Db) {
         !recoveryAgent ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
+        const standingRollup = await tx
+          .select({ id: routines.id })
+          .from(routines)
+          .where(and(eq(routines.parentIssueId, issue.id), eq(routines.status, "active")))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (standingRollup) {
+          return {
+            kind: "released_standing_rollup" as const,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            previousStatus: issue.status as "todo" | "in_progress",
+            latestRun: run,
+          };
+        }
         const comment = buildImmediateExecutionPathRecoveryComment({
           status: issue.status as "todo" | "in_progress",
           latestRun: run,
@@ -6528,6 +6602,20 @@ export function heartbeatService(db: Db) {
           latestRunStatus: run.status,
           latestRunErrorCode: run.errorCode ?? null,
         },
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "released_standing_rollup") {
+      await recordStandingRollupAutoBlockSkip({
+        issue: {
+          id: promotionResult.issueId,
+          companyId: run.companyId,
+          identifier: promotionResult.issueIdentifier,
+        },
+        previousStatus: promotionResult.previousStatus,
+        latestRun: promotionResult.latestRun,
+        source: "heartbeat.release_issue_execution_and_promote",
       });
       return;
     }
