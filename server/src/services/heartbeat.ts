@@ -4293,6 +4293,9 @@ export function heartbeatService(db: Db) {
         and(
           eq(issues.companyId, companyId),
           eq(issues.parentId, issueId),
+          // Keep parent stranded recovery suppressed while any delegated child
+          // is still non-terminal, including blocked child work that still
+          // requires explicit intervention before the parent can complete.
           inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
         ),
       )

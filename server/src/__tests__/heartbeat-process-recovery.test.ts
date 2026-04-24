@@ -908,7 +908,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
   });
 
-  it("skips stranded escalation for delegated parent work when a child issue is still active", async () => {
+  it("skips stranded escalation for delegated parent work when a child issue is blocked", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
@@ -918,8 +918,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(issues).values({
       id: randomUUID(),
       companyId,
-      title: "Active delegated child",
-      status: "in_progress",
+      title: "Blocked delegated child",
+      status: "blocked",
       priority: "medium",
       parentId: issueId,
       issueNumber: 2,
