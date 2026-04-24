@@ -1115,8 +1115,8 @@ export function agentRoutes(
     }
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
+    if (canReadConfigs || req.actor.type === "board") {
+      res.json(result.map((agent) => redactAgentConfiguration(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
