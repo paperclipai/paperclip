@@ -1266,9 +1266,10 @@ function allowsBlockedIssueInteractionWake(
   if (!deriveCommentId(contextSnapshot, null)) return false;
 
   // Blocked issue interaction wakes are intentionally reserved for human
-  // clarification/triage comments. Automation or agent bookkeeping comments
-  // must not turn blocked tickets into implementation runs.
-  return opts?.requestedByActorType === "user";
+  // clarification/triage comments. When actor attribution is missing, preserve
+  // the historical default of allowing the comment wake rather than silently
+  // dropping it; explicit agent/system actors remain disallowed.
+  return !opts?.requestedByActorType || opts.requestedByActorType === "user";
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -3493,7 +3494,7 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
-    const context = parseObject(run.contextSnapshot);
+    let context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
@@ -3505,11 +3506,65 @@ export function heartbeatService(db: Db) {
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
-      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
-      const unresolvedBlockerCount = dependencyReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsBlockedIssueInteractionWake(context)) {
-        logger.debug({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: skipping blocked run");
+      const wakeupRequest = run.wakeupRequestId
+        ? await db
+          .select({
+            id: agentWakeupRequests.id,
+            payload: agentWakeupRequests.payload,
+            requestedByActorType: agentWakeupRequests.requestedByActorType,
+          })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : null;
+      const issue = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const decision = await evaluateIssueWakeEligibility({
+        dbOrTx: db,
+        issue,
+        contextSnapshot: context,
+        requestedByActorType: wakeupRequest?.requestedByActorType ?? null,
+      });
+      if (decision.kind !== "allowed") {
+        logger.debug({ runId: run.id, issueId, reason: decision.reason }, "claimQueuedRun: cancelling ineligible queued run");
+        if (wakeupRequest) {
+          await cancelPendingWakeRequestAndRun({
+            request: {
+              id: wakeupRequest.id,
+              runId: run.id,
+              payload: wakeupRequest.payload,
+            },
+            reason: decision.reason,
+            error: decision.error,
+            payloadPatch: decision.payloadPatch,
+          });
+        } else {
+          await setRunStatus(run.id, "cancelled", {
+            finishedAt: new Date(),
+            error: decision.error,
+            errorCode: decision.reason,
+          });
+        }
         return null;
+      }
+      if (JSON.stringify(decision.contextSnapshot) !== JSON.stringify(context)) {
+        context = decision.contextSnapshot;
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
       }
     }
 
@@ -3939,7 +3994,157 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  async function reconcileQueuedIssueWakeEligibility() {
+    const pendingRequests = await db
+      .select({
+        id: agentWakeupRequests.id,
+        companyId: agentWakeupRequests.companyId,
+        agentId: agentWakeupRequests.agentId,
+        status: agentWakeupRequests.status,
+        payload: agentWakeupRequests.payload,
+        runId: agentWakeupRequests.runId,
+        requestedAt: agentWakeupRequests.requestedAt,
+        requestedByActorType: agentWakeupRequests.requestedByActorType,
+      })
+      .from(agentWakeupRequests)
+      .where(inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]))
+      .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.createdAt));
+
+    const result = {
+      scanned: pendingRequests.length,
+      cancelledDependencyBlocked: 0,
+      cancelledBlockedStatus: 0,
+      cancelledTerminal: 0,
+      cancelledMissingIssue: 0,
+      cancelledDuplicateQueued: 0,
+      unchanged: 0,
+      wakeupRequestIds: [] as string[],
+    };
+    if (pendingRequests.length === 0) return result;
+
+    const runIds = pendingRequests
+      .map((request) => request.runId)
+      .filter((runId): runId is string => Boolean(runId));
+    const runRows = runIds.length === 0
+      ? []
+      : await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, runIds));
+    const runById = new Map(runRows.map((run) => [run.id, run]));
+
+    const refs = pendingRequests.map((request) => {
+      const run = request.runId ? runById.get(request.runId) ?? null : null;
+      const issueId = issueIdFromWakePayload(request.payload) ?? issueIdFromRunContext(run?.contextSnapshot);
+      return {
+        request,
+        run,
+        issueId,
+        contextSnapshot: contextSnapshotFromPendingWakeRequest(request, run),
+      };
+    });
+
+    const issueIds = [...new Set(refs.map((entry) => entry.issueId).filter((issueId): issueId is string => Boolean(issueId)))];
+    const issueRows = issueIds.length === 0
+      ? []
+      : await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(inArray(issues.id, issueIds));
+    const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
+
+    const activeExecutionRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, ["running", "scheduled_retry"]));
+    const activeExecutionRunByIssueKey = new Map<string, { id: string; companyId: string; status: string }>();
+    for (const run of activeExecutionRuns) {
+      const issueId = issueIdFromRunContext(run.contextSnapshot);
+      if (!issueId || !issueById.has(issueId)) continue;
+      activeExecutionRunByIssueKey.set(`${run.companyId}:${issueId}`, {
+        id: run.id,
+        companyId: run.companyId,
+        status: run.status,
+      });
+    }
+
+    const cancelledRequestIds = new Set<string>();
+    const queuedByAgentIssueKey = new Map<string, typeof refs>();
+    for (const ref of refs) {
+      if (ref.request.status !== "queued" || !ref.issueId) continue;
+      const key = `${ref.request.agentId}:${ref.issueId}`;
+      const group = queuedByAgentIssueKey.get(key) ?? [];
+      group.push(ref);
+      queuedByAgentIssueKey.set(key, group);
+    }
+    for (const group of queuedByAgentIssueKey.values()) {
+      if (group.length <= 1) continue;
+      group.sort((left, right) => left.request.requestedAt.getTime() - right.request.requestedAt.getTime());
+      for (const duplicate of group.slice(1)) {
+        await cancelPendingWakeRequestAndRun({
+          request: duplicate.request,
+          reason: "issue_duplicate_queued",
+          error: "Cancelled duplicate queued wake for the same agent and issue",
+          payloadPatch: duplicate.issueId ? { issueId: duplicate.issueId } : undefined,
+        });
+        cancelledRequestIds.add(duplicate.request.id);
+        result.cancelledDuplicateQueued += 1;
+        result.wakeupRequestIds.push(duplicate.request.id);
+      }
+    }
+
+    for (const ref of refs) {
+      if (cancelledRequestIds.has(ref.request.id)) continue;
+      if (!ref.issueId) {
+        result.unchanged += 1;
+        continue;
+      }
+      const issue = issueById.get(ref.issueId) ?? null;
+      const activeExecutionRun = issue
+        ? activeExecutionRunByIssueKey.get(`${issue.companyId}:${issue.id}`) ?? null
+        : null;
+      const decision = await evaluateIssueWakeEligibility({
+        dbOrTx: db,
+        issue,
+        contextSnapshot: ref.contextSnapshot,
+        requestedByActorType: ref.request.requestedByActorType,
+        activeExecutionRun,
+      });
+      if (decision.kind === "allowed") {
+        result.unchanged += 1;
+        continue;
+      }
+      await cancelPendingWakeRequestAndRun({
+        request: ref.request,
+        reason: decision.reason,
+        error: decision.error,
+        payloadPatch: decision.payloadPatch,
+      });
+      result.wakeupRequestIds.push(ref.request.id);
+      if (decision.reason === "issue_dependencies_blocked") result.cancelledDependencyBlocked += 1;
+      else if (decision.reason === "issue_status_blocked") result.cancelledBlockedStatus += 1;
+      else if (decision.reason === "issue_terminal") result.cancelledTerminal += 1;
+      else if (decision.reason === "issue_execution_issue_not_found") result.cancelledMissingIssue += 1;
+    }
+
+    return result;
+  }
+
   async function resumeQueuedRuns() {
+    await reconcileQueuedIssueWakeEligibility();
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -4372,6 +4577,134 @@ export function heartbeatService(db: Db) {
     return readNonEmptyString(parsed.issueId) ??
       readNonEmptyString(nestedContext.issueId) ??
       readNonEmptyString(nestedContext.taskId);
+  }
+
+  function contextSnapshotFromPendingWakeRequest(request: { payload: unknown }, run?: { contextSnapshot: unknown } | null) {
+    if (run?.contextSnapshot) return parseObject(run.contextSnapshot);
+    const parsed = parseObject(request.payload);
+    const nestedContext = parseObject(parsed[DEFERRED_WAKE_CONTEXT_KEY]);
+    return Object.keys(nestedContext).length > 0 ? nestedContext : parsed;
+  }
+
+  async function evaluateIssueWakeEligibility(input: {
+    dbOrTx: any;
+    issue: { id: string; companyId: string; status: string } | null;
+    contextSnapshot: Record<string, unknown>;
+    requestedByActorType?: string | null;
+    activeExecutionRun?: unknown;
+  }) {
+    if (!input.issue) {
+      return {
+        kind: "skipped" as const,
+        reason: "issue_execution_issue_not_found",
+        error: "Cancelled because the issue no longer exists",
+        payloadPatch: {},
+        contextSnapshot: input.contextSnapshot,
+      };
+    }
+
+    const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+      input.issue.companyId,
+      [input.issue.id],
+      input.dbOrTx,
+    ).then((rows) => rows.get(input.issue.id) ?? null);
+
+    const allowedBlockedInteractionWake = allowsBlockedIssueInteractionWake(input.contextSnapshot, {
+      requestedByActorType: input.requestedByActorType ?? null,
+    });
+    const blockedInteractionWake =
+      dependencyReadiness &&
+      !dependencyReadiness.isDependencyReady &&
+      allowedBlockedInteractionWake;
+
+    let nextContextSnapshot = input.contextSnapshot;
+    if (blockedInteractionWake) {
+      nextContextSnapshot = {
+        ...nextContextSnapshot,
+        dependencyBlockedInteraction: true,
+        unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+        unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
+        unresolvedBlockerSummaries: await listUnresolvedBlockerSummaries(
+          input.dbOrTx,
+          input.issue.companyId,
+          input.issue.id,
+          dependencyReadiness.unresolvedBlockerIssueIds,
+        ),
+      };
+    }
+
+    if (!input.activeExecutionRun && (input.issue.status === "done" || input.issue.status === "cancelled")) {
+      return {
+        kind: "skipped" as const,
+        reason: "issue_terminal",
+        error: `Cancelled because issue ${input.issue.id} is ${input.issue.status}`,
+        payloadPatch: { issueId: input.issue.id, issueStatus: input.issue.status },
+        contextSnapshot: nextContextSnapshot,
+      };
+    }
+
+    if (!input.activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+      return {
+        kind: "skipped" as const,
+        reason: "issue_dependencies_blocked",
+        error: `Cancelled because issue ${input.issue.id} still has unresolved blockers`,
+        payloadPatch: {
+          issueId: input.issue.id,
+          issueStatus: input.issue.status,
+          unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+        },
+        contextSnapshot: nextContextSnapshot,
+      };
+    }
+
+    if (!input.activeExecutionRun && input.issue.status === "blocked" && !allowedBlockedInteractionWake) {
+      return {
+        kind: "skipped" as const,
+        reason: "issue_status_blocked",
+        error: `Cancelled because issue ${input.issue.id} is blocked`,
+        payloadPatch: {
+          issueId: input.issue.id,
+          issueStatus: input.issue.status,
+          blockedStatusWithoutReadyWake: true,
+        },
+        contextSnapshot: nextContextSnapshot,
+      };
+    }
+
+    return {
+      kind: "allowed" as const,
+      contextSnapshot: nextContextSnapshot,
+      dependencyReadiness,
+    };
+  }
+
+  async function cancelPendingWakeRequestAndRun(input: {
+    request: {
+      id: string;
+      runId?: string | null;
+      payload: unknown;
+    };
+    reason: string;
+    error: string;
+    payloadPatch?: Record<string, unknown>;
+  }) {
+    const now = new Date();
+    if (input.request.runId) {
+      await setRunStatus(input.request.runId, "cancelled", {
+        finishedAt: now,
+        error: input.error,
+        errorCode: input.reason,
+      });
+    }
+    await setWakeupStatus(input.request.id, "skipped", {
+      finishedAt: now,
+      reason: input.reason,
+      error: input.error,
+      payload: {
+        ...parseObject(input.request.payload),
+        ...(input.payloadPatch ?? {}),
+      },
+    });
   }
 
   async function collectIssueGraphLivenessFindings() {
@@ -6584,67 +6917,26 @@ export function heartbeatService(db: Db) {
           }
         }
 
-        const dependencyReadiness = await issuesSvc.listDependencyReadiness(
-          issue.companyId,
-          [issue.id],
-          tx,
-        ).then((rows) => rows.get(issue.id) ?? null);
-        const allowedBlockedInteractionWake = allowsBlockedIssueInteractionWake(enrichedContextSnapshot, {
+        const eligibility = await evaluateIssueWakeEligibility({
+          dbOrTx: tx,
+          issue,
+          contextSnapshot: enrichedContextSnapshot,
           requestedByActorType: opts.requestedByActorType ?? null,
+          activeExecutionRun,
         });
+        Object.assign(enrichedContextSnapshot, eligibility.contextSnapshot);
 
-        // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
-        const blockedInteractionWake =
-          dependencyReadiness &&
-          !dependencyReadiness.isDependencyReady &&
-          allowedBlockedInteractionWake;
-
-        if (blockedInteractionWake) {
-          enrichedContextSnapshot.dependencyBlockedInteraction = true;
-          enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
-          enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
-          enrichedContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
-            tx,
-            issue.companyId,
-            issue.id,
-            dependencyReadiness.unresolvedBlockerIssueIds,
-          );
-        }
-
-        if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+        if (eligibility.kind === "skipped") {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
             source,
             triggerDetail,
-            reason: "issue_dependencies_blocked",
+            reason: eligibility.reason,
             payload: {
               ...(payload ?? {}),
               issueId,
-              unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
-            },
-            status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
-          });
-          return { kind: "skipped" as const };
-        }
-
-        if (!activeExecutionRun && issue.status === "blocked" && !allowedBlockedInteractionWake) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_status_blocked",
-            payload: {
-              ...(payload ?? {}),
-              issueId,
-              blockedStatusWithoutReadyWake: true,
+              ...(eligibility.payloadPatch ?? {}),
             },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
@@ -7416,6 +7708,8 @@ export function heartbeatService(db: Db) {
     promoteDueScheduledRetries,
 
     resumeQueuedRuns,
+
+    reconcileQueuedIssueWakeEligibility,
 
     scheduleBoundedRetry: async (
       runId: string,
