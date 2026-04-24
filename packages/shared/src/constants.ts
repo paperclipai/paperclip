@@ -598,6 +598,7 @@ export const PLUGIN_CAPABILITIES = [
   "api.routes.register",
   "http.outbound",
   "secrets.read-ref",
+  "secrets.write",
   // Agent Tools
   "agent.tools.register",
   // UI

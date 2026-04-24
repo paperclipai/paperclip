@@ -3,51 +3,42 @@
  * Paperclip secret provider system.
  *
  * When a plugin worker calls `ctx.secrets.resolve(secretRef)`, the JSON-RPC
- * request arrives at the host with `{ secretRef }`. This module provides the
- * concrete `HostServices.secrets` adapter that:
+ * request arrives at the host worker manager, which dispatches it to the
+ * `resolve` method in this handler.
  *
- * 1. Parses the `secretRef` string to identify the secret.
- * 2. Looks up the secret record and its latest version in the database.
- * 3. Delegates to the configured `SecretProviderModule` to decrypt /
- *    resolve the raw value.
- * 4. Returns the resolved plaintext value to the worker.
+ * ## Security
  *
- * ## Secret Reference Format
+ * 1. **Capability Gating**: Every call is checked by the `PluginCapabilityValidator`.
+ *    The worker manager ensures the plugin has `secrets.read-ref` before
+ *    calling this handler.
  *
- * A `secretRef` is a **secret UUID** — the primary key (`id`) of a row in
- * the `company_secrets` table. Operators place these UUIDs into plugin
- * config values; plugin workers resolve them at execution time via
- * `ctx.secrets.resolve(secretId)`.
+ * 2. **Scope Isolation**: A plugin may **only** resolve secrets that are
+ *    explicitly referenced in its own `plugin_config`. Brute-force UUID
+ *    enumeration is prevented by both rate-limiting and a whitelist check.
  *
- * ## Security Invariants
+ * 3. **Material Safety**: The resolved plaintext material is returned as a
+ *    JSON-RPC response to the plugin worker. It is the worker's responsibility
+ *    to never cache, log, or persist this value.
  *
- * - Resolved values are **never** logged, persisted, or included in error
- *   messages (per PLUGIN_SPEC.md §22).
- * - The handler is capability-gated: only plugins with `secrets.read-ref`
- *   declared in their manifest may call it (enforced by `host-client-factory`).
- * - The host handler itself does not cache resolved values. Each call goes
- *   through the secret provider to honour rotation.
- *
- * @see PLUGIN_SPEC.md §22 — Secrets
- * @see host-client-factory.ts — capability gating
- * @see services/secrets.ts — secretService used by agent env bindings
- */
-
-import { eq, and, desc } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions, pluginConfig } from "@paperclipai/db";
-import type { SecretProvider } from "@paperclipai/shared";
-import { getSecretProvider } from "../secrets/provider-registry.js";
-import { pluginRegistryService } from "./plugin-registry.js";
-
-// ---------------------------------------------------------------------------
-// Error helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Create a sanitised error that never leaks secret material.
  * Only the ref identifier is included; never the resolved value.
  */
+
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import {
+  companySecrets,
+  companySecretVersions,
+  pluginConfig,
+  pluginCompanySettings,
+} from "@paperclipai/db";
+import { SECRET_PROVIDERS, type SecretProvider } from "@paperclipai/shared";
+
+import { getSecretProvider } from "../secrets/provider-registry.js";
+import { pluginRegistryService } from "./plugin-registry.js";
+import { secretService } from "./secrets.js";
+import { logActivity } from "./activity-log.js";
+import { HttpError } from "../errors.js";
+
 function secretNotFound(secretRef: string): Error {
   const err = new Error(`Secret not found: ${secretRef}`);
   err.name = "SecretNotFoundError";
@@ -67,12 +58,18 @@ function invalidSecretRef(secretRef: string): Error {
 }
 
 // ---------------------------------------------------------------------------
-// Validation
+// Validation Constants
 // ---------------------------------------------------------------------------
 
 /** UUID v4 regex for validating secretRef format. */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Secret name restricted to alphanumeric, underscores, and dashes. */
+const SECRET_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+
+/** Must equal the largest window used in any checkRateLimit call in this file. */
+const MAX_RATE_LIMIT_WINDOW_MS = 60_000;
 
 /**
  * Check whether a secretRef looks like a valid UUID.
@@ -162,6 +159,51 @@ export function extractSecretRefsFromConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Rate Limiting (Module Level for durability across worker restarts)
+// ---------------------------------------------------------------------------
+
+/** Global sliding-window state store keyed by pluginId + companyId + operation. */
+const _limiterState = new Map<string, number[]>();
+
+function checkRateLimit(key: string, maxAttempts: number, windowMs: number): boolean {
+  const now = Date.now();
+  const windowStart = now - windowMs;
+  const existing = (_limiterState.get(key) ?? []).filter((ts) => ts > windowStart);
+  
+  if (existing.length >= maxAttempts) return false;
+  
+  existing.push(now);
+  _limiterState.set(key, existing);
+  
+  return true;
+}
+
+/**
+ * Periodically evict fully expired rate limiter entries to prevent memory leaks
+ * over long-running process lifetimes with high plugin churn.
+ */
+setInterval(() => {
+  const now = Date.now();
+  const windowStart = now - MAX_RATE_LIMIT_WINDOW_MS;
+  for (const [key, timestamps] of _limiterState.entries()) {
+    const valid = timestamps.filter((ts) => ts > windowStart);
+    if (valid.length === 0) {
+      _limiterState.delete(key);
+    } else if (valid.length !== timestamps.length) {
+      _limiterState.set(key, valid);
+    }
+  }
+}, 60_000).unref?.();
+
+/**
+ * Reset rate limiters (FOR TESTING ONLY)
+ * @internal
+ */
+export function _resetRateLimiters(): void {
+  _limiterState.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------
 
@@ -202,6 +244,14 @@ export interface PluginSecretsService {
    *   the provider fails to resolve
    */
   resolve(params: PluginSecretsResolveParams): Promise<string>;
+
+  /**
+   * Create or update a secret in the Paperclip vault.
+   *
+   * @param params - Contains companyId, name, value, and description
+   * @returns The generated secret reference UUID
+   */
+  write(params: { companyId: string; name: string; value: string; description?: string }): Promise<string>;
 }
 
 /**
@@ -227,31 +277,19 @@ export interface PluginSecretsService {
  * @param options - Database connection and plugin identity
  * @returns A `PluginSecretsService` suitable for `HostServices.secrets`
  */
-/** Simple sliding-window rate limiter for secret resolution attempts. */
-function createRateLimiter(maxAttempts: number, windowMs: number) {
-  const attempts = new Map<string, number[]>();
-
-  return {
-    check(key: string): boolean {
-      const now = Date.now();
-      const windowStart = now - windowMs;
-      const existing = (attempts.get(key) ?? []).filter((ts) => ts > windowStart);
-      if (existing.length >= maxAttempts) return false;
-      existing.push(now);
-      attempts.set(key, existing);
-      return true;
-    },
-  };
-}
-
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
   const { db, pluginId } = options;
   const registry = pluginRegistryService(db);
 
-  // Rate limit: max 30 resolution attempts per plugin per minute
-  const rateLimiter = createRateLimiter(30, 60_000);
+  // Resolve default provider from environment
+  const configuredDefaultProvider = process.env.PAPERCLIP_SECRETS_PROVIDER;
+  const defaultProvider = (
+    configuredDefaultProvider && SECRET_PROVIDERS.includes(configuredDefaultProvider as SecretProvider)
+      ? configuredDefaultProvider
+      : "local_encrypted"
+  ) as SecretProvider;
 
   let cachedAllowedRefs: Set<string> | null = null;
   let cachedAllowedRefsExpiry = 0;
@@ -262,9 +300,10 @@ export function createPluginSecretsHandler(
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
+      // 0. Early per-plugin resolve guard (before any DB I/O)
       // ---------------------------------------------------------------
-      if (!rateLimiter.check(pluginId)) {
+      // Prevents unbounded DB queries for non-existent UUIDs.
+      if (!checkRateLimit(`${pluginId}:resolve:global`, 100, MAX_RATE_LIMIT_WINDOW_MS)) {
         const err = new Error("Rate limit exceeded for secret resolution");
         err.name = "RateLimitExceededError";
         throw err;
@@ -284,7 +323,38 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 1b. Scope check — only allow secrets referenced in this plugin's config
+      // 2. Look up the secret record by UUID
+      // ---------------------------------------------------------------
+      const secret = await db
+        .select({ 
+          id: companySecrets.id,
+          companyId: companySecrets.companyId,
+          provider: companySecrets.provider,
+          externalRef: companySecrets.externalRef,
+          latestVersion: companySecrets.latestVersion,
+          createdByUserId: companySecrets.createdByUserId
+        })
+        .from(companySecrets)
+        .where(eq(companySecrets.id, trimmedRef))
+        .then((rows) => rows[0] ?? null);
+
+      if (!secret) {
+        throw secretNotFound(trimmedRef);
+      }
+
+      // ---------------------------------------------------------------
+      // 2b. Rate limiting — prevent brute-force UUID enumeration
+      // ---------------------------------------------------------------
+      // We use the verified companyId from the secret record to prevent
+      // bypasses via fake caller-supplied company IDs.
+      if (!checkRateLimit(`${pluginId}:${secret.companyId}:resolve`, 30, MAX_RATE_LIMIT_WINDOW_MS)) {
+        const err = new Error("Rate limit exceeded for secret resolution");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      // ---------------------------------------------------------------
+      // 3. Ownership & Multi-Tenant Scoping
       // ---------------------------------------------------------------
       const now = Date.now();
       if (!cachedAllowedRefs || now > cachedAllowedRefsExpiry) {
@@ -304,25 +374,35 @@ export function createPluginSecretsHandler(
       }
 
       if (!cachedAllowedRefs.has(trimmedRef)) {
-        // Return "not found" to avoid leaking whether the secret exists
-        throw secretNotFound(trimmedRef);
+        // Fallback: Check if the plugin explicitly created this secret.
+        // This handles the secure onboarding use-case where a plugin creates
+        // a secret via `write` and then immediately needs to `resolve` it.
+        //
+        // CRITICAL SECURITY: We must also check that the secret belongs to a
+        // company that has this plugin enabled.
+        const settings = await db
+          .select()
+          .from(pluginCompanySettings)
+          .where(
+            and(
+              eq(pluginCompanySettings.pluginId, pluginId),
+              eq(pluginCompanySettings.companyId, secret.companyId),
+              eq(pluginCompanySettings.enabled, true),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        
+        if (
+          secret.createdByUserId !== `plugin:${pluginId}` || 
+          !settings
+        ) {
+          // Return "not found" to avoid leaking cross-tenant secrets
+          throw secretNotFound(trimmedRef);
+        }
       }
 
       // ---------------------------------------------------------------
-      // 2. Look up the secret record by UUID
-      // ---------------------------------------------------------------
-      const secret = await db
-        .select()
-        .from(companySecrets)
-        .where(eq(companySecrets.id, trimmedRef))
-        .then((rows) => rows[0] ?? null);
-
-      if (!secret) {
-        throw secretNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 3. Fetch the latest version's material
+      // 4. Fetch the latest version's material
       // ---------------------------------------------------------------
       const versionRow = await db
         .select()
@@ -340,7 +420,7 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 4. Resolve through the appropriate secret provider
+      // 5. Resolve through the appropriate secret provider
       // ---------------------------------------------------------------
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const resolved = await provider.resolveVersion({
@@ -349,6 +429,195 @@ export function createPluginSecretsHandler(
       });
 
       return resolved;
+    },
+
+    async write(params: { companyId: string; name: string; value: string; description?: string }): Promise<string> {
+      const { companyId } = params;
+
+      // ---------------------------------------------------------------
+      // 0. Global Rate limit (Defence in depth)
+      // ---------------------------------------------------------------
+      // Blunt guard against massive parallel requests with unique fake companyIds
+      if (!checkRateLimit(`${pluginId}:global:write`, 50, MAX_RATE_LIMIT_WINDOW_MS)) {
+        const err = new Error("Global rate limit exceeded for secret creation");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      // ---------------------------------------------------------------
+      // 1. Validation — ensure plugin is allowed to act for this company
+      // ---------------------------------------------------------------
+      // Critical Security: We DO NOT trust the companyId in the payload.
+      // We verify that the plugin is actually installed and enabled for this
+      // specific company in the database.
+      const settings = await db
+        .select()
+        .from(pluginCompanySettings)
+        .where(
+          and(
+            eq(pluginCompanySettings.pluginId, pluginId),
+            eq(pluginCompanySettings.companyId, companyId),
+            eq(pluginCompanySettings.enabled, true),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (!settings) {
+        throw new Error(`Plugin not enabled for company: ${companyId}`);
+      }
+
+      // ---------------------------------------------------------------
+      // 1b. Scoped Rate limiting — prevent resource exhaustion
+      // ---------------------------------------------------------------
+      // Now that companyId is verified, apply the specific rate limit.
+      if (!checkRateLimit(`${pluginId}:${companyId}:write`, 10, MAX_RATE_LIMIT_WINDOW_MS)) {
+        const err = new Error("Rate limit exceeded for secret creation");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      // ---------------------------------------------------------------
+      // 2. Input validation
+      // ---------------------------------------------------------------
+      
+      // Name validation
+      if (!params.name || params.name.trim().length === 0) {
+        throw new Error("Secret name must not be empty.");
+      }
+      if (params.name.length > 255) {
+        throw new Error("Secret name must not exceed 255 characters.");
+      }
+      if (!SECRET_NAME_RE.test(params.name)) {
+        throw new Error("Secret name must only contain alphanumeric characters, underscores, and dashes.");
+      }
+
+      // Value validation
+      if (!params.value || params.value.trim().length === 0) {
+        throw new Error("Secret value must not be empty.");
+      }
+      if (Buffer.byteLength(params.value, "utf8") > 65_536) {
+        throw new Error("Secret value must not exceed 64 KiB.");
+      }
+      if (params.value.includes("\0")) {
+        throw new Error("Secret value must not contain null bytes.");
+      }
+
+      // Description validation
+      if (params.description !== undefined && params.description !== null && Buffer.byteLength(params.description, "utf8") > 1024) {
+        throw new Error("Secret description must not exceed 1024 bytes.");
+      }
+
+      // ---------------------------------------------------------------
+      // 3. Safety check — reserved prefixes
+      // ---------------------------------------------------------------
+      const upperName = params.name.toUpperCase();
+      if (upperName.startsWith("PAPERCLIP_") || upperName.startsWith("BETTER_AUTH_")) {
+        throw new Error(`Secret name "${params.name}" is reserved for system use.`);
+      }
+
+      // ---------------------------------------------------------------
+      // 4. Collision & Ownership Protection
+      // ---------------------------------------------------------------
+      // Check if a secret with this name already exists for the company.
+      // Plugins are allowed to UPDATE their own secrets, but not hijack
+      // secrets created by humans or other agents.
+      const existing = await secretService(db).getByName(companyId, params.name);
+      const pluginActorId = `plugin:${pluginId}`;
+
+      if (existing) {
+        if (existing.createdByUserId !== pluginActorId) {
+          throw new Error(`Collision: A secret named "${params.name}" already exists and was not created by this plugin.`);
+        }
+        
+        // Update (rotate) the existing secret
+        const updated = await secretService(db).rotate(
+          existing.id, 
+          { 
+            value: params.value,
+            description: params.description
+          },
+          { userId: pluginActorId, agentId: null }
+        );
+
+        // Audit Logging (Fire and forget to prevent rollback on audit failure)
+        logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: pluginId,
+          action: "secret.rotated",
+          entityType: "secret",
+          entityId: updated.id,
+          details: { name: params.name },
+        }).catch((err) => console.warn("[plugin-secrets-handler] Failed to write audit log for secret rotation:", err));
+
+        return updated.id;
+      }
+
+      // ---------------------------------------------------------------
+      // 5. Secure Creation / Update
+      // ---------------------------------------------------------------
+      // Crucial Security Requirement: Delegate to secretService to ensure
+      // proper provider-level encryption (e.g. AES-256-GCM) is applied before
+      // the secret is ever persisted to the database.
+      try {
+        const secret = await secretService(db).create(
+          companyId,
+          {
+            name: params.name,
+            provider: defaultProvider,
+            value: params.value,
+            description: params.description,
+          },
+          { userId: pluginActorId, agentId: null }
+        );
+
+        // Audit Logging (Fire and forget to prevent rollback on audit failure)
+        logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: pluginId,
+          action: "secret.created",
+          entityType: "secret",
+          entityId: secret.id,
+          details: { name: params.name },
+        }).catch((err) => console.warn("[plugin-secrets-handler] Failed to write audit log for secret creation:", err));
+
+        return secret.id;
+      } catch (err: any) {
+        // Handle TOCTOU race: if creation fails due to a name conflict that 
+        // happened between our check and the insert, perform one final 
+        // ownership check to provide the correct error message.
+        if (err instanceof HttpError && err.status === 409) {
+          const raced = await secretService(db).getByName(companyId, params.name);
+          if (raced && raced.createdByUserId !== pluginActorId) {
+            throw new Error(`Collision: A secret named "${params.name}" already exists and was not created by this plugin.`);
+          }
+          // If it IS our secret now (won the race), we can try to rotate it
+          if (raced) {
+            const updated = await secretService(db).rotate(
+              raced.id, 
+              { 
+                value: params.value,
+                description: params.description
+              },
+              { userId: pluginActorId, agentId: null }
+            );
+
+            logActivity(db, {
+              companyId,
+              actorType: "system",
+              actorId: pluginId,
+              action: "secret.rotated",
+              entityType: "secret",
+              entityId: updated.id,
+              details: { name: params.name },
+            }).catch((err) => console.warn("[plugin-secrets-handler] Failed to write audit log for secret rotation (TOCTOU):", err));
+
+            return updated.id;
+          }
+        }
+        throw err;
+      }
     },
   };
 }

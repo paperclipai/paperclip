@@ -529,6 +529,10 @@ export interface WorkerToHostMethods {
     params: { secretRef: string },
     result: string,
   ];
+  "secrets.write": [
+    params: { companyId: string; name: string; value: string; description?: string },
+    result: string,
+  ];
 
   // Activity
   "activity.log": [
