@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.10.0",
+    "@opentelemetry/api": "1.9.1",
     "@paperclipai/adapter-acpx-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",

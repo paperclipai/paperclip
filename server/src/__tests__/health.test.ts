@@ -22,6 +22,11 @@ function createApp(db?: Db) {
 describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.LANGFUSE_PUBLIC_KEY;
+    delete process.env.LANGFUSE_SECRET_KEY;
+    delete process.env.LANGFUSE_BASE_URL;
+    delete process.env.LANGFUSE_HOST;
+    delete process.env.LANGFUSE_RECORD_IO;
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
   });
 
@@ -32,8 +37,40 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({
+      status: "ok",
+      version: serverVersion,
+      observability: {
+        langfuse: {
+          configured: false,
+          public_key: false,
+          secret_key: false,
+          base_url: "https://us.cloud.langfuse.com",
+          record_io: false,
+        },
+      },
+    });
   }, 15_000);
+
+  it("reports redacted Langfuse readiness when configured", async () => {
+    process.env.LANGFUSE_PUBLIC_KEY = "pk-test";
+    process.env.LANGFUSE_SECRET_KEY = "sk-test";
+    process.env.LANGFUSE_BASE_URL = "https://us.cloud.langfuse.com";
+
+    const app = createApp();
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.observability.langfuse).toMatchObject({
+      configured: true,
+      public_key: true,
+      secret_key: true,
+      base_url: "https://us.cloud.langfuse.com",
+      record_io: false,
+    });
+    expect(JSON.stringify(res.body)).not.toContain("sk-test");
+    expect(JSON.stringify(res.body)).not.toContain("pk-test");
+  });
 
   it("returns 200 when the database probe succeeds", async () => {
     const db = {

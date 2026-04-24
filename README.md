@@ -401,6 +401,14 @@ Telemetry is **enabled by default** and can be disabled with any of the followin
 | CI environments      | Automatically disabled when `CI=true`                   |
 | Config file          | Set `telemetry.enabled: false` in your Paperclip config |
 
+HLT deployments can also enable Langfuse as an operational trace sink for agent
+heartbeat execution. This is separate from anonymous product telemetry and is
+metadata-only by default: set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and
+`LANGFUSE_BASE_URL`; leave `LANGFUSE_RECORD_IO=false` unless a short debugging
+session explicitly needs prompt/output capture. `/health` reports redacted
+Langfuse readiness so ecosystem verifiers can catch missing tracing before
+agents run.
+
 ## Contributing
 
 We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.

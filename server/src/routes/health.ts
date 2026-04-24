@@ -8,6 +8,7 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-se
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+import { getLangfuseRuntimeStatus } from "../langfuse.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -56,7 +57,7 @@ export function healthRoutes(
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion }
+          ? { status: "ok", version: serverVersion, observability: { langfuse: getLangfuseRuntimeStatus() } }
           : { status: "ok", deploymentMode: opts.deploymentMode },
       );
       return;
@@ -140,6 +141,9 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
+      },
+      observability: {
+        langfuse: getLangfuseRuntimeStatus(),
       },
       ...(devServer ? { devServer } : {}),
     });
