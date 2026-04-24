@@ -5,6 +5,10 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type {
+  BeforeAdapterExecuteParams,
+  BeforeAdapterExecuteResult,
+} from "@paperclipai/plugin-sdk";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -2277,7 +2281,30 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
 }
 
+/**
+ * Error thrown when a plugin's `beforeAdapterExecute` hook returns `block`.
+ * Caught by the heartbeat dispatcher and converted into a failed run with
+ * the plugin-provided reason visible in the run's error message.
+ */
+export class AdapterPreExecuteBlockedError extends Error {
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(`adapter pre-execute blocked: ${reason} — ${message}`);
+    this.name = "AdapterPreExecuteBlockedError";
+    this.reason = reason;
+  }
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  // The beforeAdapterExecute plugin hook is sourced from the plugin worker
+  // manager already threaded into heartbeatService. When absent (plugin-less
+  // deployments / test harnesses) the broadcaster is undefined and the hook
+  // block below is skipped entirely — behaviour is byte-identical to before.
+  const broadcastBeforeAdapterExecute = options.pluginWorkerManager
+    ? options.pluginWorkerManager.broadcastBeforeAdapterExecute.bind(
+        options.pluginWorkerManager,
+      )
+    : undefined;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7581,13 +7608,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+
+      // Invoke the beforeAdapterExecute plugin hook so installed plugins can
+      // observe the pending run and optionally inject env vars, override
+      // runtime config, or block the run (fail-closed egress gates, etc.).
+      // Plugin-less deployments skip this block entirely (broadcaster omitted).
+      let effectiveRuntimeConfig: Record<string, unknown> = runtimeConfig;
+      if (broadcastBeforeAdapterExecute) {
+        const preExecuteInput: BeforeAdapterExecuteParams = {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          runId: run.id,
+          adapterType: agent.adapterType,
+          runtimeConfig,
+          adapterEnv,
+          context: context as Record<string, unknown>,
+        };
+        let preExecuteResult: BeforeAdapterExecuteResult;
+        try {
+          preExecuteResult = await broadcastBeforeAdapterExecute(preExecuteInput);
+        } catch (err) {
+          // Broadcast-level failure (not a single plugin's error — those are
+          // already swallowed inside the broadcaster). Log and continue
+          // without the hook's modifications.
+          logger.error(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "broadcastBeforeAdapterExecute threw unexpectedly; proceeding without hook modifications",
+          );
+          preExecuteResult = {};
+        }
+
+        if (preExecuteResult.block) {
+          const { reason, message } = preExecuteResult.block;
+          await onLog(
+            "stderr",
+            `[paperclip] Run blocked by plugin pre-execute hook: ${reason} — ${message}\n`,
+          );
+          throw new AdapterPreExecuteBlockedError(reason, message);
+        }
+
+        if (preExecuteResult.env || preExecuteResult.runtimeConfig) {
+          const baseEnv = parseObject(effectiveRuntimeConfig.env);
+          const mergedEnv = {
+            ...baseEnv,
+            ...(preExecuteResult.env ?? {}),
+          };
+          effectiveRuntimeConfig = {
+            ...effectiveRuntimeConfig,
+            ...(preExecuteResult.runtimeConfig ?? {}),
+            env: mergedEnv,
+          };
+        }
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: runtimeConfig,
+        config: effectiveRuntimeConfig,
         context,
-        runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+        runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(effectiveRuntimeConfig) ?? null,
         executionTarget,
         executionTransport: remoteExecution
           ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
