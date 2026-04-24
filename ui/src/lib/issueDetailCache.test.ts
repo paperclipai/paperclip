@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issuesApi } from "@/api/issues";
@@ -103,5 +103,31 @@ describe("issueDetailCache", () => {
     expect(result).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.identifier!))).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
+  });
+
+  it("refetches the authoritative issue detail on mount even when a prefetched snapshot exists", async () => {
+    const prefetchedIssue = createIssue({ title: "Prefetched snapshot" });
+    const refreshedIssue = createIssue({ title: "Fresh detail payload" });
+    await prefetchIssueDetail(queryClient, prefetchedIssue.identifier!, { issue: prefetchedIssue });
+    vi.mocked(issuesApi.get).mockResolvedValue(refreshedIssue);
+
+    const observer = new QueryObserver(queryClient, {
+      queryKey: queryKeys.issues.detail(prefetchedIssue.identifier!),
+      queryFn: () => fetchIssueDetail(queryClient, prefetchedIssue.identifier!),
+      initialData: () => getCachedIssueDetail(queryClient, prefetchedIssue.identifier!, prefetchedIssue),
+      staleTime: 30_000,
+      refetchOnMount: "always",
+    });
+
+    const unsubscribe = observer.subscribe(() => {});
+
+    await vi.waitFor(() => {
+      expect(issuesApi.get).toHaveBeenCalledWith(prefetchedIssue.identifier!);
+    });
+
+    expect(queryClient.getQueryData(queryKeys.issues.detail(prefetchedIssue.identifier!))).toEqual(refreshedIssue);
+    expect(queryClient.getQueryData(queryKeys.issues.detail(prefetchedIssue.id))).toEqual(refreshedIssue);
+
+    unsubscribe();
   });
 });

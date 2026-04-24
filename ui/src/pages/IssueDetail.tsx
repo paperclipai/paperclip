@@ -898,6 +898,7 @@ export function IssueDetail() {
     queryFn: () => fetchIssueDetail(queryClient, issueId!),
     enabled: !!issueId,
     initialData: () => cachedIssue,
+    refetchOnMount: "always",
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
