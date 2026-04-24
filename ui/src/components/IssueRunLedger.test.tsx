@@ -192,6 +192,40 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).not.toContain("initial attempt");
   });
 
+  it("surfaces scheduled retry timing and exhaustion state without opening logs", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-scheduled",
+          status: "scheduled_retry",
+          finishedAt: null,
+          livenessState: null,
+          livenessReason: null,
+          retryOfRunId: "run-root",
+          scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+          scheduledRetryAttempt: 2,
+          scheduledRetryReason: "transient_failure",
+        }),
+        createRun({
+          runId: "run-exhausted",
+          status: "failed",
+          createdAt: "2026-04-18T19:57:00.000Z",
+          retryOfRunId: "run-root",
+          scheduledRetryAttempt: 4,
+          scheduledRetryReason: "transient_failure",
+          retryExhaustedReason: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Retry scheduled");
+    expect(container.textContent).toContain("Attempt 2");
+    expect(container.textContent).toContain("Transient failure");
+    expect(container.textContent).toContain("Next retry");
+    expect(container.textContent).toContain("Retry exhausted");
+    expect(container.textContent).toContain("No further automatic retry queued");
+  });
+
   it("shows timeout, cancel, and budget stop reasons without raw logs", () => {
     renderLedger({
       runs: [

@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -52,16 +52,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2 } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
-import type { Issue, Project } from "@paperclipai/shared";
+import { statusBadge } from "../lib/status-colors";
+import { ISSUE_STATUSES, type Issue, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
+const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 150;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_ROW_RENDER_BATCH_DELAY_MS = 0;
+const boardIssueStatuses = ISSUE_STATUSES;
 
 /* ── View state ── */
 
@@ -107,6 +110,20 @@ function getInitialViewState(key: string, initialAssignees?: string[]): IssueVie
   return {
     ...stored,
     assignees: initialAssignees,
+    statuses: [],
+  };
+}
+
+function getInitialWorkspaceViewState(
+  key: string,
+  initialAssignees?: string[],
+  initialWorkspaces?: string[],
+): IssueViewState {
+  const stored = getInitialViewState(key, initialAssignees);
+  if (!initialWorkspaces) return stored;
+  return {
+    ...stored,
+    workspaces: initialWorkspaces,
     statuses: [],
   };
 }
@@ -160,6 +177,15 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   return sorted;
 }
 
+function issueMatchesLocalSearch(issue: Issue, normalizedSearch: string): boolean {
+  if (!normalizedSearch) return true;
+  return [
+    issue.identifier,
+    issue.title,
+    issue.description,
+  ].some((value) => value?.toLowerCase().includes(normalizedSearch));
+}
+
 /* ── Component ── */
 
 interface Agent {
@@ -188,11 +214,15 @@ interface IssuesListProps {
   viewStateKey: string;
   issueLinkState?: unknown;
   initialAssignees?: string[];
+  initialWorkspaces?: string[];
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
+  searchWithinLoadedIssues?: boolean;
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   enableRoutineVisibilityFilter?: boolean;
+  mutedIssueIds?: Set<string>;
+  issueBadgeById?: Map<string, string>;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -270,11 +300,15 @@ export function IssuesList({
   viewStateKey,
   issueLinkState,
   initialAssignees,
+  initialWorkspaces,
   initialSearch,
   searchFilters,
+  searchWithinLoadedIssues = false,
   baseCreateIssueDefaults,
   createIssueLabel,
   enableRoutineVisibilityFilter = false,
+  mutedIssueIds,
+  issueBadgeById,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -300,8 +334,11 @@ export function IssuesList({
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
+  const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
 
-  const [viewState, setViewState] = useState<IssueViewState>(() => getInitialViewState(scopedKey, initialAssignees));
+  const [viewState, setViewState] = useState<IssueViewState>(() =>
+    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces),
+  );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
@@ -315,14 +352,14 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}`);
+  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}`;
+    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialViewState(scopedKey, initialAssignees));
+      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces));
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey]);
+  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -367,8 +404,33 @@ export function IssuesList({
         ...searchFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
       }),
-    enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
+    enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
+  });
+  const boardIssueQueries = useQueries({
+    queries: boardIssueStatuses.map((status) => ({
+      queryKey: [
+        ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
+        "board-column",
+        status,
+        normalizedIssueSearch,
+        projectId ?? "__all-projects__",
+        searchFilters ?? {},
+        ISSUE_BOARD_COLUMN_RESULT_LIMIT,
+        enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      ],
+      queryFn: () =>
+        issuesApi.list(selectedCompanyId!, {
+          ...searchFilters,
+          ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
+          projectId,
+          status,
+          limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
+          ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        }),
+      enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
+      placeholderData: (previousData: Issue[] | undefined) => previousData,
+    })),
   });
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
@@ -546,11 +608,36 @@ export function IssuesList({
     return map;
   }, [issues]);
 
+  const boardIssues = useMemo(() => {
+    if (viewState.viewMode !== "board" || searchWithinLoadedIssues) return null;
+    const merged = new Map<string, Issue>();
+    let isPending = false;
+    for (const query of boardIssueQueries) {
+      isPending ||= query.isPending;
+      for (const issue of query.data ?? []) {
+        merged.set(issue.id, issue);
+      }
+    }
+    if (merged.size > 0) return [...merged.values()];
+    return isPending ? issues : [];
+  }, [boardIssueQueries, issues, searchWithinLoadedIssues, viewState.viewMode]);
+  const boardColumnLimitReached = useMemo(
+    () =>
+      viewState.viewMode === "board" &&
+      !searchWithinLoadedIssues &&
+      boardIssueQueries.some((query) => (query.data?.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT),
+    [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
+  );
+
   const filtered = useMemo(() => {
-    const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
-    const filteredByControls = applyIssueFilters(sourceIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
+    const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
+    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+    const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
+      ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
+      : sourceIssues;
+    const filteredByControls = applyIssueFilters(searchScopedIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
     return sortIssues(filteredByControls, viewState);
-  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter]);
+  }, [boardIssues, issues, searchedIssues, searchWithinLoadedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -848,9 +935,14 @@ export function IssuesList({
 
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
-      {normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
+      {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
           Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+        </p>
+      )}
+      {boardColumnLimitReached && (
+        <p className="text-xs text-muted-foreground">
+          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
@@ -926,6 +1018,8 @@ export function IssuesList({
                   const useDeferredRowRendering = !(hasChildren && isExpanded);
                   const issueProject = issue.projectId ? projectById.get(issue.projectId) ?? null : null;
                   const parentIssue = issue.parentId ? issueById.get(issue.parentId) ?? null : null;
+                  const issueBadge = issueBadgeById?.get(issue.id);
+                  const isMutedIssue = mutedIssueIds?.has(issue.id) === true;
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
@@ -960,11 +1054,32 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
-                        titleSuffix={hasChildren && !isExpanded ? (
-                          <span className="ml-1.5 text-xs text-muted-foreground">
-                            ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
-                          </span>
-                        ) : undefined}
+                        titleSuffix={(
+                          <>
+                            {hasChildren && !isExpanded ? (
+                              <span className="ml-1.5 text-xs text-muted-foreground">
+                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                              </span>
+                            ) : null}
+                            {issueBadge ? (
+                              issueBadge === "Paused" ? (
+                                <span
+                                  className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusBadge.paused)}
+                                  aria-label="Paused"
+                                  title="Paused"
+                                >
+                                  <CircleSlash2 className="h-3 w-3" />
+                                  Paused
+                                </span>
+                              ) : (
+                                <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                                  {issueBadge}
+                                </span>
+                              )
+                            ) : null}
+                          </>
+                        )}
+                        className={isMutedIssue ? "opacity-70" : undefined}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" onClick={toggleCollapse}>

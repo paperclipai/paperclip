@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +24,15 @@ if (capturePath) {
 console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }));
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
 console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFailingCodexCommand(commandPath: string, errorMessage: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "error", message: ${JSON.stringify(errorMessage)} }));
+process.exit(1);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -362,6 +371,194 @@ describe("codex execute", () => {
       );
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies remote-compaction high-demand failures as retryable transient upstream errors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-transient-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "Error running remote compact task: We're currently experiencing high demand, which may cause temporary errors.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-transient-error",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorMessage).toContain("high demand");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists retry-not-before metadata for codex usage-limit failures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-usage-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 22, 22, 29, 0));
+
+    try {
+      const result = await execute({
+        runId: "run-usage-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "codex-session-usage-limit",
+          sessionParams: {
+            sessionId: "codex-session-usage-limit",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-usage-limit",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5.3-codex-spark",
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      const expectedRetryNotBefore = new Date(2026, 3, 22, 23, 31, 0, 0).toISOString();
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
+        new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
+      );
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses safer invocation settings and a fresh-session handoff for codex transient fallback retries", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-fallback-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let commandNotes: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-fallback",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-stale",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-stale",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          fastMode: true,
+          model: "gpt-5.4",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          codexTransientFallbackMode: "fresh_session_safer_invocation",
+          paperclipContinuationSummary: {
+            key: "continuation-summary",
+            title: "Continuation Summary",
+            body: "Issue continuation summary for the next fresh session.",
+            updatedAt: "2026-04-21T01:00:00.000Z",
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          commandNotes = meta.commandNotes ?? [];
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+      expect(capture.argv).not.toContain("resume");
+      expect(capture.argv).not.toContain('service_tier="fast"');
+      expect(capture.argv).not.toContain("features.fast_mode=true");
+      expect(capture.prompt).toContain("Paperclip session handoff:");
+      expect(capture.prompt).toContain("Issue continuation summary for the next fresh session.");
+      expect(commandNotes).toContain("Codex transient fallback requested safer invocation settings for this retry.");
+      expect(commandNotes).toContain("Codex transient fallback forced a fresh session with a continuation handoff.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -36,6 +36,8 @@ import {
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -590,6 +592,7 @@ export async function startServer(): Promise<StartedServer> {
       databaseBackupInFlight = false;
     }
   };
+  const pluginWorkerManager = createPluginWorkerManager();
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -613,6 +616,7 @@ export async function startServer(): Promise<StartedServer> {
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
     resolveSession,
+    pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -627,15 +631,24 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const runtimeListenHost = config.host;
-  const runtimeApiHost =
-    runtimeListenHost === "0.0.0.0" || runtimeListenHost === "::"
-      ? "localhost"
-      : runtimeListenHost;
+  const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  if (!process.env.PAPERCLIP_API_URL) {
-    process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
-  }
+  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
+  process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -656,22 +669,33 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any);
-    const routines = routineService(db as any);
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
-      .then(() => heartbeat.resumeQueuedRuns())
-      .then(async () => {
+      .then(() => heartbeat.promoteDueScheduledRetries())
+      .then(async (promotion) => {
+        await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
+          promotion.promoted > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.escalated > 0
         ) {
-          logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
+          logger.warn(
+            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+            "startup heartbeat recovery changed assigned issue state",
+          );
+        }
+      })
+      .then(async () => {
+        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+        if (reconciled.escalationsCreated > 0) {
+          logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
         }
       })
       .catch((err) => {
@@ -704,15 +728,26 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.resumeQueuedRuns())
-        .then(async () => {
+        .then(() => heartbeat.promoteDueScheduledRetries())
+        .then(async (promotion) => {
+          await heartbeat.resumeQueuedRuns();
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
           if (
+            promotion.promoted > 0 ||
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
             reconciled.escalated > 0
           ) {
-            logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+            logger.warn(
+              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              "periodic heartbeat recovery changed assigned issue state",
+            );
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+          if (reconciled.escalationsCreated > 0) {
+            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
           }
         })
         .catch((err) => {
@@ -838,7 +873,7 @@ export async function startServer(): Promise<StartedServer> {
     server,
     host: config.host,
     listenPort,
-    apiUrl: process.env.PAPERCLIP_API_URL!,
+    apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
 }

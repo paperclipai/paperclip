@@ -38,7 +38,12 @@ import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type {
+  AskUserQuestionsInteraction,
+  PaperclipPluginManifestV1,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "@paperclipai/shared";
 
 import type { PaperclipPlugin } from "./define-plugin.js";
 import type {
@@ -71,6 +76,14 @@ import type {
   GetDataParams,
   PerformActionParams,
   ExecuteToolParams,
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentProbeParams,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
@@ -692,6 +705,66 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
         },
 
+        async createInteraction(issueId: string, interaction, companyId: string, options?: { authorAgentId?: string }) {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction,
+            authorAgentId: options?.authorAgentId,
+          });
+        },
+
+        async suggestTasks(
+          issueId: string,
+          interaction,
+          companyId: string,
+          options?: { authorAgentId?: string },
+        ): Promise<SuggestTasksInteraction> {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction: {
+              ...interaction,
+              kind: "suggest_tasks",
+            },
+            authorAgentId: options?.authorAgentId,
+          }) as Promise<SuggestTasksInteraction>;
+        },
+
+        async askUserQuestions(
+          issueId: string,
+          interaction,
+          companyId: string,
+          options?: { authorAgentId?: string },
+        ): Promise<AskUserQuestionsInteraction> {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction: {
+              ...interaction,
+              kind: "ask_user_questions",
+            },
+            authorAgentId: options?.authorAgentId,
+          }) as Promise<AskUserQuestionsInteraction>;
+        },
+
+        async requestConfirmation(
+          issueId: string,
+          interaction,
+          companyId: string,
+          options?: { authorAgentId?: string },
+        ): Promise<RequestConfirmationInteraction> {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction: {
+              ...interaction,
+              kind: "request_confirmation",
+            },
+            authorAgentId: options?.authorAgentId,
+          }) as Promise<RequestConfirmationInteraction>;
+        },
+
         documents: {
           async list(issueId: string, companyId: string) {
             return callHost("issues.documents.list", { issueId, companyId });
@@ -1014,6 +1087,30 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "executeTool":
         return handleExecuteTool(params as ExecuteToolParams);
 
+      case "environmentValidateConfig":
+        return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
+
+      case "environmentProbe":
+        return handleEnvironmentProbe(params as PluginEnvironmentProbeParams);
+
+      case "environmentAcquireLease":
+        return handleEnvironmentAcquireLease(params as PluginEnvironmentAcquireLeaseParams);
+
+      case "environmentResumeLease":
+        return handleEnvironmentResumeLease(params as PluginEnvironmentResumeLeaseParams);
+
+      case "environmentReleaseLease":
+        return handleEnvironmentReleaseLease(params as PluginEnvironmentReleaseLeaseParams);
+
+      case "environmentDestroyLease":
+        return handleEnvironmentDestroyLease(params as PluginEnvironmentDestroyLeaseParams);
+
+      case "environmentRealizeWorkspace":
+        return handleEnvironmentRealizeWorkspace(params as PluginEnvironmentRealizeWorkspaceParams);
+
+      case "environmentExecute":
+        return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1047,6 +1144,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
+    if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
+    if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
+    if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
+    if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");
+    if (plugin.definition.onEnvironmentReleaseLease) supportedMethods.push("environmentReleaseLease");
+    if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
+    if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
+    if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
 
     return { ok: true, supportedMethods };
   }
@@ -1188,6 +1293,71 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw new Error(`No tool handler registered for "${params.toolName}"`);
     }
     return entry.fn(params.parameters, params.runContext);
+  }
+
+  function methodNotImplemented(method: string): Error & { code: number } {
+    return Object.assign(
+      new Error(`${method} is not implemented by this plugin`),
+      { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
+    );
+  }
+
+  async function handleEnvironmentValidateConfig(
+    params: PluginEnvironmentValidateConfigParams,
+  ) {
+    if (!plugin.definition.onEnvironmentValidateConfig) {
+      throw methodNotImplemented("environmentValidateConfig");
+    }
+    return plugin.definition.onEnvironmentValidateConfig(params);
+  }
+
+  async function handleEnvironmentProbe(params: PluginEnvironmentProbeParams) {
+    if (!plugin.definition.onEnvironmentProbe) {
+      throw methodNotImplemented("environmentProbe");
+    }
+    return plugin.definition.onEnvironmentProbe(params);
+  }
+
+  async function handleEnvironmentAcquireLease(params: PluginEnvironmentAcquireLeaseParams) {
+    if (!plugin.definition.onEnvironmentAcquireLease) {
+      throw methodNotImplemented("environmentAcquireLease");
+    }
+    return plugin.definition.onEnvironmentAcquireLease(params);
+  }
+
+  async function handleEnvironmentResumeLease(params: PluginEnvironmentResumeLeaseParams) {
+    if (!plugin.definition.onEnvironmentResumeLease) {
+      throw methodNotImplemented("environmentResumeLease");
+    }
+    return plugin.definition.onEnvironmentResumeLease(params);
+  }
+
+  async function handleEnvironmentReleaseLease(params: PluginEnvironmentReleaseLeaseParams) {
+    if (!plugin.definition.onEnvironmentReleaseLease) {
+      throw methodNotImplemented("environmentReleaseLease");
+    }
+    return plugin.definition.onEnvironmentReleaseLease(params);
+  }
+
+  async function handleEnvironmentDestroyLease(params: PluginEnvironmentDestroyLeaseParams) {
+    if (!plugin.definition.onEnvironmentDestroyLease) {
+      throw methodNotImplemented("environmentDestroyLease");
+    }
+    return plugin.definition.onEnvironmentDestroyLease(params);
+  }
+
+  async function handleEnvironmentRealizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams) {
+    if (!plugin.definition.onEnvironmentRealizeWorkspace) {
+      throw methodNotImplemented("environmentRealizeWorkspace");
+    }
+    return plugin.definition.onEnvironmentRealizeWorkspace(params);
+  }
+
+  async function handleEnvironmentExecute(params: PluginEnvironmentExecuteParams) {
+    if (!plugin.definition.onEnvironmentExecute) {
+      throw methodNotImplemented("environmentExecute");
+    }
+    return plugin.definition.onEnvironmentExecute(params);
   }
 
   // -----------------------------------------------------------------------

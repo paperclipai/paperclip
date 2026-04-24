@@ -40,6 +40,22 @@ interface LinkedRunItem {
   agentId: string;
   createdAt: Date | string;
   startedAt: Date | string | null;
+  environment?: {
+    id: string;
+    name: string;
+    driver: string;
+  } | null;
+  environmentLease?: {
+    id: string;
+    status: string;
+    leasePolicy: string;
+    provider: string | null;
+    providerLeaseId: string | null;
+    executionWorkspaceId: string | null;
+    workspacePath: string | null;
+    failureReason: string | null;
+    cleanupStatus: string | null;
+  } | null;
   finishedAt?: Date | string | null;
 }
 
@@ -119,6 +135,16 @@ function clearDraft(draftKey: string) {
   }
 }
 
+function BreakablePath({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  const segments = text.split(/(?<=[\/-])/);
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) parts.push(<wbr key={i} />);
+    parts.push(segments[i]);
+  }
+  return <>{parts}</>;
+}
+
 function parseReassignment(target: string): CommentReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
@@ -135,8 +161,8 @@ function parseReassignment(target: string): CommentReassignment | null {
 }
 
 function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
-  return isClosed && assigneeValue.startsWith("agent:");
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
 function humanizeValue(value: string | null): string {
@@ -611,6 +637,40 @@ const TimelineList = memo(function TimelineList({
                   </a>
                 </div>
               </div>
+              {run.environment || run.environmentLease ? (
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  {run.environment ? (
+                    <span>
+                      Environment <span className="text-foreground">{run.environment.name}</span>
+                      <span> · {run.environment.driver}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.provider ? (
+                    <span>
+                      Provider <span className="text-foreground">{run.environmentLease.provider}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease ? (
+                    <span>
+                      Lease{" "}
+                      <span className="font-mono text-foreground">
+                        {run.environmentLease.id.slice(0, 8)}
+                      </span>
+                      <span> · {run.environmentLease.status}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.workspacePath ? (
+                    <span className="min-w-0 font-mono" style={{ overflowWrap: "anywhere" }}>
+                      <BreakablePath text={run.environmentLease.workspacePath} />
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.failureReason ? (
+                    <span className="text-destructive">
+                      Failure: {run.environmentLease.failureReason}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           );
         }

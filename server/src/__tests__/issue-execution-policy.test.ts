@@ -171,6 +171,75 @@ describe("issue execution policy transitions", () => {
       expect(result.decision).toBeUndefined();
     });
 
+    it("carries loose review instructions on the pending handoff", () => {
+      const reviewInstructions = [
+        "Please focus on whether the migration path is reversible.",
+        "",
+        "- Check failure handling",
+        "- Call out any unclear operator instructions",
+      ].join("\n");
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Implemented the migration",
+        reviewRequest: { instructions: reviewInstructions },
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        reviewRequest: { instructions: reviewInstructions },
+      });
+    });
+
+    it("clears loose review instructions with explicit null during a stage transition", () => {
+      const reviewStageId = policy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            reviewRequest: { instructions: "Old review request" },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Ready for review",
+        reviewRequest: null,
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        reviewRequest: null,
+      });
+    });
+
     it("reviewer approves → advances to approval stage", () => {
       const reviewStageId = policy.stages[0].id;
       const result = applyIssueExecutionPolicyTransition({
@@ -211,6 +280,44 @@ describe("issue execution policy transitions", () => {
         stageId: reviewStageId,
         stageType: "review",
         outcome: "approved",
+      });
+    });
+
+    it("lets a reviewer provide loose instructions for the next approval stage", () => {
+      const reviewStageId = policy.stages[0].id;
+      const approvalInstructions = "Please decide whether this is ready to ship, with any launch caveats.";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            reviewRequest: { instructions: "Review the implementation details." },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "QA signoff complete",
+        reviewRequest: { instructions: approvalInstructions },
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: ctoUserId },
+        reviewRequest: { instructions: approvalInstructions },
       });
     });
 
