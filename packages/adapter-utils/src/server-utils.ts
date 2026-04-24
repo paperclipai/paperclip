@@ -1414,6 +1414,16 @@ export async function runChildProcess(
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
+    /**
+     * Optional file-system paths to watch for activity. When provided, the
+     * timeout becomes *inactivity-based*: the timer resets whenever stdout,
+     * stderr, or file-system activity is detected in the watched paths.
+     * Without this, the timeout is a hard wall-clock limit from process start.
+     *
+     * Useful for adapters like Copilot CLI that write their thinking stream
+     * to session files (e.g. `~/.copilot/session-state/`) instead of stdout.
+     */
+    activityPaths?: string[];
     remoteExecution?: RemoteExecutionSpec | null;
     /**
      * Optional file-system paths to watch for activity. When provided, the
@@ -1580,11 +1590,11 @@ export async function runChildProcess(
 
         const cleanup = () => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalCleanupTimers();
           for (const w of fsWatchers) {
             try { w.close(); } catch { /* ignore */ }
           }
           fsWatchers.length = 0;
-          clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
         };
 
@@ -1594,6 +1604,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          resetIdleTimer?.();
           maybeArmTerminalResultCleanup();
           resetIdleTimer?.();
           logChain = logChain
@@ -1611,6 +1622,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          resetIdleTimer?.();
           maybeArmTerminalResultCleanup();
           resetIdleTimer?.();
           logChain = logChain
