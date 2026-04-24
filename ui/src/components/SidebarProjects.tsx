@@ -57,6 +57,7 @@ function FolderNameInput({
 }) {
   const [value, setValue] = useState(initialValue);
   const ref = useRef<HTMLInputElement>(null);
+  const committedRef = useRef(false);
 
   useEffect(() => {
     ref.current?.focus();
@@ -64,8 +65,9 @@ function FolderNameInput({
   }, []);
 
   function commit() {
+    if (committedRef.current) return;
     const trimmed = value.trim();
-    if (trimmed) onCommit(trimmed);
+    if (trimmed) { committedRef.current = true; onCommit(trimmed); }
     else onCancel();
   }
 

@@ -87,18 +87,19 @@ export function projectFolderService(db: Db) {
     },
 
     remove: async (id: string): Promise<ProjectFolder | null> => {
-      // Move projects in this folder to uncategorized before deleting.
-      await db
-        .update(projects)
-        .set({ folderId: null, updatedAt: new Date() })
-        .where(eq(projects.folderId, id));
+      return db.transaction(async (tx) => {
+        await tx
+          .update(projects)
+          .set({ folderId: null, updatedAt: new Date() })
+          .where(eq(projects.folderId, id));
 
-      const rows = await db
-        .delete(projectFolders)
-        .where(eq(projectFolders.id, id))
-        .returning();
-      const row = rows[0];
-      return row ? toProjectFolder(row) : null;
+        const rows = await tx
+          .delete(projectFolders)
+          .where(eq(projectFolders.id, id))
+          .returning();
+        const row = rows[0];
+        return row ? toProjectFolder(row) : null;
+      });
     },
   };
 }

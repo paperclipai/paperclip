@@ -27,6 +27,11 @@ export function projectFolderRoutes(db: Db) {
   router.get("/companies/:companyId/project-folders", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const company = await companySvc.getById(companyId);
+    if (!company?.projectFoldersEnabled) {
+      res.json([]);
+      return;
+    }
     const folders = await svc.list(companyId);
     res.json(folders);
   });
