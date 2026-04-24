@@ -21,6 +21,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -53,7 +57,21 @@ vi.mock("../services/index.js", () => ({
     listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
   issueApprovalService: () => ({}),
+  issueReferenceService: () => ({
+    deleteDocumentSource: async () => undefined,
+    diffIssueReferenceSummary: () => ({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
+    }),
+    emptySummary: () => ({ outbound: [], inbound: [] }),
+    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+    syncComment: async () => undefined,
+    syncDocument: async () => undefined,
+    syncIssue: async () => undefined,
+  }),
   issueService: () => mockIssueService,
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
   routineService: () => ({
@@ -94,7 +112,21 @@ function registerModuleMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
     issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
     routineService: () => ({

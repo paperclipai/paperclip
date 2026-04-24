@@ -28,6 +28,9 @@ const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
 }));
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
@@ -40,6 +43,7 @@ vi.mock("../services/index.js", () => ({
   approvalService: () => ({}),
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
   budgetService: () => ({}),
+  environmentService: () => mockEnvironmentService,
   heartbeatService: () => ({}),
   issueApprovalService: () => ({}),
   issueService: () => ({}),
@@ -112,6 +116,7 @@ function makeAgent() {
     adapterType: "codex_local",
     adapterConfig: {},
     runtimeConfig: {},
+    defaultEnvironmentId: null,
     permissions: null,
     updatedAt: new Date(),
   };

@@ -156,6 +156,115 @@ Paperclip handles the hard orchestration details correctly.
 
 <br/>
 
+## What's Under the Hood
+
+Paperclip is a full control plane, not a wrapper. Before you build any of this yourself, know that it already exists:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                       PAPERCLIP SERVER                       │
+│                                                              │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
+│  │Identity & │  │  Work &   │  │ Heartbeat │  │Governance │  │
+│  │  Access   │  │   Tasks   │  │ Execution │  │& Approvals│  │
+│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
+│                                                              │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
+│  │ Org Chart │  │Workspaces │  │  Plugins  │  │  Budget   │  │
+│  │ & Agents  │  │ & Runtime │  │           │  │ & Costs   │  │
+│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
+│                                                              │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
+│  │ Routines  │  │ Secrets & │  │ Activity  │  │  Company  │  │
+│  │& Schedules│  │  Storage  │  │ & Events  │  │Portability│  │
+│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
+└──────────────────────────────────────────────────────────────┘
+         ▲              ▲              ▲              ▲
+   ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐
+   │  Claude   │  │   Codex   │  │   CLI     │  │ HTTP/web  │
+   │   Code    │  │           │  │  agents   │  │   bots    │
+   └───────────┘  └───────────┘  └───────────┘  └───────────┘
+```
+
+### The Systems
+
+<table>
+<tr>
+<td width="50%">
+
+**Identity & Access** — Two deployment modes (trusted local or authenticated), board users, agent API keys, short-lived run JWTs, company memberships, invite flows, and OpenClaw onboarding. Every mutating request is traced to an actor.
+
+</td>
+<td width="50%">
+
+**Org Chart & Agents** — Agents have roles, titles, reporting lines, permissions, and budgets. Adapter examples match the diagram: Claude Code, Codex, CLI agents such as Cursor/Gemini/bash, HTTP/webhook bots such as OpenClaw, and external adapter plugins. If it can receive a heartbeat, it's hired.
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Work & Task System** — Issues carry company/project/goal/parent links, atomic checkout with execution locks, first-class blocker dependencies, comments, documents, attachments, work products, labels, and inbox state. No double-work, no lost context.
+
+</td>
+<td>
+
+**Heartbeat Execution** — DB-backed wakeup queue with coalescing, budget checks, workspace resolution, secret injection, skill loading, and adapter invocation. Runs produce structured logs, cost events, session state, and audit trails. Recovery handles orphaned runs automatically.
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Workspaces & Runtime** — Project workspaces, isolated execution workspaces (git worktrees, operator branches), and runtime services (dev servers, preview URLs). Agents work in the right directory with the right context every time.
+
+</td>
+<td>
+
+**Governance & Approvals** — Board approval workflows, execution policies with review/approval stages, decision tracking, budget hard-stops, agent pause/resume/terminate, and full audit logging. You're the board — nothing ships without your sign-off.
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Budget & Cost Control** — Token and cost tracking by company, agent, project, goal, issue, provider, and model. Scoped budget policies with warning thresholds and hard stops. Overspend pauses agents and cancels queued work automatically.
+
+</td>
+<td>
+
+**Routines & Schedules** — Recurring tasks with cron, webhook, and API triggers. Concurrency and catch-up policies. Each routine execution creates a tracked issue and wakes the assigned agent — no manual kick-offs needed.
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Plugins** — Instance-wide plugin system with out-of-process workers, capability-gated host services, job scheduling, tool exposure, and UI contributions. Extend Paperclip without forking it.
+
+</td>
+<td>
+
+**Secrets & Storage** — Instance and company secrets, encrypted local storage, provider-backed object storage, attachments, and work products. Sensitive values stay out of prompts unless a scoped run explicitly needs them.
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Activity & Events** — Mutating actions, heartbeat state changes, cost events, approvals, comments, and work products are recorded as durable activity so operators can audit what happened and why.
+
+</td>
+<td>
+
+**Company Portability** — Export and import entire organizations — agents, skills, projects, routines, and issues — with secret scrubbing and collision handling. One deployment, many companies, complete data isolation.
+
+</td>
+</tr>
+</table>
+
+<br/>
+
 ## What Paperclip is not
 
 |                              |                                                                                                                      |
@@ -256,7 +365,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Scheduled Routines
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
-- ⚪ Multiple Human Users
+- ✅ Multiple Human Users
 - ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
 - ⚪ Artifacts & Work Products
 - ⚪ Memory / Knowledge

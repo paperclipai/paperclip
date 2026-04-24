@@ -7,7 +7,6 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { heartbeatsApi } from "../api/heartbeats";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -28,7 +27,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
-const DASHBOARD_HEARTBEAT_RUN_LIMIT = 100;
+const DASHBOARD_ACTIVITY_LIMIT = 10;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -61,8 +60,8 @@ export function Dashboard() {
   });
 
   const { data: activity } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId!),
-    queryFn: () => activityApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }],
+    queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
     enabled: !!selectedCompanyId,
   });
 
@@ -75,12 +74,6 @@ export function Dashboard() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: runs } = useQuery({
-    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", DASHBOARD_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, DASHBOARD_HEARTBEAT_RUN_LIMIT),
     enabled: !!selectedCompanyId,
   });
 
@@ -300,7 +293,7 @@ export function Dashboard() {
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart runs={runs ?? []} />
+              <RunActivityChart activity={data.runActivity} />
             </ChartCard>
             <ChartCard title="Issues by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
@@ -309,7 +302,7 @@ export function Dashboard() {
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart runs={runs ?? []} />
+              <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
 

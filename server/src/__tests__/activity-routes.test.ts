@@ -1,6 +1,7 @@
+import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -21,12 +22,18 @@ const mockIssueService = vi.hoisted(() => ({
 
 vi.mock("../services/activity.js", () => ({
   activityService: () => mockActivityService,
+  normalizeActivityLimit: (limit: number | undefined) => {
+    if (!Number.isFinite(limit)) return 100;
+    return Math.max(1, Math.min(500, Math.floor(limit ?? 100)));
+  },
 }));
 
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   heartbeatService: () => mockHeartbeatService,
 }));
+
+let server: Server | null = null;
 
 async function createApp(
   actor: Record<string, unknown> = {
@@ -49,13 +56,57 @@ async function createApp(
   });
   app.use("/api", activityRoutes({} as any));
   app.use(errorHandler);
-  return app;
+  server = app.listen(0);
+  return server;
 }
 
 describe("activity routes", () => {
+  afterAll(async () => {
+    if (!server) return;
+    await new Promise<void>((resolve, reject) => {
+      server?.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    server = null;
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+  });
+
+  it("limits company activity lists by default", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/activity");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: undefined,
+      entityId: undefined,
+      limit: 100,
+    });
+  });
+
+  it("caps requested company activity list limits", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/activity?limit=5000&entityType=issue");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: "issue",
+      entityId: undefined,
+      limit: 500,
+    });
   });
 
   it("resolves issue identifiers before loading runs", async () => {
