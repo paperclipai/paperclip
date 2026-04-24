@@ -5,7 +5,7 @@ summary: Reviewing AutoAgent production gate evidence without reading repo inter
 
 Production gate reviews decide whether an AutoAgent run proves production readiness or only proves a development smoke test. Use this checklist when a Paperclip issue, approval, or review comment asks PM, Meta Agent Manager, QE, or another reviewer to accept production-gate evidence.
 
-This checklist comes from the fake-pass risk audit in [WAT-1793](/WAT/issues/WAT-1793). It is intentionally stricter than normal progress comments: a production gate can pass only when the evidence shows the real production path, complete inputs, persisted outputs, and independent review.
+This checklist comes from the fake-pass risk audit in Paperclip issue WAT-1793. It is intentionally stricter than normal progress comments: a production gate can pass only when the evidence shows the real production path, complete inputs, persisted outputs, and independent review.
 
 ## Required Evidence
 
