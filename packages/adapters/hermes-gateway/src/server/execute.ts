@@ -27,6 +27,12 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function buildAuthorizationHeader(value: unknown): string | null {
+  const token = asString(value, "").trim();
+  if (!token) return null;
+  return /^bearer\s+/i.test(token) ? token : `Bearer ${token}`;
+}
+
 function parseBoolean(value: unknown, fallback = false): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -234,7 +240,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const apiMode = resolveApiMode(config, configuredUrl);
   const requestUrl = deriveRequestUrl(configuredUrl, apiMode);
-  const apiKey = asString(config.apiKey, "");
+  const authorizationHeader = buildAuthorizationHeader(config.apiKey);
   const model = asString(config.model, "").trim();
   const timeoutMs = asNumber(config.timeoutSec, 300) * 1000;
   const sessionKeyStrategy = normalizeSessionKeyStrategy(config.sessionKeyStrategy);
@@ -268,8 +274,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakePayload.taskId) headers["X-Paperclip-Task-Id"] = wakePayload.taskId;
   if (wakePayload.wakeReason) headers["X-Paperclip-Wake-Reason"] = wakePayload.wakeReason;
 
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
+  if (authorizationHeader) {
+    headers.Authorization = authorizationHeader;
   }
 
   if (onMeta) {

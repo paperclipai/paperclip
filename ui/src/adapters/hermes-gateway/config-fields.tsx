@@ -140,7 +140,7 @@ function SecretValueField({
           ) : (
             <input
               className={inputClass + " flex-1"}
-              placeholder="Bearer token"
+              placeholder="API token"
               value={current.plainValue}
               onChange={(event) => onChange(event.target.value || undefined)}
             />

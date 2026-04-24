@@ -1289,7 +1289,7 @@ export function OnboardingWizard() {
                             <>
                               <input
                                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                                placeholder="Bearer token"
+                                placeholder="API token"
                                 value={hermesApiKey}
                                 onChange={(e) => setHermesApiKey(e.target.value)}
                               />

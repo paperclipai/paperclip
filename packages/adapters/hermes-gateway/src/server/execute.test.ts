@@ -277,4 +277,54 @@ describe("hermes_gateway execute", () => {
     const body = JSON.parse(String(init.body));
     expect(body.model).toBeUndefined();
   });
+
+  it("adds Bearer to raw API tokens", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          object: "chat.completion",
+          choices: [{ message: { content: "auth" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { ctx } = createContext({
+      config: {
+        url: "http://hermes-gateway.local/v1",
+        apiKey: "secret-token",
+      },
+    });
+
+    await execute(ctx);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret-token");
+  });
+
+  it("does not double-prefix Bearer API tokens", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          object: "chat.completion",
+          choices: [{ message: { content: "auth" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { ctx } = createContext({
+      config: {
+        url: "http://hermes-gateway.local/v1",
+        apiKey: "Bearer secret-token",
+      },
+    });
+
+    await execute(ctx);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret-token");
+  });
 });
