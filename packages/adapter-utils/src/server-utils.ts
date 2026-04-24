@@ -689,11 +689,19 @@ export function renderPaperclipWakePrompt(
         "",
       );
     } else if (executionStage.wakeRole === "executor") {
-      lines.push(
-        "You are waking because changes were requested in the execution workflow.",
-        "Address the requested changes on this issue and resubmit when the work is ready.",
-        "",
-      );
+      if (executionStage.lastDecisionOutcome === "approved") {
+        lines.push(
+          "Your submitted work on this issue was APPROVED and the execution workflow is complete.",
+          "Acknowledge the approval, wrap up any remaining handoff notes, and do not continue executor work on this issue.",
+          "",
+        );
+      } else {
+        lines.push(
+          "You are waking because changes were requested in the execution workflow.",
+          "Address the requested changes on this issue and resubmit when the work is ready.",
+          "",
+        );
+      }
     }
   }
 
