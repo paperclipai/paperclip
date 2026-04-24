@@ -1,6 +1,6 @@
 # TypeScript Runtime Layout
 
-These directories reserve stable homes for the future benchmark CLI and runtime code.
+These checked-in placeholder directories reserve stable homes for the future benchmark CLI and runtime code.
 
 - `cli/`: user-facing commands
 - `core/`: manifest loading and run orchestration

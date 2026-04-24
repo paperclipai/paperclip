@@ -20,10 +20,10 @@ This phase does not implement the runner. It establishes:
 | `benchmarks/paperclip-native/` | Paperclip-native tasks, prompts, rubrics, evaluator config, and hidden-test placeholders. |
 | `companies/` | Starter company packages used to seed Paperclip-native benchmark runs. |
 | `fixtures/` | Fixture repo placeholders plus shared env/secrets examples. |
-| `src/` | Future TypeScript CLI, task normalization, runners, evaluators, metrics, and reports. |
-| `python/` | Future bridge scripts for ecosystems that already expect Python entrypoints. |
-| `ops/` | Local Docker and single-machine cloud execution scaffolding. |
-| `runs/` | Generated benchmark outputs. Raw runs stay untracked by default. |
+| `src/` | Future TypeScript CLI, task normalization, runners, evaluators, metrics, and reports. Placeholder subdirectories are checked in so contributors can see the intended module boundaries. |
+| `python/` | Future bridge scripts for ecosystems that already expect Python entrypoints. Placeholder subdirectories reserve Python bridge, evaluator, and dataset helpers. |
+| `ops/` | Local Docker and single-machine cloud execution scaffolding, plus future CI entrypoints. |
+| `runs/` | Generated benchmark outputs. Raw runs stay untracked by default, with only a placeholder kept in git. |
 
 ## Manifest Validation
 

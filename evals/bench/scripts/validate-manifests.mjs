@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import YAML from "yaml";
 
@@ -12,11 +12,14 @@ const schemaPath = path.join(rootDir, "bench.schema.json");
 
 async function main() {
   const schema = JSON.parse(await fs.readFile(schemaPath, "utf8"));
-  const ajv = new Ajv({ allErrors: true, strict: false });
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
   addFormats(ajv);
 
-  const validateTask = ajv.compile(schema.$defs.taskV1);
-  const validateSuite = ajv.compile(schema.$defs.suiteV1);
+  const schemaId = typeof schema.$id === "string" && schema.$id.length > 0 ? schema.$id : "paperclip-bench/bench.schema.json";
+  ajv.addSchema(schema, schemaId);
+
+  const validateTask = ajv.getSchema(`${schemaId}#/$defs/taskV1`) ?? ajv.compile({ $ref: `${schemaId}#/$defs/taskV1` });
+  const validateSuite = ajv.getSchema(`${schemaId}#/$defs/suiteV1`) ?? ajv.compile({ $ref: `${schemaId}#/$defs/suiteV1` });
 
   const manifestPaths = [
     ...(await collectYamlFiles(path.join(rootDir, "suites"))),
@@ -58,6 +61,13 @@ async function main() {
       console.log(`OK   ${relativePath} (suite)`);
       continue;
     }
+
+    if (schemaName == null) {
+      continue;
+    }
+
+    console.error(`FAIL ${relativePath}\n  - /schema: unsupported manifest schema ${JSON.stringify(schemaName)}`);
+    failures += 1;
   }
 
   if (failures > 0) {
