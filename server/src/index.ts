@@ -670,6 +670,9 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
+    // The beforeAdapterExecute broadcaster is sourced inside heartbeatService
+    // from the pluginWorkerManager already threaded here, so no separate
+    // broadcaster option is needed (master wires pluginWorkerManager directly).
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
   
