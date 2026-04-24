@@ -7,7 +7,7 @@ import {
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "@paperclipai/shared";
-import { LogOut, SlidersHorizontal } from "lucide-react";
+import { LogOut, SlidersHorizontal, Globe } from "lucide-react";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -17,6 +17,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
+import { useTranslation, supportedLanguages, saveLanguage } from "@/i18n";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
@@ -24,6 +25,7 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const { t, i18n } = useTranslation();
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -37,10 +39,10 @@ export function InstanceGeneralSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
+      { label: t("instanceSettings.title") },
+      { label: t("instanceSettings.general") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -63,8 +65,13 @@ export function InstanceGeneralSettings() {
     },
   });
 
+  function handleLanguageChange(lng: string) {
+    i18n.changeLanguage(lng);
+    saveLanguage(lng);
+  }
+
   if (generalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("instanceSettings.loadingSettings")}</div>;
   }
 
   if (generalQuery.error) {
@@ -72,7 +79,7 @@ export function InstanceGeneralSettings() {
       <div className="text-sm text-destructive">
         {generalQuery.error instanceof Error
           ? generalQuery.error.message
-          : "Failed to load general settings."}
+          : t("instanceSettings.failedToLoad")}
       </div>
     );
   }
@@ -87,11 +94,10 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold">{t("instanceSettings.general")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide preferences including log display, keyboard shortcuts, backup
-          retention, and data sharing.
+          {t("instanceSettings.generalDescription", "Configure instance-wide preferences including log display, keyboard shortcuts, backup retention, and data sharing.")}
         </p>
       </div>
 
@@ -137,11 +143,34 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <div className="flex items-center gap-2">
+              <Globe className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">{t("instanceSettings.language")}</h2>
+            </div>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
-              username mentions outside of paths are not yet masked in the live transcript view. This is off by
-              default.
+              {t("instanceSettings.languageDesc")}
+            </p>
+          </div>
+          <select
+            value={i18n.language}
+            onChange={(e) => handleLanguageChange(e.target.value)}
+            className="rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+          >
+            {supportedLanguages.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">{t("instanceSettings.censorUsername")}</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              {t("instanceSettings.censorUsernameDesc")}
             </p>
           </div>
           <ToggleSwitch
@@ -156,10 +185,9 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">{t("instanceSettings.keyboardShortcuts")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
-              toggling panels. This is off by default.
+              {t("instanceSettings.keyboardShortcutsDesc")}
             </p>
           </div>
           <ToggleSwitch
@@ -276,10 +304,9 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">AI feedback sharing</h2>
+            <h2 className="text-sm font-semibold">{t("instanceSettings.aiFeedbackSharing")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Control whether thumbs up and thumbs down votes can send the voted AI output to
-              Paperclip Labs. Votes are always saved locally.
+              {t("instanceSettings.aiFeedbackSharingDesc")}
             </p>
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -288,27 +315,26 @@ export function InstanceGeneralSettings() {
                 rel="noreferrer"
                 className="inline-flex text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
               >
-                Read our terms of service
+                {t("instanceSettings.readTerms")}
               </a>
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
             <div className="rounded-lg border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-              No default is saved yet. The next thumbs up or thumbs down choice will ask once and
-              then save the answer here.
+              {t("instanceSettings.noDefaultSaved")}
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {[
               {
                 value: "allowed",
-                label: "Always allow",
-                description: "Share voted AI outputs automatically.",
+                label: t("instanceSettings.alwaysAllow"),
+                description: t("instanceSettings.alwaysAllowDesc"),
               },
               {
                 value: "not_allowed",
-                label: "Don't allow",
-                description: "Keep voted AI outputs local only.",
+                label: t("instanceSettings.dontAllow"),
+                description: t("instanceSettings.dontAllowDesc"),
               },
             ].map((option) => {
               const active = feedbackDataSharingPreference === option.value;
@@ -339,22 +365,15 @@ export function InstanceGeneralSettings() {
               );
             })}
           </div>
-          <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
-            <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
-          </p>
         </div>
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
+            <h2 className="text-sm font-semibold">{t("instanceSettings.signOut")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Sign out of this Paperclip instance. You will be redirected to the login page.
+              {t("instanceSettings.signOutDesc")}
             </p>
           </div>
           <Button
@@ -364,7 +383,7 @@ export function InstanceGeneralSettings() {
             onClick={() => signOutMutation.mutate()}
           >
             <LogOut className="size-4" />
-            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+            {signOutMutation.isPending ? t("instanceSettings.signingOut") : t("instanceSettings.signOut")}
           </Button>
         </div>
       </section>
