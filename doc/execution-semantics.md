@@ -195,6 +195,7 @@ Recovery rule:
 
 - if the latest issue-linked run failed/timed out/cancelled and no live execution path remains, Paperclip queues one automatic assignment recovery wake
 - if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and posts a visible comment
+- delegated parent exception: if the parent issue has at least one child in a non-terminal state (`todo`, `in_progress`, `in_review`, `blocked`), Paperclip does not apply stranded escalation to the parent yet
 
 This is a dispatch recovery, not a continuation recovery.
 
@@ -211,6 +212,7 @@ Recovery rule:
 
 - Paperclip queues one automatic continuation wake
 - if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and posts a visible comment
+- delegated parent exception: if the parent issue has at least one child in a non-terminal state (`todo`, `in_progress`, `in_review`, `blocked`), Paperclip does not apply stranded escalation to the parent yet
 
 This is an active-work continuity recovery.
 
