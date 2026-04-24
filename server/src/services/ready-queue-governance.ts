@@ -2,7 +2,7 @@ import { and, asc, count, eq, inArray, isNotNull, isNull, ne, notInArray, sql } 
 import type { Db } from "@paperclipai/db";
 import { agents, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
+import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./index.js";
 
 /**
  * Default minimum number of `todo` issues each healthy agent lane should have.
@@ -15,6 +15,13 @@ const DEFAULT_MIN_TODO_PER_LANE = 2;
  * Prevents unbounded promotion on a single sweep.
  */
 const MAX_PROMOTIONS_PER_AGENT_PER_TICK = 5;
+
+/**
+ * Maximum number of todo issues to deprioritize (move to backlog) per tick
+ * across all unhealthy agent lanes. Caps fan-out in degraded states where
+ * many lanes are in `error` with accumulated work.
+ */
+const MAX_DEPRIORITIZATIONS_PER_TICK = 100;
 
 /**
  * Agent statuses that are considered "healthy" / eligible for queue governance.
@@ -133,7 +140,9 @@ export function readyQueueGovernanceService(
     if (unhealthyAgents.length > 0) {
       const unhealthyAgentIds = unhealthyAgents.map((a) => a.id);
 
-      // Find all todo issues assigned to unhealthy agents.
+      // Find todo issues assigned to unhealthy agents, capped per tick to
+      // bound work in degraded states. Order by oldest first so long-standing
+      // stuck items drain ahead of newer ones.
       const todoOnUnhealthy = await db
         .select({
           id: issues.id,
@@ -148,38 +157,45 @@ export function readyQueueGovernanceService(
             inArray(issues.status, READY_QUEUE_STATUSES),
             isNull(issues.hiddenAt),
           ),
-        );
+        )
+        .orderBy(asc(issues.createdAt))
+        .limit(MAX_DEPRIORITIZATIONS_PER_TICK);
 
       if (todoOnUnhealthy.length > 0) {
         const agentLookup = new Map(unhealthyAgents.map((a) => [a.id, a]));
         const movedByAgent = new Map<string, number>();
 
-        for (const issue of todoOnUnhealthy) {
-          try {
-            const [updated] = await db
-              .update(issues)
-              .set({
-                status: "backlog",
-                updatedAt: new Date(),
-              })
-              .where(
-                and(
-                  eq(issues.id, issue.id),
-                  eq(issues.status, "todo"),
-                ),
-              )
-              .returning({ id: issues.id, status: issues.status });
+        // Batch the status transition into a single UPDATE ... WHERE id IN (...)
+        // instead of N serial round-trips. The `status = 'todo'` guard preserves
+        // the original race-safety: if a row already moved out of todo between
+        // select and update, it is not re-mutated.
+        const candidateIds = todoOnUnhealthy.map((i) => i.id);
+        let updatedRows: Array<{ id: string; assigneeAgentId: string | null }> = [];
+        try {
+          updatedRows = await db
+            .update(issues)
+            .set({
+              status: "backlog",
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                inArray(issues.id, candidateIds),
+                eq(issues.status, "todo"),
+              ),
+            )
+            .returning({ id: issues.id, assigneeAgentId: issues.assigneeAgentId });
+        } catch (err) {
+          logger.warn(
+            { err, candidateCount: candidateIds.length },
+            "ready-queue-governance: failed to deprioritize unhealthy-lane issues",
+          );
+        }
 
-            if (updated) {
-              const agentId = issue.assigneeAgentId!;
-              movedByAgent.set(agentId, (movedByAgent.get(agentId) ?? 0) + 1);
-            }
-          } catch (err) {
-            logger.warn(
-              { err, issueId: issue.id },
-              "ready-queue-governance: failed to deprioritize unhealthy-lane issue",
-            );
-          }
+        for (const row of updatedRows) {
+          const agentId = row.assigneeAgentId;
+          if (!agentId) continue;
+          movedByAgent.set(agentId, (movedByAgent.get(agentId) ?? 0) + 1);
         }
 
         for (const [agentId, moved] of movedByAgent) {

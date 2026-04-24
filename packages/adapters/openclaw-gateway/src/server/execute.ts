@@ -141,8 +141,9 @@ function resolveSessionKey(input: {
   const prefix = input.agentId ? `agent:${input.agentId}:` : "";
   if (input.strategy === "run") return `${prefix}paperclip:run:${input.runId}`;
   if (input.strategy === "issue" && input.issueId) return `${prefix}paperclip:issue:${input.issueId}`;
-  // For "fixed" strategy, only apply prefix when the configured key doesn't already
-  // contain an agent segment (avoid double-prefixing).
+  // For "fixed" strategy (and "issue" strategy when issueId is absent), only apply
+  // prefix when the configured key doesn't already contain an agent segment
+  // (avoid double-prefixing).
   if (input.agentId && !fallback.startsWith("agent:")) return `${prefix}${fallback}`;
   return fallback;
 }
