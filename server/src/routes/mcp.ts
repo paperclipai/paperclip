@@ -17,7 +17,22 @@ function readOptionalHeader(req: Request, name: string): string | null {
   return value ? value : null;
 }
 
-export function buildPaperclipMcpConfig(req: Request, serverPort: number): PaperclipMcpConfig {
+function formatHostForUrl(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+export function buildInternalApiUrl(serverPort: number, bindHost: string): string {
+  const normalizedHost = bindHost.trim().toLowerCase();
+  const internalHost =
+    normalizedHost === "0.0.0.0"
+      ? "127.0.0.1"
+      : normalizedHost === "::"
+        ? "::1"
+        : bindHost.trim() || "127.0.0.1";
+  return `http://${formatHostForUrl(internalHost)}:${serverPort}/api`;
+}
+
+export function buildPaperclipMcpConfig(req: Request, serverPort: number, bindHost: string): PaperclipMcpConfig {
   const cookie = readOptionalHeader(req, "cookie");
   const companyId =
     readOptionalHeader(req, "x-paperclip-company-id") ??
@@ -28,7 +43,7 @@ export function buildPaperclipMcpConfig(req: Request, serverPort: number): Paper
   const runId = readOptionalHeader(req, "x-paperclip-run-id") ?? req.actor.runId ?? null;
 
   return {
-    apiUrl: `http://127.0.0.1:${serverPort}/api`,
+    apiUrl: buildInternalApiUrl(serverPort, bindHost),
     apiKey: "",
     authHeader: readOptionalHeader(req, "authorization") ?? undefined,
     companyId,
@@ -54,12 +69,12 @@ function sendBadRequest(res: Response, message: string) {
   });
 }
 
-export function mcpRoutes(opts: { serverPort: number }) {
+export function mcpRoutes(opts: { serverPort: number; bindHost: string }) {
   const router = Router();
   const sessions = new Map<string, McpSession>();
 
   async function createSession(req: Request) {
-    const config = buildPaperclipMcpConfig(req, opts.serverPort);
+    const config = buildPaperclipMcpConfig(req, opts.serverPort, opts.bindHost);
     const { server } = createPaperclipMcpServer(config);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -82,7 +97,6 @@ export function mcpRoutes(opts: { serverPort: number }) {
 
   async function ensureAuthenticated(req: Request, res: Response): Promise<boolean> {
     if (req.actor.type !== "none") return true;
-    if (readOptionalHeader(req, "authorization") || readOptionalHeader(req, "cookie")) return true;
     res.status(401).json({ error: "Authentication required" });
     return false;
   }

@@ -172,7 +172,7 @@ export async function createApp(
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
-  app.use("/mcp", mcpRoutes({ serverPort: opts.serverPort }));
+  app.use("/mcp", mcpRoutes({ serverPort: opts.serverPort, bindHost: opts.bindHost }));
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();

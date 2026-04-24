@@ -1,16 +1,16 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mcpRoutes } from "../routes/mcp.js";
+import { buildInternalApiUrl, mcpRoutes } from "../routes/mcp.js";
 
-function createApp(actor: Express.Request["actor"]) {
+function createApp(actor: Express.Request["actor"], opts: { bindHost?: string } = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
   });
-  app.use("/mcp", mcpRoutes({ serverPort: 3100 }));
+  app.use("/mcp", mcpRoutes({ serverPort: 3100, bindHost: opts.bindHost ?? "127.0.0.1" }));
   return app;
 }
 
@@ -61,6 +61,40 @@ async function initializeSession(
 describe("mcp routes", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("builds internal API URLs from the configured bind host", () => {
+    expect(buildInternalApiUrl(3100, "0.0.0.0")).toBe("http://127.0.0.1:3100/api");
+    expect(buildInternalApiUrl(3100, "192.168.1.25")).toBe("http://192.168.1.25:3100/api");
+    expect(buildInternalApiUrl(3100, "::1")).toBe("http://[::1]:3100/api");
+  });
+
+  it("rejects requests without validated Paperclip authentication", async () => {
+    const app = createApp({
+      type: "none",
+      source: "none",
+    });
+
+    await request(app)
+      .post("/mcp")
+      .set({
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer invalid-token",
+      })
+      .send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: {
+            name: "paperclip-test-client",
+            version: "1.0.0",
+          },
+        },
+      })
+      .expect(401);
   });
 
   it("initializes a session and lists tools over HTTP", async () => {
@@ -122,8 +156,10 @@ describe("mcp routes", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const app = createApp({
-      type: "none",
-      source: "none",
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
     });
 
     const sessionId = await initializeSession(app, {
