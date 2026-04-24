@@ -46,7 +46,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined);
     return;
   }
 
@@ -61,7 +61,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === source) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

@@ -77,8 +77,38 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       stream.on("end", () => resolve());
     });
 
-    const content = Buffer.concat(chunks).toString("utf8");
-    const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
+    const buf = Buffer.concat(chunks);
+
+    // Trim trailing bytes that form an incomplete UTF-8 multi-byte character
+    // so they are included in the next read instead of becoming U+FFFD.
+    let trimEnd = buf.length;
+    if (trimEnd > 0) {
+      // Walk backwards to find a valid UTF-8 boundary.
+      // A UTF-8 continuation byte has the pattern 10xxxxxx (0x80..0xBF).
+      // A leading byte tells how many continuation bytes follow:
+      //   110xxxxx = 2-byte, 1110xxxx = 3-byte, 11110xxx = 4-byte.
+      let trailingContinuation = 0;
+      while (trailingContinuation < 4 && trailingContinuation < trimEnd) {
+        const byte = buf[trimEnd - 1 - trailingContinuation]!;
+        if ((byte & 0xc0) !== 0x80) break; // not a continuation byte
+        trailingContinuation++;
+      }
+      if (trailingContinuation > 0 && trailingContinuation < trimEnd) {
+        const leadByte = buf[trimEnd - 1 - trailingContinuation]!;
+        let expectedContinuation = 0;
+        if ((leadByte & 0xe0) === 0xc0) expectedContinuation = 1;       // 2-byte sequence
+        else if ((leadByte & 0xf0) === 0xe0) expectedContinuation = 2;  // 3-byte sequence
+        else if ((leadByte & 0xf8) === 0xf0) expectedContinuation = 3;  // 4-byte sequence
+        if (trailingContinuation < expectedContinuation) {
+          // Incomplete character — exclude the partial bytes
+          trimEnd -= trailingContinuation + 1;
+        }
+      }
+    }
+
+    const content = buf.subarray(0, trimEnd).toString("utf8");
+    const bytesConsumed = start + trimEnd;
+    const nextOffset = bytesConsumed < stat.size ? bytesConsumed : undefined;
     return { content, nextOffset };
   }
 
