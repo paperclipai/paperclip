@@ -15,22 +15,29 @@ function resolveServerLogDir(): string {
   return resolveDefaultLogsDir();
 }
 
-const logDir = resolveServerLogDir();
-fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
-
-const logFile = path.join(logDir, "server.log");
-
-// Ensure the log file is owner-only (0600) even if Pino/sonic-boom creates it
-// with a umask-dependent default (typically 0644). Request bodies on 4xx/5xx
-// responses can contain sensitive form fields, so group/other must never read.
-try {
-  if (!fs.existsSync(logFile)) {
-    fs.closeSync(fs.openSync(logFile, "a", 0o600));
+/**
+ * Create the log directory at 0700 and ensure the server log file ends up at 0600,
+ * even if Pino/sonic-boom creates it later with a umask-dependent default (typically
+ * 0644). Request bodies on 4xx/5xx responses can contain sensitive form fields, so
+ * group/other must never read. Safe to call at module init; exported so tests can
+ * exercise the same code path without importing the whole logger transport.
+ */
+export function ensureLogPathPermissions(dir: string, file: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+    if (!fs.existsSync(file)) {
+      fs.closeSync(fs.openSync(file, "a", 0o600));
+    }
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Non-fatal: continue even if the chmod fails (e.g., read-only mount).
   }
-  fs.chmodSync(logFile, 0o600);
-} catch {
-  // Non-fatal: continue even if the chmod fails (e.g., read-only mount).
 }
+
+const logDir = resolveServerLogDir();
+const logFile = path.join(logDir, "server.log");
+ensureLogPathPermissions(logDir, logFile);
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
