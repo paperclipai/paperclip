@@ -127,6 +127,21 @@ export interface IssueRelation {
   relatedIssue: IssueRelationIssueSummary;
 }
 
+export interface IssueDependencySummary {
+  issueId: string;
+  blockerIssueIds: string[];
+  unresolvedBlockerIssueIds: string[];
+  unresolvedBlockerCount: number;
+  allBlockersDone: boolean;
+  isDependencyReady: boolean;
+}
+
+export type IssueGraphState =
+  | "ready"
+  | "blocked_no_relations"
+  | "blocked_waiting_on_relations"
+  | "blocked_relations_resolved";
+
 export interface IssueReferenceSource {
   kind: IssueReferenceSourceKind;
   sourceRecordId: string | null;
@@ -237,6 +252,9 @@ export interface Issue {
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
+  blockedByIssueIds?: string[];
+  dependency?: IssueDependencySummary;
+  graphState?: IssueGraphState;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;

@@ -7437,6 +7437,11 @@ export function heartbeatService(db: Db) {
 
     reconcileIssueGraphLiveness,
 
+    listIssueGraphLivenessFindings: async (opts?: { companyId?: string }) => {
+      const findings = await collectIssueGraphLivenessFindings();
+      return opts?.companyId ? findings.filter((finding) => finding.companyId === opts.companyId) : findings;
+    },
+
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
       let checked = 0;

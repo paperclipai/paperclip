@@ -312,6 +312,8 @@ export type {
   IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueDependencySummary,
+  IssueGraphState,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,

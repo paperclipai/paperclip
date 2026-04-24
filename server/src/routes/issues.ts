@@ -829,6 +829,24 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/companies/:companyId/issues/graph-health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const [graphHealth, livenessFindings] = await Promise.all([
+      svc.getCompanyGraphHealth(companyId),
+      heartbeat.listIssueGraphLivenessFindings({ companyId }),
+    ]);
+    res.json({
+      companyId,
+      ...graphHealth,
+      summary: {
+        ...graphHealth.summary,
+        livenessFindings: livenessFindings.length,
+      },
+      livenessFindings,
+    });
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -3115,7 +3133,7 @@ export function issueRoutes(
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
-    let currentIssue = issue;
+    let currentIssue: any = issue;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
     if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {

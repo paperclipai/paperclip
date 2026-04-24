@@ -223,6 +223,147 @@ function createIssueDependencyReadiness(issueId: string): IssueDependencyReadine
   };
 }
 
+function issueGraphStateFor(input: {
+  status: string;
+  readiness: IssueDependencyReadiness;
+}) {
+  if (input.status !== "blocked") return "ready" as const;
+  if (input.readiness.blockerIssueIds.length === 0) return "blocked_no_relations" as const;
+  if (input.readiness.unresolvedBlockerCount > 0) return "blocked_waiting_on_relations" as const;
+  return "blocked_relations_resolved" as const;
+}
+
+async function listIssueRelationSummaryMap(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueIds: string[],
+): Promise<Map<string, IssueRelationSummaryMap>> {
+  const uniqueIssueIds = [...new Set(issueIds)];
+  const empty = new Map<string, IssueRelationSummaryMap>();
+  for (const issueId of uniqueIssueIds) {
+    empty.set(issueId, { blockedBy: [], blocks: [] });
+  }
+  if (uniqueIssueIds.length === 0) return empty;
+
+  const [blockedByRows, blockingRows] = await Promise.all([
+    dbOrTx
+      .select({
+        currentIssueId: issueRelations.relatedIssueId,
+        relatedId: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+        ),
+      ),
+    dbOrTx
+      .select({
+        currentIssueId: issueRelations.issueId,
+        relatedId: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.issueId, uniqueIssueIds),
+        ),
+      ),
+  ]);
+
+  for (const row of blockedByRows) {
+    empty.get(row.currentIssueId)?.blockedBy.push({
+      id: row.relatedId,
+      identifier: row.identifier,
+      title: row.title,
+      status: row.status as IssueRelationIssueSummary["status"],
+      priority: row.priority as IssueRelationIssueSummary["priority"],
+      assigneeAgentId: row.assigneeAgentId,
+      assigneeUserId: row.assigneeUserId,
+    });
+  }
+  for (const row of blockingRows) {
+    empty.get(row.currentIssueId)?.blocks.push({
+      id: row.relatedId,
+      identifier: row.identifier,
+      title: row.title,
+      status: row.status as IssueRelationIssueSummary["status"],
+      priority: row.priority as IssueRelationIssueSummary["priority"],
+      assigneeAgentId: row.assigneeAgentId,
+      assigneeUserId: row.assigneeUserId,
+    });
+  }
+
+  for (const relations of empty.values()) {
+    relations.blockedBy.sort((a, b) => a.title.localeCompare(b.title));
+    relations.blocks.sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  return empty;
+}
+
+async function enrichIssueGraphRows<T extends { id: string; companyId: string; status: string }>(
+  dbOrTx: Pick<Db, "select">,
+  rows: T[],
+) {
+  if (rows.length === 0) return [] as Array<T & {
+    blockedBy: IssueRelationIssueSummary[];
+    blocks: IssueRelationIssueSummary[];
+    blockedByIssueIds: string[];
+    dependency: IssueDependencyReadiness;
+    graphState: ReturnType<typeof issueGraphStateFor>;
+  }>;
+
+  const relationMap = new Map<string, IssueRelationSummaryMap>();
+  const readinessMap = new Map<string, IssueDependencyReadiness>();
+  const issueIdsByCompany = new Map<string, string[]>();
+
+  for (const row of rows) {
+    const existing = issueIdsByCompany.get(row.companyId) ?? [];
+    existing.push(row.id);
+    issueIdsByCompany.set(row.companyId, existing);
+  }
+
+  for (const [companyId, issueIds] of issueIdsByCompany) {
+    const [relations, readiness] = await Promise.all([
+      listIssueRelationSummaryMap(dbOrTx, companyId, issueIds),
+      listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds),
+    ]);
+    for (const [issueId, summary] of relations) relationMap.set(issueId, summary);
+    for (const [issueId, summary] of readiness) readinessMap.set(issueId, summary);
+  }
+
+  return rows.map((row) => {
+    const relations = relationMap.get(row.id) ?? { blockedBy: [], blocks: [] };
+    const dependency = readinessMap.get(row.id) ?? createIssueDependencyReadiness(row.id);
+    return {
+      ...row,
+      blockedBy: relations.blockedBy,
+      blocks: relations.blocks,
+      blockedByIssueIds: relations.blockedBy.map((relation) => relation.id),
+      dependency,
+      graphState: issueGraphStateFor({ status: row.status, readiness: dependency }),
+    };
+  });
+}
+
 async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -880,7 +1021,8 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const [withGraph] = await enrichIssueGraphRows(db, [enriched]);
+    return withGraph ?? enriched;
   }
 
   async function getIssueByIdentifier(identifier: string) {
@@ -891,7 +1033,8 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const [withGraph] = await enrichIssueGraphRows(db, [enriched]);
+    return withGraph ?? enriched;
   }
 
   function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
@@ -1439,11 +1582,12 @@ export function issueService(db: Db) {
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
-      if (withRuns.length === 0) {
-        return withRuns;
+      const withGraph = await enrichIssueGraphRows(db, withRuns);
+      if (withGraph.length === 0) {
+        return withGraph;
       }
 
-      const issueIds = withRuns.map((row) => row.id);
+      const issueIds = withGraph.map((row) => row.id);
       const [statsRows, readRows, lastActivityRows] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
@@ -1457,7 +1601,7 @@ export function issueService(db: Db) {
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
 
       if (!contextUserId) {
-        return withRuns.map((row) => {
+        return withGraph.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
           const lastActivityAt = latestIssueActivityAt(
             row.updatedAt,
@@ -1473,7 +1617,7 @@ export function issueService(db: Db) {
 
       const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
 
-      return withRuns.map((row) => {
+      return withGraph.map((row) => {
         const activity = lastActivityByIssueId.get(row.id);
         const lastActivityAt = latestIssueActivityAt(
           row.updatedAt,
@@ -1624,6 +1768,53 @@ export function issueService(db: Db) {
 
     listDependencyReadiness: async (companyId: string, issueIds: string[], dbOrTx: any = db) => {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
+    },
+
+    getCompanyGraphHealth: async (companyId: string) => {
+      const rows = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
+      const enriched = await enrichIssueGraphRows(db, rows);
+      const blockedIssues = enriched.filter((issue) => issue.status === "blocked");
+      const blockedWithoutExplicitBlockers = blockedIssues.filter((issue) => issue.graphState === "blocked_no_relations");
+      const blockedWithUnresolvedBlockers = blockedIssues.filter((issue) => issue.graphState === "blocked_waiting_on_relations");
+      const blockedReadyToUnblock = blockedIssues.filter((issue) => issue.graphState === "blocked_relations_resolved");
+      const toHealthEntry = (issue: any) => ({
+        issueId: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+        priority: issue.priority,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        blockedBy: issue.blockedBy,
+        blockedByIssueIds: issue.blockedByIssueIds,
+        dependency: issue.dependency,
+        graphState: issue.graphState,
+      });
+      return {
+        summary: {
+          blockedIssues: blockedIssues.length,
+          blockedWithoutExplicitBlockers: blockedWithoutExplicitBlockers.length,
+          blockedWithUnresolvedBlockers: blockedWithUnresolvedBlockers.length,
+          blockedReadyToUnblock: blockedReadyToUnblock.length,
+          frontierReadyIssues: blockedReadyToUnblock.length,
+        },
+        blockedWithoutExplicitBlockers: blockedWithoutExplicitBlockers.map(toHealthEntry),
+        blockedWithUnresolvedBlockers: blockedWithUnresolvedBlockers.map(toHealthEntry),
+        blockedReadyToUnblock: blockedReadyToUnblock.map(toHealthEntry),
+        frontierReady: blockedReadyToUnblock.map(toHealthEntry),
+      };
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {

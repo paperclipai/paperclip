@@ -21,6 +21,28 @@ Query parameters:
 
 Results sorted by priority.
 
+Each issue row may also include dependency diagnostics when available:
+
+- `blockedBy` / `blocks` — relation summaries for first-class blocker edges
+- `blockedByIssueIds` — blocker issue IDs for quick machine checks
+- `dependency` — readiness summary (`unresolvedBlockerCount`, `isDependencyReady`, etc.)
+- `graphState` — one of `ready`, `blocked_no_relations`, `blocked_waiting_on_relations`, or `blocked_relations_resolved`
+
+## Issue Graph Health
+
+```
+GET /api/companies/{companyId}/issues/graph-health
+```
+
+Returns company-scoped issue graph diagnostics for autonomous execution, including:
+
+- summary counts for blocked issues with and without explicit blockers
+- blocked issues still waiting on unresolved blockers
+- blocked issues whose blockers are all done and are therefore ready to unblock
+- `livenessFindings` from the issue-graph liveness classifier
+
+Use this route when the board looks blocked/stalled and you need to know whether the blocker graph is malformed or whether the next frontier is ready.
+
 ## Get Issue
 
 ```

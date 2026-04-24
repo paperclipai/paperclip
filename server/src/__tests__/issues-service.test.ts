@@ -2012,3 +2012,150 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService graph health and dependency metadata", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-graph-health-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("enriches listed issues with blocker summaries and dependency graph state", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockedWithoutEdgesId = randomUUID();
+    const unresolvedBlockerId = randomUUID();
+    const blockedWaitingId = randomUUID();
+    const resolvedBlockerId = randomUUID();
+    const blockedReadyId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockedWithoutEdgesId, companyId, title: "Blocked without edges", status: "blocked", priority: "medium" },
+      { id: unresolvedBlockerId, companyId, title: "Unresolved blocker", status: "todo", priority: "medium" },
+      { id: blockedWaitingId, companyId, title: "Blocked waiting", status: "blocked", priority: "medium" },
+      { id: resolvedBlockerId, companyId, title: "Resolved blocker", status: "done", priority: "medium" },
+      { id: blockedReadyId, companyId, title: "Blocked but ready", status: "blocked", priority: "medium" },
+    ]);
+
+    await svc.update(blockedWaitingId, { blockedByIssueIds: [unresolvedBlockerId] });
+    await svc.update(blockedReadyId, { blockedByIssueIds: [resolvedBlockerId] });
+
+    const listed = await svc.list(companyId);
+    const byId = new Map(listed.map((issue) => [issue.id, issue]));
+
+    expect(byId.get(blockedWithoutEdgesId)).toMatchObject({
+      blockedBy: [],
+      blockedByIssueIds: [],
+      dependency: {
+        blockerIssueIds: [],
+        unresolvedBlockerIssueIds: [],
+        unresolvedBlockerCount: 0,
+        allBlockersDone: true,
+        isDependencyReady: true,
+      },
+      graphState: "blocked_no_relations",
+    });
+
+    expect(byId.get(blockedWaitingId)).toMatchObject({
+      blockedBy: [expect.objectContaining({ id: unresolvedBlockerId, title: "Unresolved blocker" })],
+      blockedByIssueIds: [unresolvedBlockerId],
+      dependency: {
+        blockerIssueIds: [unresolvedBlockerId],
+        unresolvedBlockerIssueIds: [unresolvedBlockerId],
+        unresolvedBlockerCount: 1,
+        allBlockersDone: false,
+        isDependencyReady: false,
+      },
+      graphState: "blocked_waiting_on_relations",
+    });
+
+    expect(byId.get(blockedReadyId)).toMatchObject({
+      blockedBy: [expect.objectContaining({ id: resolvedBlockerId, title: "Resolved blocker" })],
+      blockedByIssueIds: [resolvedBlockerId],
+      dependency: {
+        blockerIssueIds: [resolvedBlockerId],
+        unresolvedBlockerIssueIds: [],
+        unresolvedBlockerCount: 0,
+        allBlockersDone: true,
+        isDependencyReady: true,
+      },
+      graphState: "blocked_relations_resolved",
+    });
+
+    await expect(svc.getById(blockedReadyId)).resolves.toMatchObject({
+      id: blockedReadyId,
+      blockedByIssueIds: [resolvedBlockerId],
+      graphState: "blocked_relations_resolved",
+    });
+  });
+
+  it("reports company graph health for malformed, unresolved, and frontier-ready blocked issues", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockedWithoutEdgesId = randomUUID();
+    const unresolvedBlockerId = randomUUID();
+    const blockedWaitingId = randomUUID();
+    const resolvedBlockerId = randomUUID();
+    const blockedReadyId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockedWithoutEdgesId, companyId, title: "Blocked without edges", status: "blocked", priority: "medium" },
+      { id: unresolvedBlockerId, companyId, title: "Unresolved blocker", status: "todo", priority: "medium" },
+      { id: blockedWaitingId, companyId, title: "Blocked waiting", status: "blocked", priority: "medium" },
+      { id: resolvedBlockerId, companyId, title: "Resolved blocker", status: "done", priority: "medium" },
+      { id: blockedReadyId, companyId, title: "Blocked but ready", status: "blocked", priority: "medium" },
+    ]);
+
+    await svc.update(blockedWaitingId, { blockedByIssueIds: [unresolvedBlockerId] });
+    await svc.update(blockedReadyId, { blockedByIssueIds: [resolvedBlockerId] });
+
+    await expect(svc.getCompanyGraphHealth(companyId)).resolves.toMatchObject({
+      summary: {
+        blockedIssues: 3,
+        blockedWithoutExplicitBlockers: 1,
+        blockedWithUnresolvedBlockers: 1,
+        blockedReadyToUnblock: 1,
+        frontierReadyIssues: 1,
+      },
+      blockedWithoutExplicitBlockers: [expect.objectContaining({ issueId: blockedWithoutEdgesId, graphState: "blocked_no_relations" })],
+      blockedWithUnresolvedBlockers: [expect.objectContaining({ issueId: blockedWaitingId, graphState: "blocked_waiting_on_relations" })],
+      blockedReadyToUnblock: [expect.objectContaining({ issueId: blockedReadyId, graphState: "blocked_relations_resolved" })],
+      frontierReady: [expect.objectContaining({ issueId: blockedReadyId, graphState: "blocked_relations_resolved" })],
+    });
+  });
+});
