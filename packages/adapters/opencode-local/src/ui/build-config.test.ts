@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexLocalConfig } from "./build-config.js";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { buildOpenCodeLocalConfig } from "./build-config.js";
 
 function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigValues {
   return {
-    adapterType: "codex_local",
+    adapterType: "opencode_local",
     cwd: "",
     instructionsFilePath: "",
     promptTemplate: "",
-    model: "gpt-5.4",
+    model: "opencode-go/minimax-m2.7",
     thinkingEffort: "",
     chrome: false,
     dangerouslySkipPermissions: true,
@@ -35,22 +35,15 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
   };
 }
 
-describe("buildCodexLocalConfig", () => {
-  it("persists the fastMode toggle into adapter config", () => {
-    const config = buildCodexLocalConfig(
-      makeValues({
-        search: true,
-        fastMode: true,
-      }),
-    );
+describe("buildOpenCodeLocalConfig", () => {
+  it("enables a finite adapter timeout by default", () => {
+    const config = buildOpenCodeLocalConfig(makeValues());
 
     expect(config).toMatchObject({
-      model: "gpt-5.4",
-      search: true,
-      fastMode: true,
+      model: "opencode-go/minimax-m2.7",
       timeoutSec: 15 * 60,
-      graceSec: 15,
-      dangerouslyBypassApprovalsAndSandbox: true,
+      graceSec: 20,
+      dangerouslySkipPermissions: true,
     });
   });
 });

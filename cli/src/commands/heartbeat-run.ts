@@ -250,6 +250,13 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
       finalError = `CLI timed out after ${timeoutMs}ms`;
       finalStatus = "timed_out";
       console.error(pc.yellow(finalError));
+      try {
+        await api.post(`/api/heartbeat-runs/${activeRunId}/cancel`, {});
+        console.error(pc.yellow(`Cancelled heartbeat run ${activeRunId} after CLI timeout.`));
+      } catch (err) {
+        const reason = asErrorText(err) || (err instanceof Error ? err.message : String(err));
+        console.error(pc.yellow(`Failed to cancel heartbeat run ${activeRunId} after CLI timeout: ${reason}`));
+      }
       break;
     }
 
