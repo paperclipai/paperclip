@@ -63,4 +63,26 @@ describe("redaction", () => {
       safe: "value",
     });
   });
+
+  it("redacts generic token bindings such as TELEGRAM_BOT_TOKEN", () => {
+    const input = {
+      env: {
+        TELEGRAM_BOT_TOKEN: {
+          type: "plain",
+          value: "telegram-secret",
+        },
+        PAPERCLIP_API_URL: "http://localhost:3100",
+      },
+    };
+
+    const result = sanitizeRecord(input);
+
+    expect(result.env).toEqual({
+      TELEGRAM_BOT_TOKEN: {
+        type: "plain",
+        value: REDACTED_EVENT_VALUE,
+      },
+      PAPERCLIP_API_URL: "http://localhost:3100",
+    });
+  });
 });
