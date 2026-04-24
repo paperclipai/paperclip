@@ -4,11 +4,11 @@ import { Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
+import { Link } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { Link } from "@/lib/router";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
@@ -29,11 +29,9 @@ let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = nul
 
 function MarkdownIssueLink({
   issuePathId,
-  href,
   children,
 }: {
   issuePathId: string;
-  href: string;
   children: ReactNode;
 }) {
   const { data } = useQuery({
@@ -42,14 +40,23 @@ function MarkdownIssueLink({
     staleTime: 60_000,
   });
 
+  const identifier = data?.identifier ?? issuePathId;
+  const title = data?.title ?? identifier;
+  const status = data?.status;
+  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+
   return (
     <Link
-      to={href}
-      className="inline-flex items-center gap-1 align-baseline font-medium"
+      to={`/issues/${identifier}`}
       data-mention-kind="issue"
+      className="paperclip-markdown-issue-ref"
+      title={title}
+      aria-label={issueLabel}
     >
-      {data ? <StatusIcon status={data.status} className="h-3.5 w-3.5" /> : null}
-      <span>{children}</span>
+      {status ? (
+        <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
+      ) : null}
+      {children}
     </Link>
   );
 }
@@ -240,7 +247,7 @@ export function MarkdownBody({
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
             {linkChildren}
           </MarkdownIssueLink>
         );

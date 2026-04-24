@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
@@ -7,11 +8,13 @@ export function IssueReferencePill({
   issue,
   strikethrough,
   className,
+  children,
 }: {
   issue: Pick<IssueRelationIssueSummary, "id" | "identifier" | "title"> &
     Partial<Pick<IssueRelationIssueSummary, "status">>;
   strikethrough?: boolean;
   className?: string;
+  children?: ReactNode;
 }) {
   const issueLabel = issue.identifier ?? issue.title;
   const classNames = cn(
@@ -24,7 +27,7 @@ export function IssueReferencePill({
   const content = (
     <>
       {issue.status ? <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" /> : null}
-      <span>{issue.identifier ?? issue.title}</span>
+      {children !== undefined ? children : <span>{issue.identifier ?? issue.title}</span>}
     </>
   );
 

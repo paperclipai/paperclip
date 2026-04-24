@@ -34,6 +34,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
+  extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
@@ -725,6 +726,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const transientRetryNotBefore =
+      (attempt.proc.exitCode ?? 0) !== 0
+        ? extractCodexRetryNotBefore({
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        : null;
+    const transientUpstream =
+      (attempt.proc.exitCode ?? 0) !== 0 &&
+      isCodexTransientUpstreamError({
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+        errorMessage: fallbackErrorMessage,
+      });
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -735,14 +751,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? null
           : fallbackErrorMessage,
       errorCode:
-        (attempt.proc.exitCode ?? 0) !== 0 &&
-        isCodexTransientUpstreamError({
-          stdout: attempt.proc.stdout,
-          stderr: attempt.proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        })
+        transientUpstream
           ? "codex_transient_upstream"
           : null,
+      errorFamily: transientUpstream ? "transient_upstream" : null,
+      retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -755,6 +768,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+        ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),

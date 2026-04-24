@@ -41,6 +41,7 @@ function registerModuleMocks() {
       getById: vi.fn(),
     }),
     documentService: () => mockDocumentsService,
+    environmentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
@@ -84,6 +85,10 @@ function registerModuleMocks() {
     workProductService: () => ({
       listForIssue: vi.fn(async () => []),
     }),
+  }));
+
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
   }));
 }
 
@@ -145,6 +150,7 @@ describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/execution-workspaces.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");

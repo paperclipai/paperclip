@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, IssueRelationIssueSummary, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
@@ -194,21 +194,6 @@ function PropertyPicker({
       </Popover>
       {extra}
     </PropertyRow>
-  );
-}
-
-function IssuePillLink({
-  issue,
-}: {
-  issue: Pick<Issue, "id" | "identifier" | "title"> | IssueRelationIssueSummary;
-}) {
-  return (
-    <Link
-      to={`/issues/${issue.identifier ?? issue.id}`}
-      className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
-    >
-      <span className="truncate">{issue.identifier ?? issue.title}</span>
-    </Link>
   );
 }
 
@@ -1146,7 +1131,7 @@ export function IssueProperties({
           <div>
             <PropertyRow label="Blocked by">
               {(issue.blockedBy ?? []).map((relation) => (
-                <IssuePillLink key={relation.id} issue={relation} />
+                <IssueReferencePill key={relation.id} issue={relation} />
               ))}
               {renderAddBlockedByButton(() => setBlockedByOpen((open) => !open))}
             </PropertyRow>
@@ -1159,7 +1144,7 @@ export function IssueProperties({
         ) : (
           <PropertyRow label="Blocked by">
             {(issue.blockedBy ?? []).map((relation) => (
-              <IssuePillLink key={relation.id} issue={relation} />
+              <IssueReferencePill key={relation.id} issue={relation} />
             ))}
             <Popover
               open={blockedByOpen}
@@ -1182,7 +1167,7 @@ export function IssueProperties({
           {blockingIssues.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {blockingIssues.map((relation) => (
-                <IssuePillLink key={relation.id} issue={relation} />
+                <IssueReferencePill key={relation.id} issue={relation} />
               ))}
             </div>
           ) : null}
@@ -1192,7 +1177,7 @@ export function IssueProperties({
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
-                <IssuePillLink key={child.id} issue={child} />
+                <IssueReferencePill key={child.id} issue={child} />
               ))
               : null}
             {onAddSubIssue ? (

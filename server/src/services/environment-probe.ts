@@ -6,11 +6,14 @@ import {
   type ParsedEnvironmentConfig,
 } from "./environment-config.js";
 import os from "node:os";
+import { isBuiltinSandboxProvider, probeSandboxProvider } from "./sandbox-provider-runtime.js";
+import { probePluginEnvironmentDriver, probePluginSandboxProviderDriver } from "./plugin-environment-driver.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export async function probeEnvironment(
   db: Db,
   environment: Environment,
-  options: { resolvedConfig?: ParsedEnvironmentConfig } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; resolvedConfig?: ParsedEnvironmentConfig } = {},
 ): Promise<EnvironmentProbeResult> {
   const parsed = options.resolvedConfig ?? await resolveEnvironmentDriverConfigForRuntime(db, environment.companyId, environment);
 
@@ -24,6 +27,51 @@ export async function probeEnvironment(
         cwd: process.cwd(),
       },
     };
+  }
+
+  if (parsed.driver === "sandbox") {
+    if (!isBuiltinSandboxProvider(parsed.config.provider)) {
+      if (!options.pluginWorkerManager) {
+        return {
+          ok: false,
+          driver: "sandbox",
+          summary: `Sandbox provider "${parsed.config.provider}" requires a running provider plugin.`,
+          details: {
+            provider: parsed.config.provider,
+          },
+        };
+      }
+      return await probePluginSandboxProviderDriver({
+        db,
+        workerManager: options.pluginWorkerManager,
+        companyId: environment.companyId,
+        environmentId: environment.id,
+        provider: parsed.config.provider,
+        config: parsed.config as unknown as Record<string, unknown>,
+      });
+    }
+    return await probeSandboxProvider(parsed.config);
+  }
+
+  if (parsed.driver === "plugin") {
+    if (!options.pluginWorkerManager) {
+      return {
+        ok: false,
+        driver: "plugin",
+        summary: `Plugin environment probes require a plugin worker manager for "${parsed.config.pluginKey}:${parsed.config.driverKey}".`,
+        details: {
+          pluginKey: parsed.config.pluginKey,
+          driverKey: parsed.config.driverKey,
+        },
+      };
+    }
+    return await probePluginEnvironmentDriver({
+      db,
+      workerManager: options.pluginWorkerManager,
+      companyId: environment.companyId,
+      environmentId: environment.id,
+      config: parsed.config,
+    });
   }
 
   try {

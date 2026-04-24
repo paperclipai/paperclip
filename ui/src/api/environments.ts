@@ -9,14 +9,14 @@ export const environmentsApi = {
   create: (companyId: string, body: {
     name: string;
     description?: string | null;
-    driver: "local" | "ssh";
+    driver: "local" | "ssh" | "sandbox" | "plugin";
     config?: Record<string, unknown>;
     metadata?: Record<string, unknown> | null;
   }) => api.post<Environment>(`/companies/${companyId}/environments`, body),
   update: (environmentId: string, body: {
     name?: string;
     description?: string | null;
-    driver?: "local" | "ssh";
+    driver?: "local" | "ssh" | "sandbox" | "plugin";
     status?: "active" | "archived";
     config?: Record<string, unknown>;
     metadata?: Record<string, unknown> | null;
@@ -24,8 +24,8 @@ export const environmentsApi = {
   probe: (environmentId: string) => api.post<EnvironmentProbeResult>(`/environments/${environmentId}/probe`, {}),
   probeConfig: (companyId: string, body: {
     name?: string;
+    driver: "local" | "ssh" | "sandbox" | "plugin";
     description?: string | null;
-    driver: "local" | "ssh";
     config?: Record<string, unknown>;
     metadata?: Record<string, unknown> | null;
   }) => api.post<EnvironmentProbeResult>(`/companies/${companyId}/environments/probe-config`, body),

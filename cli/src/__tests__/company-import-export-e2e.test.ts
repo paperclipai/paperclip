@@ -398,10 +398,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       apiBase,
       `/api/companies/${importedNew.company.id}/issues`,
     );
+    const importedMatchingIssues = importedIssues.filter((issue) => issue.title === sourceIssue.title);
 
     expect(importedAgents.map((agent) => agent.name)).toContain(sourceAgent.name);
     expect(importedProjects.map((project) => project.name)).toContain(sourceProject.name);
-    expect(importedIssues.map((issue) => issue.title)).toContain(sourceIssue.title);
+    expect(importedMatchingIssues).toHaveLength(1);
 
     const previewExisting = await runCliJson<{
       errors: string[];
@@ -471,11 +472,13 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       apiBase,
       `/api/companies/${importedNew.company.id}/issues`,
     );
+    const twiceImportedMatchingIssues = twiceImportedIssues.filter((issue) => issue.title === sourceIssue.title);
 
     expect(twiceImportedAgents).toHaveLength(2);
     expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(2);
     expect(twiceImportedProjects).toHaveLength(2);
-    expect(twiceImportedIssues).toHaveLength(2);
+    expect(twiceImportedMatchingIssues).toHaveLength(2);
+    expect(new Set(twiceImportedMatchingIssues.map((issue) => issue.identifier)).size).toBe(2);
 
     const zipPath = path.join(tempRoot, "exported-company.zip");
     const portableFiles: Record<string, string> = {};

@@ -87,6 +87,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products with a clear next action.",
+  "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
@@ -282,6 +283,9 @@ type PaperclipWakeExecutionStage = {
   stageType: string | null;
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
   returnAssignee: PaperclipWakeExecutionPrincipal | null;
+  reviewRequest: {
+    instructions: string;
+  } | null;
   lastDecisionOutcome: string | null;
   allowedActions: string[];
 };
@@ -484,11 +488,14 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
     : [];
   const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
   const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
+  const reviewRequestRaw = parseObject(stage.reviewRequest);
+  const reviewInstructions = asString(reviewRequestRaw.instructions, "").trim();
+  const reviewRequest = reviewInstructions ? { instructions: reviewInstructions } : null;
   const stageId = asString(stage.stageId, "").trim() || null;
   const stageType = asString(stage.stageType, "").trim() || null;
   const lastDecisionOutcome = asString(stage.lastDecisionOutcome, "").trim() || null;
 
-  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !lastDecisionOutcome && allowedActions.length === 0) {
+  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !reviewRequest && !lastDecisionOutcome && allowedActions.length === 0) {
     return null;
   }
 
@@ -498,6 +505,7 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
     stageType,
     currentParticipant,
     returnAssignee,
+    reviewRequest,
     lastDecisionOutcome,
     allowedActions,
   };
@@ -663,6 +671,13 @@ export function renderPaperclipWakePrompt(
     );
     if (executionStage.allowedActions.length > 0) {
       lines.push(`- allowed actions: ${executionStage.allowedActions.join(", ")}`);
+    }
+    if (executionStage.reviewRequest) {
+      lines.push(
+        "",
+        "Review request instructions:",
+        executionStage.reviewRequest.instructions,
+      );
     }
     lines.push("");
     if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {

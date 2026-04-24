@@ -1,15 +1,21 @@
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
   Environment,
   EnvironmentDriver,
+  FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
+  PluginSandboxEnvironmentConfig,
+  PluginEnvironmentConfig,
+  SandboxEnvironmentConfig,
   SshEnvironmentConfig,
 } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { validatePluginEnvironmentDriverConfig } from "./plugin-environment-driver.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
@@ -37,6 +43,80 @@ const sshEnvironmentConfigSchema = z.object({
   strictHostKeyChecking: z.boolean().optional().default(true),
 }).strict();
 
+const fakeSandboxEnvironmentConfigSchema = z.object({
+  provider: z.literal("fake").default("fake"),
+  image: z
+    .string()
+    .trim()
+    .min(1, "Fake sandbox environments require an image.")
+    .default("ubuntu:24.04"),
+  reuseLease: z.boolean().optional().default(false),
+}).strict();
+
+const pluginSandboxProviderKeySchema = z.string()
+  .trim()
+  .min(1, "Sandbox provider is required.")
+  .regex(
+    /^[a-z0-9][a-z0-9._-]*$/,
+    "Sandbox provider key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
+  )
+  .refine((value) => value !== "fake", {
+    message: "Built-in sandbox providers must use their dedicated config schema.",
+  });
+
+const pluginSandboxEnvironmentConfigSchema = z.object({
+  provider: pluginSandboxProviderKeySchema,
+  timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
+  reuseLease: z.boolean().optional().default(false),
+}).catchall(z.unknown());
+
+type SandboxConfigSchemaMode = "stored" | "probe" | "persistence";
+
+const pluginEnvironmentConfigSchema = z.object({
+  pluginKey: z.string().min(1),
+  driverKey: z.string().min(1).regex(
+    /^[a-z0-9][a-z0-9._-]*$/,
+    "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
+  ),
+  driverConfig: z.record(z.unknown()).optional().default({}),
+}).strict();
+
+export type ParsedEnvironmentConfig =
+  | { driver: "local"; config: LocalEnvironmentConfig }
+  | { driver: "ssh"; config: SshEnvironmentConfig }
+  | { driver: "sandbox"; config: SandboxEnvironmentConfig }
+  | { driver: "plugin"; config: PluginEnvironmentConfig };
+
+function toErrorMessage(error: z.ZodError) {
+  const first = error.issues[0];
+  if (!first) return "Invalid environment config.";
+  return first.message;
+}
+
+function getSandboxProvider(raw: Record<string, unknown>) {
+  return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
+}
+
+function parseSandboxEnvironmentConfig(
+  input: Record<string, unknown> | null | undefined,
+  mode: SandboxConfigSchemaMode,
+) {
+  const raw = parseObject(input);
+  const provider = getSandboxProvider(raw);
+
+  if (provider === "fake") {
+    const parsed = fakeSandboxEnvironmentConfigSchema.safeParse(raw);
+    return parsed.success
+      ? ({ success: true as const, data: parsed.data satisfies FakeSandboxEnvironmentConfig })
+      : ({ success: false as const, error: parsed.error });
+  }
+
+  const parsed = pluginSandboxEnvironmentConfigSchema.safeParse(raw);
+  return parsed.success
+    ? ({ success: true as const, data: parsed.data satisfies PluginSandboxEnvironmentConfig })
+    : ({ success: false as const, error: parsed.error });
+}
+
 const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
   privateKey: z
     .string()
@@ -47,16 +127,6 @@ const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
 }).strict();
 
 const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
-
-export type ParsedEnvironmentConfig =
-  | { driver: "local"; config: LocalEnvironmentConfig }
-  | { driver: "ssh"; config: SshEnvironmentConfig };
-
-function toErrorMessage(error: z.ZodError) {
-  const first = error.issues[0];
-  if (!first) return "Invalid environment config.";
-  return first.message;
-}
 
 function secretName(input: {
   environmentName: string;
@@ -115,6 +185,26 @@ export function normalizeEnvironmentConfig(input: {
     return parsed.data satisfies SshEnvironmentConfig;
   }
 
+  if (input.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(input.config, "stored");
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data;
+  }
+
+  if (input.driver === "plugin") {
+    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data satisfies PluginEnvironmentConfig;
+  }
+
   throw unprocessable(`Unsupported environment driver "${input.driver}".`);
 }
 
@@ -132,6 +222,16 @@ export function normalizeEnvironmentConfigForProbe(input: {
     return parsed.data satisfies SshEnvironmentConfig;
   }
 
+  if (input.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(input.config, "probe");
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data;
+  }
+
   return normalizeEnvironmentConfig(input);
 }
 
@@ -142,6 +242,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
   actor?: { userId?: string | null; agentId?: string | null };
+  pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
     const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
@@ -177,6 +278,39 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     } satisfies SshEnvironmentConfig;
   }
 
+  if (input.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(input.config, "persistence");
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    const sandboxConfig = parsed.data;
+    if (sandboxConfig.provider === "fake") {
+      throw unprocessable(
+        "Built-in fake sandbox environments are reserved for internal probes and cannot be saved.",
+      );
+    }
+    return { ...(sandboxConfig as PluginSandboxEnvironmentConfig) };
+  }
+
+  if (input.driver === "plugin") {
+    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    if (!input.pluginWorkerManager) {
+      throw unprocessable("Plugin environment config validation requires a running plugin worker manager.");
+    }
+    return { ...(await validatePluginEnvironmentDriverConfig({
+      db: input.db,
+      workerManager: input.pluginWorkerManager,
+      config: parsed.data,
+    })) };
+  }
+
   return normalizeEnvironmentConfig({
     driver: input.driver,
     config: input.config,
@@ -189,12 +323,14 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   environment: Pick<Environment, "driver" | "config">,
 ): Promise<ParsedEnvironmentConfig> {
   const parsed = parseEnvironmentDriverConfig(environment);
+  const secrets = secretService(db);
+
   if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
     return {
       driver: "ssh",
       config: {
         ...parsed.config,
-        privateKey: await secretService(db).resolveSecretValue(
+        privateKey: await secrets.resolveSecretValue(
           companyId,
           parsed.config.privateKeySecretRef.secretId,
           parsed.config.privateKeySecretRef.version ?? "latest",
@@ -229,6 +365,25 @@ export function parseEnvironmentDriverConfig(
     const parsed = sshEnvironmentConfigSchema.parse(parseObject(environment.config));
     return {
       driver: "ssh",
+      config: parsed,
+    };
+  }
+
+  if (environment.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(environment.config, "stored");
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+    return {
+      driver: "sandbox",
+      config: parsed.data,
+    };
+  }
+
+  if (environment.driver === "plugin") {
+    const parsed = pluginEnvironmentConfigSchema.parse(parseObject(environment.config));
+    return {
+      driver: "plugin",
       config: parsed,
     };
   }

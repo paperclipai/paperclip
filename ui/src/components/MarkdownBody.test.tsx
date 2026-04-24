@@ -33,7 +33,7 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
-function renderMarkdown(children: string, seededIssues: Array<{ identifier: string; status: string }> = []) {
+function renderMarkdown(children: string, seededIssues: Array<{ identifier: string; status: string; title?: string }> = []) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -47,6 +47,7 @@ function renderMarkdown(children: string, seededIssues: Array<{ identifier: stri
       id: issue.identifier,
       identifier: issue.identifier,
       status: issue.status,
+      title: issue.title,
     });
   }
 
@@ -118,6 +119,20 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("javascript:");
   });
 
+  it("renders raw HTML tags as escaped text", () => {
+    const html = renderMarkdown(
+      '<script>fetch("/api/secrets")</script>\n<iframe src="https://example.com"></iframe>\n<p onclick="steal()">Plain text</p>',
+    );
+
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<iframe");
+    expect(html).not.toContain("<p onclick");
+    expect(html).not.toContain('onclick="steal()"');
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("onclick=&quot;steal()&quot;");
+    expect(html).toContain("Plain text");
+  });
+
   it("uses soft-break styling by default", () => {
     const html = renderMarkdown("First line\nSecond line");
 
@@ -156,7 +171,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1271"');
     expect(html).toContain("text-green-600");
     expect(html).toContain(">PAP-1271<");
+    expect(html).toContain('data-mention-kind="issue"');
+    expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("uses concise issue aria labels until a distinct title is available", () => {
+    const html = renderMarkdown("Depends on PAP-1271 and PAP-1272.", [
+      { identifier: "PAP-1271", status: "done" },
+      { identifier: "PAP-1272", status: "blocked", title: "Fix hover state" },
+    ]);
+
+    expect(html).toContain('aria-label="Issue PAP-1271"');
+    expect(html).toContain('aria-label="Issue PAP-1272: Fix hover state"');
+    expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
   });
 
   it("rewrites full issue URLs to internal issue links", () => {
@@ -167,7 +195,31 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1179"');
     expect(html).toContain("text-red-600");
     expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
+    expect(html).toContain('data-mention-kind="issue"');
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("linkifies plain internal issue paths in markdown text", () => {
+    const html = renderMarkdown("See /issues/PAP-1179 and /PAP/issues/pap-1180 for context.", [
+      { identifier: "PAP-1179", status: "blocked" },
+      { identifier: "PAP-1180", status: "done" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1179"');
+    expect(html).toContain('href="/issues/PAP-1180"');
+    expect(html).toContain(">/issues/PAP-1179<");
+    expect(html).toContain(">/PAP/issues/pap-1180<");
+    expect(html).toContain("text-red-600");
+    expect(html).toContain("text-green-600");
+  });
+
+  it("does not auto-link non-issue internal route paths", () => {
+    const html = renderMarkdown("Use /issues/new for the creation form, /issues/PAP-42extra as text, and /api/issues for data.");
+
+    expect(html).toContain("Use /issues/new for the creation form, /issues/PAP-42extra as text, and /api/issues for data.");
+    expect(html).not.toContain('href="/issues/new"');
+    expect(html).not.toContain('href="/issues/PAP-42"');
+    expect(html).not.toContain('data-mention-kind="issue"');
   });
 
   it("rewrites issue scheme links to internal issue links", () => {
@@ -192,6 +244,22 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1271"');
     expect(html).toContain('<code style="overflow-wrap:anywhere;word-break:break-word">PAP-1271</code>');
     expect(html).toContain("text-green-600");
+    expect(html).toContain("paperclip-markdown-issue-ref");
+  });
+
+  it("keeps trailing punctuation outside auto-linked issue references", () => {
+    const html = renderMarkdown("See PAP-1271: /issues/PAP-1272] and issue://PAP-1273.", [
+      { identifier: "PAP-1271", status: "done" },
+      { identifier: "PAP-1272", status: "blocked" },
+      { identifier: "PAP-1273", status: "todo" },
+    ]);
+
+    expect(html).toContain('<a href="/issues/PAP-1271"');
+    expect(html).toContain('>PAP-1271</a>:');
+    expect(html).toContain('<a href="/issues/PAP-1272"');
+    expect(html).toContain('>/issues/PAP-1272</a>]');
+    expect(html).toContain('<a href="/issues/PAP-1273"');
+    expect(html).toContain('>issue://PAP-1273</a>.');
   });
 
   it("can opt out of issue reference linkification for offline previews", () => {
@@ -277,7 +345,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
   });
 
-  it("renders internal issue links and bare identifiers as issue chips", () => {
+  it("renders internal issue links and bare identifiers as inline issue refs", () => {
     const html = renderMarkdown(`See PAP-42 and [linked task](${buildIssueReferenceHref("PAP-77")}) for follow-up.`, [
       { identifier: "PAP-42", status: "done" },
       { identifier: "PAP-77", status: "blocked" },
@@ -286,5 +354,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-42"');
     expect(html).toContain('href="/issues/PAP-77"');
     expect(html).toContain('data-mention-kind="issue"');
+    expect(html).toContain("paperclip-markdown-issue-ref");
+    expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 });

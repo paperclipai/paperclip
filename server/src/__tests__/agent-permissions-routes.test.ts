@@ -162,6 +162,10 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
   }));
 
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
+  }));
+
   vi.doMock("../services/agent-instructions.js", () => ({
     agentInstructionsService: () => mockAgentInstructionsService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
@@ -271,6 +275,7 @@ describe.sequential("agent permission routes", () => {
     vi.doUnmock("../services/issue-approvals.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/secrets.js");
+    vi.doUnmock("../services/environments.js");
     vi.doUnmock("../services/workspace-operations.js");
     vi.doUnmock("../adapters/index.js");
     vi.doUnmock("../routes/agents.js");

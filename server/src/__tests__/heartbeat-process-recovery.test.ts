@@ -320,8 +320,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(activityLog);
+      await db.delete(heartbeatRunEvents);
+      try {
+        await db.delete(heartbeatRuns);
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     await db.delete(agentWakeupRequests);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
@@ -765,11 +774,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorCode: "codex_transient_upstream",
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
       errorMessage:
         "Error running remote compact task: We're currently experiencing high demand, which may cause temporary errors.",
       provider: "openai",
       model: "gpt-5.4",
+      resultJson: {
+        errorFamily: "transient_upstream",
+      },
     });
 
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
@@ -790,7 +803,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const failedRun = runs?.find((row) => row.id === runId);
     const retryRun = runs?.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("codex_transient_upstream");
+    expect(failedRun?.errorCode).toBe("adapter_failed");
+    expect((failedRun?.resultJson as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
     expect(retryRun?.status).toBe("scheduled_retry");
     expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe("same_session");

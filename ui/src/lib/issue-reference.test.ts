@@ -4,6 +4,7 @@ import { parseIssuePathIdFromPath, parseIssueReferenceFromHref } from "./issue-r
 describe("issue-reference", () => {
   it("extracts issue ids from company-scoped issue paths", () => {
     expect(parseIssuePathIdFromPath("/PAP/issues/PAP-1271")).toBe("PAP-1271");
+    expect(parseIssuePathIdFromPath("/PAP/issues/pap-1272")).toBe("PAP-1272");
     expect(parseIssuePathIdFromPath("/issues/PAP-1179")).toBe("PAP-1179");
     expect(parseIssuePathIdFromPath("/issues/:id")).toBeNull();
   });
@@ -31,6 +32,10 @@ describe("issue-reference", () => {
     expect(parseIssueReferenceFromHref("http://localhost:3100/PAP/issues/PAP-1179")).toEqual({
       issuePathId: "PAP-1179",
       href: "/issues/PAP-1179",
+    });
+    expect(parseIssueReferenceFromHref("/PAP/issues/pap-1180")).toEqual({
+      issuePathId: "PAP-1180",
+      href: "/issues/PAP-1180",
     });
     expect(parseIssueReferenceFromHref("issue://PAP-1310")).toEqual({
       issuePathId: "PAP-1310",

@@ -12,8 +12,6 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
-  environmentService,
-  executionWorkspaceService,
   issueService,
   logActivity,
   projectService,
@@ -27,9 +25,16 @@ import {
 } from "../services/environment-config.js";
 import { probeEnvironment } from "../services/environment-probe.js";
 import { secretService } from "../services/secrets.js";
+import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { environmentService } from "../services/environments.js";
+import { executionWorkspaceService } from "../services/execution-workspaces.js";
 
-export function environmentRoutes(db: Db) {
+export function environmentRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const agents = agentService(db);
   const access = accessService(db);
@@ -159,7 +164,30 @@ export function environmentRoutes(db: Db) {
   router.get("/companies/:companyId/environments/capabilities", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(getEnvironmentCapabilities(AGENT_ADAPTER_TYPES));
+    const pluginDrivers = await listReadyPluginEnvironmentDrivers({
+      db,
+      workerManager: options.pluginWorkerManager,
+    });
+    res.json(getEnvironmentCapabilities(
+      AGENT_ADAPTER_TYPES,
+      {
+        sandboxProviders: Object.fromEntries(pluginDrivers.map((driver) => [
+          driver.driverKey,
+          {
+            status: "supported" as const,
+            supportsSavedProbe: true,
+            supportsUnsavedProbe: true,
+            supportsRunExecution: true,
+            supportsReusableLeases: true,
+            displayName: driver.displayName,
+            description: driver.description,
+            source: "plugin" as const,
+            pluginKey: driver.pluginKey,
+            pluginId: driver.pluginId,
+          },
+        ])),
+      },
+    ));
   });
 
   router.post("/companies/:companyId/environments", validate(createEnvironmentSchema), async (req, res) => {
@@ -178,6 +206,7 @@ export function environmentRoutes(db: Db) {
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
+        pluginWorkerManager: options.pluginWorkerManager,
       }),
     };
     const environment = await svc.create(companyId, input);
@@ -280,6 +309,7 @@ export function environmentRoutes(db: Db) {
                 agentId: actor.agentId,
                 userId: actor.actorType === "user" ? actor.actorId : null,
               },
+              pluginWorkerManager: options.pluginWorkerManager,
             }),
           }
         : {}),
@@ -351,7 +381,9 @@ export function environmentRoutes(db: Db) {
     }
     await assertCanMutateEnvironments(req, environment.companyId);
     const actor = getActorInfo(req);
-    const probe = await probeEnvironment(db, environment);
+    const probe = await probeEnvironment(db, environment, {
+      pluginWorkerManager: options.pluginWorkerManager,
+    });
     await logActivity(db, {
       companyId: environment.companyId,
       actorType: actor.actorType,
@@ -394,6 +426,7 @@ export function environmentRoutes(db: Db) {
         updatedAt: new Date(),
       };
       const probe = await probeEnvironment(db, environment, {
+        pluginWorkerManager: options.pluginWorkerManager,
         resolvedConfig: {
           driver: req.body.driver,
           config: normalizedConfig,

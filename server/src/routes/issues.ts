@@ -39,10 +39,8 @@ import {
   accessService,
   agentService,
   executionWorkspaceService,
-  feedbackService,
   goalService,
   heartbeatService,
-  instanceSettingsService,
   issueApprovalService,
   issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
@@ -55,7 +53,6 @@ import {
   projectService,
   routineService,
   workProductService,
-  environmentService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
@@ -73,11 +70,16 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
+import { feedbackService } from "../services/feedback.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { environmentService } from "../services/environments.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -101,6 +103,7 @@ type ExecutionStageWakeContext = {
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
   returnAssignee: ParsedExecutionState["returnAssignee"];
+  reviewRequest: ParsedExecutionState["reviewRequest"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
 };
@@ -124,6 +127,7 @@ function buildExecutionStageWakeContext(input: {
     stageType: input.state.currentStageType,
     currentParticipant: input.state.currentParticipant,
     returnAssignee: input.state.returnAssignee,
+    reviewRequest: input.state.reviewRequest ?? null,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
   };
@@ -374,7 +378,7 @@ function buildExecutionStageWakeup(input: {
 export function issueRoutes(
   db: Db,
   storage: StorageService,
-  opts?: {
+  opts: {
     feedbackExportService?: {
       flushPendingFeedbackTraces(input?: {
         companyId?: string;
@@ -383,24 +387,30 @@ export function issueRoutes(
         now?: Date;
       }): Promise<unknown>;
     };
-  },
+    pluginWorkerManager?: PluginWorkerManager;
+  } = {},
 ) {
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
-  const executionWorkspacesSvc = executionWorkspaceService(db);
+  const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
-  const routinesSvc = routineService(db);
+  const routinesSvc = routineService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
   const feedbackExportService = opts?.feedbackExportService;
+  const environmentsSvc = environmentService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -423,10 +433,10 @@ export function issueRoutes(
   ) {
     if (environmentId === undefined || environmentId === null) return;
     await assertEnvironmentSelectionForCompany(
-      environmentService(db),
+      environmentsSvc,
       companyId,
       environmentId,
-      { allowedDrivers: ["local", "ssh"] },
+      { allowedDrivers: ["local", "ssh", "sandbox"] },
     );
   }
 
@@ -831,6 +841,7 @@ export function issueRoutes(
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
+      descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -1787,6 +1798,7 @@ export function issueRoutes(
         : null;
     const {
       comment: commentBody,
+      reviewRequest,
       reopen: reopenRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
@@ -1813,7 +1825,8 @@ export function issueRoutes(
         : false;
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
-    const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
+    const isAgentWorkUpdate =
+      req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -1887,6 +1900,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
       commentBody,
+      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -1900,6 +1914,20 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
+      const existingExecutionState = parseIssueExecutionState(existing.executionState);
+      if (!existingExecutionState || existingExecutionState.status !== "pending") {
+        if (reviewRequest !== null) {
+          res.status(422).json({ error: "reviewRequest requires an active review or approval stage" });
+          return;
+        }
+      } else {
+        updateFields.executionState = {
+          ...existingExecutionState,
+          reviewRequest,
+        };
+      }
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);

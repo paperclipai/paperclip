@@ -106,6 +106,7 @@ export interface IssueFilters {
   workspaceId?: string;
   executionWorkspaceId?: string;
   parentId?: string;
+  descendantOf?: string;
   labelId?: string;
   originKind?: string;
   originId?: string;
@@ -1396,6 +1397,24 @@ export function issueService(db: Db) {
             AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
         )
       `;
+      if (filters?.descendantOf) {
+        conditions.push(sql<boolean>`
+          ${issues.id} IN (
+            WITH RECURSIVE descendants(id) AS (
+              SELECT ${issues.id}
+              FROM ${issues}
+              WHERE ${issues.companyId} = ${companyId}
+                AND ${issues.parentId} = ${filters.descendantOf}
+              UNION
+              SELECT ${issues.id}
+              FROM ${issues}
+              JOIN descendants ON ${issues.parentId} = descendants.id
+              WHERE ${issues.companyId} = ${companyId}
+            )
+            SELECT id FROM descendants
+          )
+        `);
+      }
       if (filters?.status) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));

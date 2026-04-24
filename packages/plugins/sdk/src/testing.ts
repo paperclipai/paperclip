@@ -29,6 +29,21 @@ import type {
   AgentSession,
   AgentSessionEvent,
 } from "./types.js";
+import type {
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentValidationResult,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentProbeResult,
+  PluginEnvironmentLease,
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentExecuteResult,
+} from "./protocol.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -78,6 +93,262 @@ export interface TestHarness {
   telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
   dbQueries: Array<{ sql: string; params?: unknown[] }>;
   dbExecutes: Array<{ sql: string; params?: unknown[] }>;
+}
+
+// ---------------------------------------------------------------------------
+// Environment test harness types
+// ---------------------------------------------------------------------------
+
+/** Recorded environment lifecycle event for assertion helpers. */
+export interface EnvironmentEventRecord {
+  type:
+    | "validateConfig"
+    | "probe"
+    | "acquireLease"
+    | "resumeLease"
+    | "releaseLease"
+    | "destroyLease"
+    | "realizeWorkspace"
+    | "execute";
+  driverKey: string;
+  environmentId: string;
+  timestamp: string;
+  params: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+}
+
+/** Options for creating an environment-aware test harness. */
+export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
+  /** Environment driver hooks provided by the plugin under test. */
+  environmentDriver: {
+    driverKey: string;
+    onValidateConfig?: (params: PluginEnvironmentValidateConfigParams) => Promise<PluginEnvironmentValidationResult>;
+    onProbe?: (params: PluginEnvironmentProbeParams) => Promise<PluginEnvironmentProbeResult>;
+    onAcquireLease?: (params: PluginEnvironmentAcquireLeaseParams) => Promise<PluginEnvironmentLease>;
+    onResumeLease?: (params: PluginEnvironmentResumeLeaseParams) => Promise<PluginEnvironmentLease>;
+    onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<void>;
+    onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<void>;
+    onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
+    onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
+  };
+}
+
+/** Extended test harness with environment driver simulation. */
+export interface EnvironmentTestHarness extends TestHarness {
+  /** Recorded environment lifecycle events for assertion. */
+  environmentEvents: EnvironmentEventRecord[];
+  /** Invoke the environment driver's validateConfig hook. */
+  validateConfig(params: PluginEnvironmentValidateConfigParams): Promise<PluginEnvironmentValidationResult>;
+  /** Invoke the environment driver's probe hook. */
+  probe(params: PluginEnvironmentProbeParams): Promise<PluginEnvironmentProbeResult>;
+  /** Invoke the environment driver's acquireLease hook. */
+  acquireLease(params: PluginEnvironmentAcquireLeaseParams): Promise<PluginEnvironmentLease>;
+  /** Invoke the environment driver's resumeLease hook. */
+  resumeLease(params: PluginEnvironmentResumeLeaseParams): Promise<PluginEnvironmentLease>;
+  /** Invoke the environment driver's releaseLease hook. */
+  releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<void>;
+  /** Invoke the environment driver's destroyLease hook. */
+  destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<void>;
+  /** Invoke the environment driver's realizeWorkspace hook. */
+  realizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult>;
+  /** Invoke the environment driver's execute hook. */
+  execute(params: PluginEnvironmentExecuteParams): Promise<PluginEnvironmentExecuteResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Environment event assertion helpers
+// ---------------------------------------------------------------------------
+
+/** Filter environment events by type. */
+export function filterEnvironmentEvents(
+  events: EnvironmentEventRecord[],
+  type: EnvironmentEventRecord["type"],
+): EnvironmentEventRecord[] {
+  return events.filter((e) => e.type === type);
+}
+
+/** Assert that environment events occurred in the expected order. */
+export function assertEnvironmentEventOrder(
+  events: EnvironmentEventRecord[],
+  expectedOrder: EnvironmentEventRecord["type"][],
+): void {
+  const actual = events.map((e) => e.type);
+  const matched: EnvironmentEventRecord["type"][] = [];
+  let cursor = 0;
+  for (const eventType of actual) {
+    if (cursor < expectedOrder.length && eventType === expectedOrder[cursor]) {
+      matched.push(eventType);
+      cursor++;
+    }
+  }
+  if (matched.length !== expectedOrder.length) {
+    throw new Error(
+      `Environment event order mismatch.\nExpected: ${JSON.stringify(expectedOrder)}\nActual:   ${JSON.stringify(actual)}`,
+    );
+  }
+}
+
+/** Assert that a full lease lifecycle (acquire → release) occurred for an environment. */
+export function assertLeaseLifecycle(
+  events: EnvironmentEventRecord[],
+  environmentId: string,
+): { acquire: EnvironmentEventRecord; release: EnvironmentEventRecord } {
+  const acquire = events.find((e) => e.type === "acquireLease" && e.environmentId === environmentId);
+  const release = events.find((e) => (e.type === "releaseLease" || e.type === "destroyLease") && e.environmentId === environmentId);
+  if (!acquire) throw new Error(`No acquireLease event found for environment ${environmentId}`);
+  if (!release) throw new Error(`No releaseLease/destroyLease event found for environment ${environmentId}`);
+  if (acquire.timestamp > release.timestamp) {
+    throw new Error(`acquireLease occurred after release for environment ${environmentId}`);
+  }
+  return { acquire, release };
+}
+
+/** Assert that workspace realization occurred between lease acquire and release. */
+export function assertWorkspaceRealizationLifecycle(
+  events: EnvironmentEventRecord[],
+  environmentId: string,
+): EnvironmentEventRecord {
+  const lifecycle = assertLeaseLifecycle(events, environmentId);
+  const realize = events.find(
+    (e) => e.type === "realizeWorkspace" && e.environmentId === environmentId,
+  );
+  if (!realize) throw new Error(`No realizeWorkspace event found for environment ${environmentId}`);
+  if (realize.timestamp < lifecycle.acquire.timestamp) {
+    throw new Error(`realizeWorkspace occurred before acquireLease for environment ${environmentId}`);
+  }
+  if (realize.timestamp > lifecycle.release.timestamp) {
+    throw new Error(`realizeWorkspace occurred after release for environment ${environmentId}`);
+  }
+  return realize;
+}
+
+/** Assert that an execute call occurred within the lease lifecycle. */
+export function assertExecutionLifecycle(
+  events: EnvironmentEventRecord[],
+  environmentId: string,
+): EnvironmentEventRecord[] {
+  const lifecycle = assertLeaseLifecycle(events, environmentId);
+  const execEvents = events.filter(
+    (e) => e.type === "execute" && e.environmentId === environmentId,
+  );
+  if (execEvents.length === 0) {
+    throw new Error(`No execute events found for environment ${environmentId}`);
+  }
+  for (const exec of execEvents) {
+    if (exec.timestamp < lifecycle.acquire.timestamp || exec.timestamp > lifecycle.release.timestamp) {
+      throw new Error(`Execute event occurred outside lease lifecycle for environment ${environmentId}`);
+    }
+  }
+  return execEvents;
+}
+
+/** Assert that an event recorded an error. */
+export function assertEnvironmentError(
+  events: EnvironmentEventRecord[],
+  type: EnvironmentEventRecord["type"],
+  environmentId?: string,
+): EnvironmentEventRecord {
+  const match = events.find(
+    (e) => e.type === type && e.error != null && (!environmentId || e.environmentId === environmentId),
+  );
+  if (!match) {
+    throw new Error(`No error event of type '${type}'${environmentId ? ` for environment ${environmentId}` : ""}`);
+  }
+  return match;
+}
+
+// ---------------------------------------------------------------------------
+// Fake environment plugin driver
+// ---------------------------------------------------------------------------
+
+/** Options for creating a fake environment driver for contract testing. */
+export interface FakeEnvironmentDriverOptions {
+  driverKey?: string;
+  /** Simulated acquire delay in ms. */
+  acquireDelayMs?: number;
+  /** If true, probe will return `ok: false`. */
+  probeFailure?: boolean;
+  /** If true, acquireLease will throw. */
+  acquireFailure?: string;
+  /** If true, execute will return a non-zero exit code. */
+  executeFailure?: boolean;
+  /** Custom metadata returned on lease acquire. */
+  leaseMetadata?: Record<string, unknown>;
+}
+
+/**
+ * Create a fake environment driver suitable for contract testing.
+ *
+ * This returns a driver hooks object compatible with `EnvironmentTestHarnessOptions.environmentDriver`.
+ * It simulates the full environment lifecycle with configurable failure injection.
+ */
+export function createFakeEnvironmentDriver(options: FakeEnvironmentDriverOptions = {}): EnvironmentTestHarnessOptions["environmentDriver"] {
+  const driverKey = options.driverKey ?? "fake";
+  const leases = new Map<string, { providerLeaseId: string; metadata: Record<string, unknown> }>();
+  let leaseCounter = 0;
+
+  return {
+    driverKey,
+    async onValidateConfig(params) {
+      if (!params.config || typeof params.config !== "object") {
+        return { ok: false, errors: ["Config must be an object"] };
+      }
+      return { ok: true, normalizedConfig: params.config };
+    },
+    async onProbe(_params) {
+      if (options.probeFailure) {
+        return { ok: false, summary: "Simulated probe failure", diagnostics: [{ severity: "error", message: "Probe failed" }] };
+      }
+      return { ok: true, summary: "Fake environment is healthy" };
+    },
+    async onAcquireLease(params) {
+      if (options.acquireFailure) {
+        throw new Error(options.acquireFailure);
+      }
+      if (options.acquireDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.acquireDelayMs));
+      }
+      const providerLeaseId = `fake-lease-${++leaseCounter}`;
+      const metadata = { ...options.leaseMetadata, acquiredAt: new Date().toISOString(), runId: params.runId };
+      leases.set(providerLeaseId, { providerLeaseId, metadata });
+      return { providerLeaseId, metadata };
+    },
+    async onResumeLease(params) {
+      const existing = leases.get(params.providerLeaseId);
+      if (!existing) {
+        throw new Error(`Lease ${params.providerLeaseId} not found — cannot resume`);
+      }
+      return { providerLeaseId: existing.providerLeaseId, metadata: { ...existing.metadata, resumed: true } };
+    },
+    async onReleaseLease(params) {
+      if (params.providerLeaseId) {
+        leases.delete(params.providerLeaseId);
+      }
+    },
+    async onDestroyLease(params) {
+      if (params.providerLeaseId) {
+        leases.delete(params.providerLeaseId);
+      }
+    },
+    async onRealizeWorkspace(params) {
+      return {
+        cwd: params.workspace.localPath ?? params.workspace.remotePath ?? "/tmp/fake-workspace",
+        metadata: { realized: true },
+      };
+    },
+    async onExecute(params) {
+      if (options.executeFailure) {
+        return { exitCode: 1, timedOut: false, stdout: "", stderr: "Simulated execution failure" };
+      }
+      return {
+        exitCode: 0,
+        timedOut: false,
+        stdout: `Executed: ${params.command} ${(params.args ?? []).join(" ")}`.trim(),
+        stderr: "",
+      };
+    },
+  };
 }
 
 type EventRegistration = {
@@ -1035,4 +1306,90 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   };
 
   return harness;
+}
+
+/**
+ * Create an environment-aware test harness that wraps the base harness with
+ * environment driver simulation and lifecycle event recording.
+ *
+ * Use this to test environment plugins through the full host contract:
+ * validateConfig → probe → acquireLease → realizeWorkspace → execute → releaseLease.
+ */
+export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOptions): EnvironmentTestHarness {
+  const base = createTestHarness(options);
+  const environmentEvents: EnvironmentEventRecord[] = [];
+  const driver = options.environmentDriver;
+
+  function record(
+    type: EnvironmentEventRecord["type"],
+    params: Record<string, unknown>,
+    result?: unknown,
+    error?: string,
+  ): EnvironmentEventRecord {
+    const event: EnvironmentEventRecord = {
+      type,
+      driverKey: (params as { driverKey?: string }).driverKey ?? driver.driverKey,
+      environmentId: (params as { environmentId?: string }).environmentId ?? "unknown",
+      timestamp: new Date().toISOString(),
+      params,
+      result,
+      error,
+    };
+    environmentEvents.push(event);
+    return event;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function callHook<R>(
+    type: EnvironmentEventRecord["type"],
+    hook: ((...args: any[]) => Promise<R>) | undefined,
+    params: unknown,
+    hookName: string,
+  ): Promise<R> {
+    if (!hook) {
+      const err = `Environment driver '${driver.driverKey}' does not implement ${hookName}`;
+      record(type, params as Record<string, unknown>, undefined, err);
+      throw new Error(err);
+    }
+    try {
+      const result = await hook(params);
+      record(type, params as Record<string, unknown>, result);
+      return result;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      record(type, params as Record<string, unknown>, undefined, msg);
+      throw e;
+    }
+  }
+
+  const envHarness: EnvironmentTestHarness = {
+    ...base,
+    environmentEvents,
+    async validateConfig(params) {
+      return callHook("validateConfig", driver.onValidateConfig, params, "onValidateConfig");
+    },
+    async probe(params) {
+      return callHook("probe", driver.onProbe, params, "onProbe");
+    },
+    async acquireLease(params) {
+      return callHook("acquireLease", driver.onAcquireLease, params, "onAcquireLease");
+    },
+    async resumeLease(params) {
+      return callHook("resumeLease", driver.onResumeLease, params, "onResumeLease");
+    },
+    async releaseLease(params) {
+      return callHook("releaseLease", driver.onReleaseLease, params, "onReleaseLease");
+    },
+    async destroyLease(params) {
+      return callHook("destroyLease", driver.onDestroyLease, params, "onDestroyLease");
+    },
+    async realizeWorkspace(params) {
+      return callHook("realizeWorkspace", driver.onRealizeWorkspace, params, "onRealizeWorkspace");
+    },
+    async execute(params) {
+      return callHook("execute", driver.onExecute, params, "onExecute");
+    },
+  };
+
+  return envHarness;
 }

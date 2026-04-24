@@ -219,7 +219,12 @@ export type {
   Environment,
   EnvironmentLease,
   EnvironmentProbeResult,
+  FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
+  PluginSandboxEnvironmentConfig,
+  PluginEnvironmentConfig,
+  SandboxEnvironmentConfig,
+  SandboxEnvironmentProvider,
   SshEnvironmentConfig,
   FeedbackVote,
   FeedbackDataSharingPreference,
@@ -300,6 +305,10 @@ export type {
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,
   WorkspaceRuntimeDesiredState,
+  WorkspaceRealizationRecord,
+  WorkspaceRealizationRequest,
+  WorkspaceRealizationSyncStrategy,
+  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceProviderType,
@@ -471,6 +480,7 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
   PluginUiSlotDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,
@@ -541,17 +551,6 @@ export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
 } from "./execution-workspace-guards.js";
-
-export {
-  adapterSupportsRemoteManagedEnvironments,
-  getAdapterEnvironmentSupport,
-  getEnvironmentCapabilities,
-  isEnvironmentDriverSupportedForAdapter,
-  supportedEnvironmentDriversForAdapter,
-  type AdapterEnvironmentSupport,
-  type EnvironmentCapabilities,
-  type EnvironmentSupportStatus,
-} from "./environment-support.js";
 
 export {
   instanceGeneralSettingsSchema,
@@ -631,6 +630,7 @@ export {
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
+  issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
@@ -823,6 +823,7 @@ export {
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
+  pluginEnvironmentDriverDeclarationSchema,
   pluginUiSlotDeclarationSchema,
   pluginLauncherActionDeclarationSchema,
   pluginLauncherRenderDeclarationSchema,
@@ -841,6 +842,7 @@ export {
   type PluginJobDeclarationInput,
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
+  type PluginEnvironmentDriverDeclarationInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
   type PluginLauncherRenderDeclarationInput,
@@ -925,3 +927,20 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+export {
+  adapterSupportsRemoteManagedEnvironments,
+  getEnvironmentCapabilities,
+  getAdapterEnvironmentSupport,
+  isEnvironmentDriverSupportedForAdapter,
+  isSandboxProviderSupportedForAdapter,
+  supportedEnvironmentDriversForAdapter,
+  supportedSandboxProvidersForAdapter,
+} from "./environment-support.js";
+
+export type {
+  AdapterEnvironmentSupport,
+  EnvironmentCapabilities,
+  EnvironmentProviderCapability,
+  EnvironmentSupportStatus,
+} from "./environment-support.js";

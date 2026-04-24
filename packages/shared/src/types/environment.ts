@@ -22,6 +22,41 @@ export interface SshEnvironmentConfig {
   strictHostKeyChecking: boolean;
 }
 
+/**
+ * Known sandbox environment provider keys.
+ *
+ * `"fake"` is a built-in test-only provider.
+ *
+ * Additional providers can be added by installing sandbox provider plugins
+ * that declare matching `environmentDrivers` in their manifest. The type
+ * includes `string` to allow plugin-backed providers without requiring
+ * shared type changes.
+ */
+export type SandboxEnvironmentProvider = "fake" | (string & {});
+
+export interface FakeSandboxEnvironmentConfig {
+  provider: "fake";
+  image: string;
+  reuseLease: boolean;
+}
+
+export interface PluginSandboxEnvironmentConfig {
+  provider: SandboxEnvironmentProvider;
+  reuseLease: boolean;
+  timeoutMs?: number;
+  [key: string]: unknown;
+}
+
+export type SandboxEnvironmentConfig =
+  | FakeSandboxEnvironmentConfig
+  | PluginSandboxEnvironmentConfig;
+
+export interface PluginEnvironmentConfig {
+  pluginKey: string;
+  driverKey: string;
+  driverConfig: Record<string, unknown>;
+}
+
 export interface EnvironmentProbeResult {
   ok: boolean;
   driver: EnvironmentDriver;
