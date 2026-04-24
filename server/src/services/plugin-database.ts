@@ -117,7 +117,7 @@ function stripSqlForKeywordScan(input: string): string {
     .replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-function normaliseSql(input: string): string {
+function normalizeSql(input: string): string {
   return stripSqlForKeywordScan(input).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
@@ -150,7 +150,7 @@ function assertAllowedPublicRead(
 }
 
 function assertNoBannedSql(statement: string): void {
-  const normalized = normaliseSql(statement);
+  const normalized = normalizeSql(statement);
   const banned = [
     /\bcreate\s+extension\b/,
     /\bcreate\s+(?:event\s+)?trigger\b/,
@@ -177,7 +177,7 @@ export function validatePluginMigrationStatement(
   assertIdentifier(namespace, "namespace");
   assertNoBannedSql(statement);
 
-  const normalized = normaliseSql(statement);
+  const normalized = normalizeSql(statement);
   if (/^\s*(drop|truncate)\b/.test(normalized)) {
     throw new Error("Destructive plugin migrations are not allowed in Phase 1");
   }
@@ -214,7 +214,7 @@ export function validatePluginRuntimeQuery(
   }
   const statement = statements[0]!;
   assertNoBannedSql(statement);
-  const normalized = normaliseSql(statement);
+  const normalized = normalizeSql(statement);
   if (!normalized.startsWith("select ") && !normalized.startsWith("with ")) {
     throw new Error("ctx.db.query only allows SELECT statements");
   }
@@ -240,7 +240,7 @@ export function validatePluginRuntimeExecute(query: string, namespace: string): 
   }
   const statement = statements[0]!;
   assertNoBannedSql(statement);
-  const normalized = normaliseSql(statement);
+  const normalized = normalizeSql(statement);
   if (!/^(insert\s+into|update|delete\s+from)\b/.test(normalized)) {
     throw new Error("ctx.db.execute only allows INSERT, UPDATE, or DELETE");
   }
