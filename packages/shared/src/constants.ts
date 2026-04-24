@@ -66,6 +66,17 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
+/**
+ * Roles that can be assigned to issues without a project (org-level work).
+ * All other roles must own project-scoped issues only. Source of truth for both
+ * server enforcement (services/issues.ts) and UI hinting.
+ */
+export const PROJECT_EXEMPT_AGENT_ROLES = ["ceo", "cto", "cmo", "cfo"] as const satisfies ReadonlyArray<AgentRole>;
+
+export function isProjectExemptAgentRole(role: string): boolean {
+  return (PROJECT_EXEMPT_AGENT_ROLES as ReadonlyArray<string>).includes(role);
+}
+
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 5;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 export const AGENT_ICON_NAMES = [

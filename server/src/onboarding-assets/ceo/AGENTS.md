@@ -50,10 +50,3 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 - Never exfiltrate secrets or private data.
 - Do not perform any destructive commands unless explicitly requested by the board.
 
-## References
-
-These files are essential. Read them.
-
-- `./HEARTBEAT.md` -- execution and extraction checklist. Run every heartbeat.
-- `./SOUL.md` -- who you are and how you should act.
-- `./TOOLS.md` -- tools you have access to

@@ -25,7 +25,12 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isProjectExemptAgentRole,
+  isUuidLike,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1329,12 +1334,17 @@ export function issueService(db: Db) {
     };
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
+  async function assertAssignableAgent(
+    companyId: string,
+    agentId: string,
+    issueProjectId?: string | null,
+  ) {
     const assignee = await db
       .select({
         id: agents.id,
         companyId: agents.companyId,
         status: agents.status,
+        role: agents.role,
       })
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -1349,6 +1359,18 @@ export function issueService(db: Db) {
     }
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
+    }
+    // Only enforce the project-required rule when the caller provided the issue's
+    // project context (issueProjectId !== undefined). Omitting the argument is how
+    // callers that don't know the project state (legacy paths) opt out of the check.
+    if (
+      issueProjectId !== undefined &&
+      issueProjectId === null &&
+      !isProjectExemptAgentRole(assignee.role)
+    ) {
+      throw unprocessable(
+        "Issue must be assigned to a project before a non-C-suite agent can pick it up",
+      );
     }
   }
 
@@ -2317,7 +2339,7 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(companyId, data.assigneeAgentId);
+        await assertAssignableAgent(companyId, data.assigneeAgentId, data.projectId ?? null);
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
@@ -2537,13 +2559,19 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
-      if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+      // Re-validate assignment whenever either the assignee or the project changed.
+      // Running the check against the merged (nextAssigneeAgentId, nextProjectId) ensures
+      // that un-setting the project on an issue assigned to a non-C-suite agent is also
+      // rejected, not just the obvious "assign engineer to project-less issue" case.
+      const assignmentRuleNeedsRecheck =
+        issueData.assigneeAgentId !== undefined || issueData.projectId !== undefined;
+      if (assignmentRuleNeedsRecheck && nextAssigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, nextAssigneeAgentId, nextProjectId);
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
-      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
@@ -2694,12 +2722,12 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, projectId: issues.projectId })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      await assertAssignableAgent(issueCompany.companyId, agentId, issueCompany.projectId);
 
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
