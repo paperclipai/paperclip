@@ -49,6 +49,16 @@ export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
+
+/**
+ * Label name that exempts an issue from harness-driven status auto-transitions
+ * (both `in_progress → blocked` on executor loss and `blocked → in_progress`
+ * on checkout). Applied to parent/monitor tickets that are owned-active
+ * without an attached executor — feature epics, phase parents, standing
+ * inboxes, governance umbrellas, cleanup plan parents. See upstream issue
+ * #4395.
+ */
+export const MONITORING_LABEL_NAME = "monitoring";
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 function assertTransition(from: string, to: string) {
@@ -651,6 +661,20 @@ async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<s
     }
   }
   return map;
+}
+
+export async function issueHasLabel(
+  dbOrTx: any,
+  issueId: string,
+  labelName: string,
+): Promise<boolean> {
+  const rows = await dbOrTx
+    .select({ issueId: issueLabels.issueId })
+    .from(issueLabels)
+    .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+    .where(and(eq(issueLabels.issueId, issueId), eq(labels.name, labelName)))
+    .limit(1);
+  return rows.length > 0;
 }
 
 async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWithLabels[]> {
@@ -2297,6 +2321,19 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+
+      // Monitoring-label exemption: if the issue is currently `blocked` and
+      // carries the `monitoring` label, preserve the blocked status rather than
+      // auto-flipping to `in_progress` on checkout. See upstream issue #4395.
+      const preCheckoutStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0]?.status ?? null);
+      const preserveBlockedForMonitoring =
+        preCheckoutStatus === "blocked" &&
+        (await issueHasLabel(db, id, MONITORING_LABEL_NAME));
+
       const updated = await db
         .update(issues)
         .set({
@@ -2304,8 +2341,7 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
+          ...(preserveBlockedForMonitoring ? {} : { status: "in_progress" as const, startedAt: now }),
           updatedAt: now,
         })
         .where(
