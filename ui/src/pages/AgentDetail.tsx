@@ -1158,7 +1158,6 @@ export function AgentDetail() {
           hasNextPage={hasNextPage}
           fetchNextPage={fetchNextPage}
           isFetchingNextPage={isFetchingNextPage}
-          adapterConfig={agent.adapterConfig}
         />
       )}
 
