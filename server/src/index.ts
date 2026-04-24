@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import './otel.js'; // must be first import — instruments Node modules before they are loaded
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
