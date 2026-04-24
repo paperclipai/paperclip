@@ -20,57 +20,90 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(async () => []),
+  saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({
+    id: "instance-settings-1",
+    general: {
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    },
+  })),
+  listCompanyIds: vi.fn(async () => ["company-1"]),
+}));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
+function registerModuleMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => ({ getById: vi.fn(async () => null) }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/feedback.js", () => ({
+    feedbackService: () => mockFeedbackService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => ({ getById: vi.fn(async () => null) }),
+    documentService: () => ({}),
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => mockFeedbackService,
+    goalService: () => ({}),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
+    issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
     }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
-  workProductService: () => ({}),
-}));
+    issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
+    workProductService: () => ({}),
+  }));
+}
 
 function createApp() {
   const app = express();
@@ -80,8 +113,8 @@ function createApp() {
 
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
 
   app.use((req, _res, next) => {
@@ -129,6 +162,19 @@ function makeComment(overrides: Record<string, unknown> = {}) {
 describe("issue comment cancel routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/feedback.js");
+    vi.doUnmock("../services/heartbeat.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -136,6 +182,12 @@ describe("issue comment cancel routes", () => {
     mockIssueService.removeComment.mockResolvedValue(makeComment());
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
+    mockFeedbackService.saveIssueVote.mockResolvedValue({
+      vote: null,
+      consentEnabledNow: false,
+      sharingEnabled: false,
+    });
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -145,6 +197,14 @@ describe("issue comment cancel routes", () => {
       createdAt: new Date("2026-04-11T14:59:00.000Z"),
     });
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockLogActivity.mockResolvedValue(undefined);
   });
 

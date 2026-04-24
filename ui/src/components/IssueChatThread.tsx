@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type DragEvent as ReactDragEvent,
   type ErrorInfo,
   type Ref,
   type ReactNode,
@@ -45,6 +46,14 @@ import {
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
+import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -67,6 +76,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
@@ -114,6 +124,18 @@ interface IssueChatMessageContext {
   onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -206,11 +228,13 @@ interface IssueChatComposerProps {
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
   composerDisabledReason?: string | null;
+  composerHint?: string | null;
   issueStatus?: string;
 }
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -243,6 +267,7 @@ interface IssueChatThreadProps {
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
+  composerHint?: string | null;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
@@ -256,6 +281,18 @@ interface IssueChatThreadProps {
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
 
@@ -469,6 +506,11 @@ function IssueChatFallbackThread({
 
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
+const SUBMIT_SCROLL_RESERVE_VH = 0.4;
+
+function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
+  return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
+}
 
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
@@ -572,6 +614,23 @@ function initialsForName(name: string) {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
   return name.slice(0, 2).toUpperCase();
+}
+
+function formatInteractionActorLabel(args: {
+  agentId?: string | null;
+  userId?: string | null;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+}) {
+  const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
+  if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
+  if (userId) {
+    return userLabelMap?.get(userId)
+      ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
+      ?? "Board";
+  }
+  return "System";
 }
 
 export function resolveIssueChatHumanAuthor(args: {
@@ -1119,6 +1178,8 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
+  const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
@@ -1155,7 +1216,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-              Queued
+              {queueBadgeLabel}
             </span>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
@@ -1697,8 +1758,115 @@ function IssueChatFeedbackButtons({
   );
 }
 
+function ExpiredRequestConfirmationActivity({
+  message,
+  anchorId,
+  interaction,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+  interaction: RequestConfirmationInteraction;
+}) {
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+  } = useContext(IssueChatCtx);
+  const [expanded, setExpanded] = useState(false);
+  const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
+  const actorAgentId = hasResolvedActor
+    ? interaction.resolvedByAgentId ?? null
+    : interaction.createdByAgentId ?? null;
+  const actorUserId = hasResolvedActor
+    ? interaction.resolvedByUserId ?? null
+    : interaction.createdByUserId ?? null;
+  const actorName = formatInteractionActorLabel({
+    agentId: actorAgentId,
+    userId: actorUserId,
+    agentMap,
+    currentUserId,
+    userLabelMap,
+  });
+  const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
+  const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
+  const detailsId = anchorId ? `${anchorId}-details` : `${interaction.id}-details`;
+  const summary = buildIssueThreadInteractionSummary(interaction);
+
+  const rowContent = (
+    <div className="min-w-0 flex-1">
+      <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
+        <span className="font-medium text-foreground">{actorName}</span>
+        <span className="text-muted-foreground">updated this task</span>
+        <a
+          href={anchorId ? `#${anchorId}` : undefined}
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+        >
+          {timeAgo(message.createdAt)}
+        </a>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+          {expanded ? "Hide confirmation" : "Expired confirmation"}
+        </button>
+      </div>
+      {expanded ? (
+        <p className={cn("mt-1 text-xs text-muted-foreground", isCurrentUser && "text-right")}>
+          {summary}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <div id={anchorId}>
+      {isCurrentUser ? (
+        <div className="flex items-start justify-end gap-2 py-1">
+          {rowContent}
+        </div>
+      ) : (
+        <div className="flex items-start gap-2.5 py-1">
+          <Avatar size="sm" className="mt-0.5">
+            {actorIcon ? (
+              <AvatarFallback><AgentIcon icon={actorIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            )}
+          </Avatar>
+          {rowContent}
+        </div>
+      )}
+      {expanded ? (
+        <div id={detailsId} className="mt-2">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
-  const { agentMap, currentUserId, userLabelMap } = useContext(IssueChatCtx);
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+  } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -1717,6 +1885,37 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         to: IssueTimelineAssignee;
       }
     : null;
+  const interaction = isIssueThreadInteraction(custom.interaction)
+    ? custom.interaction
+    : null;
+
+  if (custom.kind === "interaction" && interaction) {
+    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+      return (
+        <ExpiredRequestConfirmationActivity
+          message={message}
+          anchorId={anchorId}
+          interaction={interaction}
+        />
+      );
+    }
+
+    return (
+      <div id={anchorId}>
+        <div className="py-1.5">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (custom.kind === "event" && actorName) {
     const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
@@ -1848,18 +2047,22 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   mentions = [],
   agentMap,
   composerDisabledReason = null,
+  composerHint = null,
   issueStatus,
 }, forwardedRef) {
   const api = useAui();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canAcceptFiles = Boolean(onImageUpload || onAttachImage);
 
   function queueViewportRestore(snapshot: ReturnType<typeof captureComposerViewportSnapshot>) {
     if (!snapshot) return;
@@ -1959,23 +2162,44 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     }
   }
 
+  async function attachFile(file: File) {
+    if (onImageUpload && file.type.startsWith("image/")) {
+      const url = await onImageUpload(file);
+      const safeName = file.name.replace(/[[\]]/g, "\\$&");
+      const markdown = `![${safeName}](${url})`;
+      setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+    } else if (onAttachImage) {
+      await onAttachImage(file);
+    }
+  }
+
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
     const file = evt.target.files?.[0];
     if (!file) return;
     setAttaching(true);
     try {
-      if (onImageUpload) {
-        const url = await onImageUpload(file);
-        const safeName = file.name.replace(/[[\]]/g, "\\$&");
-        const markdown = `![${safeName}](${url})`;
-        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
-      } else if (onAttachImage) {
-        await onAttachImage(file);
-      }
+      await attachFile(file);
     } finally {
       setAttaching(false);
       if (attachInputRef.current) attachInputRef.current.value = "";
     }
+  }
+
+  async function handleDroppedFiles(files: FileList | null | undefined) {
+    if (!files || files.length === 0) return;
+    setAttaching(true);
+    try {
+      for (const file of Array.from(files)) {
+        await attachFile(file);
+      }
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  function resetDragState() {
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
   }
 
   const canSubmit = !submitting && !!body.trim();
@@ -1992,7 +2216,35 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
-      className="space-y-3 pt-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)]"
+      className={cn(
+        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isDragOver && "ring-2 ring-primary/60 bg-accent/10",
+      )}
+      onDragEnter={(evt) => {
+        if (!canAcceptFiles || !hasFilePayload(evt)) return;
+        dragDepthRef.current += 1;
+        setIsDragOver(true);
+      }}
+      onDragOver={(evt) => {
+        if (!canAcceptFiles || !hasFilePayload(evt)) return;
+        evt.preventDefault();
+        evt.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={() => {
+        if (!canAcceptFiles) return;
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) setIsDragOver(false);
+      }}
+      onDrop={(evt) => {
+        if (!canAcceptFiles) return;
+        if (evt.defaultPrevented) {
+          resetDragState();
+          return;
+        }
+        evt.preventDefault();
+        resetDragState();
+        void handleDroppedFiles(evt.dataTransfer?.files);
+      }}
     >
       <MarkdownEditor
         ref={editorRef}
@@ -2002,9 +2254,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
-        bordered
-        contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
+        bordered={false}
+        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
       />
+
+      {composerHint ? (
+        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+          {composerHint}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
         {(onImageUpload || onAttachImage) ? (
@@ -2077,6 +2335,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
 export function IssueChatThread({
   comments,
+  interactions = [],
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -2105,6 +2364,7 @@ export function IssueChatThread({
   suggestedAssigneeValue,
   mentions = [],
   composerDisabledReason = null,
+  composerHint = null,
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
@@ -2118,6 +2378,9 @@ export function IssueChatThread({
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onSubmitInteractionAnswers,
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
@@ -2126,6 +2389,11 @@ export function IssueChatThread({
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
+  const pendingSubmitScrollRef = useRef(false);
+  const lastUserMessageIdRef = useRef<string | null>(null);
+  const spacerBaselineAnchorRef = useRef<string | null>(null);
+  const spacerInitialReserveRef = useRef(0);
+  const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -2173,6 +2441,7 @@ export function IssueChatThread({
     () =>
       buildIssueChatMessages({
         comments,
+        interactions,
         timelineEvents,
         linkedRuns,
         liveRuns,
@@ -2188,6 +2457,7 @@ export function IssueChatThread({
       }),
     [
       comments,
+      interactions,
       timelineEvents,
       linkedRuns,
       liveRuns,
@@ -2237,10 +2507,57 @@ export function IssueChatThread({
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment }) => onAdd(body, reopen, reassignment),
+    onSend: ({ body, reopen, reassignment }) => {
+      pendingSubmitScrollRef.current = true;
+      return onAdd(body, reopen, reassignment);
+    },
     onCancel: onCancelRun,
   });
 
+  useEffect(() => {
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    const lastUserId = lastUserMessage?.id ?? null;
+
+    if (
+      pendingSubmitScrollRef.current
+      && lastUserId
+      && lastUserId !== lastUserMessageIdRef.current
+    ) {
+      pendingSubmitScrollRef.current = false;
+      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+      const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
+      if (anchorId) {
+        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
+        spacerBaselineAnchorRef.current = anchorId;
+        spacerInitialReserveRef.current = reserve;
+        setBottomSpacerHeight(reserve);
+        requestAnimationFrame(() => {
+          const el = document.getElementById(anchorId);
+          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    }
+
+    lastUserMessageIdRef.current = lastUserId;
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const anchorId = spacerBaselineAnchorRef.current;
+    if (!anchorId || spacerInitialReserveRef.current <= 0) return;
+    const userEl = document.getElementById(anchorId);
+    const bottomEl = bottomAnchorRef.current;
+    if (!userEl || !bottomEl) return;
+    const contentBelow = Math.max(
+      0,
+      bottomEl.getBoundingClientRect().top - userEl.getBoundingClientRect().bottom,
+    );
+    const next = Math.max(0, spacerInitialReserveRef.current - contentBelow);
+    setBottomSpacerHeight((prev) => (prev === next ? prev : next));
+    if (next === 0) {
+      spacerBaselineAnchorRef.current = null;
+      spacerInitialReserveRef.current = 0;
+    }
+  }, [messages]);
   useLayoutEffect(() => {
     const composerElement = composerViewportAnchorRef.current;
     if (preserveComposerViewportRef.current) {
@@ -2256,7 +2573,14 @@ export function IssueChatThread({
 
   useEffect(() => {
     const hash = location.hash;
-    if (!(hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
+    if (
+      !(
+        hash.startsWith("#comment-")
+        || hash.startsWith("#activity-")
+        || hash.startsWith("#run-")
+        || hash.startsWith("#interaction-")
+      )
+    ) return;
     if (messages.length === 0 || hasScrolledRef.current) return;
     const targetId = hash.slice(1);
     const element = document.getElementById(targetId);
@@ -2286,6 +2610,9 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     }),
     [
       feedbackVoteByTargetId,
@@ -2303,6 +2630,9 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     ],
   );
 
@@ -2366,15 +2696,30 @@ export function IssueChatThread({
                   return <IssueChatSystemMessage key={message.id} message={message} />;
                 })
               )}
+              {showComposer ? (
+                <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
+                  <IssueAssigneePausedNotice agent={assignedAgent} />
+                </div>
+              ) : null}
               <div ref={bottomAnchorRef} />
+              {showComposer ? (
+                <div
+                  aria-hidden
+                  data-testid="issue-chat-bottom-spacer"
+                  style={{ height: bottomSpacerHeight }}
+                />
+              ) : null}
             </div>
           </div>
         </IssueChatErrorBoundary>
 
         {showComposer ? (
-          <div ref={composerViewportAnchorRef}>
-            <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
-            <IssueAssigneePausedNotice agent={assignedAgent} />
+          <div
+            ref={composerViewportAnchorRef}
+            data-testid="issue-chat-composer-dock"
+            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+          >
             <IssueChatComposer
               ref={composerRef}
               onImageUpload={imageUploadHandler}
@@ -2387,6 +2732,7 @@ export function IssueChatThread({
               mentions={mentions}
               agentMap={agentMap}
               composerDisabledReason={composerDisabledReason}
+              composerHint={composerHint}
               issueStatus={issueStatus}
             />
           </div>

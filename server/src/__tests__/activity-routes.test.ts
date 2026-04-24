@@ -1,6 +1,7 @@
+import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -32,6 +33,8 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
 }));
 
+let server: Server | null = null;
+
 async function createApp(
   actor: Record<string, unknown> = {
     type: "board",
@@ -53,10 +56,22 @@ async function createApp(
   });
   app.use("/api", activityRoutes({} as any));
   app.use(errorHandler);
-  return app;
+  server = app.listen(0);
+  return server;
 }
 
 describe("activity routes", () => {
+  afterAll(async () => {
+    if (!server) return;
+    await new Promise<void>((resolve, reject) => {
+      server?.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    server = null;
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();

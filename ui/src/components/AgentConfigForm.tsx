@@ -5,10 +5,13 @@ import type {
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
+  Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
+import { environmentsApi } from "../api/environments";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import {
@@ -186,7 +189,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
 
+  const { data: environments = [] } = useQuery<Environment[]>({
+    queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
+    queryFn: () => environmentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId) && environmentsEnabled,
+  });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to create secrets");
@@ -278,6 +292,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const supportedEnvironmentDrivers = useMemo(
+    () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
+    [adapterType],
+  );
+  const runnableEnvironments = useMemo(
+    () => environments.filter((environment) => supportedEnvironmentDrivers.has(environment.driver)),
+    [environments, supportedEnvironmentDrivers],
+  );
 
   // Fetch adapter models for the effective adapter type
   const {
@@ -432,6 +454,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       heartbeat: mergedHeartbeat,
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
+  const currentDefaultEnvironmentId = isCreate
+    ? val!.defaultEnvironmentId ?? ""
+    : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -527,6 +552,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       )}
+
+      {/* ---- Execution ---- */}
+      {environmentsEnabled ? (
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field
+              label="Default environment"
+              hint="Agent-level default execution target. Project and issue settings can still override this."
+            >
+              <select
+                className={inputClass}
+                value={currentDefaultEnvironmentId}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  if (isCreate) {
+                    set!({ defaultEnvironmentId: nextValue });
+                    return;
+                  }
+                  mark("identity", "defaultEnvironmentId", nextValue || null);
+                }}
+              >
+                <option value="">Company default (Local)</option>
+                {runnableEnvironments.map((environment) => (
+                  <option key={environment.id} value={environment.id}>
+                    {environment.name} · {environment.driver}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </div>
+      ) : null}
 
       {/* ---- Adapter ---- */}
       <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>

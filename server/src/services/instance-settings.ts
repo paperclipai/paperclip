@@ -38,11 +38,13 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
+      enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
     };
   }
   return {
+    enableEnvironments: false,
     enableIsolatedWorkspaces: false,
     autoRestartDevServerWhenIdle: false,
   };

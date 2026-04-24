@@ -1,9 +1,13 @@
 import { z } from "zod";
 import {
   addIssueCommentSchema,
+  askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
   createIssueSchema,
+  issueThreadInteractionContinuationPolicySchema,
+  requestConfirmationPayloadSchema,
+  suggestTasksPayloadSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
@@ -106,6 +110,39 @@ const checkoutIssueToolSchema = z.object({
 const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
 }).merge(addIssueCommentSchema);
+
+const createSuggestTasksToolSchema = z.object({
+  issueId: issueIdSchema,
+  idempotencyKey: z.string().trim().max(255).nullable().optional(),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  title: z.string().trim().max(240).nullable().optional(),
+  summary: z.string().trim().max(1000).nullable().optional(),
+  continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+  payload: suggestTasksPayloadSchema,
+});
+
+const createAskUserQuestionsToolSchema = z.object({
+  issueId: issueIdSchema,
+  idempotencyKey: z.string().trim().max(255).nullable().optional(),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  title: z.string().trim().max(240).nullable().optional(),
+  summary: z.string().trim().max(1000).nullable().optional(),
+  continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+  payload: askUserQuestionsPayloadSchema,
+});
+
+const createRequestConfirmationToolSchema = z.object({
+  issueId: issueIdSchema,
+  idempotencyKey: z.string().trim().max(255).nullable().optional(),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  title: z.string().trim().max(240).nullable().optional(),
+  summary: z.string().trim().max(1000).nullable().optional(),
+  continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+  payload: requestConfirmationPayloadSchema,
+});
 
 const approvalDecisionSchema = z.object({
   approvalId: approvalIdSchema,
@@ -442,6 +479,42 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       addCommentToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body }),
+    ),
+    makeTool(
+      "paperclipSuggestTasks",
+      "Create a suggest_tasks interaction on an issue",
+      createSuggestTasksToolSchema,
+      async ({ issueId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
+          body: {
+            kind: "suggest_tasks",
+            ...body,
+          },
+        }),
+    ),
+    makeTool(
+      "paperclipAskUserQuestions",
+      "Create an ask_user_questions interaction on an issue",
+      createAskUserQuestionsToolSchema,
+      async ({ issueId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
+          body: {
+            kind: "ask_user_questions",
+            ...body,
+          },
+        }),
+    ),
+    makeTool(
+      "paperclipRequestConfirmation",
+      "Create a request_confirmation interaction on an issue",
+      createRequestConfirmationToolSchema,
+      async ({ issueId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
+          body: {
+            kind: "request_confirmation",
+            ...body,
+          },
+        }),
     ),
     makeTool(
       "paperclipUpsertIssueDocument",

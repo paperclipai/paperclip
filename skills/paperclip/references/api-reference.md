@@ -637,6 +637,54 @@ POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
 
+### Issue-thread confirmations
+
+Use `request_confirmation` interactions for issue-scoped yes/no decisions that should render as cards in the issue thread. Do not ask the board/user to type yes or no in markdown when the decision controls follow-up work.
+
+Use formal approvals for governed actions. Use `request_confirmation` for decisions such as:
+
+- accepting a plan
+- approving a proposed issue breakdown
+- confirming a configuration or launch choice
+
+Create a confirmation:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+  "title": "Plan approval",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this plan?",
+    "acceptLabel": "Accept plan",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What needs to change?",
+    "detailsMarkdown": "Review the latest plan document before accepting.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "documentId": "{documentId}",
+      "key": "plan",
+      "revisionId": "{latestRevisionId}",
+      "revisionNumber": 3
+    }
+  }
+}
+```
+
+Rules:
+
+- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
+- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
+- Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, and wait for acceptance before creating implementation subtasks.
+
 ### Checking approval status
 
 ```
@@ -739,6 +787,11 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
+| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |

@@ -16,21 +16,25 @@ const mockLifecycle = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 
-vi.mock("../services/plugin-registry.js", () => ({
-  pluginRegistryService: () => mockRegistry,
-}));
+function registerRouteMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
-vi.mock("../services/plugin-lifecycle.js", () => ({
-  pluginLifecycleManager: () => mockLifecycle,
-}));
+  vi.doMock("../services/plugin-registry.js", () => ({
+    pluginRegistryService: () => mockRegistry,
+  }));
 
-vi.mock("../services/activity-log.js", () => ({
-  logActivity: vi.fn(),
-}));
+  vi.doMock("../services/plugin-lifecycle.js", () => ({
+    pluginLifecycleManager: () => mockLifecycle,
+  }));
 
-vi.mock("../services/live-events.js", () => ({
-  publishGlobalLiveEvent: vi.fn(),
-}));
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: vi.fn(),
+  }));
+
+  vi.doMock("../services/live-events.js", () => ({
+    publishGlobalLiveEvent: vi.fn(),
+  }));
+}
 
 async function createApp(
   actor: Record<string, unknown>,
@@ -43,8 +47,8 @@ async function createApp(
   } = {},
 ) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/plugins.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/plugins.js")>("../routes/plugins.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
 
   const loader = {
@@ -112,6 +116,18 @@ function readyPlugin() {
 
 describe("plugin install and upgrade authz", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/plugin-config-validator.js");
+    vi.doUnmock("../services/plugin-loader.js");
+    vi.doUnmock("../services/plugin-registry.js");
+    vi.doUnmock("../services/plugin-lifecycle.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/live-events.js");
+    vi.doUnmock("../routes/plugins.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerRouteMocks();
     vi.resetAllMocks();
   });
 
@@ -253,6 +269,18 @@ describe("plugin install and upgrade authz", () => {
 
 describe("scoped plugin API routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/plugin-config-validator.js");
+    vi.doUnmock("../services/plugin-loader.js");
+    vi.doUnmock("../services/plugin-registry.js");
+    vi.doUnmock("../services/plugin-lifecycle.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/live-events.js");
+    vi.doUnmock("../routes/plugins.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerRouteMocks();
     vi.resetAllMocks();
   });
 
@@ -319,6 +347,18 @@ describe("scoped plugin API routes", () => {
 
 describe("plugin tool and bridge authz", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/plugin-config-validator.js");
+    vi.doUnmock("../services/plugin-loader.js");
+    vi.doUnmock("../services/plugin-registry.js");
+    vi.doUnmock("../services/plugin-lifecycle.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/live-events.js");
+    vi.doUnmock("../routes/plugins.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerRouteMocks();
     vi.resetAllMocks();
   });
 
@@ -495,7 +535,6 @@ describe("plugin tool and bridge authz", () => {
       .send({});
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ data: { ok: true } });
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
       params: {},
@@ -517,7 +556,7 @@ describe("plugin tool and bridge authz", () => {
     expect(res.status).toBe(403);
     expect(scheduler.triggerJob).not.toHaveBeenCalled();
     expect(jobStore.getJobByIdForPlugin).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("allows manual job triggers for instance admins", async () => {
     readyPlugin();

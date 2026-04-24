@@ -6,7 +6,9 @@ import type { Db } from "@paperclipai/db";
 import { issueExecutionDecisions } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  acceptIssueThreadInteractionSchema,
   createIssueAttachmentMetadataSchema,
+  createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
@@ -19,7 +21,9 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
+  respondIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
@@ -40,6 +44,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   issueApprovalService,
+  issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
@@ -50,10 +55,11 @@ import {
   projectService,
   routineService,
   workProductService,
+  environmentService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -66,6 +72,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -94,6 +101,7 @@ type ExecutionStageWakeContext = {
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
   returnAssignee: ParsedExecutionState["returnAssignee"];
+  reviewRequest: ParsedExecutionState["reviewRequest"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
 };
@@ -117,6 +125,7 @@ function buildExecutionStageWakeContext(input: {
     stageType: input.state.currentStageType,
     currentParticipant: input.state.currentParticipant,
     returnAssignee: input.state.returnAssignee,
+    reviewRequest: input.state.reviewRequest ?? null,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
   };
@@ -183,6 +192,65 @@ function shouldImplicitlyMoveCommentedIssueToTodoForAgent(input: {
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
   return true;
+}
+
+function queueResolvedInteractionContinuationWakeup(input: {
+  heartbeat: ReturnType<typeof heartbeatService>;
+  issue: { id: string; assigneeAgentId: string | null; status: string };
+  interaction: {
+    id: string;
+    kind: string;
+    status: string;
+    continuationPolicy: string;
+    sourceCommentId?: string | null;
+    sourceRunId?: string | null;
+  };
+  actor: { actorType: "user" | "agent"; actorId: string };
+  source: string;
+}) {
+  if (
+    input.interaction.continuationPolicy !== "wake_assignee"
+    && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
+  ) return;
+  if (
+    input.interaction.continuationPolicy === "wake_assignee_on_accept"
+    && input.interaction.status !== "accepted"
+  ) return;
+  if (input.interaction.status === "expired") return;
+  if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
+
+  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
+    source: "automation",
+    triggerDetail: "system",
+    reason: "issue_commented",
+    payload: {
+      issueId: input.issue.id,
+      interactionId: input.interaction.id,
+      interactionKind: input.interaction.kind,
+      interactionStatus: input.interaction.status,
+      sourceCommentId: input.interaction.sourceCommentId ?? null,
+      sourceRunId: input.interaction.sourceRunId ?? null,
+      mutation: "interaction",
+    },
+    requestedByActorType: input.actor.actorType,
+    requestedByActorId: input.actor.actorId,
+    contextSnapshot: {
+      issueId: input.issue.id,
+      taskId: input.issue.id,
+      interactionId: input.interaction.id,
+      interactionKind: input.interaction.kind,
+      interactionStatus: input.interaction.status,
+      sourceCommentId: input.interaction.sourceCommentId ?? null,
+      sourceRunId: input.interaction.sourceRunId ?? null,
+      wakeReason: "issue_commented",
+      source: input.source,
+    },
+  }).catch((err) => logger.warn({
+    err,
+    issueId: input.issue.id,
+    interactionId: input.interaction.id,
+    agentId: input.issue.assigneeAgentId,
+  }, "failed to wake assignee on issue interaction resolution"));
 }
 
 function diffExecutionParticipants(
@@ -349,6 +417,47 @@ export function issueRoutes(
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
+  }
+
+  async function assertIssueEnvironmentSelection(
+    companyId: string,
+    environmentId: string | null | undefined,
+  ) {
+    if (environmentId === undefined || environmentId === null) return;
+    await assertEnvironmentSelectionForCompany(
+      environmentService(db),
+      companyId,
+      environmentId,
+      { allowedDrivers: ["local", "ssh"] },
+    );
+  }
+
+  async function logExpiredRequestConfirmations(input: {
+    issue: { id: string; companyId: string; identifier?: string | null };
+    interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
+    actor: ReturnType<typeof getActorInfo>;
+    source: string;
+  }) {
+    for (const interaction of input.interactions) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "issue.thread_interaction_expired",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier ?? null,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          source: input.source,
+          result: interaction.result ?? null,
+        },
+      });
+    }
   }
 
   function parseDateQuery(value: unknown, field: string) {
@@ -724,6 +833,7 @@ export function issueRoutes(
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
+      descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -1041,6 +1151,28 @@ export function issueRoutes(
       },
     });
 
+    if (!result.created) {
+      const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
+        issue,
+        {
+          id: doc.id,
+          key: doc.key,
+          latestRevisionId: doc.latestRevisionId,
+          latestRevisionNumber: doc.latestRevisionNumber,
+        },
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredRequestConfirmations({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.document_updated",
+      });
+    }
+
     res.status(result.created ? 201 : 200).json(doc);
   });
 
@@ -1118,6 +1250,26 @@ export function issueRoutes(
         },
       });
 
+      const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
+        issue,
+        {
+          id: result.document.id,
+          key: result.document.key,
+          latestRevisionId: result.document.latestRevisionId,
+          latestRevisionNumber: result.document.latestRevisionNumber,
+        },
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredRequestConfirmations({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.document_restored",
+      });
+
       res.json(result.document);
     },
   );
@@ -1168,6 +1320,25 @@ export function issueRoutes(
           currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
         }),
       },
+    });
+    const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
+      issue,
+      {
+        id: removed.id,
+        key: removed.key,
+        latestRevisionId: null,
+        latestRevisionNumber: null,
+      },
+      {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
+    await logExpiredRequestConfirmations({
+      issue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.document_deleted",
     });
     res.json({ ok: true });
   });
@@ -1482,6 +1653,7 @@ export function issueRoutes(
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
+    await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -1548,6 +1720,7 @@ export function issueRoutes(
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId);
     }
+    await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -1617,11 +1790,13 @@ export function issueRoutes(
         : null;
     const {
       comment: commentBody,
+      reviewRequest,
       reopen: reopenRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const effectiveMoveToTodoRequested =
@@ -1642,7 +1817,8 @@ export function issueRoutes(
         : false;
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
-    const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
+    const isAgentWorkUpdate =
+      req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -1716,6 +1892,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
       commentBody,
+      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -1729,6 +1906,20 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
+      const existingExecutionState = parseIssueExecutionState(existing.executionState);
+      if (!existingExecutionState || existingExecutionState.status !== "pending") {
+        if (reviewRequest !== null) {
+          res.status(422).json({ error: "reviewRequest requires an active review or approval stage" });
+          return;
+        }
+      } else {
+        updateFields.executionState = {
+          ...existingExecutionState,
+          reviewRequest,
+        };
+      }
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -2030,6 +2221,21 @@ export function issueRoutes(
             currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
           }),
         },
+      });
+
+      const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+        issue,
+        comment,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredRequestConfirmations({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.comment",
       });
 
     } else if (updateReferenceSummaryAfter) {
@@ -2406,6 +2612,52 @@ export function issueRoutes(
     res.json(released);
   });
 
+  router.post("/issues/:id/admin/force-release", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const clearAssignee = req.query.clearAssignee === "true";
+    const result = await svc.adminForceRelease(id, { clearAssignee });
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.admin_force_release",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        issueId: result.issue.id,
+        actorUserId: req.actor.userId,
+        prevCheckoutRunId: result.previous.checkoutRunId,
+        prevExecutionRunId: result.previous.executionRunId,
+        clearAssignee,
+      },
+    });
+
+    res.json(result);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2439,6 +2691,269 @@ export function issueRoutes(
     });
     res.json(comments);
   });
+
+  router.get("/issues/:id/interactions", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const interactions = await issueThreadInteractionService(db).listForIssue(id);
+    res.json(interactions);
+  });
+
+  router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "agent") {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    } else {
+      assertBoard(req);
+    }
+
+    const actor = getActorInfo(req);
+    const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
+    if (req.actor.type === "agent" && !agentSourceRunId) return;
+
+    const interaction = await issueThreadInteractionService(db).create(issue, {
+      ...req.body,
+      sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
+    }, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.thread_interaction_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        continuationPolicy: interaction.continuationPolicy,
+      },
+    });
+
+    res.status(201).json(interaction);
+  });
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/accept",
+    validate(acceptIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      assertBoard(req);
+
+      const actor = getActorInfo(req);
+      const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      const continuationWakeIssue = continuationIssue ?? issue;
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: interaction.status === "expired"
+          ? "issue.thread_interaction_expired"
+          : "issue.thread_interaction_accepted",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          createdTaskCount:
+            interaction.kind === "suggest_tasks"
+              ? (interaction.result?.createdTasks?.length ?? 0)
+              : 0,
+          skippedTaskCount:
+            interaction.kind === "suggest_tasks"
+              ? (interaction.result?.skippedClientKeys?.length ?? 0)
+              : 0,
+        },
+      });
+
+      if (continuationIssue) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            status: continuationIssue.status,
+            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
+            assigneeUserId: continuationIssue.assigneeUserId ?? null,
+            source: "request_confirmation_accept",
+            interactionId: interaction.id,
+            _previous: {
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId ?? null,
+              assigneeUserId: issue.assigneeUserId ?? null,
+            },
+          },
+        });
+      }
+
+      for (const createdIssue of createdIssues) {
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: createdIssue,
+          reason: "issue_assigned",
+          mutation: "interaction_accept",
+          contextSource: "issue.interaction.accept",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      }
+
+      queueResolvedInteractionContinuationWakeup({
+        heartbeat,
+        issue: continuationWakeIssue,
+        interaction,
+        actor,
+        source: "issue.interaction.accept",
+      });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/reject",
+    validate(rejectIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      assertBoard(req);
+
+      const actor = getActorInfo(req);
+      const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: interaction.status === "expired"
+          ? "issue.thread_interaction_expired"
+          : "issue.thread_interaction_rejected",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          rejectionReason:
+            interaction.kind === "suggest_tasks"
+              ? (interaction.result?.rejectionReason ?? null)
+              : interaction.kind === "request_confirmation"
+                ? (interaction.result?.reason ?? null)
+              : null,
+        },
+      });
+
+      queueResolvedInteractionContinuationWakeup({
+        heartbeat,
+        issue,
+        interaction,
+        actor,
+        source: "issue.interaction.reject",
+      });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/respond",
+    validate(respondIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      assertBoard(req);
+
+      const actor = getActorInfo(req);
+      const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_answered",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          answeredQuestionCount:
+            interaction.kind === "ask_user_questions"
+              ? (interaction.result?.answers?.length ?? 0)
+              : 0,
+        },
+      });
+
+      queueResolvedInteractionContinuationWakeup({
+        heartbeat,
+        issue,
+        interaction,
+        actor,
+        source: "issue.interaction.respond",
+      });
+
+      res.json(interaction);
+    },
+  );
 
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
@@ -2735,6 +3250,21 @@ export function issueRoutes(
           currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
         }),
       },
+    });
+
+    const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+      currentIssue,
+      comment,
+      {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
+    await logExpiredRequestConfirmations({
+      issue: currentIssue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.comment",
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.

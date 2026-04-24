@@ -137,6 +137,31 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
+export const ISSUE_THREAD_INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+] as const;
+export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const ISSUE_THREAD_INTERACTION_STATUSES = [
+  "pending",
+  "accepted",
+  "rejected",
+  "answered",
+  "expired",
+  "failed",
+] as const;
+export type IssueThreadInteractionStatus = (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
+
+export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
+  "none",
+  "wake_assignee",
+  "wake_assignee_on_accept",
+] as const;
+export type IssueThreadInteractionContinuationPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
+
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -144,6 +169,15 @@ export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
+
+export const ISSUE_TREE_CONTROL_MODES = ["pause", "resume", "cancel", "restore"] as const;
+export type IssueTreeControlMode = (typeof ISSUE_TREE_CONTROL_MODES)[number];
+
+export const ISSUE_TREE_HOLD_STATUSES = ["active", "released"] as const;
+export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
+
+export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
+export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
 export const SYSTEM_ISSUE_DOCUMENT_KEYS = [ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY] as const;
@@ -183,6 +217,21 @@ export const PROJECT_STATUSES = [
   "cancelled",
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+export const ENVIRONMENT_DRIVERS = ["local", "ssh"] as const;
+export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
+
+export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
+export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed"] as const;
+export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
+
+export const ENVIRONMENT_LEASE_POLICIES = ["ephemeral"] as const;
+export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
+
+export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
+export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
 
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
@@ -437,6 +486,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
   "joins:approve",
+  "environments:manage",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
@@ -523,6 +573,7 @@ export const PLUGIN_CAPABILITIES = [
   "issues.checkout",
   "issues.wakeup",
   "issue.comments.create",
+  "issue.interactions.create",
   "issue.documents.write",
   "agents.pause",
   "agents.resume",

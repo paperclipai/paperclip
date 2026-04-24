@@ -309,6 +309,11 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/{issueId}/interactions");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Respect budget, pause/cancel, approval gates, and company boundaries",
     );
@@ -372,6 +377,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("dependency-blocked interaction: yes");
     expect(prompt).toContain("respond or triage the human comment");
     expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
+  });
+
+  it("renders loose review request instructions for execution handoffs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2011",
+        title: "Review request handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        reviewRequest: {
+          instructions: "Please focus on edge cases and leave a short risk summary.",
+        },
+        allowedActions: ["approve", "request_changes"],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Review request instructions:");
+    expect(prompt).toContain("Please focus on edge cases and leave a short risk summary.");
+    expect(prompt).toContain("You are waking as the active reviewer for this issue.");
   });
 
   it("includes continuation and child issue summaries in structured wake context", () => {
