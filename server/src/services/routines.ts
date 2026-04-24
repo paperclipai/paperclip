@@ -74,7 +74,10 @@ function isOpenRoutineExecutionConflict(error: unknown) {
     typeof error === "object" &&
     "code" in error &&
     (error as { code?: string }).code === "23505" &&
-    (constraint === "issues_open_routine_execution_uq" || constraintName === "issues_open_routine_execution_uq")
+    (constraint === "issues_open_routine_execution_uq" ||
+      constraintName === "issues_open_routine_execution_uq" ||
+      constraint === "issues_open_routine_origin_uq" ||
+      constraintName === "issues_open_routine_origin_uq")
   );
 }
 
