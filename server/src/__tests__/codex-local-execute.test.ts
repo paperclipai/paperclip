@@ -206,6 +206,74 @@ describe("codex execute", () => {
     }
   });
 
+  it("does not inherit a parent Paperclip API key when no closer auth token was injected", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-noauth-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiKey = process.env.PAPERCLIP_API_KEY;
+    const previousPaperclipTaskId = process.env.PAPERCLIP_TASK_ID;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_API_KEY = "parent-engineer-token";
+    process.env.PAPERCLIP_TASK_ID = "parent-task";
+
+    try {
+      const result = await execute({
+        runId: "run-noauth",
+        agent: {
+          id: "agent-closer",
+          companyId: "company-1",
+          name: "Closer",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipEnvKeys).toEqual(
+        expect.arrayContaining([
+          "PAPERCLIP_AGENT_ID",
+          "PAPERCLIP_API_URL",
+          "PAPERCLIP_COMPANY_ID",
+          "PAPERCLIP_RUN_ID",
+        ]),
+      );
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_API_KEY");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_TASK_ID");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previousPaperclipApiKey;
+      if (previousPaperclipTaskId === undefined) delete process.env.PAPERCLIP_TASK_ID;
+      else process.env.PAPERCLIP_TASK_ID = previousPaperclipTaskId;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-"));
     const workspace = path.join(root, "workspace");

@@ -80,6 +80,32 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const PAPERCLIP_CHILD_EXECUTION_ENV_KEYS = [
+  "AGENT_HOME",
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_APPROVAL_ID",
+  "PAPERCLIP_APPROVAL_STATUS",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_LINKED_ISSUE_IDS",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACES_JSON",
+] as const;
+const PAPERCLIP_CHILD_EXECUTION_ENV_PREFIXES = [
+  "PAPERCLIP_RUNTIME_",
+  "PAPERCLIP_WORKSPACE_",
+] as const;
+const PAPERCLIP_ALLOWED_INHERITED_ENV_KEYS = new Set([
+  "PAPERCLIP_HOME",
+  "PAPERCLIP_RUNTIME_API_URL",
+  "PAPERCLIP_LISTEN_HOST",
+  "PAPERCLIP_LISTEN_PORT",
+]);
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
@@ -833,13 +859,22 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   return vars;
 }
 
-export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function sanitizeInheritedPaperclipEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  childEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
-    if (key === "PAPERCLIP_LISTEN_HOST") continue;
-    if (key === "PAPERCLIP_LISTEN_PORT") continue;
+    if (key in childEnv) continue;
+    if (PAPERCLIP_ALLOWED_INHERITED_ENV_KEYS.has(key)) continue;
+    const isPaperclipKey = key.startsWith("PAPERCLIP_");
+    const isChildExecutionKey = PAPERCLIP_CHILD_EXECUTION_ENV_KEYS.includes(
+      key as (typeof PAPERCLIP_CHILD_EXECUTION_ENV_KEYS)[number],
+    );
+    const isChildExecutionPrefix = PAPERCLIP_CHILD_EXECUTION_ENV_PREFIXES.some((prefix) =>
+      key.startsWith(prefix),
+    );
+    if (!isPaperclipKey && !isChildExecutionKey && !isChildExecutionPrefix) continue;
     delete env[key];
   }
   return env;
@@ -1419,7 +1454,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...sanitizeInheritedPaperclipEnv(process.env, opts.env),
       ...opts.env,
     };
 

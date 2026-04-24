@@ -91,6 +91,59 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("does not leak inherited Paperclip execution env into the child when it was not explicitly set", async () => {
+    const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    const previousAgentId = process.env.PAPERCLIP_AGENT_ID;
+    const previousTaskId = process.env.PAPERCLIP_TASK_ID;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_API_KEY = "parent-run-token";
+    process.env.PAPERCLIP_AGENT_ID = "parent-agent";
+    process.env.PAPERCLIP_TASK_ID = "parent-task";
+    process.env.PAPERCLIP_HOME = "/tmp/paperclip-home";
+
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.stdout.write(JSON.stringify({",
+            "apiKey: process.env.PAPERCLIP_API_KEY ?? null,",
+            "agentId: process.env.PAPERCLIP_AGENT_ID ?? null,",
+            "taskId: process.env.PAPERCLIP_TASK_ID ?? null,",
+            "home: process.env.PAPERCLIP_HOME ?? null,",
+            "}));",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        apiKey: null,
+        agentId: null,
+        taskId: null,
+        home: "/tmp/paperclip-home",
+      });
+    } finally {
+      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previousApiKey;
+      if (previousAgentId === undefined) delete process.env.PAPERCLIP_AGENT_ID;
+      else process.env.PAPERCLIP_AGENT_ID = previousAgentId;
+      if (previousTaskId === undefined) delete process.env.PAPERCLIP_TASK_ID;
+      else process.env.PAPERCLIP_TASK_ID = previousTaskId;
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+    }
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 
