@@ -161,6 +161,8 @@ export type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  BeforeAdapterExecuteParams,
+  BeforeAdapterExecuteResult,
   PluginModalBoundsRequest,
   PluginRenderCloseEvent,
   PluginLauncherRenderContextSnapshot,

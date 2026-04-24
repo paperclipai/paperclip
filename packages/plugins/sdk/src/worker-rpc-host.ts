@@ -84,6 +84,8 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentProbeParams,
+  BeforeAdapterExecuteParams,
+  BeforeAdapterExecuteResult,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
@@ -1218,6 +1220,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "beforeAdapterExecute":
+        return handleBeforeAdapterExecute(params as BeforeAdapterExecuteParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1259,6 +1264,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onBeforeAdapterExecute) supportedMethods.push("beforeAdapterExecute");
 
     return { ok: true, supportedMethods };
   }
@@ -1465,6 +1471,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleBeforeAdapterExecute(
+    params: BeforeAdapterExecuteParams,
+  ): Promise<BeforeAdapterExecuteResult> {
+    if (!plugin.definition.onBeforeAdapterExecute) {
+      throw methodNotImplemented("beforeAdapterExecute");
+    }
+    const result = await plugin.definition.onBeforeAdapterExecute(params);
+    return (result ?? {}) as BeforeAdapterExecuteResult;
   }
 
   // -----------------------------------------------------------------------

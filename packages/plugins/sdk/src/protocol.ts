@@ -426,6 +426,72 @@ export interface PluginEnvironmentExecuteResult {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Input for the `beforeAdapterExecute` RPC method.
+ *
+ * Invoked by the host immediately before an agent's adapter is executed, so
+ * installed plugins can observe the pending run and optionally modify the
+ * adapter's runtime configuration (for example, injecting environment
+ * variables that route egress traffic through a proxy).
+ *
+ * All string fields are already resolved: secret refs have been replaced with
+ * their plaintext values before this hook is called. Plugins MUST NOT log or
+ * persist this payload verbatim — treat it as sensitive.
+ *
+ * @see PLUGIN_SPEC.md §13.11 — `beforeAdapterExecute`
+ */
+export interface BeforeAdapterExecuteParams {
+  /** The agent about to execute. */
+  agentId: string;
+  /** The agent's company. */
+  companyId: string;
+  /** The heartbeat run this execution belongs to. */
+  runId: string;
+  /** Adapter type identifier (e.g. `"claude_local"`, `"codex_local"`). */
+  adapterType: string;
+  /**
+   * Fully resolved adapter runtime configuration (bindings already resolved).
+   * Treat as read-only — return overrides via the result shape.
+   */
+  runtimeConfig: Record<string, unknown>;
+  /**
+   * The environment map that will be merged into the spawned subprocess env
+   * (derived from `runtimeConfig.env`). Snapshot at the time of the hook call.
+   */
+  adapterEnv: Record<string, string>;
+  /** Heartbeat execution context (issue, workspace, wake metadata). */
+  context: Record<string, unknown>;
+}
+
+/**
+ * Result of the `beforeAdapterExecute` RPC method.
+ *
+ * All fields are optional; returning an empty object (or `undefined`) means
+ * "no changes". The host merges results from all plugins that implement this
+ * hook — `env` entries from multiple plugins are merged shallow (later
+ * registrations override earlier ones for the same key). If any plugin
+ * returns a `block`, the run is aborted with the provided reason before
+ * the adapter is called.
+ */
+export interface BeforeAdapterExecuteResult {
+  /**
+   * Shallow-merged into `runtimeConfig` before `adapter.execute`. Use sparingly
+   * — prefer `env` for the common case of injecting environment variables.
+   */
+  runtimeConfig?: Record<string, unknown>;
+  /**
+   * Environment variables to merge into the adapter subprocess env. These
+   * override the corresponding `runtimeConfig.env` values.
+   */
+  env?: Record<string, string>;
+  /**
+   * When set, the host aborts the run before calling the adapter and marks
+   * it failed with the given reason. Use for fail-closed policy enforcement
+   * (e.g. "egress gateway unreachable under required-mode policy").
+   */
+  block?: { reason: string; message: string };
+}
+
 // ---------------------------------------------------------------------------
 // UI launcher / modal host interaction payloads
 // ---------------------------------------------------------------------------
@@ -527,6 +593,11 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  /** @see PLUGIN_SPEC.md §13.11 */
+  beforeAdapterExecute: [
+    params: BeforeAdapterExecuteParams,
+    result: BeforeAdapterExecuteResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -558,6 +629,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "beforeAdapterExecute",
 ] as const;
 
 // ---------------------------------------------------------------------------
