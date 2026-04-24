@@ -103,6 +103,7 @@ describeEmbeddedPostgres("issueService.list legacy SQL_ASCII descriptions", () =
 
   afterAll(async () => {
     await sqlAscii.end();
+    await db.$client.end();
     await adminSql.end();
     await tempDb?.cleanup();
   });
