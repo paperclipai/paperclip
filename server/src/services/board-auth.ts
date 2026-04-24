@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   authUsers,
@@ -141,21 +141,26 @@ export function boardAuthService(db: Db) {
         and(
           eq(boardApiKeys.keyHash, tokenHash),
           isNull(boardApiKeys.revokedAt),
+          sql`(${boardApiKeys.expiresAt} is null or ${boardApiKeys.expiresAt} > ${now})`,
         ),
       )
-      .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > now.getTime()) ?? null);
+      .then((rows) => rows[0] ?? null);
   }
 
   async function touchBoardApiKey(id: string) {
     await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
   }
 
-  async function revokeBoardApiKey(id: string) {
+  async function revokeBoardApiKey(id: string, userId: string) {
     const now = new Date();
     return db
       .update(boardApiKeys)
       .set({ revokedAt: now, lastUsedAt: now })
-      .where(and(eq(boardApiKeys.id, id), isNull(boardApiKeys.revokedAt)))
+      .where(and(
+        eq(boardApiKeys.id, id),
+        eq(boardApiKeys.userId, userId),
+        isNull(boardApiKeys.revokedAt),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
   }
@@ -343,6 +348,46 @@ export function boardAuthService(db: Db) {
     return key;
   }
 
+  async function listBoardApiKeys(userId: string, includeRevoked = false) {
+    const conditions = [eq(boardApiKeys.userId, userId)];
+    if (!includeRevoked) {
+      conditions.push(isNull(boardApiKeys.revokedAt));
+    }
+    return db
+      .select({
+        id: boardApiKeys.id,
+        name: boardApiKeys.name,
+        lastUsedAt: boardApiKeys.lastUsedAt,
+        expiresAt: boardApiKeys.expiresAt,
+        revokedAt: boardApiKeys.revokedAt,
+        createdAt: boardApiKeys.createdAt,
+      })
+      .from(boardApiKeys)
+      .where(and(...conditions))
+      .orderBy(desc(boardApiKeys.createdAt));
+  }
+
+  async function createBoardApiKeyForUser(userId: string, name: string, expiresInDays?: number | null) {
+    const token = createBoardApiToken();
+    const keyHash = hashBearerToken(token);
+    const expiresAt = expiresInDays
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+      : null;
+
+    const created = await db
+      .insert(boardApiKeys)
+      .values({
+        userId,
+        name,
+        keyHash,
+        expiresAt,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    return { id: created.id, token, name: created.name, expiresAt: created.expiresAt, createdAt: created.createdAt };
+  }
+
   return {
     resolveBoardAccess,
     findBoardApiKeyByToken,
@@ -355,5 +400,7 @@ export function boardAuthService(db: Db) {
     cancelCliAuthChallenge,
     assertCurrentBoardKey,
     resolveBoardActivityCompanyIds,
+    listBoardApiKeys,
+    createBoardApiKeyForUser,
   };
 }

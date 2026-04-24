@@ -243,6 +243,8 @@ export type {
   AdminUserDirectoryEntry,
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
+  BoardApiKeySummary,
+  BoardApiKeyCreated,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {

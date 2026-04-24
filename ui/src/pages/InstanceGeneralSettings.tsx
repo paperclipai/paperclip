@@ -79,6 +79,7 @@ export function InstanceGeneralSettings() {
 
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
+  const boardApiKeysEnabled = generalQuery.data?.boardApiKeysEnabled === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
 
@@ -167,6 +168,25 @@ export function InstanceGeneralSettings() {
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Board API keys</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Allow board users to create bearer-token API keys for headless access to the Paperclip
+              REST API. When off, new keys cannot be created and existing keys stop authenticating
+              immediately. This is off by default as a safety measure.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={boardApiKeysEnabled}
+            onCheckedChange={() => updateGeneralMutation.mutate({ boardApiKeysEnabled: !boardApiKeysEnabled })}
+            disabled={updateGeneralMutation.isPending}
+            aria-label="Toggle board API keys"
           />
         </div>
       </section>

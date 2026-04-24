@@ -46,8 +46,33 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
+  // drizzle's postgres-js adapter calls `client.unsafe(query, params)`,
+  // which skips postgres.js default type inference — so Date bindings for
+  // timestamptz columns reach the wire as raw Date instances and trip
+  // `ERR_INVALID_ARG_TYPE: Received an instance of Date` at bytes.js:22.
+  // Register an explicit `date` type handler that serializes Date → ISO.
+  // Cast trims the `types` generic (which would leak as `Sql<{date: Date}>`)
+  // back to the base `Sql<{}>` that drizzle's postgres-js adapter expects.
   const sql = postgres(url);
-  return drizzlePg(sql, { schema });
+  const db = drizzlePg(sql, { schema });
+  // drizzle-orm@0.38 replaces postgres.js's default timestamp serializers
+  // (OIDs 1082/1083/1114/1184) with identity fns in
+  // `drizzle-orm/postgres-js/driver.js:16-19`, assuming it'll serialize
+  // Date values itself before handing them to postgres-js. That's true for
+  // its own prepared-statement path, but NOT for `client.unsafe(sql, params)`,
+  // which drizzle uses internally for most queries. Result: Date instances
+  // reach postgres.js's Bind step raw and crash
+  // `Buffer.byteLength(Date)` in bytes.js:22.
+  //
+  // Restore real Date→ISO serializers for timestamp types. Upstream fix
+  // tracked in drizzle-team/drizzle-orm (as of 0.38.4 still broken).
+  const serializeDate = (x: Date | string) =>
+    x instanceof Date ? x.toISOString() : String(x);
+  const opts = (sql as unknown as { options: { serializers: Record<number, (x: unknown) => unknown> } }).options;
+  for (const oid of [1082, 1083, 1114, 1184]) {
+    opts.serializers[oid] = serializeDate as (x: unknown) => unknown;
+  }
+  return db;
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {

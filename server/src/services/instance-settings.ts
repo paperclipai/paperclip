@@ -24,6 +24,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      boardApiKeysEnabled: parsed.data.boardApiKeysEnabled ?? false,
     };
   }
   return {
@@ -31,6 +32,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    boardApiKeysEnabled: false,
   };
 }
 
@@ -61,6 +63,8 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
 }
 
 export function instanceSettingsService(db: Db) {
+  let cachedBoardApiKeysEnabled: boolean | null = null;
+
   async function getOrCreateRow() {
     const existing = await db
       .select()
@@ -112,6 +116,13 @@ export function instanceSettingsService(db: Db) {
       return normalizeExperimentalSettings(row.experimental);
     },
 
+    getBoardApiKeysEnabled: async (): Promise<boolean> => {
+      if (cachedBoardApiKeysEnabled !== null) return cachedBoardApiKeysEnabled;
+      const row = await getOrCreateRow();
+      cachedBoardApiKeysEnabled = normalizeGeneralSettings(row.general).boardApiKeysEnabled;
+      return cachedBoardApiKeysEnabled;
+    },
+
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
       const nextGeneral = normalizeGeneralSettings({
@@ -127,6 +138,7 @@ export function instanceSettingsService(db: Db) {
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      cachedBoardApiKeysEnabled = null;
       return toInstanceSettings(updated ?? current);
     },
 

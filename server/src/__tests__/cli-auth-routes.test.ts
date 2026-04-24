@@ -26,10 +26,20 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const stubInstanceSettings = () => ({
+  getGeneral: vi.fn().mockResolvedValue({ boardApiKeysEnabled: false }),
+  getExperimental: vi.fn(),
+  get: vi.fn(),
+  updateGeneral: vi.fn(),
+  updateExperimental: vi.fn(),
+  listCompanyIds: vi.fn(),
+});
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   boardAuthService: () => mockBoardAuthService,
+  instanceSettingsService: stubInstanceSettings,
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
@@ -56,6 +66,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     boardAuthService: () => mockBoardAuthService,
+    instanceSettingsService: stubInstanceSettings,
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
     deduplicateAgentName: vi.fn((name: string) => name),

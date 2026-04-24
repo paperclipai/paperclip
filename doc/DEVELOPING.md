@@ -485,6 +485,22 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## Board API Keys
+
+You can create API keys to call the Paperclip REST API from scripts, CI pipelines, or external services without a browser session. **Disabled by default** — enable the `Board API keys` toggle under **Instance Settings > General** first.
+
+1. Navigate to **Instance Settings > API Keys** in the board UI.
+2. Click **Create key**, enter a name and optional expiry, and copy the token.
+3. Use the token as a Bearer header:
+
+```sh
+curl -H "Authorization: Bearer pcp_board_<your_token>" http://localhost:3100/api/companies
+```
+
+Keys inherit the creating user's permissions. In `local_trusted` mode any board user can create keys; in `authenticated` mode you must be logged in via a browser session.
+
+See `doc/BOARD-API-KEYS.md` for the full reference (REST endpoints, security model, schema).
+
 ## CLI Client Operations
 
 Paperclip CLI now includes client-side control-plane commands in addition to setup commands.

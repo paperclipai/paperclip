@@ -8,6 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -20,9 +21,14 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+  const instanceSettings = instanceSettingsService(db);
   return async (req, _res, next) => {
+    const runIdHeader = req.header("x-paperclip-run-id");
+    const authHeader = req.header("authorization");
+    const hasBearer = !!authHeader?.toLowerCase().startsWith("bearer ");
+
     req.actor =
-      opts.deploymentMode === "local_trusted"
+      opts.deploymentMode === "local_trusted" && !hasBearer
         ? {
             type: "board",
             userId: "local-board",
@@ -33,10 +39,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
-
-    const authHeader = req.header("authorization");
-    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+    if (!hasBearer) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         let session: BetterAuthSessionResult | null = null;
         try {
@@ -90,31 +93,34 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const token = authHeader.slice("bearer ".length).trim();
+    const token = authHeader!.slice("bearer ".length).trim();
     if (!token) {
       next();
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
-      if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
-        req.actor = {
-          type: "board",
-          userId: boardKey.userId,
-          userName: access.user?.name ?? null,
-          userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
-          isInstanceAdmin: access.isInstanceAdmin,
-          keyId: boardKey.id,
-          runId: runIdHeader || undefined,
-          source: "board_key",
-        };
-        next();
-        return;
+    const boardApiKeysEnabled = await instanceSettings.getBoardApiKeysEnabled();
+    if (boardApiKeysEnabled) {
+      const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+      if (boardKey) {
+        const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+        if (access.user) {
+          await boardAuth.touchBoardApiKey(boardKey.id);
+          req.actor = {
+            type: "board",
+            userId: boardKey.userId,
+            userName: access.user?.name ?? null,
+            userEmail: access.user?.email ?? null,
+            companyIds: access.companyIds,
+            memberships: access.memberships,
+            isInstanceAdmin: access.isInstanceAdmin,
+            keyId: boardKey.id,
+            runId: runIdHeader || undefined,
+            source: "board_key",
+          };
+          next();
+          return;
+        }
       }
     }
 
