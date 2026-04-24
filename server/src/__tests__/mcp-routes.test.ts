@@ -3,14 +3,25 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildInternalApiUrl, mcpRoutes } from "../routes/mcp.js";
 
-function createApp(actor: Express.Request["actor"], opts: { bindHost?: string } = {}) {
+function createApp(
+  actor: Express.Request["actor"],
+  opts: { bindHost?: string; sessionIdleTimeoutMs?: number; maxSessions?: number } = {},
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
   });
-  app.use("/mcp", mcpRoutes({ serverPort: 3100, bindHost: opts.bindHost ?? "127.0.0.1" }));
+  app.use(
+    "/mcp",
+    mcpRoutes({
+      serverPort: 3100,
+      bindHost: opts.bindHost ?? "127.0.0.1",
+      sessionIdleTimeoutMs: opts.sessionIdleTimeoutMs,
+      maxSessions: opts.maxSessions,
+    }),
+  );
   return app;
 }
 
@@ -205,5 +216,86 @@ describe("mcp routes", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(
       "Bearer route-token-123",
     );
+  });
+
+  it("expires idle sessions", async () => {
+    const app = createApp(
+      {
+        type: "board",
+        userId: "board-user",
+        source: "session",
+      },
+      { sessionIdleTimeoutMs: 10 },
+    );
+
+    const sessionId = await initializeSession(app, {
+      Authorization: "Bearer token-123",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    await request(app)
+      .post("/mcp")
+      .set({
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer token-123",
+        "mcp-session-id": sessionId,
+      })
+      .send({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/list",
+        params: {},
+      })
+      .expect(400);
+  });
+
+  it("evicts the oldest session when the session cap is reached", async () => {
+    const app = createApp(
+      {
+        type: "board",
+        userId: "board-user",
+        source: "session",
+      },
+      { maxSessions: 1 },
+    );
+
+    const firstSessionId = await initializeSession(app, {
+      Authorization: "Bearer token-123",
+    });
+    const secondSessionId = await initializeSession(app, {
+      Authorization: "Bearer token-123",
+    });
+
+    await request(app)
+      .post("/mcp")
+      .set({
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer token-123",
+        "mcp-session-id": firstSessionId,
+      })
+      .send({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/list",
+        params: {},
+      })
+      .expect(400);
+
+    const response = await request(app)
+      .post("/mcp")
+      .set({
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer token-123",
+        "mcp-session-id": secondSessionId,
+      })
+      .send({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/list",
+        params: {},
+      });
+
+    expect(response.status).toBe(200);
   });
 });

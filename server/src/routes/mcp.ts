@@ -10,7 +10,11 @@ import {
 type McpSession = {
   server: Awaited<ReturnType<typeof createPaperclipMcpServer>>["server"];
   transport: StreamableHTTPServerTransport;
+  timeout: ReturnType<typeof setTimeout>;
 };
+
+export const MCP_SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+export const MCP_MAX_SESSIONS = 100;
 
 function readOptionalHeader(req: Request, name: string): string | null {
   const value = req.header(name)?.trim();
@@ -69,9 +73,47 @@ function sendBadRequest(res: Response, message: string) {
   });
 }
 
-export function mcpRoutes(opts: { serverPort: number; bindHost: string }) {
+export function mcpRoutes(opts: {
+  serverPort: number;
+  bindHost: string;
+  sessionIdleTimeoutMs?: number;
+  maxSessions?: number;
+}) {
   const router = Router();
   const sessions = new Map<string, McpSession>();
+  const sessionIdleTimeoutMs = opts.sessionIdleTimeoutMs ?? MCP_SESSION_IDLE_TIMEOUT_MS;
+  const maxSessions = opts.maxSessions ?? MCP_MAX_SESSIONS;
+
+  function removeSession(sessionId: string) {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    sessions.delete(sessionId);
+    clearTimeout(session.timeout);
+    void session.server.close().catch(() => {});
+  }
+
+  function scheduleSessionTimeout(sessionId: string) {
+    const timeout = setTimeout(() => {
+      removeSession(sessionId);
+    }, sessionIdleTimeoutMs);
+    timeout.unref?.();
+    return timeout;
+  }
+
+  function touchSession(sessionId: string, session: McpSession) {
+    clearTimeout(session.timeout);
+    session.timeout = scheduleSessionTimeout(sessionId);
+    sessions.delete(sessionId);
+    sessions.set(sessionId, session);
+  }
+
+  function enforceSessionLimit() {
+    while (sessions.size >= maxSessions) {
+      const oldestSessionId = sessions.keys().next().value as string | undefined;
+      if (!oldestSessionId) break;
+      removeSession(oldestSessionId);
+    }
+  }
 
   async function createSession(req: Request) {
     const config = buildPaperclipMcpConfig(req, opts.serverPort, opts.bindHost);
@@ -79,16 +121,16 @@ export function mcpRoutes(opts: { serverPort: number; bindHost: string }) {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
-        sessions.set(sessionId, { server, transport });
+        enforceSessionLimit();
+        sessions.set(sessionId, { server, transport, timeout: scheduleSessionTimeout(sessionId) });
       },
     });
 
     transport.onclose = () => {
       const sessionId = transport.sessionId;
       if (sessionId) {
-        sessions.delete(sessionId);
+        removeSession(sessionId);
       }
-      void server.close().catch(() => {});
     };
 
     await server.connect(transport);
@@ -112,6 +154,7 @@ export function mcpRoutes(opts: { serverPort: number; bindHost: string }) {
           sendBadRequest(res, "Bad Request: Invalid session ID");
           return;
         }
+        touchSession(sessionId, existing);
         await existing.transport.handleRequest(req, res, req.body);
         return;
       }
@@ -150,6 +193,7 @@ export function mcpRoutes(opts: { serverPort: number; bindHost: string }) {
       sendBadRequest(res, "Bad Request: Invalid session ID");
       return;
     }
+    touchSession(sessionId, existing);
     await existing.transport.handleRequest(req, res);
   });
 
@@ -166,6 +210,7 @@ export function mcpRoutes(opts: { serverPort: number; bindHost: string }) {
       sendBadRequest(res, "Bad Request: Invalid session ID");
       return;
     }
+    touchSession(sessionId, existing);
     await existing.transport.handleRequest(req, res);
   });
 
