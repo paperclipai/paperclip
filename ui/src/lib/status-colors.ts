@@ -16,7 +16,7 @@ export const issueStatusIcon: Record<string, string> = {
   in_progress: "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
   in_review: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
-  cancelled: "text-neutral-500 border-neutral-500",
+  cancelled: "text-neutral-500 border-neutral-500 bg-neutral-500 dark:bg-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
 };
 
