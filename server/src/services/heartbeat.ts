@@ -4285,6 +4285,25 @@ export function heartbeatService(db: Db) {
     return updated;
   }
 
+  async function hasActiveNonTerminalChildIssue(companyId: string, issueId: string) {
+    const child = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.parentId, issueId),
+          // Keep parent stranded recovery suppressed while any delegated child
+          // is still non-terminal, including blocked child work that still
+          // requires explicit intervention before the parent can complete.
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return child !== null;
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -4319,6 +4338,11 @@ export function heartbeatService(db: Db) {
         continue;
       }
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveNonTerminalChildIssue(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
