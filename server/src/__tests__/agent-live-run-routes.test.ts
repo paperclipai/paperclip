@@ -10,6 +10,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  buildRunOutputSilence: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
 }));
@@ -173,6 +174,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -209,6 +211,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
       agentName: "Builder",
       adapterType: "codex_local",
+      outputSilence: null,
     });
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");

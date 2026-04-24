@@ -445,6 +445,7 @@ export function getInboxSearchSupplementIssues({
   issueFilters,
   currentUserId,
   enableRoutineVisibilityFilter = false,
+  liveIssueIds,
 }: {
   query: string;
   filteredWorkItems: InboxWorkItem[];
@@ -453,6 +454,7 @@ export function getInboxSearchSupplementIssues({
   issueFilters: IssueFilterState;
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
+  liveIssueIds?: ReadonlySet<string>;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -462,7 +464,7 @@ export function getInboxSearchSupplementIssues({
       .map((item) => item.issue.id),
     ...archivedSearchIssues.map((issue) => issue.id),
   ]);
-  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter)
+  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter, liveIssueIds)
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 

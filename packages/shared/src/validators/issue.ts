@@ -171,6 +171,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),
+  resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
@@ -188,6 +189,7 @@ export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
+  resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
 });
 

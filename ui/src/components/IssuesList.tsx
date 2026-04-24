@@ -23,6 +23,7 @@ import {
   issuePriorityOrder,
   normalizeIssueFilterState,
   resolveIssueFilterWorkspaceId,
+  shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
   type IssueFilterState,
 } from "../lib/issue-filters";
@@ -61,7 +62,7 @@ import { ISSUE_STATUSES, type Issue, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
-const INITIAL_ISSUE_ROW_RENDER_LIMIT = 150;
+const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_ROW_RENDER_BATCH_DELAY_MS = 0;
 const boardIssueStatuses = ISSUE_STATUSES;
@@ -483,6 +484,10 @@ export function IssuesList({
     }
     return map;
   }, [projects]);
+  const defaultProjectWorkspaceIds = useMemo(
+    () => new Set(defaultProjectWorkspaceIdByProjectId.values()),
+    [defaultProjectWorkspaceIdByProjectId],
+  );
 
   const executionWorkspaceById = useMemo(() => {
     const map = new Map<string, {
@@ -499,17 +504,27 @@ export function IssuesList({
     }
     return map;
   }, [executionWorkspaces]);
+  const issueFilterWorkspaceContext = useMemo(() => ({
+    executionWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  }), [defaultProjectWorkspaceIdByProjectId, executionWorkspaceById]);
 
   const workspaceNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const [workspaceId, workspace] of projectWorkspaceById) {
+      if (!shouldIncludeIssueFilterWorkspaceOption({ id: workspaceId }, defaultProjectWorkspaceIds)) continue;
       map.set(workspaceId, workspace.name);
     }
     for (const [workspaceId, workspace] of executionWorkspaceById) {
+      if (!shouldIncludeIssueFilterWorkspaceOption({
+        id: workspaceId,
+        mode: workspace.mode,
+        projectWorkspaceId: workspace.projectWorkspaceId,
+      }, defaultProjectWorkspaceIds)) continue;
       map.set(workspaceId, workspace.name);
     }
     return map;
-  }, [executionWorkspaceById, projectWorkspaceById]);
+  }, [defaultProjectWorkspaceIds, executionWorkspaceById, projectWorkspaceById]);
 
   const workspaceOptions = useMemo(() => {
     const options = new Map<string, string>();
@@ -635,9 +650,27 @@ export function IssuesList({
     const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
       : sourceIssues;
-    const filteredByControls = applyIssueFilters(searchScopedIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
+    const filteredByControls = applyIssueFilters(
+      searchScopedIssues,
+      viewState,
+      currentUserId,
+      enableRoutineVisibilityFilter,
+      liveIssueIds,
+      issueFilterWorkspaceContext,
+    );
     return sortIssues(filteredByControls, viewState);
-  }, [boardIssues, issues, searchedIssues, searchWithinLoadedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter]);
+  }, [
+    boardIssues,
+    issues,
+    searchedIssues,
+    searchWithinLoadedIssues,
+    viewState,
+    normalizedIssueSearch,
+    currentUserId,
+    enableRoutineVisibilityFilter,
+    liveIssueIds,
+    issueFilterWorkspaceContext,
+  ]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -664,7 +697,10 @@ export function IssuesList({
         .map((p) => ({ key: p, label: issueFilterLabel(p), items: groups[p]! }));
     }
     if (viewState.groupBy === "workspace") {
-      const groups = groupBy(filtered, (issue) => resolveIssueFilterWorkspaceId(issue) ?? "__no_workspace");
+      const groups = groupBy(
+        filtered,
+        (issue) => resolveIssueFilterWorkspaceId(issue, issueFilterWorkspaceContext) ?? "__no_workspace",
+      );
       return Object.keys(groups)
         .sort((a, b) => {
           // Groups with items first, "no workspace" last
@@ -708,7 +744,17 @@ export function IssuesList({
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents, agentName, currentUserId, workspaceNameMap, issueTitleMap, companyUserLabelMap]);
+  }, [
+    filtered,
+    issueFilterWorkspaceContext,
+    viewState.groupBy,
+    agents,
+    agentName,
+    currentUserId,
+    workspaceNameMap,
+    issueTitleMap,
+    companyUserLabelMap,
+  ]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -1087,7 +1133,7 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -1111,7 +1157,7 @@ export function IssuesList({
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                               statusSlot={(
                                 <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />
@@ -1125,7 +1171,7 @@ export function IssuesList({
                               columns={visibleTrailingIssueColumns}
                               projectName={issueProject?.name ?? null}
                               projectColor={issueProject?.color ?? null}
-                              workspaceId={resolveIssueFilterWorkspaceId(issue)}
+                              workspaceId={resolveIssueFilterWorkspaceId(issue, issueFilterWorkspaceContext)}
                               workspaceName={resolveIssueWorkspaceName(issue, {
                                 executionWorkspaceById,
                                 projectWorkspaceById,

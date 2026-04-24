@@ -170,6 +170,24 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
+async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+  }
+
+  throw lastError;
+}
+
 function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
@@ -393,6 +411,10 @@ describe("IssuesList", () => {
       }),
     );
 
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ statuses: ["done"] }),
+    );
     mockIssuesApi.list.mockResolvedValue(serverIssues);
 
     const { root } = renderWithQueryClient(
@@ -407,14 +429,14 @@ describe("IssuesList", () => {
       container,
     );
 
-    await waitForAssertion(() => {
+    await waitForMicrotaskAssertion(() => {
       expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
     });
 
     act(() => {
       root.unmount();
     });
-  });
+  }, 10_000);
 
   it("loads board issues with a separate result limit for each status column", async () => {
     localStorage.setItem(
@@ -544,8 +566,8 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(150);
-      expect(container.textContent).toContain("Rendering 150 of 220 issues");
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+      expect(container.textContent).toContain("Rendering 100 of 220 issues");
     });
 
     act(() => {

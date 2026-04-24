@@ -58,6 +58,7 @@ import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "..
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
@@ -353,6 +354,26 @@ function IssueBlockedNotice({
   if (blockers.length === 0 && issueStatus !== "blocked") return null;
 
   const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+  const terminalBlockers = blockers
+    .flatMap((blocker) => blocker.terminalBlockers ?? [])
+    .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
+
+  const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
+    const issuePathId = blocker.identifier ?? blocker.id;
+    return (
+      <IssueLinkQuicklook
+        key={blocker.id}
+        issuePathId={issuePathId}
+        to={createIssueDetailPath(issuePathId)}
+        className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+      >
+        <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+        <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+          {blocker.title}
+        </span>
+      </IssueLinkQuicklook>
+    );
+  };
 
   return (
     <div className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
@@ -366,22 +387,15 @@ function IssueBlockedNotice({
           </p>
           {blockers.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
-              {blockers.map((blocker) => {
-                const issuePathId = blocker.identifier ?? blocker.id;
-                return (
-                  <IssueLinkQuicklook
-                    key={blocker.id}
-                    issuePathId={issuePathId}
-                    to={createIssueDetailPath(issuePathId)}
-                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
-                  >
-                    <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-                    <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
-                      {blocker.title}
-                    </span>
-                  </IssueLinkQuicklook>
-                );
-              })}
+              {blockers.map(renderBlockerChip)}
+            </div>
+          ) : null}
+          {terminalBlockers.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                Ultimately waiting on
+              </span>
+              {terminalBlockers.map(renderBlockerChip)}
             </div>
           ) : null}
         </div>
@@ -754,8 +768,7 @@ function IssueChatChainOfThought({
     (p): p is ToolCallMessagePart => p.type === "tool-call",
   );
 
-  const hasActiveTool = toolParts.some((t) => t.result === undefined);
-  const isActive = isMessageRunning && hasActiveTool;
+  const isActive = isMessageRunning;
   const [expanded, setExpanded] = useState(isActive);
 
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
@@ -1196,6 +1209,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
@@ -1221,6 +1235,11 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+        {followUpRequested ? (
+          <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+            Follow-up
+          </Badge>
+        ) : null}
       </div>
       <div
         className={cn(
@@ -1396,6 +1415,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
   };
 
   const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+  const followUpRequested = custom.followUpRequested === true;
 
   return (
     <div id={anchorId}>
@@ -1429,6 +1449,11 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              {followUpRequested ? (
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                  Follow-up
+                </Badge>
+              ) : null}
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -1944,7 +1969,9 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
       <div className="min-w-0 space-y-1">
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">
+            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+          </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -2551,6 +2578,8 @@ export function IssueChatThread({
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        logBytes: activeRun.logBytes,
+        lastOutputBytes: activeRun.lastOutputBytes,
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
