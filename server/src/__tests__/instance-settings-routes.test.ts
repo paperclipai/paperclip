@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { instanceSettingsRoutes } from "../routes/instance-settings.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
@@ -13,12 +11,18 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-  logActivity: mockLogActivity,
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+    logActivity: mockLogActivity,
+  }));
+}
 
-function createApp(actor: any) {
+async function createApp(actor: any) {
+  const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -32,13 +36,26 @@ function createApp(actor: any) {
 
 describe("instance settings routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/instance-settings.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.clearAllMocks();
+    mockInstanceSettingsService.getGeneral.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.updateGeneral.mockReset();
+    mockInstanceSettingsService.updateExperimental.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockLogActivity.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
     });
@@ -53,6 +70,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
       id: "instance-settings-1",
       experimental: {
+        enableEnvironments: true,
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
       },
@@ -61,7 +79,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to read and update experimental settings", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "local-board",
       source: "local_implicit",
@@ -71,6 +89,7 @@ describe("instance settings routes", () => {
     const getRes = await request(app).get("/api/instance/settings/experimental");
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
+      enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
     });
@@ -87,7 +106,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update guarded dev-server auto-restart", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "local-board",
       source: "local_implicit",
@@ -104,8 +123,26 @@ describe("instance settings routes", () => {
     });
   });
 
+  it("allows local board users to update environment controls", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableEnvironments: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableEnvironments: true,
+    });
+  });
+
   it("allows local board users to read and update general settings", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "local-board",
       source: "local_implicit",
@@ -138,7 +175,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows non-admin board users to read general settings", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -149,11 +186,31 @@ describe("instance settings routes", () => {
     const res = await request(app).get("/api/instance/settings/general");
 
     expect(res.status).toBe(200);
-    expect(mockInstanceSettingsService.getGeneral).toHaveBeenCalled();
+    expect(res.body).toEqual({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
+  });
+
+  it("rejects signed-in users without company access from reading general settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+      memberships: [],
+    });
+
+    const res = await request(app).get("/api/instance/settings/general");
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects non-admin board users from updating general settings", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -170,7 +227,7 @@ describe("instance settings routes", () => {
   });
 
   it("rejects agent callers", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",

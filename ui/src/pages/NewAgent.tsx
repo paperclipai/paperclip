@@ -23,6 +23,7 @@ import { getUIAdapter, listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
+import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -167,25 +168,17 @@ export function NewAgent() {
         return;
       }
     }
-    createAgent.mutate({
-      name: name.trim(),
-      role: effectiveRole,
-      ...(title.trim() ? { title: title.trim() } : {}),
-      ...(reportsTo ? { reportsTo } : {}),
-      ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
-      adapterType: configValues.adapterType,
-      adapterConfig: buildAdapterConfig(),
-      runtimeConfig: {
-        heartbeat: {
-          enabled: configValues.heartbeatEnabled,
-          intervalSec: configValues.intervalSec,
-          wakeOnDemand: true,
-          cooldownSec: 10,
-          maxConcurrentRuns: 1,
-        },
-      },
-      budgetMonthlyCents: 0,
-    });
+    createAgent.mutate(
+      buildNewAgentHirePayload({
+        name,
+        effectiveRole,
+        title,
+        reportsTo,
+        selectedSkillKeys,
+        configValues,
+        adapterConfig: buildAdapterConfig(),
+      }),
+    );
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));

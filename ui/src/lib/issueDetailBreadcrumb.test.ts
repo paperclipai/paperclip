@@ -4,11 +4,14 @@ import {
   createIssueDetailLocationState,
   createIssueDetailPath,
   hasLegacyIssueDetailQuery,
+  readIssueDetailHeaderSeed,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
   rememberIssueDetailLocationState,
   shouldArmIssueDetailInboxQuickArchive,
+  withIssueDetailHeaderSeed,
 } from "./issueDetailBreadcrumb";
+import type { Issue } from "@paperclipai/shared";
 
 const sessionStorageMock = (() => {
   const store = new Map<string, string>();
@@ -29,6 +32,91 @@ Object.defineProperty(globalThis, "window", {
 });
 
 describe("issueDetailBreadcrumb", () => {
+  function createIssue(overrides: Partial<Issue> = {}): Issue {
+    return {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: null,
+      goalId: null,
+      parentId: null,
+      title: "Prefilled issue title",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      issueNumber: 42,
+      identifier: "PAP-42",
+      originKind: "manual",
+      originId: null,
+      originRunId: null,
+      requestDepth: 0,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionPolicy: null,
+      executionState: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      startedAt: null,
+      completedAt: null,
+      cancelledAt: null,
+      hiddenAt: null,
+      project: {
+        id: "project-1",
+        companyId: "company-1",
+        urlKey: "paperclip-app",
+        goalId: null,
+        goalIds: [],
+        goals: [],
+        name: "Paperclip App",
+        description: null,
+        status: "in_progress",
+        leadAgentId: null,
+        targetDate: null,
+        color: null,
+        env: null,
+        pauseReason: null,
+        pausedAt: null,
+        executionWorkspacePolicy: null,
+        codebase: {
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          defaultRef: null,
+          repoName: null,
+          localFolder: null,
+          managedFolder: "/tmp/paperclip-app",
+          effectiveLocalFolder: "/tmp/paperclip-app",
+          origin: "local_folder",
+        },
+        workspaces: [],
+        primaryWorkspace: null,
+        archivedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      goal: null,
+      currentExecutionWorkspace: null,
+      workProducts: [],
+      mentionedProjects: [],
+      myLastTouchAt: null,
+      lastExternalCommentAt: null,
+      lastActivityAt: null,
+      isUnreadForMe: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides,
+    };
+  }
+
   it("returns clean issue detail paths", () => {
     expect(createIssueDetailPath("PAP-465")).toBe("/issues/PAP-465");
   });
@@ -74,6 +162,48 @@ describe("issueDetailBreadcrumb", () => {
       issueDetailBreadcrumb: { label: "Inbox", href: "/inbox/mine" },
       issueDetailSource: "inbox",
       issueDetailInboxQuickArchiveArmed: false,
+    });
+  });
+
+  it("attaches and reads issue header seed data from route state", () => {
+    const seededState = withIssueDetailHeaderSeed(
+      createIssueDetailLocationState("Issues", "/issues", "issues"),
+      createIssue(),
+    );
+
+    expect(readIssueDetailHeaderSeed(seededState)).toEqual({
+      id: "11111111-1111-4111-8111-111111111111",
+      identifier: "PAP-42",
+      title: "Prefilled issue title",
+      status: "todo",
+      priority: "medium",
+      projectId: "project-1",
+      projectName: "Paperclip App",
+      originKind: "manual",
+      originId: null,
+    });
+  });
+
+  it("persists issue header seed data when breadcrumb state is remembered", () => {
+    const seededState = withIssueDetailHeaderSeed(
+      createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox"),
+      createIssue(),
+    );
+
+    sessionStorageMock.clear();
+    rememberIssueDetailLocationState("PAP-42", seededState);
+
+    const restoredState = readIssueDetailLocationState("PAP-42", null);
+    expect(readIssueDetailHeaderSeed(restoredState)).toEqual({
+      id: "11111111-1111-4111-8111-111111111111",
+      identifier: "PAP-42",
+      title: "Prefilled issue title",
+      status: "todo",
+      priority: "medium",
+      projectId: "project-1",
+      projectName: "Paperclip App",
+      originKind: "manual",
+      originId: null,
     });
   });
 

@@ -61,12 +61,26 @@ vi.mock("@/plugins/slots", () => ({
 
 describe("CommentThread", () => {
   let container: HTMLDivElement;
+  let writeTextMock: ReturnType<typeof vi.fn>;
+  let execCommandMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-11T12:00:00.000Z"));
+    writeTextMock = vi.fn(async () => {});
+    execCommandMock = vi.fn(() => true);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      value: true,
+      configurable: true,
+    });
+    document.execCommand = execCommandMock;
   });
 
   afterEach(() => {
@@ -164,6 +178,52 @@ describe("CommentThread", () => {
     });
   });
 
+  it("hides the reopen control and infers reopen for closed agent-assigned issues", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            issueStatus="done"
+            currentAssigneeValue="agent:agent-1"
+            onAdd={onAdd}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).not.toContain("Re-open");
+
+    const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Comment",
+    ) as HTMLButtonElement | undefined;
+    expect(editor).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please pick this back up");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders linked approvals inline in the timeline", () => {
     const root = createRoot(container);
     const agent: Agent = {
@@ -229,6 +289,61 @@ describe("CommentThread", () => {
     expect(container.textContent).toContain("Approve hosting spend");
     expect(container.textContent).toContain("Approve");
     expect(container.textContent).toContain("Reject");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses a larger copy control with feedback and a clipboard fallback", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              body: "Hello from the comment body",
+              createdAt: new Date("2026-03-11T11:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T11:00:00.000Z"),
+            }]}
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const copyButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.getAttribute("aria-label") === "Copy comment as markdown",
+    ) as HTMLButtonElement | undefined;
+
+    expect(copyButton).toBeDefined();
+    expect(copyButton?.className).toContain("min-h-8");
+    expect(copyButton?.textContent).toContain("Copy");
+
+    Object.defineProperty(window, "isSecureContext", {
+      value: false,
+      configurable: true,
+    });
+
+    await act(async () => {
+      copyButton?.click();
+    });
+
+    expect(writeTextMock).not.toHaveBeenCalled();
+    expect(execCommandMock).toHaveBeenCalledWith("copy");
+    expect(copyButton?.textContent).toContain("Copied");
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    expect(copyButton?.textContent).toContain("Copy");
 
     act(() => {
       root.unmount();

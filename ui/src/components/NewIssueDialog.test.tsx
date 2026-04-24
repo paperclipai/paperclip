@@ -77,7 +77,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => toastState,
+  useToastActions: () => toastState,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -372,6 +372,66 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits the parent assignee when a sub-issue opens with inherited defaults", async () => {
+    dialogState.newIssueDefaults = {
+      parentId: "issue-1",
+      parentIdentifier: "PAP-1",
+      parentTitle: "Parent issue",
+      title: "Child issue",
+      projectId: "project-1",
+      goalId: "goal-1",
+      assigneeAgentId: "agent-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Child issue",
+        parentId: "issue-1",
+        goalId: "goal-1",
+        projectId: "project-1",
+        assigneeAgentId: "agent-1",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the mobile dialog bounded with an internal flexible scroll region", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+    );
+    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("overflow-hidden");
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
+    const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("overscroll-contain"),
+    );
+    expect(bodyScrollRegion?.className).toContain("flex-1");
+    expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
+    expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
+    expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
+
+    act(() => root.unmount());
+  });
+
   it("warns when a sub-issue stops matching the parent workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
@@ -417,6 +477,7 @@ describe("NewIssueDialog", () => {
     };
 
     const { root } = renderDialog(container);
+    await flush();
     await flush();
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");

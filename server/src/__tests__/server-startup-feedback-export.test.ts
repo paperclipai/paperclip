@@ -66,6 +66,8 @@ vi.mock("../config.js", () => ({
   loadConfig: vi.fn(() => ({
     deploymentMode: "authenticated",
     deploymentExposure: "private",
+    bind: "loopback",
+    customBindHost: undefined,
     host: "127.0.0.1",
     port: 3210,
     allowedHostnames: [],
@@ -102,6 +104,9 @@ vi.mock("../config.js", () => ({
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
+    child: vi.fn(function child() {
+      return this;
+    }),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -116,8 +121,25 @@ vi.mock("../services/index.js", () => ({
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
+    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
+    reconcileStrandedAssignedIssues: vi.fn(async () => ({
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      escalated: 0,
+      skipped: 0,
+      issueIds: [],
+    })),
     tickTimers: vi.fn(async () => ({ enqueued: 0 })),
+  })),
+  instanceSettingsService: vi.fn(() => ({
+    getGeneral: vi.fn(async () => ({
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    })),
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
@@ -169,5 +191,29 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+});
+
+describe("startServer PAPERCLIP_API_URL handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_API_URL;
+  });
+
+  it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
+    process.env.PAPERCLIP_API_URL = "http://custom-api:3100";
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://custom-api:3100");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://custom-api:3100");
+  });
+
+  it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
   });
 });

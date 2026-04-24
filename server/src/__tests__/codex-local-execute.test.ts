@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +24,15 @@ if (capturePath) {
 console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }));
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
 console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFailingCodexCommand(commandPath: string, errorMessage: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "error", message: ${JSON.stringify(errorMessage)} }));
+process.exit(1);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -369,6 +378,444 @@ describe("codex execute", () => {
     }
   });
 
+  it("classifies remote-compaction high-demand failures as retryable transient upstream errors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-transient-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "Error running remote compact task: We're currently experiencing high demand, which may cause temporary errors.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-transient-error",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorMessage).toContain("high demand");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists retry-not-before metadata for codex usage-limit failures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-usage-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 22, 22, 29, 0));
+
+    try {
+      const result = await execute({
+        runId: "run-usage-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "codex-session-usage-limit",
+          sessionParams: {
+            sessionId: "codex-session-usage-limit",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-usage-limit",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5.3-codex-spark",
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      const expectedRetryNotBefore = new Date(2026, 3, 22, 23, 31, 0, 0).toISOString();
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
+        new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
+      );
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses safer invocation settings and a fresh-session handoff for codex transient fallback retries", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-fallback-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let commandNotes: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-fallback",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-stale",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-stale",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          fastMode: true,
+          model: "gpt-5.4",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          codexTransientFallbackMode: "fresh_session_safer_invocation",
+          paperclipContinuationSummary: {
+            key: "continuation-summary",
+            title: "Continuation Summary",
+            body: "Issue continuation summary for the next fresh session.",
+            updatedAt: "2026-04-21T01:00:00.000Z",
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          commandNotes = meta.commandNotes ?? [];
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+      expect(capture.argv).not.toContain("resume");
+      expect(capture.argv).not.toContain('service_tier="fast"');
+      expect(capture.argv).not.toContain("features.fast_mode=true");
+      expect(capture.prompt).toContain("Paperclip session handoff:");
+      expect(capture.prompt).toContain("Issue continuation summary for the next fresh session.");
+      expect(commandNotes).toContain("Codex transient fallback requested safer invocation settings for this retry.");
+      expect(commandNotes).toContain("Codex transient fallback forced a fresh session with a continuation handoff.");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("renders execution-stage wake instructions for reviewer and executor roles", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-stage-wake-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-stage-wake",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "execution_review_requested",
+          paperclipWake: {
+            reason: "execution_review_requested",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1207",
+              title: "implement the plan of PAP-1200",
+              status: "in_review",
+              priority: "medium",
+            },
+            executionStage: {
+              wakeRole: "reviewer",
+              stageId: "stage-1",
+              stageType: "review",
+              currentParticipant: { type: "agent", agentId: "qa-agent" },
+              returnAssignee: { type: "agent", agentId: "coder-agent" },
+              lastDecisionOutcome: null,
+              allowedActions: ["approve", "request_changes"],
+            },
+            commentIds: [],
+            latestCommentId: null,
+            comments: [],
+            commentWindow: {
+              requestedCount: 0,
+              includedCount: 0,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("execution wake role: reviewer");
+      expect(capture.prompt).toContain("You are waking as the active reviewer for this issue.");
+      expect(capture.prompt).toContain("Do not execute the task itself or continue executor work.");
+      expect(capture.prompt).toContain("allowed actions: approve, request_changes");
+
+      const executorCapturePath = path.join(root, "capture-executor.json");
+      const executorResult = await execute({
+        runId: "run-stage-wake-executor",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: executorCapturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "execution_changes_requested",
+          paperclipWake: {
+            reason: "execution_changes_requested",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1207",
+              title: "implement the plan of PAP-1200",
+              status: "in_progress",
+              priority: "medium",
+            },
+            executionStage: {
+              wakeRole: "executor",
+              stageId: "stage-1",
+              stageType: "review",
+              currentParticipant: { type: "agent", agentId: "qa-agent" },
+              returnAssignee: { type: "agent", agentId: "coder-agent" },
+              lastDecisionOutcome: "changes_requested",
+              allowedActions: ["address_changes", "resubmit"],
+            },
+            commentIds: [],
+            latestCommentId: null,
+            comments: [],
+            commentWindow: {
+              requestedCount: 0,
+              includedCount: 0,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(executorResult.exitCode).toBe(0);
+      const executorCapture = JSON.parse(await fs.readFile(executorCapturePath, "utf8")) as CapturePayload;
+      expect(executorCapture.prompt).toContain("execution wake role: executor");
+      expect(executorCapture.prompt).toContain("You are waking because changes were requested in the execution workflow.");
+      expect(executorCapture.prompt).toContain("allowed actions: address_changes, resubmit");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("renders an issue-scoped wake prompt even when the wake has no comments yet", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-issue-wake-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-issue-wake",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWake: {
+            reason: "issue_assigned",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1201",
+              title: "Fix gallery opening for inline images",
+              status: "in_progress",
+              priority: "medium",
+            },
+            checkedOutByHarness: true,
+            commentIds: [],
+            latestCommentId: null,
+            comments: [],
+            commentWindow: {
+              requestedCount: 0,
+              includedCount: 0,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.paperclipWakePayloadJson).not.toBeNull();
+      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
+        reason: "issue_assigned",
+        issue: {
+          identifier: "PAP-1201",
+          title: "Fix gallery opening for inline images",
+          status: "in_progress",
+          priority: "medium",
+        },
+        checkedOutByHarness: true,
+        commentIds: [],
+      });
+      expect(capture.prompt).toContain("## Paperclip Wake Payload");
+      expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");
+      expect(capture.prompt).toContain("- pending comments: 0/0");
+      expect(capture.prompt).toContain("- issue status: in_progress");
+      expect(capture.prompt).toContain("- checkout: already claimed by the harness for this run");
+      expect(capture.prompt).toContain("The harness already checked out this issue for the current run.");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-wake-"));
     const workspace = path.join(root, "workspace");
@@ -479,7 +926,6 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
-
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");

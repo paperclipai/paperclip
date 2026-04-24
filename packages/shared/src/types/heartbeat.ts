@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   HeartbeatInvocationSource,
   HeartbeatRunStatus,
+  RunLivenessState,
   WakeupTriggerDetail,
   WakeupRequestStatus,
 } from "../constants.js";
@@ -34,9 +35,19 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   processPid: number | null;
+  processGroupId?: number | null;
   processStartedAt: Date | null;
   retryOfRunId: string | null;
   processLossRetryCount: number;
+  scheduledRetryAt?: Date | null;
+  scheduledRetryAttempt?: number;
+  scheduledRetryReason?: string | null;
+  retryExhaustedReason?: string | null;
+  livenessState: RunLivenessState | null;
+  livenessReason: string | null;
+  continuationAttempt: number;
+  lastUsefulActionAt: Date | null;
+  nextAction: string | null;
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

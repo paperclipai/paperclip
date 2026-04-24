@@ -1,10 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Issue } from "@paperclipai/shared";
 import {
+  applyLocalQueuedIssueCommentState,
+  applyOptimisticIssueFieldUpdate,
+  applyOptimisticIssueFieldUpdateToCollection,
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
+  flattenIssueCommentPages,
+  getNextIssueCommentPageParam,
   isQueuedIssueComment,
+  matchesIssueRef,
   mergeIssueComments,
+  removeIssueCommentFromPages,
+  takeOptimisticIssueComment,
   upsertIssueComment,
+  upsertIssueCommentInPages,
 } from "./optimistic-issue-comments";
 
 describe("optimistic issue comments", () => {
@@ -94,6 +104,30 @@ describe("optimistic issue comments", () => {
     expect(merged.map((comment) => comment.id)).toEqual(["optimistic-1", "comment-2"]);
   });
 
+  it("can take one optimistic queued comment back out of the queue", () => {
+    const first = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "First",
+      authorUserId: "board-1",
+      clientStatus: "queued",
+      queueTargetRunId: "run-1",
+    });
+    const second = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Second",
+      authorUserId: "board-1",
+      clientStatus: "queued",
+      queueTargetRunId: "run-1",
+    });
+
+    const result = takeOptimisticIssueComment([first, second], first.clientId);
+
+    expect(result.comment?.body).toBe("First");
+    expect(result.comments.map((comment) => comment.clientId)).toEqual([second.clientId]);
+  });
+
   it("upserts confirmed comments without creating duplicates", () => {
     const next = upsertIssueComment(
       [
@@ -122,6 +156,171 @@ describe("optimistic issue comments", () => {
 
     expect(next).toHaveLength(1);
     expect(next[0]?.body).toBe("Updated");
+  });
+
+  it("flattens paged comments into one chronological thread", () => {
+    const flattened = flattenIssueCommentPages([
+      [
+        {
+          id: "comment-3",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorAgentId: null,
+          authorUserId: "board-1",
+          body: "Newest",
+          createdAt: new Date("2026-03-28T14:00:03.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:03.000Z"),
+        },
+      ],
+      [
+        {
+          id: "comment-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorAgentId: null,
+          authorUserId: "board-1",
+          body: "Oldest",
+          createdAt: new Date("2026-03-28T14:00:01.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+        },
+        {
+          id: "comment-2",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorAgentId: null,
+          authorUserId: "board-1",
+          body: "Middle",
+          createdAt: new Date("2026-03-28T14:00:02.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:02.000Z"),
+        },
+      ],
+    ]);
+
+    expect(flattened.map((comment) => comment.id)).toEqual(["comment-1", "comment-2", "comment-3"]);
+  });
+
+  it("returns no next page param when the last page is missing", () => {
+    expect(getNextIssueCommentPageParam(undefined, 50)).toBeUndefined();
+  });
+
+  it("returns the oldest id when the last page is full", () => {
+    expect(
+      getNextIssueCommentPageParam(
+        [
+          {
+            id: "comment-2",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Second",
+            createdAt: new Date("2026-03-28T14:00:02.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:02.000Z"),
+          },
+          {
+            id: "comment-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "First",
+            createdAt: new Date("2026-03-28T14:00:01.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+          },
+        ],
+        2,
+      ),
+    ).toBe("comment-1");
+  });
+
+  it("upserts paged comments without dropping older pages", () => {
+    const nextPages = upsertIssueCommentInPages(
+      [
+        [
+          {
+            id: "comment-3",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Newest",
+            createdAt: new Date("2026-03-28T14:00:03.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:03.000Z"),
+          },
+        ],
+        [
+          {
+            id: "comment-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Oldest",
+            createdAt: new Date("2026-03-28T14:00:01.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+          },
+        ],
+      ],
+      {
+        id: "comment-4",
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: "board-1",
+        body: "Brand new",
+        createdAt: new Date("2026-03-28T14:00:04.000Z"),
+        updatedAt: new Date("2026-03-28T14:00:04.000Z"),
+      },
+    );
+
+    expect(nextPages[0]?.map((comment) => comment.id)).toEqual(["comment-4", "comment-3"]);
+    expect(nextPages[1]?.map((comment) => comment.id)).toEqual(["comment-1"]);
+  });
+
+  it("removes a confirmed queued comment from paged caches", () => {
+    const nextPages = removeIssueCommentFromPages(
+      [
+        [
+          {
+            id: "comment-3",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Newest",
+            createdAt: new Date("2026-03-28T14:00:03.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:03.000Z"),
+          },
+        ],
+        [
+          {
+            id: "comment-2",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Middle",
+            createdAt: new Date("2026-03-28T14:00:02.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:02.000Z"),
+          },
+          {
+            id: "comment-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Oldest",
+            createdAt: new Date("2026-03-28T14:00:01.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+          },
+        ],
+      ],
+      "comment-2",
+    );
+
+    expect(nextPages).toHaveLength(2);
+    expect(nextPages[0]?.map((comment) => comment.id)).toEqual(["comment-3"]);
+    expect(nextPages[1]?.map((comment) => comment.id)).toEqual(["comment-1"]);
   });
 
   it("applies optimistic reopen and reassignment updates to the issue cache", () => {
@@ -177,6 +376,286 @@ describe("optimistic issue comments", () => {
     expect(next?.assigneeUserId).toBe("board-2");
   });
 
+  it("applies optimistic field updates for issue property edits", () => {
+    const next = applyOptimisticIssueFieldUpdate(
+      {
+        id: "issue-1",
+        companyId: "company-1",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        goalId: null,
+        parentId: null,
+        ancestors: [
+          {
+            id: "issue-9",
+            identifier: "PAP-9",
+            title: "Old parent",
+            description: null,
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            goalId: null,
+            project: null,
+            goal: null,
+          },
+        ],
+        title: "Fix property pane",
+        description: null,
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        createdByAgentId: null,
+        createdByUserId: "board-1",
+        issueNumber: 1,
+        identifier: "PAP-1",
+        originKind: "manual",
+        originId: null,
+        originRunId: null,
+        requestDepth: 0,
+        billingCode: null,
+        assigneeAdapterOverrides: null,
+        executionWorkspaceId: "exec-1",
+        executionWorkspacePreference: "shared_workspace",
+        executionWorkspaceSettings: null,
+        startedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        hiddenAt: null,
+        labelIds: ["label-1", "label-2"],
+        labels: [
+          {
+            id: "label-1",
+            companyId: "company-1",
+            name: "One",
+            color: "#111111",
+            createdAt: new Date("2026-03-28T14:00:00.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+          },
+          {
+            id: "label-2",
+            companyId: "company-1",
+            name: "Two",
+            color: "#222222",
+            createdAt: new Date("2026-03-28T14:00:00.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+          },
+        ],
+        blockedBy: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "First blocker",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+          {
+            id: "issue-3",
+            identifier: "PAP-3",
+            title: "Second blocker",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+        blocks: [],
+        project: {
+          id: "project-1",
+          companyId: "company-1",
+          urlKey: "project-one",
+          goalId: null,
+          goalIds: [],
+          goals: [],
+          name: "Project one",
+          description: null,
+          status: "in_progress",
+          leadAgentId: null,
+          targetDate: null,
+          color: null,
+          env: null,
+          pauseReason: null,
+          pausedAt: null,
+          executionWorkspacePolicy: null,
+          codebase: {
+            workspaceId: null,
+            repoUrl: null,
+            repoRef: null,
+            defaultRef: null,
+            repoName: null,
+            localFolder: null,
+            managedFolder: "/tmp/paperclip",
+            effectiveLocalFolder: "/tmp/paperclip",
+            origin: "local_folder",
+          },
+          workspaces: [],
+          primaryWorkspace: null,
+          archivedAt: null,
+          createdAt: new Date("2026-03-28T14:00:00.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+        },
+        currentExecutionWorkspace: {
+          id: "exec-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          projectWorkspaceId: null,
+          sourceIssueId: "issue-1",
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          branchName: null,
+          status: "active",
+          name: "Execution workspace",
+          cwd: "/tmp/paperclip",
+          repoUrl: null,
+          baseRef: null,
+          providerType: "local_fs",
+          providerRef: null,
+          derivedFromExecutionWorkspaceId: null,
+          lastUsedAt: new Date("2026-03-28T14:00:00.000Z"),
+          cleanupEligibleAt: null,
+          cleanupReason: null,
+          config: null,
+          metadata: null,
+          createdAt: new Date("2026-03-28T14:00:00.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+          openedAt: new Date("2026-03-28T14:00:00.000Z"),
+          closedAt: null,
+        },
+        createdAt: new Date("2026-03-28T14:00:00.000Z"),
+        updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+      },
+      {
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "board-2",
+        labelIds: ["label-2"],
+        blockedByIssueIds: ["issue-3"],
+        parentId: "issue-4",
+        projectId: "project-2",
+        executionWorkspaceId: "exec-2",
+      },
+    );
+
+    expect(next?.status).toBe("in_review");
+    expect(next?.assigneeAgentId).toBeNull();
+    expect(next?.assigneeUserId).toBe("board-2");
+    expect(next?.labelIds).toEqual(["label-2"]);
+    expect(next?.labels?.map((label) => label.id)).toEqual(["label-2"]);
+    expect(next?.blockedBy?.map((relation) => relation.id)).toEqual(["issue-3"]);
+    expect(next?.parentId).toBe("issue-4");
+    expect(next?.ancestors).toBeUndefined();
+    expect(next?.projectId).toBe("project-2");
+    expect(next?.project).toBeNull();
+    expect(next?.executionWorkspaceId).toBe("exec-2");
+    expect(next?.currentExecutionWorkspace).toBeNull();
+  });
+
+  it("matches issues by either uuid or identifier reference", () => {
+    expect(matchesIssueRef({ id: "issue-1", identifier: "PAP-1" } as const, ["issue-1"])).toBe(true);
+    expect(matchesIssueRef({ id: "issue-1", identifier: "PAP-1" } as const, ["PAP-1"])).toBe(true);
+    expect(matchesIssueRef({ id: "issue-1", identifier: "PAP-1" } as const, ["issue-2", "PAP-2"])).toBe(false);
+  });
+
+  it("applies optimistic field updates across cached issue collections", () => {
+    const issues: Issue[] = [
+      {
+        id: "issue-1",
+        companyId: "company-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        goalId: null,
+        parentId: null,
+        title: "Fix property pane",
+        description: null,
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        createdByAgentId: null,
+        createdByUserId: "board-1",
+        issueNumber: 1,
+        identifier: "PAP-1",
+        originKind: "manual",
+        originId: null,
+        originRunId: null,
+        requestDepth: 0,
+        billingCode: null,
+        assigneeAdapterOverrides: null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+        startedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        hiddenAt: null,
+        labelIds: [],
+        labels: [],
+        blockedBy: [],
+        blocks: [],
+        createdAt: new Date("2026-03-28T14:00:00.000Z"),
+        updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+      },
+      {
+        id: "issue-2",
+        companyId: "company-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        goalId: null,
+        parentId: null,
+        title: "Leave me alone",
+        description: null,
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        createdByAgentId: null,
+        createdByUserId: "board-1",
+        issueNumber: 2,
+        identifier: "PAP-2",
+        originKind: "manual",
+        originId: null,
+        originRunId: null,
+        requestDepth: 0,
+        billingCode: null,
+        assigneeAdapterOverrides: null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+        startedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        hiddenAt: null,
+        labelIds: [],
+        labels: [],
+        blockedBy: [],
+        blocks: [],
+        createdAt: new Date("2026-03-28T14:00:00.000Z"),
+        updatedAt: new Date("2026-03-28T14:00:00.000Z"),
+      },
+    ];
+
+    const next = applyOptimisticIssueFieldUpdateToCollection(issues, ["PAP-1"], { assigneeAgentId: "agent-9" });
+
+    expect(next?.[0]?.assigneeAgentId).toBe("agent-9");
+    expect(next?.[1]?.assigneeAgentId).toBe("agent-2");
+  });
+
   it("treats comments without a run id as queued when they arrive during an active run", () => {
     expect(
       isQueuedIssueComment({
@@ -225,5 +704,73 @@ describe("optimistic issue comments", () => {
         runId: null,
       }),
     ).toBe(false);
+  });
+
+  it("keeps a confirmed queued comment queued while the target run is still live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: true,
+      runningRunId: "run-1",
+    });
+
+    expect(result).toMatchObject({
+      id: "comment-1",
+      clientStatus: "queued",
+      queueState: "queued",
+      queueTargetRunId: "run-1",
+    });
+  });
+
+  it("does not keep local queued state after the target run is no longer live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: false,
+      runningRunId: null,
+    });
+
+    expect(result).toBe(comment);
+  });
+
+  it("does not keep local queued state when a different run is live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: true,
+      runningRunId: "run-2",
+    });
+
+    expect(result).toBe(comment);
   });
 });

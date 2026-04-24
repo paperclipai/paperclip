@@ -171,6 +171,75 @@ describe("issue execution policy transitions", () => {
       expect(result.decision).toBeUndefined();
     });
 
+    it("carries loose review instructions on the pending handoff", () => {
+      const reviewInstructions = [
+        "Please focus on whether the migration path is reversible.",
+        "",
+        "- Check failure handling",
+        "- Call out any unclear operator instructions",
+      ].join("\n");
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Implemented the migration",
+        reviewRequest: { instructions: reviewInstructions },
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        reviewRequest: { instructions: reviewInstructions },
+      });
+    });
+
+    it("clears loose review instructions with explicit null during a stage transition", () => {
+      const reviewStageId = policy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            reviewRequest: { instructions: "Old review request" },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Ready for review",
+        reviewRequest: null,
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        reviewRequest: null,
+      });
+    });
+
     it("reviewer approves → advances to approval stage", () => {
       const reviewStageId = policy.stages[0].id;
       const result = applyIssueExecutionPolicyTransition({
@@ -211,6 +280,44 @@ describe("issue execution policy transitions", () => {
         stageId: reviewStageId,
         stageType: "review",
         outcome: "approved",
+      });
+    });
+
+    it("lets a reviewer provide loose instructions for the next approval stage", () => {
+      const reviewStageId = policy.stages[0].id;
+      const approvalInstructions = "Please decide whether this is ready to ship, with any launch caveats.";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            reviewRequest: { instructions: "Review the implementation details." },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "QA signoff complete",
+        reviewRequest: { instructions: approvalInstructions },
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: ctoUserId },
+        reviewRequest: { instructions: approvalInstructions },
       });
     });
 
@@ -413,7 +520,7 @@ describe("issue execution policy transitions", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;
 
-    it("non-participant cannot advance stage via status change", () => {
+    it("non-participant cannot advance the active stage", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
           issue: {
@@ -435,7 +542,7 @@ describe("issue execution policy transitions", () => {
           },
           policy,
           requestedStatus: "done",
-          requestedAssigneePatch: {},
+          requestedAssigneePatch: { assigneeUserId: boardUserId },
           actor: { agentId: coderAgentId },
           commentBody: "Trying to bypass review",
         }),
@@ -663,6 +770,7 @@ describe("issue execution policy transitions", () => {
 
   describe("no-op transitions", () => {
     const policy = twoStagePolicy();
+    const reviewStageId = policy.stages[0].id;
 
     it("non-done status change without review context is a no-op", () => {
       const result = applyIssueExecutionPolicyTransition({
@@ -682,6 +790,72 @@ describe("issue execution policy transitions", () => {
       expect(result.patch).toEqual({});
     });
 
+    it("coerces a malformed executor in_review patch into the first policy stage", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: { assigneeUserId: boardUserId },
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+        },
+      });
+    });
+
+    it("reasserts the active stage when issue status drifted out of in_review", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId },
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+        },
+      });
+    });
+
     it("no policy and no state is a no-op", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
@@ -695,6 +869,25 @@ describe("issue execution policy transitions", () => {
         requestedStatus: "done",
         requestedAssigneePatch: {},
         actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch).toEqual({});
+    });
+
+    it("does not auto-start workflow when policy is added to an already in_review issue", () => {
+      const reviewOnly = reviewOnlyPolicy();
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: null,
+          executionState: null,
+        },
+        policy: reviewOnly,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
       });
 
       expect(result.patch).toEqual({});
@@ -788,6 +981,83 @@ describe("issue execution policy transitions", () => {
 
       // coderAgentId is the returnAssignee, so QA should be selected
       expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    });
+
+    it("skips a self-review-only stage and completes the workflow", () => {
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: coderAgentId }],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done",
+      });
+
+      expect(result.patch).toMatchObject({
+        executionState: {
+          status: "completed",
+          currentStageType: null,
+          currentParticipant: null,
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [policy.stages[0].id],
+        },
+      });
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+    });
+
+    it("skips a self-review-only review stage and advances to approval", () => {
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: coderAgentId }],
+        },
+        {
+          type: "approval",
+          participants: [{ type: "user", userId: ctoUserId }],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done",
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: ctoUserId,
+        executionState: {
+          status: "pending",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: ctoUserId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [policy.stages[0].id],
+        },
+      });
     });
   });
 
@@ -893,6 +1163,102 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.status).toBe("in_review");
       expect(result.patch.assigneeAgentId).toBeNull();
       expect(result.patch.assigneeUserId).toBe(boardUserId);
+    });
+  });
+
+  describe("policy edits while a stage is active", () => {
+    it("clears the active execution state when its stage is removed from the policy", () => {
+      const reviewAndApproval = twoStagePolicy();
+      const approvalOnly = approvalOnlyPolicy();
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: reviewAndApproval,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewAndApproval.stages[0].id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: approvalOnly,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionState: null,
+      });
+    });
+
+    it("reassigns the active stage when the current participant is removed", () => {
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [
+            { type: "agent", agentId: qaAgentId },
+            { type: "agent", agentId: ctoAgentId },
+          ],
+        },
+      ]);
+      const updatedPolicy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: ctoAgentId }],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: policy.stages[0].id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: {
+          ...updatedPolicy,
+          stages: [{ ...updatedPolicy.stages[0], id: policy.stages[0].id }],
+        },
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: ctoAgentId,
+        assigneeUserId: null,
+        executionState: {
+          status: "pending",
+          currentStageId: policy.stages[0].id,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: ctoAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+        },
+      });
     });
   });
 });
