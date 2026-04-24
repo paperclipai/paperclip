@@ -11,7 +11,7 @@ const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
 function createUtilitySql(url: string) {
-  return postgres(url, { max: 1, onnotice: () => {} });
+  return postgres(url, { max: 1, onnotice: () => {}, connection: { client_encoding: "UTF8" } });
 }
 
 function isSafeIdentifier(value: string): boolean {
@@ -46,7 +46,7 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  const sql = postgres(url, { connection: { client_encoding: "UTF8" } });
   return drizzlePg(sql, { schema });
 }
 

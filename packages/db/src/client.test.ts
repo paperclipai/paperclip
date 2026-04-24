@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
+  createDb,
   inspectMigrations,
 } from "./client.js";
 import {
@@ -43,6 +45,15 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("forces UTF8 client encoding for Drizzle connections", async () => {
+    const connectionString = await createTempDatabase();
+    const db = createDb(connectionString);
+
+    const rows = await db.execute<{ client_encoding: string }>(sql.raw(`SHOW client_encoding`));
+
+    expect(rows[0]?.client_encoding).toBe("UTF8");
+  });
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
