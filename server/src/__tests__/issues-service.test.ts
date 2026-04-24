@@ -118,17 +118,18 @@ describeEmbeddedPostgres("issueService.list legacy SQL_ASCII descriptions", () =
       requireBoardApprovalForNewAgents: false,
     });
 
-    await sqlAscii.unsafe(`
-      INSERT INTO "issues" ("id", "company_id", "title", "description", "status", "priority")
-      VALUES (
-        '${issueId}',
-        '${companyId}',
-        'Legacy description bytes',
-        convert_from(E'\\xe2'::bytea, 'SQL_ASCII'),
-        'todo',
-        'medium'
-      )
-    `);
+    await sqlAscii.unsafe(
+      `INSERT INTO "issues" ("id", "company_id", "title", "description", "status", "priority")
+       VALUES (
+         $1,
+         $2,
+         'Legacy description bytes',
+         convert_from(E'\\xe2'::bytea, 'SQL_ASCII'),
+         'todo',
+         'medium'
+       )`,
+      [issueId, companyId],
+    );
 
     const result = await svc.list(companyId);
 
