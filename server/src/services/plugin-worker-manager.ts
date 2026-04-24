@@ -1377,58 +1377,109 @@ export function createPluginWorkerManager(
       params: BeforeAdapterExecuteParams,
       opts?: { timeoutMs?: number },
     ): Promise<BeforeAdapterExecuteResult> {
-      const merged: BeforeAdapterExecuteResult = {};
-      const mergedEnv: Record<string, string> = {};
-      const mergedRuntimeConfig: Record<string, unknown> = {};
-      let anyEnv = false;
-      let anyRuntimeConfig = false;
-
-      for (const handle of workers.values()) {
-        if (handle.status !== "running") continue;
-        if (!handle.supportedMethods.includes("beforeAdapterExecute")) continue;
-
-        let result: BeforeAdapterExecuteResult;
-        try {
-          result = await handle.call("beforeAdapterExecute", params, opts?.timeoutMs);
-        } catch (err) {
+      return runBeforeAdapterExecuteBroadcast(params, workers.values(), {
+        timeoutMs: opts?.timeoutMs,
+        onError: (pluginId, err) => {
           log.warn(
             {
-              pluginId: handle.pluginId,
+              pluginId,
               runId: params.runId,
               agentId: params.agentId,
               err: err instanceof Error ? err.message : String(err),
             },
             "beforeAdapterExecute failed — discarding result, continuing with next plugin",
           );
-          continue;
-        }
-
-        if (result?.block) {
-          // First block wins — stop here.
-          merged.block = result.block;
-          break;
-        }
-
-        if (result?.env) {
-          for (const [key, value] of Object.entries(result.env)) {
-            if (typeof value === "string") {
-              mergedEnv[key] = value;
-              anyEnv = true;
-            }
-          }
-        }
-
-        if (result?.runtimeConfig) {
-          for (const [key, value] of Object.entries(result.runtimeConfig)) {
-            mergedRuntimeConfig[key] = value;
-            anyRuntimeConfig = true;
-          }
-        }
-      }
-
-      if (anyEnv) merged.env = mergedEnv;
-      if (anyRuntimeConfig) merged.runtimeConfig = mergedRuntimeConfig;
-      return merged;
+        },
+      });
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast helper (pure; exported for unit tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal worker view used by {@link runBeforeAdapterExecuteBroadcast}.
+ *
+ * Real `PluginWorkerHandle` instances satisfy this shape; tests pass in
+ * plain objects with stubbed `call` functions.
+ */
+export interface BroadcastableWorker {
+  readonly pluginId: string;
+  readonly status: string;
+  readonly supportedMethods: readonly string[];
+  call<M extends HostToWorkerMethodName>(
+    method: M,
+    params: HostToWorkerMethods[M][0],
+    timeoutMs?: number,
+  ): Promise<HostToWorkerMethods[M][1]>;
+}
+
+/**
+ * Iterate plugin workers in insertion order and merge their
+ * `beforeAdapterExecute` responses. Exported for unit tests — the
+ * {@link PluginWorkerManager} uses this internally via
+ * {@link PluginWorkerManager.broadcastBeforeAdapterExecute}.
+ *
+ * Rules (must match the public contract):
+ *   - skip workers whose `status !== "running"`
+ *   - skip workers that did not report `beforeAdapterExecute` support
+ *   - first plugin returning `block` wins; subsequent plugins are NOT called
+ *   - a plugin throwing or timing out: call `onError` (if provided) and
+ *     continue with the next plugin — fail-soft per-plugin
+ *   - env keys: later plugins override earlier ones
+ *   - runtimeConfig keys: later plugins override earlier ones
+ */
+export async function runBeforeAdapterExecuteBroadcast(
+  params: BeforeAdapterExecuteParams,
+  workerIterable: Iterable<BroadcastableWorker>,
+  opts?: {
+    timeoutMs?: number;
+    onError?: (pluginId: string, err: unknown) => void;
+  },
+): Promise<BeforeAdapterExecuteResult> {
+  const merged: BeforeAdapterExecuteResult = {};
+  const mergedEnv: Record<string, string> = {};
+  const mergedRuntimeConfig: Record<string, unknown> = {};
+  let anyEnv = false;
+  let anyRuntimeConfig = false;
+
+  for (const handle of workerIterable) {
+    if (handle.status !== "running") continue;
+    if (!handle.supportedMethods.includes("beforeAdapterExecute")) continue;
+
+    let result: BeforeAdapterExecuteResult;
+    try {
+      result = await handle.call("beforeAdapterExecute", params, opts?.timeoutMs);
+    } catch (err) {
+      opts?.onError?.(handle.pluginId, err);
+      continue;
+    }
+
+    if (result?.block) {
+      merged.block = result.block;
+      return merged;
+    }
+
+    if (result?.env) {
+      for (const [key, value] of Object.entries(result.env)) {
+        if (typeof value === "string") {
+          mergedEnv[key] = value;
+          anyEnv = true;
+        }
+      }
+    }
+
+    if (result?.runtimeConfig) {
+      for (const [key, value] of Object.entries(result.runtimeConfig)) {
+        mergedRuntimeConfig[key] = value;
+        anyRuntimeConfig = true;
+      }
+    }
+  }
+
+  if (anyEnv) merged.env = mergedEnv;
+  if (anyRuntimeConfig) merged.runtimeConfig = mergedRuntimeConfig;
+  return merged;
 }
