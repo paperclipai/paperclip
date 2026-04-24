@@ -487,6 +487,7 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "joins:approve",
   "environments:manage",
+  "agents:skills:sync",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
