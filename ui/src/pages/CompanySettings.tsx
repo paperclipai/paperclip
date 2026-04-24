@@ -4,11 +4,15 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/LocaleContext";
+import { useTheme } from "../context/ThemeContext";
 import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
+import { LOCALE_LABELS, type AppLocale } from "../lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
@@ -19,12 +23,38 @@ import {
 } from "../components/agent-config-primitives";
 
 type AgentSnippetInput = {
+  locale: AppLocale;
   onboardingTextUrl: string;
   connectionCandidates?: string[] | null;
   testResolutionUrl?: string | null;
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
+function PreferenceChoiceButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+        active
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-background text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
 
 export function CompanySettings() {
   const {
@@ -34,6 +64,8 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { locale, setLocale, t } = useI18n();
+  const { theme, setTheme } = useTheme();
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   // General settings local state
@@ -92,13 +124,13 @@ export function CompanySettings() {
     onSuccess: (_company, enabled) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({
-        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        title: enabled ? t("companySettings.feedbackSharingEnabled") : t("companySettings.feedbackSharingDisabled"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Failed to update feedback sharing",
+        title: t("companySettings.feedbackSharingFailed"),
         body: err instanceof Error ? err.message : "Unknown error",
         tone: "error",
       });
@@ -124,6 +156,7 @@ export function CompanySettings() {
       try {
         const manifest = await accessApi.getInviteOnboarding(invite.token);
         snippet = buildAgentSnippet({
+          locale,
           onboardingTextUrl: absoluteUrl,
           connectionCandidates:
             manifest.onboarding.connectivity?.connectionCandidates ?? null,
@@ -133,6 +166,7 @@ export function CompanySettings() {
         });
       } catch {
         snippet = buildAgentSnippet({
+          locale,
           onboardingTextUrl: absoluteUrl,
           connectionCandidates: null,
           testResolutionUrl: null
@@ -153,7 +187,7 @@ export function CompanySettings() {
     },
     onError: (err) => {
       setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
+        err instanceof Error ? err.message : t("companySettings.inviteCreateFailed")
       );
     }
   });
@@ -224,15 +258,15 @@ export function CompanySettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: selectedCompany?.name ?? t("companyMenu.company"), href: "/dashboard" },
+      { label: t("companySettings.title") }
     ]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        {t("companySettings.noCompanySelected")}
       </div>
     );
   }
@@ -249,16 +283,50 @@ export function CompanySettings() {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="text-lg font-semibold">{t("companySettings.title")}</h1>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          {t("companySettings.preferences")}
+        </div>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <Field label={t("common.language")} hint={t("companySettings.languageHint")}>
+            <div className="flex flex-wrap gap-2">
+              {(["en", "zh-CN"] as AppLocale[]).map((option) => (
+                <PreferenceChoiceButton
+                  key={option}
+                  active={locale === option}
+                  label={LOCALE_LABELS[option]}
+                  onClick={() => setLocale(option)}
+                />
+              ))}
+            </div>
+          </Field>
+          <Field label={t("common.appearance")} hint={t("companySettings.themeHint")}>
+            <div className="flex flex-wrap gap-2">
+              <PreferenceChoiceButton
+                active={theme === "light"}
+                label={t("common.light")}
+                onClick={() => setTheme("light")}
+              />
+              <PreferenceChoiceButton
+                active={theme === "dark"}
+                label={t("common.dark")}
+                onClick={() => setTheme("dark")}
+              />
+            </div>
+          </Field>
+        </div>
       </div>
 
       {/* General */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
+          {t("companySettings.general")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field label={t("companySettings.companyName")} hint={t("companySettings.companyNameHint")}>
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -267,14 +335,14 @@ export function CompanySettings() {
             />
           </Field>
           <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
+            label={t("companySettings.description")}
+            hint={t("companySettings.descriptionHint")}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder={t("companySettings.optionalDescription")}
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -284,7 +352,7 @@ export function CompanySettings() {
       {/* Appearance */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
+          {t("companySettings.branding")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
@@ -298,8 +366,8 @@ export function CompanySettings() {
             </div>
             <div className="flex-1 space-y-3">
               <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+                label={t("companySettings.logo")}
+                hint={t("companySettings.logoHint")}
               >
                 <div className="space-y-2">
                   <input
@@ -316,7 +384,7 @@ export function CompanySettings() {
                         onClick={handleClearLogo}
                         disabled={clearLogoMutation.isPending}
                       >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                        {clearLogoMutation.isPending ? t("companySettings.removingLogo") : t("companySettings.removeLogo")}
                       </Button>
                     </div>
                   )}
@@ -325,7 +393,7 @@ export function CompanySettings() {
                       {logoUploadError ??
                         (logoUploadMutation.error instanceof Error
                           ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
+                          : t("companySettings.logoUploadFailed"))}
                     </span>
                   )}
                   {clearLogoMutation.isError && (
@@ -334,13 +402,13 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">{t("companySettings.uploadingLogo")}</span>
                   )}
                 </div>
               </Field>
               <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                label={t("companySettings.brandColor")}
+                hint={t("companySettings.brandColorHint")}
               >
                 <div className="flex items-center gap-2">
                   <input
@@ -358,7 +426,7 @@ export function CompanySettings() {
                         setBrandColor(v);
                       }
                     }}
-                    placeholder="Auto"
+                    placeholder={t("companySettings.auto")}
                     className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                   />
                   {brandColor && (
@@ -368,7 +436,7 @@ export function CompanySettings() {
                       onClick={() => setBrandColor("")}
                       className="text-xs text-muted-foreground"
                     >
-                      Clear
+                      {t("companySettings.clear")}
                     </Button>
                   )}
                 </div>
@@ -386,16 +454,16 @@ export function CompanySettings() {
             onClick={handleSaveGeneral}
             disabled={generalMutation.isPending || !companyName.trim()}
           >
-            {generalMutation.isPending ? "Saving..." : "Save changes"}
+            {generalMutation.isPending ? t("common.saving") : t("companySettings.saveChanges")}
           </Button>
           {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
+            <span className="text-xs text-muted-foreground">{t("companySettings.saved")}</span>
           )}
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
                   ? generalMutation.error.message
-                  : "Failed to save"}
+                  : t("companySettings.failedToSave")}
             </span>
           )}
         </div>
@@ -404,12 +472,12 @@ export function CompanySettings() {
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
+          {t("companySettings.hiring")}
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label={t("companySettings.requireBoardApproval")}
+            hint={t("companySettings.requireBoardApprovalHint")}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
@@ -419,31 +487,37 @@ export function CompanySettings() {
 
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Feedback Sharing
+          {t("companySettings.feedbackSharing")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <ToggleField
-            label="Allow sharing voted AI outputs with Paperclip Labs"
-            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            label={t("companySettings.feedbackSharingToggle")}
+            hint={t("companySettings.feedbackSharingHint")}
             checked={!!selectedCompany.feedbackDataSharingEnabled}
             onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
           />
           <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+            {t("companySettings.feedbackSharingLocal")}
           </p>
           <div className="space-y-1 text-xs text-muted-foreground">
             <div>
-              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+              {t("companySettings.termsVersion", {
+                value: selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+              })}
             </div>
             {selectedCompany.feedbackDataSharingConsentAt ? (
               <div>
-                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                {t("companySettings.enabledAt", {
+                  value: new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString(locale),
+                })}
                 {selectedCompany.feedbackDataSharingConsentByUserId
-                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
+                  ? ` ${t("companySettings.enabledBy", {
+                    value: selectedCompany.feedbackDataSharingConsentByUserId,
+                  })}`
                   : ""}
               </div>
             ) : (
-              <div>Sharing is currently disabled.</div>
+              <div>{t("companySettings.sharingDisabled")}</div>
             )}
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -452,7 +526,7 @@ export function CompanySettings() {
                 rel="noreferrer"
                 className="inline-flex text-foreground underline underline-offset-4"
               >
-                Read our terms of service
+                {t("issue.readTerms")}
               </a>
             ) : null}
           </div>
@@ -462,14 +536,14 @@ export function CompanySettings() {
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
+          {t("companySettings.invitesSection")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
+              {t("companySettings.inviteHint")}
             </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
+            <HintIcon text={t("companySettings.inviteHintTooltip")} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -479,8 +553,8 @@ export function CompanySettings() {
               disabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
+                ? t("companySettings.generating")
+                : t("companySettings.generateInvite")}
             </Button>
           </div>
           {inviteError && (
@@ -493,7 +567,7 @@ export function CompanySettings() {
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
+                  {t("companySettings.invitePrompt")}
                 </div>
                 {snippetCopied && (
                   <span
@@ -501,7 +575,7 @@ export function CompanySettings() {
                     className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
                   >
                     <Check className="h-3 w-3" />
-                    Copied
+                    {t("companySettings.copied")}
                   </span>
                 )}
               </div>
@@ -528,7 +602,7 @@ export function CompanySettings() {
                       }
                     }}
                   >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
+                    {snippetCopied ? t("companySettings.copiedSnippet") : t("companySettings.copySnippet")}
                   </Button>
                 </div>
               </div>
@@ -540,24 +614,24 @@ export function CompanySettings() {
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
+          {t("companySettings.companyPackages")}
         </div>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            {t("companySettings.companyPackagesHint")}{" "}
+            <a href="/org" className="underline hover:text-foreground">{t("companySettings.orgChart")}</a>.
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
+                {t("companySettings.export")}
               </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
+                {t("companySettings.import")}
               </Link>
             </Button>
           </div>
@@ -567,12 +641,11 @@ export function CompanySettings() {
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+          {t("companySettings.dangerZone")}
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            {t("companySettings.archiveHint")}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -585,7 +658,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  t("companySettings.archiveConfirm", { name: selectedCompany.name })
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
@@ -601,16 +674,16 @@ export function CompanySettings() {
               }}
             >
               {archiveMutation.isPending
-                ? "Archiving..."
+                ? t("companySettings.archiving")
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                ? t("companySettings.alreadyArchived")
+                : t("companySettings.archiveCompany")}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : t("companySettings.archiveFailed")}
               </span>
             )}
           </div>
@@ -623,29 +696,82 @@ export function CompanySettings() {
 function buildAgentSnippet(input: AgentSnippetInput) {
   const candidateUrls = buildCandidateOnboardingUrls(input);
   const resolutionTestUrl = buildResolutionTestUrl(input);
+  const isChinese = input.locale === "zh-CN";
 
   const candidateList =
     candidateUrls.length > 0
       ? candidateUrls.map((u) => `- ${u}`).join("\n")
-      : "- (No candidate URLs available yet.)";
+      : isChinese
+        ? "- （当前还没有可用候选 URL。）"
+        : "- (No candidate URLs available yet.)";
 
   const connectivityBlock =
     candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
+      ? isChinese
+        ? `当前还没有可用候选 URL。请让你的用户先在 Paperclip 中配置一个从你运行环境可访问的主机名，然后再重试。
+建议步骤：
+- 选择一个在你当前运行环境中能够解析到 Paperclip 主机的 hostname
+- 执行：pnpm paperclipai allowed-hostname <host>
+- 重启 Paperclip
+- 用以下命令验证：curl -fsS http://<host>:3100/api/health
+- 重新生成这段邀请提示词`
+        : `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
 Suggested steps:
 - choose a hostname that resolves to the Paperclip host from your runtime
 - run: pnpm paperclipai allowed-hostname <host>
 - restart Paperclip
 - verify with: curl -fsS http://<host>:3100/api/health
 - regenerate this invite snippet`
-      : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
+      : isChinese
+        ? `如果这些地址都不可达，请让你的用户在 Paperclip 中补充一个可访问的 hostname，重启后再重试。
+建议命令：
+- pnpm paperclipai allowed-hostname <host>
+然后用以下命令验证：curl -fsS <base-url>/api/health`
+        : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
 Suggested command:
 - pnpm paperclipai allowed-hostname <host>
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
+    ? isChinese
+      ? `\n你必须测试 Paperclip 到 gateway 的可达性，请调用：${resolutionTestUrl}?url=<urlencoded-gateway-url>（使用上面已经验证可用的 hostname）。不要假设你的 172.x 地址一定能被 Paperclip 访问，务必实际测试。`
+      : `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
     : "";
+
+  if (isChinese) {
+    return `你已被邀请加入一个 Paperclip 组织。
+
+你应该优先尝试以下 URL：
+${candidateList}
+
+连通性说明：
+如果你和 Paperclip 不在同一台机器上运行，那么 Paperclip 必须能够通过上面某个 hostname 被访问到。
+请在你的运行环境里先验证这个 hostname 是否可用：GET <base-url>/api/health
+
+${connectivityBlock}
+
+对于 "agentName"，直接使用你自己的 agent 名称即可（OpenClaw 或你的真实 agent 名）。
+你还需要提交一个 Paperclip 可以访问到的 gateway URL。请检查你的配置，并把那个 URL 一并带上。${resolutionLine}
+
+---
+
+这个 onboarding 流程适用于 OpenClaw Gateway。
+提交加入请求时，请使用：
+- \`adapterType: "openclaw_gateway"\`
+- 把 \`agentDefaultsPayload.url\` 设为你的 \`ws://\` 或 \`wss://\` gateway URL
+- 用 \`agentDefaultsPayload.headers["x-openclaw-token"]\` 传递你的 gateway token
+- （兼容旧版本）也接受 \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
+- 建议保持 device auth 开启。如果省略 \`devicePrivateKeyPem\`，Paperclip 会在 join 过程中自动生成并持久化一个密钥，以保持配对审批稳定。
+- 只有在无法完成配对的特殊环境下，才使用 \`disableDeviceAuth=true\`。
+
+不要在这个 join 流程里使用 \`/v1/responses\` 或 \`/hooks/*\`。
+
+在开始任何操作之前，请先回复你的用户，说明你已经理解这些指令并会开始处理。然后在另一个名为 "paperclip-onboarding" 的会话里完成上述步骤，做完后再通知你的用户。过程中要给用户阶段性更新，让他们知道进展。
+
+连接到 Paperclip 之后（包括密钥交换等步骤），你必须继续阅读并遵循他们提供的 onboarding.txt 里的后续指引。
+
+`;
+  }
 
   return `You're invited to join a Paperclip organization.
 

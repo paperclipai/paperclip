@@ -429,6 +429,26 @@ async function writeBundleFiles(
   }
 }
 
+function normalizeFileMap(files: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(files).map(([relativePath, content]) => [
+      normalizeRelativeFilePath(relativePath),
+      content,
+    ]),
+  );
+}
+
+function sortedFileKeys(files: Record<string, string>): string[] {
+  return Object.keys(files).sort((left, right) => left.localeCompare(right));
+}
+
+function fileMapsEqual(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = sortedFileKeys(left);
+  const rightKeys = sortedFileKeys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+}
+
 export function syncInstructionsBundleConfigFromFilePath(
   agent: AgentLike,
   adapterConfig: Record<string, unknown>,
@@ -722,6 +742,98 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
+  async function replaceManagedBundleIfExactMatch(
+    agent: AgentLike,
+    input: {
+      candidates: Array<{ id: string; files: Record<string, string> }>;
+      replacement: { id: string; files: Record<string, string> };
+      entryFile?: string;
+    },
+  ): Promise<{
+    bundle: AgentInstructionsBundle;
+    adapterConfig: Record<string, unknown>;
+    changed: boolean;
+    matchedCandidateId: string | null;
+  }> {
+    const derived = deriveBundleState(agent);
+    const state = await recoverManagedBundleState(agent, derived);
+    const adapterConfig = buildPersistedBundleConfig(derived, state);
+    const currentAgent = { ...agent, adapterConfig };
+
+    if (
+      state.mode !== "managed"
+      || !state.rootPath
+      || state.legacyPromptTemplateActive
+      || state.legacyBootstrapPromptTemplateActive
+    ) {
+      return {
+        bundle: await getBundle(currentAgent),
+        adapterConfig,
+        changed: false,
+        matchedCandidateId: null,
+      };
+    }
+
+    const entryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : ENTRY_FILE_DEFAULT;
+    if (state.entryFile !== entryFile) {
+      return {
+        bundle: await getBundle(currentAgent),
+        adapterConfig,
+        changed: false,
+        matchedCandidateId: null,
+      };
+    }
+
+    const stat = await statIfExists(state.rootPath);
+    if (!stat?.isDirectory()) {
+      return {
+        bundle: await getBundle(currentAgent),
+        adapterConfig,
+        changed: false,
+        matchedCandidateId: null,
+      };
+    }
+
+    const currentRelativePaths = await listFilesRecursive(state.rootPath);
+    const currentFiles = Object.fromEntries(
+      await Promise.all(currentRelativePaths.map(async (relativePath) => {
+        const absolutePath = resolvePathWithinRoot(state.rootPath!, relativePath);
+        return [relativePath, await fs.readFile(absolutePath, "utf8")] as const;
+      })),
+    );
+    const normalizedCandidates = input.candidates.map((candidate) => ({
+      id: candidate.id,
+      files: normalizeFileMap(candidate.files),
+    }));
+    const matchedCandidate = normalizedCandidates.find((candidate) => fileMapsEqual(currentFiles, candidate.files));
+    if (!matchedCandidate) {
+      return {
+        bundle: await getBundle(currentAgent),
+        adapterConfig,
+        changed: false,
+        matchedCandidateId: null,
+      };
+    }
+
+    const replacementFiles = normalizeFileMap(input.replacement.files);
+    if (fileMapsEqual(currentFiles, replacementFiles)) {
+      return {
+        bundle: await getBundle(currentAgent),
+        adapterConfig,
+        changed: false,
+        matchedCandidateId: matchedCandidate.id,
+      };
+    }
+
+    await writeBundleFiles(state.rootPath, replacementFiles, { overwriteExisting: true });
+    return {
+      bundle: await getBundle(currentAgent),
+      adapterConfig,
+      changed: true,
+      matchedCandidateId: matchedCandidate.id,
+    };
+  }
+
   return {
     getBundle,
     readFile,
@@ -731,5 +843,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    replaceManagedBundleIfExactMatch,
   };
 }

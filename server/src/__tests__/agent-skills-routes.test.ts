@@ -36,6 +36,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   exportFiles: vi.fn(),
   ensureManagedBundle: vi.fn(),
   materializeManagedBundle: vi.fn(),
+  replaceManagedBundleIfExactMatch: vi.fn(),
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
@@ -439,7 +440,35 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {
+  it("materializes the Chinese bundled CEO instruction set when requested", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        instructionsLocale: "zh-CN",
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "11111111-1111-4111-8111-111111111111",
+        role: "ceo",
+        adapterType: "claude_local",
+      }),
+      expect.objectContaining({
+        "AGENTS.md": expect.stringContaining("你是 CEO"),
+        "HEARTBEAT.md": expect.stringContaining("CEO 心跳检查清单"),
+        "SOUL.md": expect.stringContaining("CEO 人格设定"),
+        "TOOLS.md": expect.stringContaining("你的工具会记录在这里"),
+      }),
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+  });
+
+  it("materializes the bundled engineer instruction set for engineer agents with no prompt template", async () => {
     const res = await request(await createApp())
       .post("/api/companies/company-1/agents")
       .send({
@@ -458,16 +487,35 @@ describe("agent skill routes", () => {
           adapterType: "claude_local",
         }),
         expect.objectContaining({
-          "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
+          "AGENTS.md": expect.stringMatching(/You are a software engineer[\s\S]*Run the smallest relevant verification/),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );
+    });
+  });
+
+  it("materializes the bundled default instruction set for general agents with no prompt template", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "General Agent",
+        role: "general",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    await vi.waitFor(() => {
       expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
-        expect.any(Object),
+        expect.objectContaining({
+          id: "11111111-1111-4111-8111-111111111111",
+          role: "general",
+          adapterType: "claude_local",
+        }),
         expect.objectContaining({
           "AGENTS.md": expect.stringContaining('kind: "request_confirmation"'),
         }),
-        expect.any(Object),
+        { entryFile: "AGENTS.md", replaceExisting: false },
       );
       expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
         expect.any(Object),
@@ -477,6 +525,171 @@ describe("agent skill routes", () => {
         expect.any(Object),
       );
     });
+  });
+
+  it("materializes the Chinese bundled engineer instruction set when requested", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Engineer",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        instructionsLocale: "zh-CN",
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    await vi.waitFor(() => {
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "11111111-1111-4111-8111-111111111111",
+          role: "engineer",
+          adapterType: "claude_local",
+        }),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("你是这家 Paperclip 公司的软件工程师"),
+        }),
+        { entryFile: "AGENTS.md", replaceExisting: false },
+      );
+    });
+  });
+
+  it("materializes Chinese role-specific CMO and CTO instruction sets when requested", async () => {
+    const app = await createApp();
+
+    const ctoRes = await request(app)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "CTO",
+        role: "cto",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        instructionsLocale: "zh-CN",
+      });
+    const cmoRes = await request(app)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        instructionsLocale: "zh-CN",
+      });
+
+    expect([200, 201], JSON.stringify(ctoRes.body)).toContain(ctoRes.status);
+    expect([200, 201], JSON.stringify(cmoRes.body)).toContain(cmoRes.status);
+    await vi.waitFor(() => {
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "cto" }),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("你是 CTO"),
+        }),
+        { entryFile: "AGENTS.md", replaceExisting: false },
+      );
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "cmo" }),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("你是 CMO"),
+        }),
+        { entryFile: "AGENTS.md", replaceExisting: false },
+      );
+    });
+  });
+
+  it("localizes an untouched default managed instruction bundle through the API", async () => {
+    const existingAgent = {
+      ...makeAgent("claude_local"),
+      role: "ceo",
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/agent/instructions",
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: "/tmp/agent/instructions/AGENTS.md",
+      },
+    };
+    mockAgentService.getById.mockResolvedValue(existingAgent);
+    mockAgentInstructionsService.replaceManagedBundleIfExactMatch.mockResolvedValue({
+      bundle: {
+        agentId: existingAgent.id,
+        companyId: existingAgent.companyId,
+        mode: "managed",
+        rootPath: "/tmp/agent/instructions",
+        managedRootPath: "/tmp/agent/instructions",
+        entryFile: "AGENTS.md",
+        resolvedEntryPath: "/tmp/agent/instructions/AGENTS.md",
+        editable: true,
+        warnings: [],
+        legacyPromptTemplateActive: false,
+        legacyBootstrapPromptTemplateActive: false,
+        files: [],
+      },
+      adapterConfig: {
+        ...existingAgent.adapterConfig,
+        localized: true,
+      },
+      changed: true,
+      matchedCandidateId: "en",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/agents/${existingAgent.id}/instructions-bundle/localize-default?companyId=company-1`)
+      .send({ instructionsLocale: "zh-CN" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      changed: true,
+      instructionsLocale: "zh-CN",
+      matchedLocale: "en",
+    });
+    expect(mockAgentInstructionsService.replaceManagedBundleIfExactMatch).toHaveBeenCalledWith(
+      existingAgent,
+      expect.objectContaining({
+        candidates: [
+          expect.objectContaining({
+            id: "en",
+            files: expect.objectContaining({
+              "AGENTS.md": expect.stringContaining("You are the CEO."),
+            }),
+          }),
+          expect.objectContaining({
+            id: "zh-CN",
+            files: expect.objectContaining({
+              "AGENTS.md": expect.stringContaining("你是 CEO"),
+            }),
+          }),
+        ],
+        replacement: expect.objectContaining({
+          id: "zh-CN",
+          files: expect.objectContaining({
+            "HEARTBEAT.md": expect.stringContaining("CEO 心跳检查清单"),
+          }),
+        }),
+        entryFile: "AGENTS.md",
+      }),
+    );
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      existingAgent.id,
+      {
+        adapterConfig: expect.objectContaining({
+          localized: true,
+        }),
+      },
+      expect.objectContaining({
+        recordRevision: expect.objectContaining({
+          source: "instructions_bundle_default_locale",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.instructions_bundle_localized",
+        details: {
+          instructionsLocale: "zh-CN",
+          matchedLocale: "en",
+        },
+      }),
+    );
   });
 
   it("includes canonical desired skills in hire approvals", async () => {

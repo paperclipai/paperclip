@@ -18,6 +18,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
+import { localizeKnownOnboardingProjectName } from "../lib/onboarding-localization";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -29,6 +30,7 @@ import {
 } from "@/components/ui/collapsible";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import type { Project } from "@paperclipai/shared";
+import { useI18n } from "../context/LocaleContext";
 
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
@@ -57,6 +59,8 @@ function SortableProjectItem({
     transition,
     isDragging,
   } = useSortable({ id: project.id });
+  const { locale, t } = useI18n();
+  const localizedProjectName = localizeKnownOnboardingProjectName(project.name, locale);
 
   const routeRef = projectRouteRef(project);
 
@@ -94,8 +98,8 @@ function SortableProjectItem({
             className="shrink-0 h-3.5 w-3.5 rounded-sm"
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
-          <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          <span className="flex-1 truncate">{localizedProjectName}</span>
+          {project.pauseReason === "budget" ? <BudgetSidebarMarker title={t("sidebar.projectPausedByBudget")} /> : null}
         </NavLink>
         {projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
@@ -122,6 +126,7 @@ function SortableProjectItem({
 }
 
 export function SidebarProjects() {
+  const { t } = useI18n();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
@@ -192,7 +197,7 @@ export function SidebarProjects() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
+              {t("sidebar.projects")}
             </span>
           </CollapsibleTrigger>
           <button
@@ -201,7 +206,7 @@ export function SidebarProjects() {
               openNewProject();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New project"
+            aria-label={t("sidebar.newProject")}
           >
             <Plus className="h-3 w-3" />
           </button>

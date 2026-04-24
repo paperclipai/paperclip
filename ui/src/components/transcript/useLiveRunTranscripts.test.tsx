@@ -163,7 +163,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       const { isInitialHydrating } = useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local" }],
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", hasStoredOutput: true }],
       });
       latestIsInitialHydrating = isInitialHydrating;
       return null;
@@ -200,7 +200,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local" }],
+        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local", hasStoredOutput: true }],
       });
       return null;
     }
@@ -233,7 +233,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local", hasStoredOutput: true }],
         enableRealtimeUpdates: false,
         logReadLimitBytes: 64_000,
       });
@@ -251,6 +251,36 @@ describe("useLiveRunTranscripts", () => {
 
     expect(FakeWebSocket.instances).toHaveLength(0);
     expect(logMock).toHaveBeenCalledWith("run-1", 0, 64_000);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("does not read persisted logs for live runs without stored output yet", async () => {
+    let latestIsInitialHydrating = true;
+
+    function Harness() {
+      const { isInitialHydrating } = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-queued", status: "queued", adapterType: "codex_local", hasStoredOutput: false }],
+      });
+      latestIsInitialHydrating = isInitialHydrating;
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).not.toHaveBeenCalled();
+    expect(latestIsInitialHydrating).toBe(false);
 
     act(() => {
       root.unmount();

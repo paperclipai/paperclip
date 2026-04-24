@@ -1,6 +1,8 @@
 import type { Goal } from "@paperclipai/shared";
+import type { AppLocale } from "./i18n";
+import { getDefaultOnboardingProjectName } from "./onboarding-localization";
 
-export const ONBOARDING_PROJECT_NAME = "Onboarding";
+export const ONBOARDING_PROJECT_NAME = getDefaultOnboardingProjectName("en");
 
 function goalCreatedAt(goal: Goal) {
   const createdAt = goal.createdAt instanceof Date ? goal.createdAt : new Date(goal.createdAt);
@@ -24,9 +26,9 @@ export function selectDefaultCompanyGoalId(goals: Goal[]): string | null {
   );
 }
 
-export function buildOnboardingProjectPayload(goalId: string | null) {
+export function buildOnboardingProjectPayload(goalId: string | null, locale: AppLocale = "en") {
   return {
-    name: ONBOARDING_PROJECT_NAME,
+    name: getDefaultOnboardingProjectName(locale),
     status: "in_progress" as const,
     ...(goalId ? { goalIds: [goalId] } : {}),
   };

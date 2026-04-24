@@ -41,6 +41,21 @@ vi.mock("@/context/SidebarContext", () => ({
   }),
 }));
 
+vi.mock("@/context/LocaleContext", () => ({
+  useI18n: () => ({
+    locale: "en",
+    setLocale: vi.fn(),
+    localeLabel: "English",
+    t: (key: string) => ({
+      "companyMenu.company": "Company",
+      "companySettings.title": "Company Settings",
+      "companySettings.general": "General",
+      "companySettings.access": "Access",
+      "companySettings.invites": "Invites",
+    }[key] ?? key),
+  }),
+}));
+
 vi.mock("./SidebarNavItem", () => ({
   SidebarNavItem: (props: {
     to: string;

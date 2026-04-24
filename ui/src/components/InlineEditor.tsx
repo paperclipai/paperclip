@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { useI18n } from "../context/LocaleContext";
 
 interface InlineEditorProps {
   value: string;
@@ -51,6 +52,7 @@ export function InlineEditor({
   onDropFile,
   mentions,
 }: InlineEditorProps) {
+  const { t } = useI18n();
   const [editing, setEditing] = useState(false);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -253,12 +255,12 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? t("common.autosaving")
               : autosaveState === "saved"
-                ? "Saved"
+                ? t("common.saved")
                 : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+                  ? t("common.couldNotSave")
+                  : t("status.idle")}
           </span>
         </div>
       </div>

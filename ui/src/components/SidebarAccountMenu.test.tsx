@@ -14,7 +14,7 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
-const mockToggleTheme = vi.hoisted(() => vi.fn());
+const mockSetTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
@@ -37,7 +37,40 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
-    toggleTheme: mockToggleTheme,
+    setTheme: mockSetTheme,
+    toggleTheme: vi.fn(),
+  }),
+}));
+
+vi.mock("../context/LocaleContext", () => ({
+  useI18n: () => ({
+    locale: "en",
+    setLocale: vi.fn(),
+    localeLabel: "English",
+    t: (key: string) => ({
+      "account.openMenu": "Open account menu",
+      "account.viewProfile": "View profile",
+      "account.editProfile": "Edit profile",
+      "account.instanceSettings": "Instance settings",
+      "account.documentation": "Documentation",
+      "account.signOut": "Sign out",
+      "account.signingOut": "Signing out...",
+      "account.signOutDesc": "End this browser session.",
+      "account.languageDesc": "Switch the UI language.",
+      "account.appearanceDesc": "Choose the app appearance.",
+      "common.language": "Language",
+      "common.appearance": "Appearance",
+      "common.light": "Light",
+      "common.dark": "Dark",
+      "account.badge.account": "Account",
+      "account.badge.local": "Local",
+      "account.signedIn": "Signed in",
+      "account.localWorkspaceBoard": "Local workspace board",
+      "account.viewProfileDesc": "Open your activity, task, and usage ledger.",
+      "account.editProfileDesc": "Update your display name and avatar.",
+      "account.instanceSettingsDesc": "Jump back to the last settings page you opened.",
+      "account.documentationDesc": "Open Paperclip docs in a new tab.",
+    }[key] ?? key),
   }),
 }));
 

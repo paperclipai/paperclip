@@ -12,6 +12,8 @@ export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
 });
 
+export const agentInstructionsLocaleSchema = z.enum(["en", "zh-CN"]);
+
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
 
 export const updateAgentInstructionsBundleSchema = z.object({
@@ -22,6 +24,12 @@ export const updateAgentInstructionsBundleSchema = z.object({
 });
 
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
+
+export const localizeAgentInstructionsBundleSchema = z.object({
+  instructionsLocale: agentInstructionsLocaleSchema,
+});
+
+export type LocalizeAgentInstructionsBundle = z.infer<typeof localizeAgentInstructionsBundleSchema>;
 
 export const upsertAgentInstructionsFileSchema = z.object({
   path: z.string().trim().min(1),
@@ -58,6 +66,7 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
+  instructionsLocale: agentInstructionsLocaleSchema.optional().default("en"),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
@@ -70,7 +79,7 @@ export const createAgentHireSchema = createAgentSchema.extend({
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
 export const updateAgentSchema = createAgentSchema
-  .omit({ permissions: true })
+  .omit({ permissions: true, instructionsLocale: true })
   .partial()
   .extend({
     permissions: z.never().optional(),

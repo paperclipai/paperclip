@@ -1,13 +1,11 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
   LogOut,
   type LucideIcon,
-  Moon,
   Settings,
   UserRound,
-  Sun,
   UserRoundPen,
 } from "lucide-react";
 import type { DeploymentMode } from "@paperclipai/shared";
@@ -16,9 +14,11 @@ import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
+import { useI18n } from "../context/LocaleContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "../lib/utils";
+import { LOCALE_LABELS, type AppLocale } from "@/lib/i18n";
 
 const PROFILE_SETTINGS_PATH = "/instance/settings/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -101,6 +101,51 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
   );
 }
 
+function SelectionButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+        active
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-background/70 text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PreferenceSection({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-border/80 bg-background/40 px-3 py-3">
+      <div className="mb-2">
+        <div className="text-sm font-medium text-foreground">{title}</div>
+        <div className="text-xs text-muted-foreground">{description}</div>
+      </div>
+      <div className="flex flex-wrap gap-2">{children}</div>
+    </div>
+  );
+}
+
 export function SidebarAccountMenu({
   deploymentMode,
   instanceSettingsTarget,
@@ -111,7 +156,8 @@ export function SidebarAccountMenu({
   const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen } = useSidebar();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
+  const { locale, setLocale, t } = useI18n();
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
@@ -130,8 +176,9 @@ export function SidebarAccountMenu({
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
-  const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
+    session?.user.email?.trim()
+    || (deploymentMode === "authenticated" ? t("account.signedIn") : t("account.localWorkspaceBoard"));
+  const accountBadge = deploymentMode === "authenticated" ? t("account.badge.account") : t("account.badge.local");
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
@@ -147,7 +194,7 @@ export function SidebarAccountMenu({
           <button
             type="button"
             className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
-            aria-label="Open account menu"
+            aria-label={t("account.openMenu")}
           >
             <Avatar size="sm">
               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
@@ -187,43 +234,74 @@ export function SidebarAccountMenu({
 
             <div className="mt-4 space-y-1">
               <MenuAction
-                label="View profile"
-                description="Open your activity, task, and usage ledger."
+                label={t("account.viewProfile")}
+                description={t("account.viewProfileDesc")}
                 icon={UserRound}
                 href={profileHref}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Edit profile"
-                description="Update your display name and avatar."
+                label={t("account.editProfile")}
+                description={t("account.editProfileDesc")}
                 icon={UserRoundPen}
                 href={PROFILE_SETTINGS_PATH}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Instance settings"
-                description="Jump back to the last settings page you opened."
+                label={t("account.instanceSettings")}
+                description={t("account.instanceSettingsDesc")}
                 icon={Settings}
                 href={instanceSettingsTarget}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Documentation"
-                description="Open Paperclip docs in a new tab."
+                label={t("account.documentation")}
+                description={t("account.documentationDesc")}
                 icon={BookOpen}
                 href={DOCS_URL}
                 external
                 onClick={() => setOpen(false)}
               />
-              <MenuAction
-                label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                description="Toggle the app appearance."
-                icon={theme === "dark" ? Sun : Moon}
-                onClick={() => {
-                  toggleTheme();
-                  setOpen(false);
-                }}
-              />
+              <PreferenceSection
+                title={t("common.language")}
+                description={t("account.languageDesc")}
+              >
+                {(["en", "zh-CN"] as AppLocale[]).map((option) => (
+                  <SelectionButton
+                    key={option}
+                    active={locale === option}
+                    onClick={() => {
+                      setLocale(option);
+                      setOpen(false);
+                    }}
+                  >
+                    {LOCALE_LABELS[option]}
+                  </SelectionButton>
+                ))}
+              </PreferenceSection>
+              <PreferenceSection
+                title={t("common.appearance")}
+                description={t("account.appearanceDesc")}
+              >
+                <SelectionButton
+                  active={theme === "light"}
+                  onClick={() => {
+                    setTheme("light");
+                    setOpen(false);
+                  }}
+                >
+                  {t("common.light")}
+                </SelectionButton>
+                <SelectionButton
+                  active={theme === "dark"}
+                  onClick={() => {
+                    setTheme("dark");
+                    setOpen(false);
+                  }}
+                >
+                  {t("common.dark")}
+                </SelectionButton>
+              </PreferenceSection>
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
@@ -239,10 +317,10 @@ export function SidebarAccountMenu({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-foreground">
-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                      {signOutMutation.isPending ? t("account.signingOut") : t("account.signOut")}
                     </span>
                     <span className="block text-xs text-muted-foreground">
-                      End this browser session.
+                      {t("account.signOutDesc")}
                     </span>
                   </span>
                 </button>

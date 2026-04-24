@@ -59,6 +59,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        hasStoredOutput: activeRun.hasStoredOutput,
         issueId,
       });
     }

@@ -1,84 +1,91 @@
 ---
 name: paperclip-create-agent
 description: >
-  Create new agents in Paperclip with governance-aware hiring. Use when you need
-  to inspect adapter configuration options, compare existing agent configs,
-  draft a new agent prompt/config, and submit a hire request.
+  在 Paperclip 中按治理流程创建或招聘新智能体。适用于检查适配器配置、
+  对比现有智能体配置、起草新智能体指令/配置并提交 hire request。
 ---
 
 # Paperclip Create Agent Skill
 
-Use this skill when you are asked to hire/create an agent.
+当你被要求招聘或创建 Paperclip 智能体时使用这个 skill。
 
-## Preconditions
+## 前置条件
 
-You need either:
+你需要满足其中之一：
 
-- board access, or
-- agent permission `can_create_agents=true` in your company
+- 拥有 board 权限
+- 当前公司内的智能体权限 `can_create_agents=true`
 
-If you do not have this permission, escalate to your CEO or board.
+如果没有权限，请升级给 CEO 或 board，不要绕过治理流程。
 
-## Workflow
+## 工作流
 
-1. Confirm identity and company context.
+1. 确认身份和公司上下文。
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/agents/me" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-2. Discover available adapter configuration docs for this Paperclip instance.
+2. 读取当前 Paperclip 实例可用的适配器配置说明。
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-3. Read adapter-specific docs (example: `claude_local`).
+3. 读取目标适配器的详细配置说明，例如 `claude_local`。
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-4. Compare existing agent configurations in your company.
+4. 对比公司里已有智能体的配置，优先复用已经验证过的运行方式。
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-5. Read the reusable agent instruction templates before drafting the hire. If the role matches an existing pattern, start from that template and adapt it to the company, manager, adapter, and workspace.
+5. 起草 hire request 前，先查看可复用的指令模板。
 
-Reference:
+模板索引：
 `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 
-Agent-specific templates:
+具体模板目录：
 `skills/paperclip-create-agent/references/agents/`
 
-6. Discover allowed agent icons and pick one that matches the role.
+语言选择规则：
+
+- 如果当前公司或任务使用中文，优先使用 `*.zh-CN.md` 模板。
+- 如果当前公司或任务使用英文，使用默认英文模板。
+- 文件名、API 路径、skill 名和代码标识保持英文；自然语言指令按目标语言编写。
+
+6. 读取允许使用的智能体图标，并选择符合角色的图标。
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-7. Draft the new hire config:
-- role/title/name
-- icon (required in practice; use one from `/llms/agent-icons.txt`)
-- reporting line (`reportsTo`)
-- adapter type
-- optional `desiredSkills` from the company skill library when this role needs installed skills on day one
-- adapter and runtime config aligned to this environment
-- leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
-- capabilities
-- run prompt in adapter config (`promptTemplate` where applicable)
-- for coding or execution agents, include the Paperclip execution contract: start actionable work in the same heartbeat; do not stop at a plan unless planning was requested; leave durable progress with a clear next action; use child issues for long or parallel delegated work instead of polling; mark blocked work with owner/action; respect budget, pause/cancel, approval gates, and company boundaries.
-- instruction text such as `AGENTS.md`, using a reusable template when one fits; for local managed-bundle adapters, put the adapted `AGENTS.md` content in `adapterConfig.promptTemplate` unless you are a board user intentionally managing bundle paths/files
-- source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
+7. 起草新智能体配置，至少包含：
 
-8. Submit hire request.
+- `name`、`role`、`title`
+- `icon`，实际创建时应从 `/llms/agent-icons.txt` 中选择
+- `reportsTo`
+- `adapterType`
+- 与环境匹配的 `adapterConfig`
+- 需要开箱即用技能时填写 `desiredSkills`
+- `capabilities`
+- 指令内容，例如 `AGENTS.md`
+- 如来自任务，填写 `sourceIssueId` 或 `sourceIssueIds`
+
+默认不要开启定时心跳。只有角色确实需要周期性工作，或用户明确要求时，才设置 `runtimeConfig.heartbeat.enabled=true` 和 `intervalSec`。
+
+对于本地 managed-bundle 适配器，如果没有自定义 bundle 路径，优先让服务端按 `instructionsLocale` materialize 默认角色模板。只有当你确实需要自定义内容时，才在 `adapterConfig.promptTemplate` 中放入改写后的 `AGENTS.md`。
+
+8. 提交 hire request。
 
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
@@ -90,19 +97,21 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "title": "Chief Technology Officer",
     "icon": "crown",
     "reportsTo": "<ceo-agent-id>",
-    "capabilities": "Owns technical roadmap, architecture, staffing, execution",
+    "capabilities": "负责技术路线图、架构、人员配置和执行。",
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
     "adapterType": "codex_local",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
+    "instructionsLocale": "zh-CN",
     "sourceIssueId": "<issue-id>"
   }'
 ```
 
-9. Handle governance state:
-- if response has `approval`, hire is `pending_approval`
-- monitor and discuss on approval thread
-- when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
+9. 处理治理状态。
+
+- 如果响应包含 `approval`，说明 hire request 处于 `pending_approval`。
+- 在 approval thread 中跟进 board 评论。
+- board 批准后，你可能会带着 `PAPERCLIP_APPROVAL_ID` 被唤醒；读取相关 approval 和 issue，完成评论、关闭或后续交接。
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
@@ -111,10 +120,10 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
 curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
+  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\n已按 board 反馈更新指令和适配器配置。"}'
 ```
 
-If the approval already exists and needs manual linking to the issue:
+如果需要手动把 approval 关联回 issue：
 
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
@@ -123,39 +132,26 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
   -d '{"approvalId":"<approval-id>"}'
 ```
 
-After approval is granted, run this follow-up loop:
+## 质量标准
 
-```sh
-curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+提交 hire request 前检查：
 
-curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
-```
+- 角色需要技能时，确认技能已经存在于公司技能库，或先完成导入。
+- 复用同类智能体中已经验证过的配置模式。
+- 角色匹配模板时，从 `references/agent-instruction-templates.md` 或 `references/agents/` 起草，并替换占位符。
+- 按当前公司语言选择中文或英文模板，不要在中文公司里继续提交英文默认 `AGENTS.md`。
+- 使用明确的 `icon`，便于在组织图和任务视图中识别。
+- 不要把 secrets 明文写入配置，除非适配器行为明确要求。
+- 汇报关系必须在当前公司内且符合组织结构。
+- 指令要具体、可执行、边界清晰。
+- 定时心跳保持 opt-in。
+- 如果 board 要求修改，更新 payload 后按 approval 流程重新提交。
 
-For each linked issue, either:
-- close it if approval resolved the request, or
-- comment in markdown with links to the approval and next actions.
-
-## Quality Bar
-
-Before sending a hire request:
-
-- if the role needs skills, make sure they already exist in the company library or install them first using the Paperclip company-skills workflow
-- Reuse proven config patterns from related agents where possible.
-- Reuse a proven instruction template when the role matches one in `skills/paperclip-create-agent/references/agent-instruction-templates.md` or `skills/paperclip-create-agent/references/agents/`; update placeholders and remove irrelevant guidance before submitting the hire.
-- Set a concrete `icon` from `/llms/agent-icons.txt` so the new hire is identifiable in org and task views.
-- Avoid secrets in plain text unless required by adapter behavior.
-- Ensure reporting line is correct and in-company.
-- Ensure prompt is role-specific and operationally scoped.
-- Keep timer heartbeats opt-in. Most hires should rely on assignment/on-demand wakeups unless the job explicitly needs a schedule.
-- If board requests revision, update payload and resubmit through approval flow.
-
-For endpoint payload shapes and full examples, read:
+更多 API payload 和示例见：
 `skills/paperclip-create-agent/references/api-reference.md`
 
-For the reusable `AGENTS.md` starting point index, read:
+可复用 `AGENTS.md` 模板索引见：
 `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 
-For the individual agent templates, read:
+具体智能体模板见：
 `skills/paperclip-create-agent/references/agents/`

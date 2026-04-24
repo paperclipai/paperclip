@@ -6,38 +6,20 @@ import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useI18n } from "@/context/LocaleContext";
 import { useToast } from "@/context/ToastContext";
+import { type AppLocale, formatDateTimeForLocale } from "@/lib/i18n";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 
-const inviteRoleOptions = [
-  {
-    value: "viewer",
-    label: "Viewer",
-    description: "Can view company work and follow along without operational permissions.",
-    gets: "No built-in grants.",
-  },
-  {
-    value: "operator",
-    label: "Operator",
-    description: "Recommended for people who need to help run work without managing access.",
-    gets: "Can assign tasks.",
-  },
-  {
-    value: "admin",
-    label: "Admin",
-    description: "Recommended for operators who need to invite people, create agents, and approve joins.",
-    gets: "Can create agents, invite users, assign tasks, and approve join requests.",
-  },
-  {
-    value: "owner",
-    label: "Owner",
-    description: "Full company access, including membership and permission management.",
-    gets: "Everything in Admin, plus managing members and permission grants.",
-  },
-] as const;
-
 const INVITE_HISTORY_PAGE_SIZE = 5;
+type InviteRole = "owner" | "admin" | "operator" | "viewer";
+type InviteRoleOption = {
+  value: InviteRole;
+  label: string;
+  description: string;
+  gets: string;
+};
 
 function isInviteHistoryRow(value: unknown): value is Awaited<ReturnType<typeof accessApi.listInvites>>["invites"][number] {
   if (!value || typeof value !== "object") return false;
@@ -47,11 +29,13 @@ function isInviteHistoryRow(value: unknown): value is Awaited<ReturnType<typeof 
 export function CompanyInvites() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { locale, t } = useI18n();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
+  const [humanRole, setHumanRole] = useState<InviteRole>("operator");
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
+  const inviteRoleOptions = useMemo(() => getInviteRoleOptions(locale), [locale]);
 
   useEffect(() => {
     if (!latestInviteCopied) return;
@@ -72,8 +56,8 @@ export function CompanyInvites() {
     }
 
     pushToast({
-      title: "Clipboard unavailable",
-      body: "Copy the invite URL manually from the field below.",
+      title: t("companyInvites.clipboardUnavailable"),
+      body: t("companyInvites.clipboardUnavailableDesc"),
       tone: "warn",
     });
     return false;
@@ -81,11 +65,11 @@ export function CompanyInvites() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Invites" },
+      { label: selectedCompany?.name ?? t("companyMenu.company"), href: "/dashboard" },
+      { label: t("companySettings.title"), href: "/company/settings" },
+      { label: t("companyInvites.breadcrumb") },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs, t]);
 
   const inviteHistoryQueryKey = queryKeys.access.invites(selectedCompanyId ?? "", "all", INVITE_HISTORY_PAGE_SIZE);
   const invitesQuery = useInfiniteQuery({
@@ -116,20 +100,20 @@ export function CompanyInvites() {
       }),
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
-      setLatestInviteCopied(false);
       const copied = await copyInviteUrl(invite.inviteUrl);
+      setLatestInviteCopied(copied);
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
-        title: "Invite created",
-        body: copied ? "Invite ready below and copied to clipboard." : "Invite ready below.",
+        title: t("companyInvites.inviteCreated"),
+        body: copied ? t("companyInvites.inviteCreatedCopied") : t("companyInvites.inviteCreatedReady"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to create invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("companyInvites.inviteCreateFailed"),
+        body: error instanceof Error ? error.message : t("common.unknown"),
         tone: "error",
       });
     },
@@ -139,32 +123,32 @@ export function CompanyInvites() {
     mutationFn: (inviteId: string) => accessApi.revokeInvite(inviteId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
-      pushToast({ title: "Invite revoked", tone: "success" });
+      pushToast({ title: t("companyInvites.inviteRevoked"), tone: "success" });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to revoke invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("companyInvites.inviteRevokeFailed"),
+        body: error instanceof Error ? error.message : t("common.unknown"),
         tone: "error",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyInvites.noCompany")}</div>;
   }
 
   if (invitesQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading invites…</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyInvites.loading")}</div>;
   }
 
   if (invitesQuery.error) {
     const message =
       invitesQuery.error instanceof ApiError && invitesQuery.error.status === 403
-        ? "You do not have permission to manage company invites."
+        ? t("companyInvites.noPermission")
         : invitesQuery.error instanceof Error
           ? invitesQuery.error.message
-          : "Failed to load invites.";
+          : t("companyInvites.loadFailed");
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -173,23 +157,23 @@ export function CompanyInvites() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <MailPlus className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Invites</h1>
+          <h1 className="text-lg font-semibold">{t("companyInvites.title")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Create human invite links for company access. New invite links are copied to your clipboard when they are generated.
+          {t("companyInvites.description")}
         </p>
       </div>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Create invite</h2>
+          <h2 className="text-sm font-semibold">{t("companyInvites.createInviteTitle")}</h2>
           <p className="text-sm text-muted-foreground">
-            Generate a human invite link and choose the default access it should request.
+            {t("companyInvites.createInviteDesc")}
           </p>
         </div>
 
         <fieldset className="space-y-3">
-          <legend className="text-sm font-medium">Choose a role</legend>
+          <legend className="text-sm font-medium">{t("companyInvites.chooseRole")}</legend>
           <div className="rounded-xl border border-border">
             {inviteRoleOptions.map((option, index) => {
               const checked = humanRole === option.value;
@@ -211,7 +195,7 @@ export function CompanyInvites() {
                       <span className="text-sm font-medium">{option.label}</span>
                       {option.value === "operator" ? (
                         <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
-                          Default
+                          {t("common.default")}
                         </span>
                       ) : null}
                     </span>
@@ -225,30 +209,30 @@ export function CompanyInvites() {
         </fieldset>
 
         <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.
+          {t("companyInvites.singleUseHint")}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
-            {createInviteMutation.isPending ? "Creating…" : "Create invite"}
+            {createInviteMutation.isPending ? t("common.saving") : t("companyInvites.createInviteTitle")}
           </Button>
-          <span className="text-sm text-muted-foreground">Invite history below keeps the audit trail.</span>
+          <span className="text-sm text-muted-foreground">{t("companyInvites.auditTrailHint")}</span>
         </div>
 
         {latestInviteUrl ? (
           <div className="space-y-3 rounded-lg border border-border px-4 py-4">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium">Latest invite link</div>
+                <div className="text-sm font-medium">{t("companyInvites.latestInviteLink")}</div>
                 {latestInviteCopied ? (
                   <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                     <Check className="h-3.5 w-3.5" />
-                    Copied
+                    {t("companySettings.copied")}
                   </div>
                 ) : null}
               </div>
               <div className="text-sm text-muted-foreground">
-                This URL includes the current Paperclip domain returned by the server.
+                {t("companyInvites.latestInviteLinkDesc")}
               </div>
             </div>
             <button
@@ -265,7 +249,7 @@ export function CompanyInvites() {
               <Button size="sm" variant="outline" asChild>
                 <a href={latestInviteUrl} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
-                  Open invite
+                  {t("companyInvites.openInvite")}
                 </a>
               </Button>
             </div>
@@ -276,19 +260,19 @@ export function CompanyInvites() {
       <section className="rounded-xl border border-border">
         <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold">Invite history</h2>
+            <h2 className="text-sm font-semibold">{t("companyInvites.historyTitle")}</h2>
             <p className="text-sm text-muted-foreground">
-              Review invite status, role, inviter, and any linked join request.
+              {t("companyInvites.historyDesc")}
             </p>
           </div>
           <Link to="/inbox/requests" className="text-sm underline underline-offset-4">
-            Open join request queue
+            {t("companyInvites.openJoinQueue")}
           </Link>
         </div>
 
         {inviteHistory.length === 0 ? (
           <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this company yet.
+            {t("companyInvites.empty")}
           </div>
         ) : (
           <div className="border-t border-border">
@@ -296,12 +280,12 @@ export function CompanyInvites() {
               <table className="min-w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="px-5 py-3 font-medium text-muted-foreground">State</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Role</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Invited by</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Created</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Join request</th>
-                    <th className="px-5 py-3 text-right font-medium text-muted-foreground">Action</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("companyInvites.tableState")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("companyInvites.tableRole")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("companyInvites.tableInvitedBy")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("companyInvites.tableCreated")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("companyInvites.tableJoinRequest")}</th>
+                    <th className="px-5 py-3 text-right font-medium text-muted-foreground">{t("companyInvites.tableAction")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -309,23 +293,23 @@ export function CompanyInvites() {
                     <tr key={invite.id} className="border-b border-border last:border-b-0">
                       <td className="px-5 py-3 align-top">
                         <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
-                          {formatInviteState(invite.state)}
+                          {formatInviteState(invite.state, locale)}
                         </span>
                       </td>
-                      <td className="px-5 py-3 align-top">{invite.humanRole ?? "—"}</td>
+                      <td className="px-5 py-3 align-top">{invite.humanRole ? getInviteRoleShortLabel(invite.humanRole, locale) : "—"}</td>
                       <td className="px-5 py-3 align-top">
-                        <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || "Unknown inviter"}</div>
+                        <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || t("companyInvites.unknownInviter")}</div>
                         {invite.invitedByUser?.email && invite.invitedByUser.name ? (
                           <div className="text-xs text-muted-foreground">{invite.invitedByUser.email}</div>
                         ) : null}
                       </td>
                       <td className="px-5 py-3 align-top text-muted-foreground">
-                        {new Date(invite.createdAt).toLocaleString()}
+                        {formatDateTimeForLocale(invite.createdAt, locale)}
                       </td>
                       <td className="px-5 py-3 align-top">
                         {invite.relatedJoinRequestId ? (
                           <Link to="/inbox/requests" className="underline underline-offset-4">
-                            Review request
+                            {t("companyInvites.reviewRequest")}
                           </Link>
                         ) : (
                           <span className="text-muted-foreground">—</span>
@@ -339,10 +323,10 @@ export function CompanyInvites() {
                             onClick={() => revokeMutation.mutate(invite.id)}
                             disabled={revokeMutation.isPending}
                           >
-                            Revoke
+                            {t("common.remove")}
                           </Button>
                         ) : (
-                          <span className="text-xs text-muted-foreground">Inactive</span>
+                          <span className="text-xs text-muted-foreground">{t("common.inactive")}</span>
                         )}
                       </td>
                     </tr>
@@ -358,7 +342,7 @@ export function CompanyInvites() {
                   onClick={() => invitesQuery.fetchNextPage()}
                   disabled={invitesQuery.isFetchingNextPage}
                 >
-                  {invitesQuery.isFetchingNextPage ? "Loading more…" : "View more"}
+                  {invitesQuery.isFetchingNextPage ? t("companyInvites.loadingMore") : t("companyInvites.loadMore")}
                 </Button>
               </div>
             ) : null}
@@ -369,6 +353,74 @@ export function CompanyInvites() {
   );
 }
 
-function formatInviteState(state: "active" | "accepted" | "expired" | "revoked") {
-  return state.charAt(0).toUpperCase() + state.slice(1);
+function getInviteRoleOptions(locale: AppLocale): InviteRoleOption[] {
+  return locale === "zh-CN"
+    ? [
+        {
+          value: "viewer",
+          label: "查看者",
+          description: "可以查看公司工作内容并跟进进展，但没有操作权限。",
+          gets: "不自带任何权限。",
+        },
+        {
+          value: "operator",
+          label: "执行者",
+          description: "推荐给需要协助推进工作、但不需要管理访问权限的成员。",
+          gets: "可以分配任务。",
+        },
+        {
+          value: "admin",
+          label: "管理员",
+          description: "推荐给需要邀请成员、创建 Agent 并审批加入请求的执行者。",
+          gets: "可以创建 Agent、邀请用户、分配任务并审批加入请求。",
+        },
+        {
+          value: "owner",
+          label: "所有者",
+          description: "拥有完整公司访问权限，包括成员和权限管理。",
+          gets: "包含管理员全部能力，并可管理成员与权限授予。",
+        },
+      ]
+    : [
+        {
+          value: "viewer",
+          label: "Viewer",
+          description: "Can view company work and follow along without operational permissions.",
+          gets: "No built-in grants.",
+        },
+        {
+          value: "operator",
+          label: "Operator",
+          description: "Recommended for people who need to help run work without managing access.",
+          gets: "Can assign tasks.",
+        },
+        {
+          value: "admin",
+          label: "Admin",
+          description: "Recommended for operators who need to invite people, create agents, and approve joins.",
+          gets: "Can create agents, invite users, assign tasks, and approve join requests.",
+        },
+        {
+          value: "owner",
+          label: "Owner",
+          description: "Full company access, including membership and permission management.",
+          gets: "Everything in Admin, plus managing members and permission grants.",
+        },
+      ] as const;
+}
+
+function getInviteRoleShortLabel(role: InviteRole, locale: AppLocale) {
+  const labels =
+    locale === "zh-CN"
+      ? { owner: "所有者", admin: "管理员", operator: "执行者", viewer: "查看者" }
+      : { owner: "Owner", admin: "Admin", operator: "Operator", viewer: "Viewer" };
+  return labels[role];
+}
+
+function formatInviteState(state: "active" | "accepted" | "expired" | "revoked", locale: AppLocale) {
+  const labels =
+    locale === "zh-CN"
+      ? { active: "生效中", accepted: "已接受", expired: "已过期", revoked: "已撤销" }
+      : { active: "Active", accepted: "Accepted", expired: "Expired", revoked: "Revoked" };
+  return labels[state];
 }

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LocaleProvider } from "@/context/LocaleContext";
 import { RunActivityChart, SuccessRateChart } from "./ActivityCharts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,7 +30,7 @@ afterEach(() => {
 
 function render(ui: ReactNode) {
   act(() => {
-    root.render(ui);
+    root.render(<LocaleProvider>{ui}</LocaleProvider>);
   });
 }
 

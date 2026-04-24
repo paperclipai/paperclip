@@ -14,6 +14,19 @@ vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateMock,
 }));
 
+vi.mock("@/context/LocaleContext", () => ({
+  useI18n: () => ({
+    locale: "en",
+    setLocale: vi.fn(),
+    localeLabel: "English",
+    t: (key: string) => ({
+      "companySettings.general": "General",
+      "companySettings.access": "Access",
+      "companySettings.invites": "Invites",
+    }[key] ?? key),
+  }),
+}));
+
 vi.mock("@/components/ui/tabs", () => ({
   Tabs: ({ children }: { children: React.ReactNode }) => <div data-testid="tabs-root">{children}</div>,
 }));

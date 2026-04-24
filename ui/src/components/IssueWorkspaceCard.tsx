@@ -10,6 +10,7 @@ import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
+import { useI18n } from "../context/LocaleContext";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
@@ -143,16 +144,22 @@ function workspaceDetailLink(input: {
   return input.workspace ? `/execution-workspaces/${input.workspace.id}` : null;
 }
 
-function statusBadge(status: string) {
+function statusBadge(status: string, t: ReturnType<typeof useI18n>["t"]) {
   const colors: Record<string, string> = {
     active: "bg-green-500/15 text-green-700 dark:text-green-400",
     idle: "bg-muted text-muted-foreground",
     in_review: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
     archived: "bg-muted text-muted-foreground",
   };
+  const labels: Record<string, string> = {
+    active: t("status.active"),
+    idle: t("status.idle"),
+    in_review: t("status.inReview"),
+    archived: t("status.archived"),
+  };
   return (
     <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", colors[status] ?? colors.idle)}>
-      {status.replace(/_/g, " ")}
+      {labels[status] ?? status.replace(/_/g, " ")}
     </span>
   );
 }
@@ -211,6 +218,7 @@ export function IssueWorkspaceCard({
   livePreview = false,
   onDraftChange,
 }: IssueWorkspaceCardProps) {
+  const { t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
@@ -359,7 +367,7 @@ export function IssueWorkspaceCard({
           {activeNonDefaultWorkspace && workspace
             ? workspaceModeLabel(workspace.mode)
             : configuredWorkspaceLabel(currentSelection, selectedReusableExecutionWorkspace)}
-          {workspace ? statusBadge(workspace.status) : statusBadge("idle")}
+          {workspace ? statusBadge(workspace.status, t) : statusBadge("idle", t)}
         </div>
         <div className="flex items-center gap-1">
           {!livePreview && editing ? (

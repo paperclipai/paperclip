@@ -128,4 +128,12 @@ describe("onboarding launch payloads", () => {
       status: "todo",
     });
   });
+
+  it("supports localized onboarding project names", () => {
+    expect(buildOnboardingProjectPayload("goal-1", "zh-CN")).toEqual({
+      name: "引导",
+      status: "in_progress",
+      goalIds: ["goal-1"],
+    });
+  });
 });

@@ -13,6 +13,7 @@ import {
   createAgentSchema,
   deriveAgentUrlKey,
   isUuidLike,
+  localizeAgentInstructionsBundleSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
@@ -73,6 +74,8 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
+  loadDefaultAgentInstructionsBundleLocalizationCandidates,
+  normalizeDefaultAgentInstructionsLocale,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -621,7 +624,7 @@ export function agentRoutes(db: Db) {
     role: string;
     adapterType: string;
     adapterConfig: unknown;
-  }>(agent: T): Promise<T> {
+  }>(agent: T, instructionsLocale?: string): Promise<T> {
     if (!adapterSupportsInstructionsBundle(agent.adapterType)) {
       return agent;
     }
@@ -641,7 +644,10 @@ export function agentRoutes(db: Db) {
       ? adapterConfig.promptTemplate
       : "";
     const files = promptTemplate.trim().length === 0
-      ? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role))
+      ? await loadDefaultAgentInstructionsBundle(
+          resolveDefaultAgentInstructionsBundleRole(agent.role),
+          normalizeDefaultAgentInstructionsLocale(instructionsLocale),
+        )
       : { "AGENTS.md": promptTemplate };
     const materialized = await instructions.materializeManagedBundle(
       agent,
@@ -1393,6 +1399,7 @@ export function agentRoutes(db: Db) {
       desiredSkills: requestedDesiredSkills,
       sourceIssueId: _sourceIssueId,
       sourceIssueIds: _sourceIssueIds,
+      instructionsLocale,
       ...hireInput
     } = req.body;
     hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
@@ -1448,7 +1455,7 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsLocale);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -1578,6 +1585,7 @@ export function agentRoutes(db: Db) {
 
     const {
       desiredSkills: requestedDesiredSkills,
+      instructionsLocale,
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
@@ -1618,7 +1626,7 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsLocale);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -1863,6 +1871,74 @@ export function agentRoutes(db: Db) {
 
     res.json(bundle);
   });
+
+  router.post(
+    "/agents/:id/instructions-bundle/localize-default",
+    validate(localizeAgentInstructionsBundleSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await assertCanManageInstructionsPath(req, existing);
+
+      const role = resolveDefaultAgentInstructionsBundleRole(existing.role);
+      const targetLocale = normalizeDefaultAgentInstructionsLocale(req.body.instructionsLocale);
+      const [candidates, replacementFiles] = await Promise.all([
+        loadDefaultAgentInstructionsBundleLocalizationCandidates(role),
+        loadDefaultAgentInstructionsBundle(role, targetLocale),
+      ]);
+      const result = await instructions.replaceManagedBundleIfExactMatch(existing, {
+        candidates,
+        replacement: { id: targetLocale, files: replacementFiles },
+        entryFile: "AGENTS.md",
+      });
+
+      if (result.changed) {
+        const actor = getActorInfo(req);
+        const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+          existing.companyId,
+          result.adapterConfig,
+          { strictMode: strictSecretsMode },
+        );
+        await svc.update(
+          id,
+          { adapterConfig: normalizedAdapterConfig },
+          {
+            recordRevision: {
+              createdByAgentId: actor.agentId,
+              createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              source: "instructions_bundle_default_locale",
+            },
+          },
+        );
+
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "agent.instructions_bundle_localized",
+          entityType: "agent",
+          entityId: existing.id,
+          details: {
+            instructionsLocale: targetLocale,
+            matchedLocale: result.matchedCandidateId,
+          },
+        });
+      }
+
+      res.json({
+        bundle: result.bundle,
+        changed: result.changed,
+        instructionsLocale: targetLocale,
+        matchedLocale: result.matchedCandidateId,
+      });
+    },
+  );
 
   router.get("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
@@ -2468,6 +2544,7 @@ export function agentRoutes(db: Db) {
       continuationAttempt: heartbeatRuns.continuationAttempt,
       lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
       nextAction: heartbeatRuns.nextAction,
+      hasStoredOutput: sql<boolean>`${heartbeatRuns.logRef} IS NOT NULL`.as("hasStoredOutput"),
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
     };
 
@@ -2652,6 +2729,7 @@ export function agentRoutes(db: Db) {
         continuationAttempt: heartbeatRuns.continuationAttempt,
         lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
         nextAction: heartbeatRuns.nextAction,
+        hasStoredOutput: sql<boolean>`${heartbeatRuns.logRef} IS NOT NULL`.as("hasStoredOutput"),
       })
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))

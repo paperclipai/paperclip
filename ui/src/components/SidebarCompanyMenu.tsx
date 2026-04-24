@@ -15,6 +15,7 @@ import {
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
+import { useI18n } from "../context/LocaleContext";
 
 interface SidebarCompanyMenuProps {
   open?: boolean;
@@ -22,6 +23,7 @@ interface SidebarCompanyMenuProps {
 }
 
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
+  const { t } = useI18n();
   const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
@@ -54,7 +56,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         <Button
           variant="ghost"
           className="h-auto flex-1 justify-start gap-1 px-2 py-1.5 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} menu` : "Open company menu"}
+          aria-label={selectedCompany ? t("companyMenu.openMenu", { name: selectedCompany.name }) : t("companyMenu.openDefaultMenu")}
           disabled={!selectedCompany}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
@@ -65,7 +67,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               />
             ) : null}
             <span className="truncate text-sm font-bold text-foreground">
-              {selectedCompany?.name ?? "Select company"}
+              {selectedCompany?.name ?? t("companyMenu.selectCompany")}
             </span>
           </span>
           <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
@@ -73,21 +75,21 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">
         <DropdownMenuLabel className="truncate">
-          {selectedCompany?.name ?? "Company"}
+          {selectedCompany?.name ?? t("companyMenu.company")}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/company/settings/invites" onClick={closeNavigationChrome}>
             <UserPlus className="size-4" />
             <span className="truncate">
-              {selectedCompany ? `Invite people to ${selectedCompany.name}` : "Invite people"}
+              {selectedCompany ? t("companyMenu.invitePeopleTo", { name: selectedCompany.name }) : t("companyMenu.invitePeople")}
             </span>
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/company/settings" onClick={closeNavigationChrome}>
             <Settings className="size-4" />
-            <span>Company settings</span>
+            <span>{t("companyMenu.companySettings")}</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (
@@ -99,7 +101,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span>{signOutMutation.isPending ? t("account.signingOut") : t("account.signOut")}</span>
             </DropdownMenuItem>
           </>
         ) : null}

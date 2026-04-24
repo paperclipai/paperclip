@@ -26,6 +26,7 @@ export interface ActiveRunForIssue {
   continuationAttempt?: number;
   lastUsefulActionAt?: string | Date | null;
   nextAction?: string | null;
+  hasStoredOutput?: boolean;
 }
 
 export interface LiveRunForIssue {
@@ -45,6 +46,7 @@ export interface LiveRunForIssue {
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
+  hasStoredOutput?: boolean;
 }
 
 export const heartbeatsApi = {

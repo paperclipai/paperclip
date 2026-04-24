@@ -7,6 +7,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useI18n } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
@@ -19,6 +20,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { localizeKnownAgentLabel } from "../lib/onboarding-localization";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
@@ -55,6 +57,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 
 export function Agents() {
   const { selectedCompanyId } = useCompany();
+  const { locale } = useI18n();
   const { openNewAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -218,11 +221,17 @@ export function Agents() {
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
           {filtered.map((agent) => {
+            const localizedName = localizeKnownAgentLabel(agent.name, locale, agent.role);
+            const localizedRole = localizeKnownAgentLabel(roleLabels[agent.role] ?? agent.role, locale, agent.role);
+            const localizedTitle = localizeKnownAgentLabel(agent.title, locale, agent.role);
+            const subtitle = localizedTitle && localizedTitle !== localizedRole
+              ? `${localizedRole} - ${localizedTitle}`
+              : localizedRole;
             return (
               <EntityRow
                 key={agent.id}
-                title={agent.name}
-                subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+                title={localizedName}
+                subtitle={subtitle}
                 to={agentUrl(agent)}
                 className={agent.pausedAt && tab !== "paused" ? "opacity-50" : ""}
                 leading={
@@ -314,9 +323,13 @@ function OrgTreeNode({
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
   tab: FilterTab;
 }) {
+  const { locale } = useI18n();
   const agent = agentMap.get(node.id);
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
+  const localizedName = localizeKnownAgentLabel(agent?.name ?? node.name, locale, agent?.role ?? node.role);
+  const localizedRole = localizeKnownAgentLabel(roleLabels[node.role] ?? node.role, locale, agent?.role ?? node.role);
+  const localizedTitle = agent?.title ? localizeKnownAgentLabel(agent.title, locale, agent.role) : "";
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -328,10 +341,10 @@ function OrgTreeNode({
           <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
         </span>
         <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium">{node.name}</span>
+          <span className="text-sm font-medium">{localizedName}</span>
           <span className="text-xs text-muted-foreground ml-2">
-            {roleLabels[node.role] ?? node.role}
-            {agent?.title ? ` - ${agent.title}` : ""}
+            {localizedRole}
+            {localizedTitle && localizedTitle !== localizedRole ? ` - ${localizedTitle}` : ""}
           </span>
         </div>
         <div className="flex items-center gap-3 shrink-0">

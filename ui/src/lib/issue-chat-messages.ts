@@ -21,6 +21,7 @@ import {
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
+type TranslateFn = (key: string, params?: Record<string, string | number | null | undefined>) => string;
 
 export interface IssueChatComment extends IssueComment {
   runId?: string | null;
@@ -346,6 +347,7 @@ function createTimelineEventMessage(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  t?: TranslateFn;
 }) {
   const { event, agentMap, currentUserId, userLabelMap } = args;
   const actorName = event.actorType === "agent"
@@ -453,22 +455,44 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
   return timings;
 }
 
-export function formatDurationWords(ms: number | null) {
+function translated(t: TranslateFn | undefined, key: string, fallback: string, params?: Record<string, string | number | null | undefined>): string {
+  const value = t?.(key, params);
+  return value && value !== key ? value : fallback;
+}
+
+export function formatDurationWords(ms: number | null, t?: TranslateFn) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
   if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+    return totalSeconds === 1
+      ? translated(t, "duration.second", "1 second")
+      : translated(t, "duration.seconds", `${totalSeconds} seconds`, { count: totalSeconds });
   }
   const totalMinutes = Math.round(totalSeconds / 60);
   if (totalMinutes < 60) {
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return totalMinutes === 1
+      ? translated(t, "duration.minute", "1 minute")
+      : translated(t, "duration.minutes", `${totalMinutes} minutes`, { count: totalMinutes });
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (minutes === 0) {
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
+    return hours === 1
+      ? translated(t, "duration.hour", "1 hour")
+      : translated(t, "duration.hours", `${hours} hours`, { count: hours });
   }
-  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const fallbackHours = `${hours} hour${hours === 1 ? "" : "s"}`;
+  const fallbackMinutes = `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hourText = hours === 1
+    ? translated(t, "duration.hour", "1 hour")
+    : translated(t, "duration.hours", `${hours} hours`, { count: hours });
+  const minuteText = minutes === 1
+    ? translated(t, "duration.minute", "1 minute")
+    : translated(t, "duration.minutes", `${minutes} minutes`, { count: minutes });
+  return translated(t, "duration.hoursMinutes", `${fallbackHours} ${fallbackMinutes}`, {
+    hours: hourText,
+    minutes: minuteText,
+  });
 }
 
 function runDurationLabel(run: {
@@ -476,31 +500,39 @@ function runDurationLabel(run: {
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
-}) {
+}, t?: TranslateFn) {
   const start = run.startedAt ?? run.createdAt;
   const end = run.finishedAt ?? null;
   const durationMs = end ? Math.max(0, toTimestamp(end) - toTimestamp(start)) : null;
-  const durationText = formatDurationWords(durationMs);
+  const durationText = formatDurationWords(durationMs, t);
   switch (run.status) {
     case "succeeded":
-      return durationText ? `Worked for ${durationText}` : "Finished work";
+      return durationText
+        ? translated(t, "run.workedFor", `Worked for ${durationText}`, { duration: durationText })
+        : translated(t, "run.finishedWork", "Finished work");
     case "failed":
     case "error":
-      return durationText ? `Failed after ${durationText}` : "Run failed";
+      return durationText
+        ? translated(t, "run.failedAfter", `Failed after ${durationText}`, { duration: durationText })
+        : translated(t, "run.failed", "Run failed");
     case "timed_out":
-      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+      return durationText
+        ? translated(t, "run.timedOutAfter", `Timed out after ${durationText}`, { duration: durationText })
+        : translated(t, "run.timedOut", "Run timed out");
     case "cancelled":
-      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+      return durationText
+        ? translated(t, "run.cancelledAfter", `Cancelled after ${durationText}`, { duration: durationText })
+        : translated(t, "run.cancelled", "Run cancelled");
     case "queued":
-      return "Queued";
+      return translated(t, "status.queued", "Queued");
     case "running":
-      return "Working...";
+      return translated(t, "run.working", "Working...");
     default:
       return formatStatusLabel(run.status);
   }
 }
 
-function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<string, Agent>) {
+function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<string, Agent>, t?: TranslateFn) {
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const message: ThreadSystemMessage = {
     id: `run:${run.runId}`,
@@ -526,12 +558,13 @@ function createHistoricalTranscriptMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
   hasOutput: boolean;
   agentMap?: Map<string, Agent>;
+  t?: TranslateFn;
 }) {
-  const { run, transcript, hasOutput, agentMap } = args;
+  const { run, transcript, hasOutput, agentMap, t } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
-  const waitingText = hasOutput ? "" : "Run finished";
+  const waitingText = hasOutput ? "" : translated(t, "run.finished", "Run finished");
   const content = parts.length > 0
     ? parts
     : waitingText
@@ -553,7 +586,7 @@ function createHistoricalTranscriptMessage(args: {
       runStatus: run.status,
       notices,
       waitingText,
-      chainOfThoughtLabel: runDurationLabel(run),
+      chainOfThoughtLabel: runDurationLabel(run, t),
       chainOfThoughtSegments: segments,
     }),
   };
@@ -722,16 +755,17 @@ function normalizeLiveRuns(
 function createLiveRunMessage(args: {
   run: LiveRunForIssue;
   transcript: readonly IssueChatTranscriptEntry[];
+  t?: TranslateFn;
 }) {
-  const { run, transcript } = args;
+  const { run, transcript, t } = args;
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
-      ? "Queued..."
+      ? translated(t, "run.queuedEllipsis", "Queued...")
       : parts.length > 0
         ? ""
-        : "Working...";
+        : translated(t, "run.working", "Working...");
 
   const content = parts;
 
@@ -750,7 +784,7 @@ function createLiveRunMessage(args: {
       adapterType: run.adapterType,
       notices,
       waitingText,
-      chainOfThoughtLabel: runDurationLabel(run),
+      chainOfThoughtLabel: runDurationLabel(run, t),
       chainOfThoughtSegments: segments,
     }),
   };
@@ -773,6 +807,7 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  t?: TranslateFn;
 }) {
   const {
     comments,
@@ -790,6 +825,7 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    t,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -833,6 +869,7 @@ export function buildIssueChatMessages(args: {
           transcript,
           hasOutput: hasRunOutput,
           agentMap,
+          t,
         }),
       });
       continue;
@@ -841,7 +878,7 @@ export function buildIssueChatMessages(args: {
     orderedMessages.push({
       createdAtMs: toTimestamp(runTimestamp(run)),
       order: 2,
-      message: createHistoricalRunMessage(run, agentMap),
+      message: createHistoricalRunMessage(run, agentMap, t),
     });
   }
 
@@ -852,6 +889,7 @@ export function buildIssueChatMessages(args: {
       message: createLiveRunMessage({
         run,
         transcript: transcriptsByRunId?.get(run.id) ?? [],
+        t,
       }),
     });
   }

@@ -193,7 +193,21 @@ export function useLiveRunTranscripts({
 
     let cancelled = false;
 
+    const markHydrated = (runId: string) => {
+      if (cancelled) return;
+      setHydratedRunIds((prev) => {
+        if (prev.has(runId)) return prev;
+        const next = new Set(prev);
+        next.add(runId);
+        return next;
+      });
+    };
+
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (run.hasStoredOutput !== true) {
+        markHydrated(run.id);
+        return;
+      }
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
         return;
       }
@@ -216,14 +230,7 @@ export function useLiveRunTranscripts({
           missingTerminalLogRunIdsRef.current.add(run.id);
         }
       } finally {
-        if (!cancelled) {
-          setHydratedRunIds((prev) => {
-            if (prev.has(run.id)) return prev;
-            const next = new Set(prev);
-            next.add(run.id);
-            return next;
-          });
-        }
+        markHydrated(run.id);
       }
     };
 

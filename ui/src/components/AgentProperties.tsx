@@ -3,12 +3,14 @@ import { Link } from "@/lib/router";
 import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
+import { useI18n } from "../context/LocaleContext";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { localizeKnownAgentLabel } from "../lib/onboarding-localization";
 
 interface AgentPropertiesProps {
   agent: Agent;
@@ -28,6 +30,7 @@ function PropertyRow({ label, children }: { label: string; children: React.React
 
 export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { locale } = useI18n();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -44,11 +47,13 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           <StatusBadge status={agent.status} />
         </PropertyRow>
         <PropertyRow label="Role">
-          <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
+          <span className="text-sm">
+            {localizeKnownAgentLabel(roleLabels[agent.role] ?? agent.role, locale, agent.role)}
+          </span>
         </PropertyRow>
         {agent.title && (
           <PropertyRow label="Title">
-            <span className="text-sm">{agent.title}</span>
+            <span className="text-sm">{localizeKnownAgentLabel(agent.title, locale, agent.role)}</span>
           </PropertyRow>
         )}
         <PropertyRow label="Adapter">

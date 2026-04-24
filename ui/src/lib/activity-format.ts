@@ -15,10 +15,13 @@ type ActivityIssueReference = {
   title?: string | null;
 };
 
+type TranslateFn = (key: string, params?: Record<string, string | number | null | undefined>) => string;
+
 interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
   userProfileMap?: Map<string, CompanyUserProfile>;
   currentUserId?: string | null;
+  t?: TranslateFn;
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
@@ -34,6 +37,10 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.document_updated": "updated document on",
   "issue.document_deleted": "deleted document from",
   "issue.commented": "commented on",
+  "issue.blockers_updated": "updated blockers on",
+  "issue.blockers.updated": "updated blockers on",
+  "issue.reviewers_updated": "updated reviewers on",
+  "issue.approvers_updated": "updated approvers on",
   "issue.deleted": "deleted",
   "agent.created": "created",
   "agent.updated": "updated",
@@ -60,6 +67,26 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.updated": "updated company",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
+};
+
+const ACTIVITY_ROW_VERB_KEYS: Record<string, string> = {
+  "issue.updated": "activity.verb.issueUpdated",
+  "issue.comment_added": "activity.verb.issueCommentedOn",
+  "issue.commented": "activity.verb.issueCommentedOn",
+  "issue.blockers_updated": "activity.verb.issueBlockersUpdated",
+  "issue.blockers.updated": "activity.verb.issueBlockersUpdated",
+  "issue.reviewers_updated": "activity.verb.issueReviewersUpdated",
+  "issue.approvers_updated": "activity.verb.issueApproversUpdated",
+  "agent.created": "activity.verb.agentCreated",
+  "agent.updated": "activity.verb.agentUpdated",
+  "agent.deleted": "activity.verb.agentDeleted",
+  "agent.terminated": "activity.verb.agentDeleted",
+  "agent.key_created": "activity.verb.agentKeyCreated",
+  "agent.key.created": "activity.verb.agentKeyCreated",
+  "agent.key_revoked": "activity.verb.agentKeyRevoked",
+  "agent.key.revoked": "activity.verb.agentKeyRevoked",
+  "agent.paused": "activity.verb.agentPaused",
+  "agent.resumed": "activity.verb.agentResumed",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -93,8 +120,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function humanizeValue(value: unknown): string {
+function translated(options: ActivityFormatOptions, key: string, fallback: string, params?: Record<string, string | number | null | undefined>): string {
+  const value = options.t?.(key, params);
+  return value && value !== key ? value : fallback;
+}
+
+function humanizeValue(value: unknown, options: ActivityFormatOptions = {}): string {
   if (typeof value !== "string") return String(value ?? "none");
+  if (options.t) {
+    const labelMap: Record<string, string> = {
+      backlog: translated(options, "status.backlog", "backlog"),
+      todo: translated(options, "status.todo", "todo"),
+      in_progress: translated(options, "status.inProgress", "in progress"),
+      in_review: translated(options, "status.inReview", "in review"),
+      done: translated(options, "status.done", "done"),
+      cancelled: translated(options, "status.cancelled", "cancelled"),
+      blocked: translated(options, "status.blocked", "blocked"),
+      critical: translated(options, "chart.priority.critical", "Critical"),
+      high: translated(options, "chart.priority.high", "High"),
+      medium: translated(options, "chart.priority.medium", "Medium"),
+      low: translated(options, "chart.priority.low", "Low"),
+    };
+    if (labelMap[value]) return labelMap[value];
+  }
   return value.replace(/_/g, " ");
 }
 
@@ -153,20 +201,30 @@ function formatChangedEntityLabel(
   return `${labels.length} ${plural}`;
 }
 
-function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
+function formatIssueUpdatedVerb(details: ActivityDetails, options: ActivityFormatOptions = {}): string | null {
   if (!details) return null;
   const previous = asRecord(details._previous) ?? {};
   if (details.status !== undefined) {
     const from = previous.status;
     return from
-      ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
-      : `changed status to ${humanizeValue(details.status)} on`;
+      ? translated(options, "activity.verb.changedStatusFrom", `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`, {
+          from: humanizeValue(from, options),
+          to: humanizeValue(details.status, options),
+        })
+      : translated(options, "activity.verb.changedStatusTo", `changed status to ${humanizeValue(details.status)} on`, {
+          to: humanizeValue(details.status, options),
+        });
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
     return from
-      ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`
-      : `changed priority to ${humanizeValue(details.priority)} on`;
+      ? translated(options, "activity.verb.changedPriorityFrom", `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`, {
+          from: humanizeValue(from, options),
+          to: humanizeValue(details.priority, options),
+        })
+      : translated(options, "activity.verb.changedPriorityTo", `changed priority to ${humanizeValue(details.priority)} on`, {
+          to: humanizeValue(details.priority, options),
+        });
   }
   return null;
 }
@@ -193,16 +251,16 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
     const from = previous.status;
     parts.push(
       from
-        ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-        : `changed the status to ${humanizeValue(details.status)}`,
+        ? `changed the status from ${humanizeValue(from, options)} to ${humanizeValue(details.status, options)}`
+        : `changed the status to ${humanizeValue(details.status, options)}`,
     );
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
     parts.push(
       from
-        ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-        : `changed the priority to ${humanizeValue(details.priority)}`,
+        ? `changed the priority from ${humanizeValue(from, options)} to ${humanizeValue(details.priority, options)}`
+        : `changed the priority to ${humanizeValue(details.priority, options)}`,
     );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
@@ -224,7 +282,15 @@ function formatStructuredIssueChange(input: {
   const details = input.details;
   if (!details) return null;
 
-  if (input.action === "issue.blockers_updated") {
+  if (input.options.t && !input.forIssueDetail) {
+    if (input.action === "issue.blockers_updated" || input.action === "issue.blockers.updated") {
+      return translated(input.options, "activity.verb.issueBlockersUpdated", "updated blockers on");
+    }
+    if (input.action === "issue.reviewers_updated") return translated(input.options, "activity.verb.issueReviewersUpdated", "updated reviewers on");
+    if (input.action === "issue.approvers_updated") return translated(input.options, "activity.verb.issueApproversUpdated", "updated approvers on");
+  }
+
+  if (input.action === "issue.blockers_updated" || input.action === "issue.blockers.updated") {
     const added = readIssueReferences(details, "addedBlockedByIssues").map(formatIssueReferenceLabel);
     const removed = readIssueReferences(details, "removedBlockedByIssues").map(formatIssueReferenceLabel);
     if (added.length > 0 && removed.length === 0) {
@@ -263,7 +329,7 @@ export function formatActivityVerb(
   options: ActivityFormatOptions = {},
 ): string {
   if (action === "issue.updated") {
-    const issueUpdatedVerb = formatIssueUpdatedVerb(details);
+    const issueUpdatedVerb = formatIssueUpdatedVerb(details, options);
     if (issueUpdatedVerb) return issueUpdatedVerb;
   }
 
@@ -275,7 +341,9 @@ export function formatActivityVerb(
   });
   if (structuredChange) return structuredChange;
 
-  return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
+  const fallback = ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
+  const key = ACTIVITY_ROW_VERB_KEYS[action];
+  return key ? translated(options, key, fallback) : fallback;
 }
 
 export function formatIssueActivityAction(

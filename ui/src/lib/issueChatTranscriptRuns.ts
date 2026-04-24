@@ -15,6 +15,7 @@ export function resolveIssueChatTranscriptRuns(args: {
       id: run.id,
       status: run.status,
       adapterType: run.adapterType,
+      hasStoredOutput: run.hasStoredOutput,
     });
   }
 
@@ -23,6 +24,7 @@ export function resolveIssueChatTranscriptRuns(args: {
       id: activeRun.id,
       status: activeRun.status,
       adapterType: activeRun.adapterType,
+      hasStoredOutput: activeRun.hasStoredOutput,
     });
   }
 

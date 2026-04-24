@@ -7,7 +7,9 @@ import {
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
+import { localizeKnownOnboardingIssueTitle } from "../lib/onboarding-localization";
 import { cn } from "../lib/utils";
+import { useI18n } from "../context/LocaleContext";
 import { StatusIcon } from "./StatusIcon";
 
 type UnreadState = "hidden" | "visible" | "fading";
@@ -47,8 +49,10 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
+  const { locale } = useI18n();
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
+  const localizedTitle = localizeKnownOnboardingIssueTitle(issue.title, locale);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
@@ -73,7 +77,7 @@ export function IssueRow({
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
-          {issue.title}{titleSuffix}
+          {localizedTitle}{titleSuffix}
         </span>
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           {desktopLeadingSpacer ? (

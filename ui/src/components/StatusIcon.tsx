@@ -3,11 +3,21 @@ import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "../context/LocaleContext";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+function statusLabel(status: string, t: ReturnType<typeof useI18n>["t"]): string {
+  const labelMap: Record<string, string> = {
+    backlog: t("status.backlog"),
+    todo: t("status.todo"),
+    in_progress: t("status.inProgress"),
+    in_review: t("status.inReview"),
+    done: t("status.done"),
+    cancelled: t("status.cancelled"),
+    blocked: t("status.blocked"),
+  };
+  return labelMap[status] ?? status.replace(/_/g, " ");
 }
 
 interface StatusIconProps {
@@ -18,6 +28,7 @@ interface StatusIconProps {
 }
 
 export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
@@ -37,12 +48,12 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
     </span>
   );
 
-  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status)}</span></span> : circle;
+  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status, t)}</span></span> : circle;
 
   const trigger = showLabel ? (
     <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
       {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm">{statusLabel(status, t)}</span>
     </button>
   ) : circle;
 
@@ -62,7 +73,7 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
             }}
           >
             <StatusIcon status={s} />
-            {statusLabel(s)}
+            {statusLabel(s, t)}
           </Button>
         ))}
       </PopoverContent>

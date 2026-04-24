@@ -7,8 +7,11 @@ import {
   companies,
   companySkills,
   createDb,
+  documentRevisions,
+  documents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
   issueExecutionDecisions,
   issueReadStates,
   issues,
@@ -45,6 +48,9 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(issueExecutionDecisions);
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -177,12 +183,43 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       details: {},
     });
 
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      latestBody: "Initial plan",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByUserId: "user-1",
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      body: "Initial plan",
+      createdByRunId: runId,
+    });
+    await db.insert(issueDocuments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+
     const removed = await companyService(db).remove(companyId);
 
     expect(removed?.id).toBe(companyId);
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issueDocuments).where(eq(issueDocuments.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(documentRevisions).where(eq(documentRevisions.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(documents).where(eq(documents.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
   });
 });

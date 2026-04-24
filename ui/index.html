@@ -22,9 +22,14 @@
     <script>
       (() => {
         const key = "paperclip.theme";
+        const localeKey = "paperclip.locale";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
+          const storedLocale = window.localStorage.getItem(localeKey);
+          const locale = storedLocale && storedLocale.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+          document.documentElement.lang = locale;
+          document.documentElement.setAttribute("data-locale", locale);
           const stored = window.localStorage.getItem(key);
           const theme = stored === "light" || stored === "dark" ? stored : "dark";
           const isDark = theme === "dark";

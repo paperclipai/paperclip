@@ -6,6 +6,8 @@ import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
+import { useI18n } from "../context/LocaleContext";
+import { localizeKnownOnboardingIssueTitle } from "../lib/onboarding-localization";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -28,7 +30,8 @@ interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+  const { t, locale } = useI18n();
+  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap, t });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -39,7 +42,10 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
     ? (heartbeatAgentId ? entityNameMap.get(`agent:${heartbeatAgentId}`) : null)
     : entityNameMap.get(`${event.entityType}:${event.entityId}`);
 
-  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
+  const rawEntityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
+  const entityTitle = rawEntityTitle && event.entityType === "issue"
+    ? localizeKnownOnboardingIssueTitle(rawEntityTitle, locale)
+    : rawEntityTitle;
 
   const link = isHeartbeatEvent && heartbeatAgentId
     ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
@@ -47,7 +53,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorName = actor?.name ?? (event.actorType === "system" ? t("issue.system") : userProfile?.label ?? (event.actorType === "user" ? t("issue.board") : event.actorId || t("common.unknown")));
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (

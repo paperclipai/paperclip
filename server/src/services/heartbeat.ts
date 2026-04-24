@@ -637,6 +637,7 @@ const heartbeatRunIssueSummaryColumns = {
   continuationAttempt: heartbeatRuns.continuationAttempt,
   lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
   nextAction: heartbeatRuns.nextAction,
+  hasStoredOutput: sql<boolean>`${heartbeatRuns.logRef} IS NOT NULL`.as("hasStoredOutput"),
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 

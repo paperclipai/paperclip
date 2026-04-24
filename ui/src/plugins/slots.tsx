@@ -40,6 +40,7 @@ import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/context/LocaleContext";
 import {
   PluginBridgeContext,
   type PluginHostContext,
@@ -788,6 +789,11 @@ type PluginSlotOutletProps = {
   missingBehavior?: "hidden" | "placeholder";
 };
 
+function localizePluginSlotError(errorMessage: string, t: ReturnType<typeof useI18n>["t"]): string {
+  if (errorMessage === "Failed to fetch") return t("plugins.errorFailedToFetch");
+  return errorMessage;
+}
+
 export function PluginSlotOutlet({
   slotTypes,
   context,
@@ -797,6 +803,7 @@ export function PluginSlotOutlet({
   errorClassName,
   missingBehavior = "hidden",
 }: PluginSlotOutletProps) {
+  const { t } = useI18n();
   const { slots, errorMessage } = usePluginSlots({
     slotTypes,
     entityType,
@@ -804,9 +811,10 @@ export function PluginSlotOutlet({
   });
 
   if (errorMessage) {
+    const localizedError = localizePluginSlotError(errorMessage, t);
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin extensions unavailable: {errorMessage}
+        {t("plugins.extensionsUnavailable", { error: localizedError })}
       </div>
     );
   }

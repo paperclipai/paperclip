@@ -62,6 +62,13 @@ export interface AgentPermissionUpdate {
   canAssignTasks: boolean;
 }
 
+export interface LocalizeDefaultInstructionsBundleResponse {
+  bundle: AgentInstructionsBundle;
+  changed: boolean;
+  instructionsLocale: "en" | "zh-CN";
+  matchedLocale: string | null;
+}
+
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
   const separator = path.includes("?") ? "&" : "?";
@@ -131,6 +138,15 @@ export const agentsApi = {
     },
     companyId?: string,
   ) => api.patch<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle"), data),
+  localizeDefaultInstructionsBundle: (
+    id: string,
+    data: { instructionsLocale: "en" | "zh-CN" },
+    companyId?: string,
+  ) =>
+    api.post<LocalizeDefaultInstructionsBundleResponse>(
+      agentPath(id, companyId, "/instructions-bundle/localize-default"),
+      data,
+    ),
   instructionsFile: (id: string, relativePath: string, companyId?: string) =>
     api.get<AgentInstructionsFileDetail>(
       agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),

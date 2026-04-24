@@ -1,6 +1,6 @@
-# Paperclip Create Agent API Reference
+# Paperclip Create Agent API 参考
 
-## Core Endpoints
+## 核心端点
 
 - `GET /llms/agent-configuration.txt`
 - `GET /llms/agent-configuration/:adapterType.txt`
@@ -17,10 +17,10 @@
 - `POST /api/issues/:issueId/approvals`
 - `GET /api/approvals/:approvalId/issues`
 
-Approval collaboration:
+Approval 协作端点：
 
 - `GET /api/approvals/:approvalId`
-- `POST /api/approvals/:approvalId/request-revision` (board)
+- `POST /api/approvals/:approvalId/request-revision`
 - `POST /api/approvals/:approvalId/resubmit`
 - `GET /api/approvals/:approvalId/comments`
 - `POST /api/approvals/:approvalId/comments`
@@ -28,7 +28,7 @@ Approval collaboration:
 
 ## `POST /api/companies/:companyId/agent-hires`
 
-Request body matches agent create shape:
+请求体与创建智能体的主体结构一致：
 
 ```json
 {
@@ -37,13 +37,12 @@ Request body matches agent create shape:
   "title": "Chief Technology Officer",
   "icon": "crown",
   "reportsTo": "uuid-or-null",
-  "capabilities": "Owns architecture and engineering execution",
+  "capabilities": "负责架构和工程执行。",
   "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
   "adapterType": "claude_local",
   "adapterConfig": {
     "cwd": "/absolute/path",
-    "model": "claude-sonnet-4-5-20250929",
-    "promptTemplate": "You are CTO..."
+    "model": "claude-sonnet-4-5-20250929"
   },
   "runtimeConfig": {
     "heartbeat": {
@@ -52,12 +51,20 @@ Request body matches agent create shape:
     }
   },
   "budgetMonthlyCents": 0,
+  "instructionsLocale": "zh-CN",
   "sourceIssueId": "uuid-or-null",
   "sourceIssueIds": ["uuid-1", "uuid-2"]
 }
 ```
 
-Response:
+关键字段：
+
+- `instructionsLocale`: 可选，`"en"` 或 `"zh-CN"`。未传时默认英文；中文公司应显式传 `"zh-CN"`。
+- `adapterConfig.promptTemplate`: 可选。只有需要自定义 `AGENTS.md` 时填写；否则让服务端按 role 和 `instructionsLocale` 写入默认模板。
+- `desiredSkills`: 接受公司 skill id、canonical key 或唯一 slug；服务端会解析为 canonical company skill key。
+- `runtimeConfig.heartbeat.enabled`: 默认保持 `false`，除非角色确实需要周期性工作。
+
+响应示例：
 
 ```json
 {
@@ -76,14 +83,11 @@ Response:
 }
 ```
 
-If company setting disables required approval, `approval` is `null` and the agent is created as `idle`.
+如果公司设置不要求创建智能体审批，`approval` 为 `null`，智能体直接进入 `idle`。
 
-`desiredSkills` accepts company skill ids, canonical keys, or a unique slug. The server resolves and stores canonical company skill keys.
-Leave timer heartbeats disabled by default. Only set `runtimeConfig.heartbeat.enabled=true` and include an `intervalSec` when the role truly needs scheduled recurring work or the user explicitly requested it.
+## Approval 生命周期
 
-## Approval Lifecycle
-
-Statuses:
+状态：
 
 - `pending`
 - `revision_requested`
@@ -91,15 +95,15 @@ Statuses:
 - `rejected`
 - `cancelled`
 
-For hire approvals:
+对 hire approval：
 
-- approved: linked agent transitions `pending_approval -> idle`
-- rejected: linked agent is terminated
+- `approved`: 关联智能体从 `pending_approval` 变为 `idle`
+- `rejected`: 关联智能体会被终止
 
-## Safety Notes
+## 安全说明
 
-- Config read APIs redact obvious secrets.
-- `pending_approval` agents cannot run heartbeats, receive assignments, or create keys.
-- All actions are logged in activity for auditability.
-- Use markdown in issue/approval comments and include links to approval, agent, and source issue.
-- After approval resolution, requester may be woken with `PAPERCLIP_APPROVAL_ID` and should reconcile linked issues.
+- 配置读取 API 会隐藏明显 secrets。
+- `pending_approval` 智能体不能运行心跳、接收任务或创建 key。
+- 所有关键动作都会写入 activity，便于审计。
+- issue/approval 评论使用 markdown，并包含 approval、agent 和 source issue 链接。
+- approval 结束后，请求方可能带着 `PAPERCLIP_APPROVAL_ID` 被唤醒，需要对相关 issue 做评论、关闭或后续交接。

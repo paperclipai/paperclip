@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,10 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import {
+  localizeKnownAgentCapabilities,
+  localizeKnownAgentLabel,
+} from "../lib/onboarding-localization";
 
 // Layout constants
 const CARD_W = 200;
@@ -173,6 +178,7 @@ const defaultDotColor = "#a3a3a3";
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { locale } = useI18n();
   const navigate = useNavigate();
 
   const { data: orgTree, isLoading } = useQuery({
@@ -560,6 +566,12 @@ export function OrgChart() {
           {allNodes.map((node) => {
             const agent = agentMap.get(node.id);
             const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+            const localizedName = localizeKnownAgentLabel(agent?.name ?? node.name, locale, agent?.role ?? node.role);
+            const localizedRole = localizeKnownAgentLabel(roleLabel(node.role), locale, agent?.role ?? node.role);
+            const localizedTitle = agent?.title
+              ? localizeKnownAgentLabel(agent.title, locale, agent.role)
+              : "";
+            const localizedCapabilities = localizeKnownAgentCapabilities(agent?.capabilities, locale);
 
             return (
               <div
@@ -591,22 +603,22 @@ export function OrgChart() {
                       style={{ backgroundColor: dotColor }}
                     />
                   </div>
-                  {/* Name + role + adapter type */}
-                  <div className="flex flex-col items-start min-w-0 flex-1">
-                    <span className="text-sm font-semibold text-foreground leading-tight">
-                      {node.name}
-                    </span>
-                    <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-                      {agent?.title ?? roleLabel(node.role)}
-                    </span>
+                    {/* Name + role + adapter type */}
+                    <div className="flex flex-col items-start min-w-0 flex-1">
+                      <span className="text-sm font-semibold text-foreground leading-tight">
+                        {localizedName}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
+                        {localizedTitle || localizedRole}
+                      </span>
                     {agent && (
                       <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
                         {getAdapterLabel(agent.adapterType)}
                       </span>
                     )}
-                    {agent && agent.capabilities && (
+                    {localizedCapabilities && (
                       <span className="text-[10px] text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
-                        {agent.capabilities}
+                        {localizedCapabilities}
                       </span>
                     )}
                   </div>

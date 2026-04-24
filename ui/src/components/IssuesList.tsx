@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useI18n } from "../context/LocaleContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
@@ -15,6 +16,10 @@ import {
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import { groupBy } from "../lib/groupBy";
+import {
+  localizeKnownOnboardingIssueTitle,
+  localizeKnownOnboardingProjectName,
+} from "../lib/onboarding-localization";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -294,6 +299,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
+  const { locale, t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { data: session } = useQuery({
@@ -414,20 +420,25 @@ export function IssuesList({
   const projectById = useMemo(() => {
     const map = new Map<string, { name: string; color: string | null }>();
     for (const project of projects ?? []) {
-      map.set(project.id, { name: project.name, color: project.color ?? null });
+      map.set(project.id, {
+        name: localizeKnownOnboardingProjectName(project.name, locale) ?? project.name,
+        color: project.color ?? null,
+      });
     }
     return map;
-  }, [projects]);
+  }, [locale, projects]);
 
   const projectWorkspaceById = useMemo(() => {
     const map = new Map<string, { name: string }>();
     for (const project of projects ?? []) {
       for (const workspace of project.workspaces ?? []) {
-        map.set(workspace.id, { name: workspace.name || project.name });
+        map.set(workspace.id, {
+          name: workspace.name || localizeKnownOnboardingProjectName(project.name, locale) || project.name,
+        });
       }
     }
     return map;
-  }, [projects]);
+  }, [locale, projects]);
 
   const defaultProjectWorkspaceIdByProjectId = useMemo(() => {
     const map = new Map<string, string>();
@@ -560,10 +571,11 @@ export function IssuesList({
   const issueTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const issue of issues) {
-      map.set(issue.id, issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title);
+      const localizedTitle = localizeKnownOnboardingIssueTitle(issue.title, locale);
+      map.set(issue.id, issue.identifier ? `${issue.identifier}: ${localizedTitle}` : localizedTitle);
     }
     return map;
-  }, [issues]);
+  }, [issues, locale]);
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
@@ -681,8 +693,12 @@ export function IssuesList({
     return defaults;
   }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel
+    ? t("issue.createNamed", { label: createIssueLabel })
+    : t("issue.createIssue");
+  const createButtonLabel = createIssueLabel
+    ? t("issue.newNamed", { label: createIssueLabel })
+    : t("sidebar.newIssue");
   const openCreateIssueDialog = useCallback((groupKey?: string) => {
     openNewIssue(newIssueDefaults(groupKey));
   }, [newIssueDefaults, openNewIssue]);

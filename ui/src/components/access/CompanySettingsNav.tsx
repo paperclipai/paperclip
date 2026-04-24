@@ -1,14 +1,15 @@
 import { PageTabBar } from "@/components/PageTabBar";
+import { useI18n } from "@/context/LocaleContext";
 import { Tabs } from "@/components/ui/tabs";
 import { useLocation, useNavigate } from "@/lib/router";
 
-const items = [
-  { value: "general", label: "General", href: "/company/settings" },
-  { value: "access", label: "Access", href: "/company/settings/access" },
-  { value: "invites", label: "Invites", href: "/company/settings/invites" },
+const itemDefs = [
+  { value: "general", labelKey: "companySettings.general", href: "/company/settings" },
+  { value: "access", labelKey: "companySettings.access", href: "/company/settings/access" },
+  { value: "invites", labelKey: "companySettings.invites", href: "/company/settings/invites" },
 ] as const;
 
-type CompanySettingsTab = (typeof items)[number]["value"];
+type CompanySettingsTab = (typeof itemDefs)[number]["value"];
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   if (pathname.includes("/company/settings/access")) {
@@ -23,9 +24,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 }
 
 export function CompanySettingsNav() {
+  const { t } = useI18n();
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getCompanySettingsTab(location.pathname);
+  const items = itemDefs.map((item) => ({ ...item, label: t(item.labelKey) }));
 
   function handleTabChange(value: string) {
     const nextTab = items.find((item) => item.value === value);
