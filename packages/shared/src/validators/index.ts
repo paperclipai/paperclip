@@ -25,6 +25,18 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  environmentDriverSchema,
+  environmentStatusSchema,
+  environmentLeaseStatusSchema,
+  environmentLeaseCleanupStatusSchema,
+  createEnvironmentSchema,
+  updateEnvironmentSchema,
+  probeEnvironmentConfigSchema,
+  type CreateEnvironment,
+  type UpdateEnvironment,
+  type ProbeEnvironmentConfig,
+} from "./environment.js";
+export {
   feedbackDataSharingPreferenceSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -186,6 +198,17 @@ export {
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
 } from "./issue.js";
+
+export {
+  createIssueTreeHoldSchema,
+  issueTreeControlModeSchema,
+  issueTreeHoldReleasePolicySchema,
+  previewIssueTreeControlSchema,
+  releaseIssueTreeHoldSchema,
+  type CreateIssueTreeHold,
+  type PreviewIssueTreeControl,
+  type ReleaseIssueTreeHold,
+} from "./issue-tree-control.js";
 
 export {
   createIssueWorkProductSchema,

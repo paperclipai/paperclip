@@ -30,12 +30,18 @@ import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
+  parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import {
+  ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  issueTreeControlService,
+  type ActiveIssueTreePauseHoldGate,
+} from "./issue-tree-control.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -45,7 +51,6 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
-
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -69,6 +74,24 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function readStringFromRecord(record: unknown, key: string) {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readLatestWakeCommentId(record: unknown) {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>).wakeCommentIds;
+  if (Array.isArray(value)) {
+    const latest = value
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .at(-1);
+    if (latest) return latest.trim();
+  }
+  return readStringFromRecord(record, "wakeCommentId") ?? readStringFromRecord(record, "commentId");
 }
 
 export interface IssueFilters {
@@ -871,6 +894,7 @@ async function lastActivityStatsForIssues(
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+  const treeControlSvc = issueTreeControlService(db);
 
   async function getIssueByUuid(id: string) {
     const row = await db
@@ -922,6 +946,27 @@ export function issueService(db: Db) {
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
     }
+  }
+
+  async function isTreeHoldInteractionCheckoutAllowed(
+    companyId: string,
+    checkoutRunId: string | null,
+    _gate: ActiveIssueTreePauseHoldGate,
+  ) {
+    if (!checkoutRunId) return false;
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, checkoutRunId), eq(heartbeatRuns.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    const wakeReason =
+      readStringFromRecord(run?.contextSnapshot, "wakeReason") ??
+      readStringFromRecord(run?.contextSnapshot, "reason");
+    return Boolean(
+      wakeReason &&
+      ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason) &&
+      readLatestWakeCommentId(run?.contextSnapshot),
+    );
   }
 
   async function assertAssignableUser(companyId: string, userId: string) {
@@ -1242,7 +1287,87 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function adoptUnownedCheckoutRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+  }) {
+    const now = new Date();
+    const adopted = await db
+      .update(issues)
+      .set({
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionLockedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.status, "in_progress"),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.checkoutRunId),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.actorRunId)),
+        ),
+      )
+      .returning({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .then((rows) => rows[0] ?? null);
+
+    return adopted;
+  }
+
+  async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+      const issue = await tx
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue?.executionRunId) return false;
+
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
+      );
+      const run = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issue.executionRunId))
+        .then((rows) => rows[0] ?? null);
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+
+      const updated = await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.executionRunId, issue.executionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      return Boolean(updated);
+    });
+  }
+
   return {
+    clearExecutionRunIfTerminal,
+
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
@@ -2067,6 +2192,36 @@ export function issueService(db: Db) {
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
     },
 
+    clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
+      const rows = await db
+        .select({
+          id: issues.id,
+          executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        })
+        .from(issues)
+        .where(eq(issues.companyId, companyId));
+
+      let cleared = 0;
+      for (const row of rows) {
+        const settings = parseIssueExecutionWorkspaceSettings(row.executionWorkspaceSettings);
+        if (settings?.environmentId !== environmentId) continue;
+
+        await db
+          .update(issues)
+          .set({
+            executionWorkspaceSettings: {
+              ...settings,
+              environmentId: null,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, row.id));
+        cleared += 1;
+      }
+
+      return cleared;
+    },
+
     remove: (id: string) =>
       db.transaction(async (tx) => {
         const attachmentAssetIds = await tx
@@ -2111,39 +2266,21 @@ export function issueService(db: Db) {
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
       const now = new Date();
+      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
+      if (
+        activePauseHold &&
+        !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, checkoutRunId, activePauseHold))
+      ) {
+        throw conflict("Issue checkout blocked by active subtree pause hold", {
+          issueId: id,
+          holdId: activePauseHold.holdId,
+          rootIssueId: activePauseHold.rootIssueId,
+          mode: activePauseHold.mode,
+          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+        });
+      }
 
-      // Fix C: staleness detection — if executionRunId references a run that is no
-      // longer queued or running, clear it before applying the execution lock condition
-      // so a dead lock can't produce a spurious 409.
-      // Wrapped in a transaction with SELECT FOR UPDATE to make the read + clear atomic,
-      // matching the existing pattern in enqueueWakeup().
-      await db.transaction(async (tx) => {
-        await tx.execute(
-          sql`select id from issues where id = ${id} for update`,
-        );
-        const preCheckRow = await tx
-          .select({ executionRunId: issues.executionRunId })
-          .from(issues)
-          .where(eq(issues.id, id))
-          .then((rows) => rows[0] ?? null);
-        if (!preCheckRow?.executionRunId) return;
-        const lockRun = await tx
-          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, preCheckRow.executionRunId))
-          .then((rows) => rows[0] ?? null);
-        if (!lockRun || (lockRun.status !== "queued" && lockRun.status !== "running")) {
-          await tx
-            .update(issues)
-            .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
-            .where(
-              and(
-                eq(issues.id, id),
-                eq(issues.executionRunId, preCheckRow.executionRunId),
-              ),
-            );
-        }
-      });
+      await clearExecutionRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -2272,12 +2409,14 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
+      await clearExecutionRunIfTerminal(id);
       const current = await db
         .select({
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -2291,6 +2430,27 @@ export function issueService(db: Db) {
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
         return { ...current, adoptedFromRunId: null as string | null };
+      }
+
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null &&
+        (current.executionRunId == null || current.executionRunId === actorRunId)
+      ) {
+        const adopted = await adoptUnownedCheckoutRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+        });
+
+        if (adopted) {
+          return {
+            ...adopted,
+            adoptedFromRunId: null as string | null,
+          };
+        }
       }
 
       if (
@@ -2320,12 +2480,14 @@ export function issueService(db: Db) {
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
+        executionRunId: current.executionRunId,
         actorAgentId,
         actorRunId,
       });
     },
 
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
+      await clearExecutionRunIfTerminal(id);
       const existing = await db
         .select()
         .from(issues)
@@ -2343,12 +2505,15 @@ export function issueService(db: Db) {
         existing.checkoutRunId &&
         !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
       ) {
-        throw conflict("Only checkout run can release issue", {
-          issueId: existing.id,
-          assigneeAgentId: existing.assigneeAgentId,
-          checkoutRunId: existing.checkoutRunId,
-          actorRunId: actorRunId ?? null,
-        });
+        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        if (!stale) {
+          throw conflict("Only checkout run can release issue", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            checkoutRunId: existing.checkoutRunId,
+            actorRunId: actorRunId ?? null,
+          });
+        }
       }
 
       const updated = await db
@@ -2357,6 +2522,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
@@ -2366,6 +2534,51 @@ export function issueService(db: Db) {
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },
+
+    adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select({
+            id: issues.id,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const patch: Partial<typeof issues.$inferInsert> = {
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        };
+        if (options.clearAssignee) {
+          patch.assigneeAgentId = null;
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set(patch)
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return {
+          issue: enriched,
+          previous: {
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+          },
+        };
+      }),
 
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),

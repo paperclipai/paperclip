@@ -77,25 +77,8 @@ async function createApp(
   return app;
 }
 
-describe("GET /invites/:token/test-resolution", () => {
+describe.sequential("GET /invites/:token/test-resolution", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("node:dns/promises");
-    vi.doUnmock("node:http");
-    vi.doUnmock("node:https");
-    vi.doUnmock("node:net");
-    vi.doUnmock("../board-claim.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../storage/index.js");
-    vi.doUnmock("../middleware/logger.js");
-    vi.doUnmock("../routes/access.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doMock("node:dns/promises", async () => vi.importActual("node:dns/promises"));
-    vi.doMock("node:http", async () => vi.importActual("node:http"));
-    vi.doMock("node:https", async () => vi.importActual("node:https"));
-    vi.doMock("node:net", async () => vi.importActual("node:net"));
-    vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
     currentAccessModule = null;
   });
 

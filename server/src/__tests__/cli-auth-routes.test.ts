@@ -1,6 +1,7 @@
+import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAccessService = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
@@ -34,6 +35,20 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn((name: string) => name),
 }));
 
+let currentServer: Server | null = null;
+
+async function closeCurrentServer() {
+  if (!currentServer) return;
+  const server = currentServer;
+  currentServer = null;
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
@@ -48,6 +63,7 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: any, db: any = {} as any) {
+  await closeCurrentServer();
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -68,10 +84,13 @@ async function createApp(actor: any, db: any = {} as any) {
     }),
   );
   app.use(errorHandler);
-  return app;
+  currentServer = app.listen(0);
+  return currentServer;
 }
 
 describe("cli auth routes", () => {
+  afterEach(closeCurrentServer);
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");

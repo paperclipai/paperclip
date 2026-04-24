@@ -55,6 +55,7 @@ import {
   projectService,
   routineService,
   workProductService,
+  environmentService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
@@ -71,6 +72,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -413,6 +415,19 @@ export function issueRoutes(
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
+  }
+
+  async function assertIssueEnvironmentSelection(
+    companyId: string,
+    environmentId: string | null | undefined,
+  ) {
+    if (environmentId === undefined || environmentId === null) return;
+    await assertEnvironmentSelectionForCompany(
+      environmentService(db),
+      companyId,
+      environmentId,
+      { allowedDrivers: ["local", "ssh"] },
+    );
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -1635,6 +1650,7 @@ export function issueRoutes(
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
+    await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -1701,6 +1717,7 @@ export function issueRoutes(
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId);
     }
+    await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -1775,6 +1792,7 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const effectiveMoveToTodoRequested =
@@ -2572,6 +2590,52 @@ export function issueRoutes(
     });
 
     res.json(released);
+  });
+
+  router.post("/issues/:id/admin/force-release", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const clearAssignee = req.query.clearAssignee === "true";
+    const result = await svc.adminForceRelease(id, { clearAssignee });
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.admin_force_release",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        issueId: result.issue.id,
+        actorUserId: req.actor.userId,
+        prevCheckoutRunId: result.previous.checkoutRunId,
+        prevExecutionRunId: result.previous.executionRunId,
+        clearAssignee,
+      },
+    });
+
+    res.json(result);
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

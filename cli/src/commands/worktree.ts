@@ -1311,6 +1311,7 @@ async function seedWorktreeDatabase(input: {
       backupDir: path.resolve(input.targetPaths.backupDir, "seed"),
       retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: `${input.instanceId}-seed`,
+      backupEngine: "javascript",
       includeMigrationJournal: true,
       excludeTables: seedPlan.excludedTables,
       nullifyColumns: seedPlan.nullifyColumns,

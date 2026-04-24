@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -30,7 +31,11 @@ interface RunningProcess {
 interface SpawnTarget {
   command: string;
   args: string[];
+  cwd?: string;
+  cleanup?: () => Promise<void>;
 }
+
+type RemoteExecutionSpec = SshRemoteExecutionSpec;
 
 type ChildProcessWithEvents = ChildProcess & {
   on(event: "error", listener: (err: Error) => void): ChildProcess;
@@ -325,11 +330,20 @@ type PaperclipWakeBlockerSummary = {
   priority: string | null;
 };
 
+type PaperclipWakeTreeHoldSummary = {
+  holdId: string | null;
+  rootIssueId: string | null;
+  mode: string | null;
+  reason: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
+  treeHoldInteraction: boolean;
+  activeTreeHold: PaperclipWakeTreeHoldSummary | null;
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
@@ -435,6 +449,16 @@ function normalizePaperclipWakeBlockerSummary(value: unknown): PaperclipWakeBloc
   return { id, identifier, title, status, priority };
 }
 
+function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTreeHoldSummary | null {
+  const hold = parseObject(value);
+  const holdId = asString(hold.holdId, "").trim() || null;
+  const rootIssueId = asString(hold.rootIssueId, "").trim() || null;
+  const mode = asString(hold.mode, "").trim() || null;
+  const reason = asString(hold.reason, "").trim() || null;
+  if (!holdId && !rootIssueId && !mode && !reason) return null;
+  return { holdId, rootIssueId, mode, reason };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -511,7 +535,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
     : [];
 
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -520,6 +545,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
+    treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
+    activeTreeHold,
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
@@ -612,6 +639,14 @@ export function renderPaperclipWakePrompt(
       lines.push(`- unresolved blockers: ${blockers}`);
     } else if (normalized.unresolvedBlockerIssueIds.length > 0) {
       lines.push(`- unresolved blocker issue ids: ${normalized.unresolvedBlockerIssueIds.join(", ")}`);
+    }
+  }
+  if (normalized.treeHoldInteraction) {
+    lines.push("- tree-hold interaction: yes");
+    lines.push("- execution scope: respond or triage the human comment; the subtree remains paused until an explicit resume action");
+    if (normalized.activeTreeHold) {
+      const hold = normalized.activeTreeHold;
+      lines.push(`- active tree hold: ${hold.holdId ?? "unknown"}${hold.rootIssueId ? ` rooted at ${hold.rootIssueId}` : ""}${hold.mode ? ` (${hold.mode})` : ""}`);
     }
   }
   if (normalized.missingCount > 0) {
@@ -776,9 +811,24 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  const apiUrl =
+    process.env.PAPERCLIP_RUNTIME_API_URL ??
+    process.env.PAPERCLIP_API_URL ??
+    `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  for (const key of Object.keys(env)) {
+    if (!key.startsWith("PAPERCLIP_")) continue;
+    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
+    if (key === "PAPERCLIP_LISTEN_HOST") continue;
+    if (key === "PAPERCLIP_LISTEN_PORT") continue;
+    delete env[key];
+  }
+  return env;
 }
 
 export function defaultPathForPlatform() {
@@ -829,7 +879,18 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   return null;
 }
 
-export async function resolveCommandForLogs(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+export async function resolveCommandForLogs(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  options: {
+    remoteExecution?: RemoteExecutionSpec | null;
+  } = {},
+): Promise<string> {
+  const remote = options.remoteExecution ?? null;
+  if (remote) {
+    return `ssh://${remote.username}@${remote.host}:${remote.port}/${remote.remoteCwd} :: ${command}`;
+  }
   return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
@@ -849,7 +910,33 @@ async function resolveSpawnTarget(
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
+  options: {
+    remoteExecution?: RemoteExecutionSpec | null;
+    remoteEnv?: Record<string, string> | null;
+  } = {},
 ): Promise<SpawnTarget> {
+  const remote = options.remoteExecution ?? null;
+  if (remote) {
+    const sshResolved = await resolveCommandPath("ssh", process.cwd(), env);
+    if (!sshResolved) {
+      throw new Error('Command not found in PATH: "ssh"');
+    }
+    const spawnTarget = await buildSshSpawnTarget({
+      spec: remote,
+      command,
+      args,
+      env: Object.fromEntries(
+        Object.entries(options.remoteEnv ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      ),
+    });
+    return {
+      command: sshResolved,
+      args: spawnTarget.args,
+      cwd: process.cwd(),
+      cleanup: spawnTarget.cleanup,
+    };
+  }
+
   const resolved = await resolveCommandPath(command, cwd, env);
   const executable = resolved ?? command;
 
@@ -1276,7 +1363,19 @@ export async function removeMaintainerOnlySkillSymlinks(
   }
 }
 
-export async function ensureCommandResolvable(command: string, cwd: string, env: NodeJS.ProcessEnv) {
+export async function ensureCommandResolvable(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  options: {
+    remoteExecution?: RemoteExecutionSpec | null;
+  } = {},
+) {
+  if (options.remoteExecution) {
+    const resolvedSsh = await resolveCommandPath("ssh", process.cwd(), env);
+    if (resolvedSsh) return;
+    throw new Error('Command not found in PATH: "ssh"');
+  }
   const resolved = await resolveCommandPath(command, cwd, env);
   if (resolved) return;
   if (command.includes("/") || command.includes("\\")) {
@@ -1300,12 +1399,15 @@ export async function runChildProcess(
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
+    remoteExecution?: RemoteExecutionSpec | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
-
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+    const rawMerged: NodeJS.ProcessEnv = {
+      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...opts.env,
+    };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
@@ -1323,10 +1425,13 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
-    void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
+    void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
+      remoteExecution: opts.remoteExecution ?? null,
+      remoteEnv: opts.remoteExecution ? opts.env : null,
+    })
       .then((target) => {
         const child = spawn(target.command, target.args, {
-          cwd: opts.cwd,
+          cwd: target.cwd ?? opts.cwd,
           env: mergedEnv,
           detached: process.platform !== "win32",
           shell: false,
@@ -1454,6 +1559,7 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -1472,15 +1578,19 @@ export async function runChildProcess(
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
-            resolve({
-              exitCode: code,
-              signal,
-              timedOut,
-              stdout,
-              stderr,
-              pid: child.pid ?? null,
-              startedAt,
-            });
+            void Promise.resolve()
+              .then(() => target.cleanup?.())
+              .finally(() => {
+              resolve({
+                exitCode: code,
+                signal,
+                timedOut,
+                stdout,
+                stderr,
+                pid: child.pid ?? null,
+                startedAt,
+              });
+              });
           });
         });
       })

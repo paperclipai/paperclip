@@ -23,6 +23,7 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  supportedEnvironmentDriversForAdapter,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -37,6 +38,7 @@ import {
   approvalService,
   companySkillService,
   budgetService,
+  environmentService,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -76,6 +78,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -138,6 +141,17 @@ export function agentRoutes(db: Db) {
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function assertAgentEnvironmentSelection(
+    companyId: string,
+    adapterType: string,
+    environmentId: string | null | undefined,
+  ) {
+    if (environmentId === undefined || environmentId === null) return;
+    await assertEnvironmentSelectionForCompany(environmentService(db), companyId, environmentId, {
+      allowedDrivers: allowedEnvironmentDriversForAgent(adapterType),
+    });
+  }
 
   async function getCurrentUserRedactionOptions() {
     return {
@@ -405,6 +419,10 @@ export function agentRoutes(db: Db) {
 
   function hasOwn(value: object, key: string): boolean {
     return Object.hasOwn(value, key);
+  }
+
+  function allowedEnvironmentDriversForAgent(adapterType: string): string[] {
+    return supportedEnvironmentDriversForAdapter(adapterType);
   }
 
   async function resolveCompanyIdForAgentReference(req: Request): Promise<string | null> {
@@ -1609,6 +1627,7 @@ export function agentRoutes(db: Db) {
       createInput.adapterType,
       normalizedAdapterConfig,
     );
+    await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
@@ -2063,6 +2082,15 @@ export function agentRoutes(db: Db) {
         existing.companyId,
         requestedAdapterType,
         effectiveAdapterConfig,
+      );
+    }
+    if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
+      await assertAgentEnvironmentSelection(
+        existing.companyId,
+        requestedAdapterType,
+        Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+          ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
+          : existing.defaultEnvironmentId,
       );
     }
 

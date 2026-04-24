@@ -55,6 +55,7 @@ describe("instance settings routes", () => {
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
     });
@@ -69,6 +70,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
       id: "instance-settings-1",
       experimental: {
+        enableEnvironments: true,
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
       },
@@ -87,6 +89,7 @@ describe("instance settings routes", () => {
     const getRes = await request(app).get("/api/instance/settings/experimental");
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
+      enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
     });
@@ -117,6 +120,24 @@ describe("instance settings routes", () => {
 
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       autoRestartDevServerWhenIdle: true,
+    });
+  });
+
+  it("allows local board users to update environment controls", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableEnvironments: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableEnvironments: true,
     });
   });
 

@@ -73,6 +73,9 @@ export const queryKeys = {
     closeReadiness: (id: string) => ["execution-workspaces", "close-readiness", id] as const,
     workspaceOperations: (id: string) => ["execution-workspaces", "workspace-operations", id] as const,
   },
+  environments: {
+    list: (companyId: string) => ["environments", companyId] as const,
+  },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
