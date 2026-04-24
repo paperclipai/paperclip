@@ -86,7 +86,7 @@ import {
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
-import { issueService } from "./issues.js";
+import { issueHasLabel, issueService, MONITORING_LABEL_NAME } from "./issues.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   issueTreeControlService,
@@ -4328,6 +4328,15 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      // Monitoring-label exemption: parent/monitor tickets (feature epics,
+      // phase parents, standing inboxes, governance umbrellas, cleanup plan
+      // parents) are intentionally owned-active without a live executor. Skip
+      // stranded-issue reconciliation entirely for them. See upstream issue #4395.
+      if (await issueHasLabel(db, issue.id, MONITORING_LABEL_NAME)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (issue.status === "todo") {
         if (!latestRun || latestRun.status === "succeeded") {
@@ -4648,6 +4657,13 @@ export function heartbeatService(db: Db) {
       .where(eq(issues.id, input.finding.issueId))
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.companyId !== input.finding.companyId) return { kind: "skipped" as const };
+
+    // Monitoring-label exemption: do not open liveness escalations against
+    // parent/monitor tickets that are owned-active without an executor. See
+    // upstream issue #4395.
+    if (await issueHasLabel(db, issue.id, MONITORING_LABEL_NAME)) {
+      return { kind: "skipped" as const };
+    }
 
     const existing = await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey);
     if (existing) {
