@@ -18,7 +18,7 @@ The canonical model is:
 
 - Company skill reads: any same-company actor
 - Company skill mutations: board, CEO, or an agent with the effective `agents:create` capability
-- Agent skill assignment: same permission model as updating that agent
+- Agent skill assignment: CEO, the target agent itself, any agent with `agents:create` (broad), **or any agent with `agents:skills:sync`** (narrow, scoped exclusively to `POST /api/agents/:agentId/skills/sync`)
 
 ## Core Endpoints
 
@@ -139,6 +139,25 @@ If you need the current state first:
 curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
+
+### Scoped delegation: the `agents:skills:sync` permission
+
+CEO can designate a "skill manager" agent without granting it full agent-mutation powers. Use the existing CEO-only permissions endpoint:
+
+```sh
+curl -sS -X PATCH "$PAPERCLIP_API_URL/api/agents/<skill-manager-agent-id>/permissions" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "canCreateAgents": false,
+    "canAssignTasks": true,
+    "canSyncOtherAgentSkills": true
+  }'
+```
+
+The designated agent can now call `POST /api/agents/:agentId/skills/sync` against any other agent in the same company. It **cannot** `PATCH` other agents or roll back their config revisions — those still require `agents:create` or CEO.
+
+All syncs continue to record the acting agent id in `agent_revisions` (`source="skill-sync"`) and `activity_log` (`action="agent.skills_synced"`), so the audit trail is unchanged from the CEO-run path.
 
 ## Include Skills During Hire Or Create
 

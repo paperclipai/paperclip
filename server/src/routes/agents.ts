@@ -970,7 +970,29 @@ export function agentRoutes(db: Db) {
         res.status(404).json({ error: "Agent not found" });
         return;
       }
-      await assertCanUpdateAgent(req, agent);
+
+      // Narrow grant fall-through: an agent holding agents:skills:sync in the
+      // same company can sync any agent's skills without being granted the
+      // broader agents:create surface. Self-sync, CEO, and agents:create
+      // holders still fall through to assertCanUpdateAgent unchanged.
+      let allowedByNarrowGrant = false;
+      if (req.actor.type === "agent" && req.actor.agentId) {
+        assertCompanyAccess(req, agent.companyId);
+        const actorAgent = await svc.getById(req.actor.agentId);
+        if (!actorAgent || actorAgent.companyId !== agent.companyId) {
+          throw forbidden("Agent key cannot access another company");
+        }
+        allowedByNarrowGrant = await access.hasPermission(
+          agent.companyId,
+          "agent",
+          actorAgent.id,
+          "agents:skills:sync",
+        );
+      }
+
+      if (!allowedByNarrowGrant) {
+        await assertCanUpdateAgent(req, agent);
+      }
 
       const requestedSkills = Array.from(
         new Set(
@@ -1713,6 +1735,10 @@ export function agentRoutes(db: Db) {
 
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanSyncSkills =
+      agent.role === "ceo"
+      || Boolean(agent.permissions?.canCreateAgents)
+      || Boolean(req.body.canSyncOtherAgentSkills);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
@@ -1720,6 +1746,14 @@ export function agentRoutes(db: Db) {
       agent.id,
       "tasks:assign",
       effectiveCanAssignTasks,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+    );
+    await access.setPrincipalPermission(
+      agent.companyId,
+      "agent",
+      agent.id,
+      "agents:skills:sync",
+      effectiveCanSyncSkills,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
 
@@ -1736,6 +1770,7 @@ export function agentRoutes(db: Db) {
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        canSyncOtherAgentSkills: effectiveCanSyncSkills,
       },
     });
 
