@@ -474,7 +474,6 @@
     {
       "idx": 67,
       "version": "7",
-<<<<<<< HEAD
       "when": 1776904200000,
       "tag": "0067_agent_default_environment",
       "breakpoints": true
@@ -484,10 +483,13 @@
       "version": "7",
       "when": 1776959400000,
       "tag": "0068_environment_local_driver_unique",
-=======
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
       "when": 1777019067587,
-      "tag": "0067_reviewed_artifact_persistence",
->>>>>>> 16efc9bb (DIG-482 refresh reviewed artifact migration)
+      "tag": "0069_reviewed_artifact_persistence",
       "breakpoints": true
     }
   ]
