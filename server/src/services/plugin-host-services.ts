@@ -6,6 +6,7 @@ import {
   costEvents,
   heartbeatRuns,
   issues as issuesTable,
+  pluginCompanySettings,
   pluginLogs,
 } from "@paperclipai/db";
 import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
@@ -21,7 +22,11 @@ import type {
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
+import type {
+  CreateIssueThreadInteraction,
+  IssueDocumentSummary,
+  PluginCompanySettingsJson,
+} from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -461,7 +466,18 @@ export function buildHostServices(
   notifyWorker?: (method: string, params: unknown) => void,
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
-  const stateStore = pluginStateStore(db);
+  const stateStore = pluginStateStore(db, {
+    resolveCompanySettings: async (resolvedPluginId, companyId) => {
+      const row = await db.query.pluginCompanySettings.findFirst({
+        where: (table, { and, eq }) => and(
+          eq(table.pluginId, resolvedPluginId),
+          eq(table.companyId, companyId),
+        ),
+        columns: { settingsJson: true },
+      });
+      return row?.settingsJson as PluginCompanySettingsJson | undefined;
+    },
+  });
   const pluginDb = pluginDatabaseService(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
@@ -753,6 +769,7 @@ export function buildHostServices(
         return stateStore.get(pluginId, params.scopeKind as any, params.stateKey, {
           scopeId: params.scopeId,
           namespace: params.namespace,
+          companyId: params.companyId,
         });
       },
       async set(params) {
@@ -762,12 +779,14 @@ export function buildHostServices(
           namespace: params.namespace,
           stateKey: params.stateKey,
           value: params.value,
+          companyId: params.companyId,
         });
       },
       async delete(params) {
         await stateStore.delete(pluginId, params.scopeKind as any, params.stateKey, {
           scopeId: params.scopeId,
           namespace: params.namespace,
+          companyId: params.companyId,
         });
       },
     },

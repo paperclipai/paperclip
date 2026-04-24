@@ -2,11 +2,14 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginState } from "@paperclipai/db";
 import type {
+  PluginCompanySettingsJson,
   PluginStateScopeKind,
   SetPluginState,
   ListPluginState,
+  PluginMemoryNamespacePolicy,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { PLUGIN_MEMORY_RESERVED_NAMESPACES } from "@paperclipai/shared";
+import { forbidden, notFound } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,7 +69,18 @@ function scopeConditions(
  * @see PLUGIN_SPEC.md §15.1 — Capabilities: Plugin State
  * @see PLUGIN_SPEC.md §21.3 — `plugin_state` table
  */
-export function pluginStateStore(db: Db) {
+type PolicyAwarePluginStateInput = {
+  companyId?: string;
+};
+
+interface PluginStateStoreOptions {
+  resolveCompanySettings?: (
+    pluginId: string,
+    companyId: string,
+  ) => Promise<PluginCompanySettingsJson | undefined>;
+}
+
+export function pluginStateStore(db: Db, options: PluginStateStoreOptions = {}) {
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
@@ -78,6 +92,61 @@ export function pluginStateStore(db: Db) {
       .where(eq(plugins.id, pluginId));
     if (rows.length === 0) {
       throw notFound(`Plugin not found: ${pluginId}`);
+    }
+  }
+
+  function mergedNamespacePolicy(
+    settings: PluginCompanySettingsJson | undefined,
+    namespace: string,
+  ): PluginMemoryNamespacePolicy | undefined {
+    return settings?.memoryPolicy?.namespacePolicies?.[namespace];
+  }
+
+  async function assertScopeAllowed(
+    pluginId: string,
+    scopeKind: PluginStateScopeKind,
+    namespace: string,
+    input?: PolicyAwarePluginStateInput,
+  ): Promise<void> {
+    if (!input?.companyId || !options.resolveCompanySettings) {
+      return;
+    }
+
+    const settings = await options.resolveCompanySettings(pluginId, input.companyId);
+    const memoryPolicy = settings?.memoryPolicy;
+    const namespacePolicy = mergedNamespacePolicy(settings, namespace);
+
+    const deniedScopes = new Set([
+      ...(memoryPolicy?.denyScopes ?? []),
+      ...(namespacePolicy?.deniedScopes ?? []),
+    ]);
+
+    if (deniedScopes.has(scopeKind)) {
+      throw forbidden(`Plugin state scope '${scopeKind}' is denied by company policy`);
+    }
+
+    const visibility = namespacePolicy?.visibility ?? memoryPolicy?.defaultVisibility;
+    const sharedScopeAllowList = namespacePolicy?.allowedScopes
+      ?? memoryPolicy?.allowSharedScopes;
+
+    if (
+      visibility === "private"
+      && ["company", "project", "project_workspace", "issue", "goal", "run"].includes(scopeKind)
+    ) {
+      throw forbidden(`Plugin state scope '${scopeKind}' is not allowed for private memory`);
+    }
+
+    if (visibility === "shared" && sharedScopeAllowList && !sharedScopeAllowList.includes(scopeKind)) {
+      throw forbidden(`Plugin state scope '${scopeKind}' is not allowed for shared memory`);
+    }
+
+    if (
+      PLUGIN_MEMORY_RESERVED_NAMESPACES.includes(
+        namespace as (typeof PLUGIN_MEMORY_RESERVED_NAMESPACES)[number],
+      )
+      && !namespacePolicy?.allowReserved
+    ) {
+      throw forbidden(`Plugin state namespace '${namespace}' is a reserved namespace`);
     }
   }
 
@@ -107,8 +176,10 @@ export function pluginStateStore(db: Db) {
       {
         scopeId,
         namespace = DEFAULT_NAMESPACE,
-      }: { scopeId?: string; namespace?: string } = {},
+        companyId,
+      }: { scopeId?: string; namespace?: string; companyId?: string } = {},
     ): Promise<unknown> => {
+      await assertScopeAllowed(pluginId, scopeKind, namespace, { companyId });
       const rows = await db
         .select()
         .from(pluginState)
@@ -129,11 +200,13 @@ export function pluginStateStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      * @param input - Scope key and value to store
      */
-    set: async (pluginId: string, input: SetPluginState): Promise<void> => {
+    set: async (pluginId: string, input: SetPluginState & PolicyAwarePluginStateInput): Promise<void> => {
       await assertPluginExists(pluginId);
 
       const namespace = input.namespace ?? DEFAULT_NAMESPACE;
       const scopeId = input.scopeId ?? null;
+
+      await assertScopeAllowed(pluginId, input.scopeKind, namespace, input);
 
       await db
         .insert(pluginState)
@@ -181,8 +254,10 @@ export function pluginStateStore(db: Db) {
       {
         scopeId,
         namespace = DEFAULT_NAMESPACE,
-      }: { scopeId?: string; namespace?: string } = {},
+        companyId,
+      }: { scopeId?: string; namespace?: string; companyId?: string } = {},
     ): Promise<void> => {
+      await assertScopeAllowed(pluginId, scopeKind, namespace, { companyId });
       await db
         .delete(pluginState)
         .where(scopeConditions(pluginId, scopeKind, scopeId, namespace, stateKey));
@@ -199,7 +274,10 @@ export function pluginStateStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      * @param filter - Optional scope filters (scopeKind, scopeId, namespace)
      */
-    list: async (pluginId: string, filter: ListPluginState = {}): Promise<typeof pluginState.$inferSelect[]> => {
+    list: async (pluginId: string, filter: ListPluginState & PolicyAwarePluginStateInput = {}): Promise<typeof pluginState.$inferSelect[]> => {
+      if (filter.scopeKind) {
+        await assertScopeAllowed(pluginId, filter.scopeKind, filter.namespace ?? DEFAULT_NAMESPACE, filter);
+      }
       const conditions = [eq(pluginState.pluginId, pluginId)];
 
       if (filter.scopeKind !== undefined) {

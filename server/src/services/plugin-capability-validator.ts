@@ -22,6 +22,7 @@
 import type {
   PluginCapability,
   PaperclipPluginManifestV1,
+  PluginCapabilityPolicy,
   PluginUiSlotType,
   PluginLauncherPlacementZone,
 } from "@paperclipai/shared";
@@ -157,6 +158,23 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",
 };
+
+export function resolveEffectiveCapabilities(
+  manifest: PaperclipPluginManifestV1,
+  policy?: PluginCapabilityPolicy,
+): PluginCapability[] {
+  const mode = policy?.mode ?? "inherit";
+  const grants = policy?.grants;
+  if (!grants) {
+    return mode === "override" ? [] : [...manifest.capabilities];
+  }
+
+  if (mode === "override") {
+    return manifest.capabilities.filter((capability) => grants[capability] === true);
+  }
+
+  return manifest.capabilities.filter((capability) => grants[capability] !== false);
+}
 
 // ---------------------------------------------------------------------------
 // Result types

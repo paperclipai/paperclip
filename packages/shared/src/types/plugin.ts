@@ -242,6 +242,40 @@ export interface PluginApiRouteDeclaration {
   companyResolution?: PluginApiRouteCompanyResolution;
 }
 
+export type PluginMemoryVisibility = "private" | "shared";
+
+export interface PluginMemoryNamespacePolicy {
+  visibility?: PluginMemoryVisibility;
+  allowedScopes?: PluginStateScopeKind[];
+  deniedScopes?: PluginStateScopeKind[];
+  allowReserved?: boolean;
+}
+
+export interface PluginMemoryPolicy {
+  defaultVisibility?: PluginMemoryVisibility;
+  allowSharedScopes?: PluginStateScopeKind[];
+  denyScopes?: PluginStateScopeKind[];
+  namespacePolicies?: Record<string, PluginMemoryNamespacePolicy>;
+}
+
+export interface PluginCapabilityPolicy {
+  mode?: "inherit" | "override";
+  /**
+   * inherit: start from manifest capabilities and only remove explicit false entries.
+   * override: ignore undeclared policy defaults and allow only explicit true entries.
+   */
+  grants?: Partial<Record<PluginCapability, boolean>>;
+}
+
+/**
+ * Company-scoped plugin policy settings stored in JSON.
+ * Canonical runtime type lives in validators/plugin.ts via the schema export.
+ */
+export interface PluginCompanySettingsShape {
+  memoryPolicy?: PluginMemoryPolicy;
+  capabilityPolicy?: PluginCapabilityPolicy;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------

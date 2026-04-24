@@ -802,6 +802,11 @@ export const PLUGIN_STATE_SCOPE_KINDS = [
 ] as const;
 export type PluginStateScopeKind = (typeof PLUGIN_STATE_SCOPE_KINDS)[number];
 
+export const PLUGIN_MEMORY_RESERVED_NAMESPACES = [
+  "paperclip.memory",
+  "paperclip.capabilities",
+] as const;
+
 /** Statuses for a plugin's scheduled job definition. */
 export const PLUGIN_JOB_STATUSES = [
   "active",

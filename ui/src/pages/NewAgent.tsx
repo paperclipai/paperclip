@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { queryKeys } from "../lib/queryKeys";
@@ -51,8 +52,9 @@ function createValuesForAdapterType(
 }
 
 export function NewAgent() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -94,6 +96,7 @@ export function NewAgent() {
 
   const isFirstAgent = !agents || agents.length === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
+  const requiresApproval = selectedCompany?.requireBoardApprovalForNewAgents === true;
 
   useEffect(() => {
     setBreadcrumbs([
@@ -125,6 +128,16 @@ export function NewAgent() {
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      if (result.approval) {
+        pushToast({
+          title: "Agent submitted for approval",
+          body: `${result.agent.name} will remain pending until approved.`,
+          tone: "success",
+          action: { label: "View approval", href: `/approvals/${result.approval.id}` },
+        });
+        navigate(`/approvals/${result.approval.id}`);
+        return;
+      }
       navigate(agentUrl(result.agent));
     },
     onError: (error) => {
@@ -199,6 +212,11 @@ export function NewAgent() {
         <p className="text-sm text-muted-foreground mt-1">
           Advanced agent configuration
         </p>
+        {requiresApproval && (
+          <p className="text-sm text-muted-foreground mt-2">
+            This hire will remain pending until approved by the board.
+          </p>
+        )}
       </div>
 
       <div className="border border-border">
@@ -325,7 +343,13 @@ export function NewAgent() {
               disabled={!name.trim() || createAgent.isPending}
               onClick={handleSubmit}
             >
-              {createAgent.isPending ? "Creating…" : "Create agent"}
+              {createAgent.isPending
+                ? requiresApproval
+                  ? "Submitting…"
+                  : "Creating…"
+                : requiresApproval
+                  ? "Submit for approval"
+                  : "Create agent"}
             </Button>
           </div>
         </div>

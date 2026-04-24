@@ -273,6 +273,57 @@ describe("agent skill routes", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
   });
 
+  it("returns a stable hire response with approval when board approval is required", async () => {
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Approval Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "Approval Agent",
+        status: "pending_approval",
+      }),
+    );
+    expect(res.body.approval).toMatchObject({
+      id: "approval-1",
+      companyId: "company-1",
+      status: "pending",
+      type: "hire_agent",
+    });
+  });
+
+  it("returns a stable hire response with null approval when board approval is not required", async () => {
+    const res = await request(await createApp(createDb(false)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Direct Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.approval).toBeNull();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "Direct Agent",
+        status: "idle",
+      }),
+    );
+  });
+
   it("skips runtime materialization when listing Claude skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
 
