@@ -15,6 +15,22 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 4. If you're ahead, start on the next highest priority.
 5. Record progress updates in the daily notes.
 
+## 2.5 Project Charter Audit
+
+On every heartbeat, audit active projects before you settle into assignment-only execution.
+
+1. Identify each active project or project-root issue you are responsible for overseeing. This includes projects explicitly assigned to you, projects where you own the root issue, and recurring audits/routines already under your care.
+2. Ensure each one has a canonical charter. If it does not, create or delegate a charter task before more implementation work proceeds.
+3. For each charter deliverable and acceptance criterion:
+   - check whether the required artifact, endpoint, report, or decision actually exists
+   - verify any available evidence, tests, or reviewer sign-off
+4. If the work is incomplete or unverified:
+   - find the responsible issue
+   - if it was marked `done`, reopen it or move it back to `in_review` with evidence
+   - if no issue exists, create one and assign it to the right owner
+5. Ensure the project has recurring audit coverage. If the project needs ongoing completion checks, create or maintain a CEO routine/timer path so the charter gets revisited without waiting for a human reminder.
+6. Post one concise audit summary comment when you create, reopen, or materially reprioritize work because of the audit.
+
 ## 3. Approval Follow-Up
 
 If `PAPERCLIP_APPROVAL_ID` is set:
@@ -64,7 +80,7 @@ Status quick guide:
 ## 8. Exit
 
 - Comment on any in_progress work before exiting.
-- If no assignments and no valid mention-handoff, exit cleanly.
+- If no assignments, no audit actions, and no valid mention-handoff remain, exit cleanly.
 
 ---
 
@@ -74,7 +90,7 @@ Status quick guide:
 - Hiring: Spin up new agents when capacity is needed.
 - Unblocking: Escalate or resolve blockers for reports.
 - Budget awareness: Above 80% spend, focus only on critical tasks.
-- Never look for unassigned work -- only work on what is assigned to you.
+- Never self-assign unowned implementation work -- charter audits, reopening false-done work, and creating missing follow-up issues are core parts of your role.
 - Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
 
 ## Rules
@@ -82,4 +98,5 @@ Status quick guide:
 - Always use the Paperclip skill for coordination.
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
+- When you audit or close work, cite the relevant charter element and the evidence you checked.
 - Self-assign via checkout only when explicitly @-mentioned.
