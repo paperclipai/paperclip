@@ -6,12 +6,22 @@ import {
   reorderProjectFoldersSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { projectFolderService, logActivity } from "../services/index.js";
+import { projectFolderService, companyService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function projectFolderRoutes(db: Db) {
   const router = Router();
   const svc = projectFolderService(db);
+  const companySvc = companyService(db);
+
+  async function assertFoldersEnabled(companyId: string, res: Parameters<Parameters<typeof router.get>[1]>[1]): Promise<boolean> {
+    const company = await companySvc.getById(companyId);
+    if (!company?.projectFoldersEnabled) {
+      res.status(403).json({ error: "Project folders are not enabled for this company" });
+      return false;
+    }
+    return true;
+  }
 
   // List all folders for a company
   router.get("/companies/:companyId/project-folders", async (req, res) => {
@@ -28,6 +38,7 @@ export function projectFolderRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      if (!await assertFoldersEnabled(companyId, res)) return;
       const folder = await svc.create(companyId, req.body as { name: string; sortOrder?: number });
 
       const actor = getActorInfo(req);
@@ -53,6 +64,7 @@ export function projectFolderRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      if (!await assertFoldersEnabled(companyId, res)) return;
       const { orderedIds } = req.body as { orderedIds: string[] };
       await svc.reorder(companyId, orderedIds);
       const folders = await svc.list(companyId);
@@ -68,6 +80,7 @@ export function projectFolderRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const folderId = req.params.folderId as string;
       assertCompanyAccess(req, companyId);
+      if (!await assertFoldersEnabled(companyId, res)) return;
 
       const existing = await svc.getById(folderId);
       if (!existing || existing.companyId !== companyId) {
@@ -102,6 +115,7 @@ export function projectFolderRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const folderId = req.params.folderId as string;
     assertCompanyAccess(req, companyId);
+    if (!await assertFoldersEnabled(companyId, res)) return;
 
     const existing = await svc.getById(folderId);
     if (!existing || existing.companyId !== companyId) {

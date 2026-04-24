@@ -97,6 +97,7 @@ function FolderNameInput({
 }) {
   const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
+  const committedRef = useRef(false);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -104,8 +105,9 @@ function FolderNameInput({
   }, []);
 
   function commit() {
+    if (committedRef.current) return;
     const trimmed = value.trim();
-    if (trimmed) onCommit(trimmed);
+    if (trimmed) { committedRef.current = true; onCommit(trimmed); }
     else onCancel();
   }
 
@@ -216,7 +218,12 @@ function FolderSection({
               </button>
               <button
                 className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive text-left"
-                onClick={() => { setActionsOpen(false); if (folder) onDelete(folder.id); }}
+                onClick={() => {
+                  setActionsOpen(false);
+                  if (folder && window.confirm(`Delete "${folder.name}"? Projects inside will move to Uncategorized.`)) {
+                    onDelete(folder.id);
+                  }
+                }}
               >
                 Delete folder
               </button>

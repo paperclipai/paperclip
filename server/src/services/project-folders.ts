@@ -74,14 +74,16 @@ export function projectFolderService(db: Db) {
     },
 
     reorder: async (companyId: string, orderedIds: string[]): Promise<void> => {
-      await Promise.all(
-        orderedIds.map((id, index) =>
-          db
-            .update(projectFolders)
-            .set({ sortOrder: index, updatedAt: new Date() })
-            .where(and(eq(projectFolders.id, id), eq(projectFolders.companyId, companyId))),
-        ),
-      );
+      await db.transaction(async (tx) => {
+        await Promise.all(
+          orderedIds.map((id, index) =>
+            tx
+              .update(projectFolders)
+              .set({ sortOrder: index, updatedAt: new Date() })
+              .where(and(eq(projectFolders.id, id), eq(projectFolders.companyId, companyId))),
+          ),
+        );
+      });
     },
 
     remove: async (id: string): Promise<ProjectFolder | null> => {
