@@ -4,7 +4,7 @@ import {
   randomBytes,
   timingSafeEqual
 } from "node:crypto";
-import { lookup as dnsLookup } from "node:dns/promises";
+import dns, { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -2099,6 +2099,46 @@ function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
 }
 
+/**
+ * Returns true if the IP address is RFC-1918 private, loopback, link-local,
+ * or otherwise non-routable — used to block SSRF in webhook probe requests.
+ */
+function isPrivateIp(ip: string): boolean {
+  // IPv4 private ranges: loopback, RFC-1918, link-local, CGNAT, broadcast
+  const ipv4Private =
+    /^(127\.|10\.|192\.168\.|169\.254\.|0\.|255\.255\.255\.255$|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+  if (ipv4Private.test(ip)) return true;
+  // IPv6 loopback (::1) and link-local (fe80::/10)
+  if (ip === "::1") return true;
+  if (/^fe80:/i.test(ip)) return true;
+  // IPv4-mapped IPv6 (::ffff:192.168.x.x etc.) — check the embedded v4 part
+  const v4mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (v4mapped) return isPrivateIp(v4mapped[1]);
+  return false;
+}
+
+async function resolveAndBlockPrivate(url: URL): Promise<void> {
+  const hostname = url.hostname;
+  // Skip resolution for bare IP literals — validate directly
+  const ipLiteralV4 = /^\d+\.\d+\.\d+\.\d+$/.test(hostname);
+  const ipLiteralV6 = hostname.startsWith("[") && hostname.endsWith("]");
+  if (ipLiteralV4 || ipLiteralV6) {
+    const ip = ipLiteralV6 ? hostname.slice(1, -1) : hostname;
+    if (isPrivateIp(ip)) throw badRequest("url resolves to a private/reserved IP address");
+    return;
+  }
+  // Resolve hostname → IPs and block any private result
+  let addresses: string[];
+  try {
+    addresses = (await dns.resolve(hostname)).flat();
+  } catch {
+    throw badRequest("url hostname could not be resolved");
+  }
+  for (const addr of addresses) {
+    if (isPrivateIp(addr)) throw badRequest("url resolves to a private/reserved IP address");
+  }
+}
+
 type InviteResolutionProbe = {
   status: "reachable" | "timeout" | "unreachable";
   method: "HEAD";
@@ -2356,6 +2396,9 @@ async function probeInviteResolutionTarget(
   target: ResolvedInviteResolutionTarget,
   timeoutMs: number
 ): Promise<InviteResolutionProbe> {
+  // SSRF protection: resolve hostname and reject private/loopback IPs
+  await resolveAndBlockPrivate(url);
+
   const startedAt = Date.now();
   try {
     const response = await inviteResolutionNetwork.requestHead(target, timeoutMs);

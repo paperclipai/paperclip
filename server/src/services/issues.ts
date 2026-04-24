@@ -112,6 +112,7 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   q?: string;
   limit?: number;
+  offset?: number;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -1372,6 +1373,9 @@ export function issueService(db: Db) {
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
+      const offset = typeof filters?.offset === "number" && Number.isFinite(filters.offset)
+        ? Math.max(0, Math.floor(filters.offset))
+        : undefined;
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
@@ -1476,7 +1480,11 @@ export function issueService(db: Db) {
           desc(canonicalLastActivityAt),
           desc(issues.updatedAt),
         );
-      const rows = (limit === undefined ? await baseQuery : await baseQuery.limit(limit)).map((row) => ({
+      // Apply limit and offset — offset requires limit in Drizzle's type chain.
+      const limitedQuery =
+        limit !== undefined ? baseQuery.limit(limit) : offset !== undefined ? baseQuery.limit(10000) : baseQuery;
+      const queriedRows = offset !== undefined ? await limitedQuery.offset(offset) : await limitedQuery;
+      const rows = queriedRows.map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
@@ -1863,6 +1871,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: IssueCreateInput,
+      dbOrTx: any = db,
     ) => {
       const {
         labelIds: inputLabelIds,
@@ -1888,7 +1897,8 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+
+      const runCreate = async (tx: any) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -1918,7 +1928,7 @@ export function issueService(db: Db) {
               })
               .from(executionWorkspaces)
               .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
-              .then((rows) => rows[0] ?? null);
+              .then((rows: Array<{ id: string; mode: string }>) => rows[0] ?? null);
             if (sourceWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
@@ -1938,7 +1948,9 @@ export function issueService(db: Db) {
             .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
+            .then((rows: Array<{ executionWorkspacePolicy: typeof projects.$inferSelect.executionWorkspacePolicy }>) =>
+              rows[0] ?? null,
+            );
           executionWorkspaceSettings =
             defaultIssueExecutionWorkspaceSettingsForProject(
               gateProjectExecutionWorkspacePolicy(
@@ -1954,7 +1966,9 @@ export function issueService(db: Db) {
             })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
+            .then((rows: Array<{ executionWorkspacePolicy: typeof projects.$inferSelect.executionWorkspacePolicy }>) =>
+              rows[0] ?? null,
+            );
           const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
           projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
           if (!projectWorkspaceId) {
@@ -1963,7 +1977,7 @@ export function issueService(db: Db) {
               .from(projectWorkspaces)
               .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
               .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-              .then((rows) => rows[0]?.id ?? null);
+              .then((rows: Array<{ id: string }>) => rows[0]?.id ?? null);
           }
         }
         if (projectWorkspaceId) {
@@ -2036,7 +2050,9 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+      };
+
+      return dbOrTx === db ? db.transaction(runCreate) : runCreate(dbOrTx);
     },
 
     update: async (
@@ -2605,15 +2621,18 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        const anchorCreatedAt = anchor.createdAt instanceof Date
+          ? anchor.createdAt.toISOString()
+          : String(anchor.createdAt);
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchorCreatedAt}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAt}::timestamptz AND ${issueComments.id} > ${anchor.id})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchorCreatedAt}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAt}::timestamptz AND ${issueComments.id} < ${anchor.id})
               )`,
         );
       }
@@ -2698,16 +2717,19 @@ export function issueService(db: Db) {
       body: string,
       actor: { agentId?: string; userId?: string; runId?: string | null },
     ) => {
-      const issue = await db
-        .select({ companyId: issues.companyId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+      const [issue, generalSettings] = await Promise.all([
+        db
+          .select({ companyId: issues.companyId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+        instanceSettings.getGeneral(),
+      ]);
 
       if (!issue) throw notFound("Issue not found");
 
       const currentUserRedactionOptions = {
-        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        enabled: generalSettings.censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       const [comment] = await db

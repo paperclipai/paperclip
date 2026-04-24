@@ -7,7 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
-import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { boardMutationGuard, initBoardMutationTrustedOrigins } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -134,6 +134,22 @@ export async function createApp(
   },
 ) {
   const app = express();
+  app.disable("x-powered-by");
+
+  // Initialize CSRF trusted origins from static config (not per-request headers)
+  initBoardMutationTrustedOrigins(
+    opts.allowedHostnames,
+    process.env.PAPERCLIP_PUBLIC_URL,
+  );
+
+  // Security headers
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-XSS-Protection", "0");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  });
 
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.

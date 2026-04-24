@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 
 interface JwtHeader {
   alg: string;
@@ -31,7 +31,7 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };
@@ -75,6 +75,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     company_id: companyId,
     adapter_type: adapterType,
     run_id: runId,
+    jti: randomUUID(),
     iat: now,
     exp: now + config.ttlSeconds,
     iss: config.issuer,

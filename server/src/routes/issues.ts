@@ -82,6 +82,7 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+type BlockerIssueDraft = NonNullable<z.infer<typeof updateIssueRouteSchema>["createBlockedByIssues"]>[number];
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type ActivityIssueRelationSummary = {
@@ -648,6 +649,11 @@ export function issueRoutes(
     }
     return resolved.agent.id;
   }
+
+  function inheritIssueField<T>(value: T | undefined, fallback: T): T {
+    return value === undefined ? fallback : value;
+  }
+
   function toValidTimestamp(value: Date | string | null | undefined) {
     if (!value) return null;
     const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
@@ -782,6 +788,11 @@ export function issueRoutes(
       ? Number.parseInt(rawLimit, 10)
       : null;
     const limit = parsedLimit === null ? ISSUE_LIST_DEFAULT_LIMIT : clampIssueListLimit(parsedLimit);
+    const rawOffset = req.query.offset as string | undefined;
+    const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
+      ? Number.parseInt(rawOffset, 10)
+      : null;
+    const offset = parsedOffset ?? undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -801,6 +812,10 @@ export function issueRoutes(
     }
     if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
       res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}` });
+      return;
+    }
+    if (rawOffset !== undefined && (parsedOffset === null || !Number.isInteger(parsedOffset) || parsedOffset < 0)) {
+      res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
 
@@ -825,6 +840,7 @@ export function issueRoutes(
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
       limit,
+      offset,
     });
     res.json(result);
   });
@@ -1756,6 +1772,13 @@ export function issueRoutes(
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
+    const rawBlockerIssueDrafts: BlockerIssueDraft[] = Array.isArray(req.body.createBlockedByIssues)
+      ? req.body.createBlockedByIssues
+      : [];
+    if (rawBlockerIssueDrafts.some((draft) => draft.assigneeAgentId || draft.assigneeUserId)) {
+      await assertCanAssignTasks(req, existing.companyId);
+    }
+
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
@@ -1764,17 +1787,30 @@ export function issueRoutes(
       req.body.assigneeAgentId as string | null | undefined,
     );
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
+    const blockerIssueDrafts = await Promise.all(
+      rawBlockerIssueDrafts.map(async (draft) => ({
+        ...draft,
+        assigneeAgentId: await normalizeIssueAssigneeAgentReference(
+          existing.companyId,
+          draft.assigneeAgentId as string | null | undefined,
+        ),
+      })),
+    );
     const existingRelations =
-      Array.isArray(req.body.blockedByIssueIds)
+      Array.isArray(req.body.blockedByIssueIds) || blockerIssueDrafts.length > 0
         ? await svc.getRelationSummaries(existing.id)
         : null;
     const {
       comment: commentBody,
+      createBlockedByIssues: _createBlockedByIssues,
       reopen: reopenRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    const explicitBlockedByIssueIds = Array.isArray(req.body.blockedByIssueIds)
+      ? (req.body.blockedByIssueIds as string[])
+      : undefined;
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const effectiveMoveToTodoRequested =
@@ -1846,6 +1882,9 @@ export function issueRoutes(
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }
+    if (blockerIssueDrafts.length > 0 && updateFields.status === undefined && existing.status !== "blocked") {
+      updateFields.status = "blocked";
+    }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =
       updateFields.executionPolicy !== undefined
@@ -1854,6 +1893,7 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    const inheritedBlockedByIssueIds = existingRelations?.blockedBy.map((relation) => relation.id) ?? [];
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
@@ -1905,14 +1945,70 @@ export function issueRoutes(
     }
 
     let issue;
+    let effectiveBlockedByIssueIds = explicitBlockedByIssueIds;
+    let createdBlockerIssues: Array<{
+      id: string;
+      companyId: string;
+      identifier: string | null;
+      title: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+      status: string;
+    }> = [];
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
+          const createdBlockers = [];
+          for (const draft of blockerIssueDrafts) {
+            const blocker = await svc.create(
+              existing.companyId,
+              {
+                projectId: inheritIssueField(draft.projectId, existing.projectId),
+                projectWorkspaceId: inheritIssueField(draft.projectWorkspaceId, existing.projectWorkspaceId),
+                goalId: inheritIssueField(draft.goalId, existing.goalId),
+                parentId: draft.parentId,
+                inheritExecutionWorkspaceFromIssueId: draft.inheritExecutionWorkspaceFromIssueId,
+                title: draft.title,
+                description: draft.description ?? null,
+                status: draft.status ?? "todo",
+                priority: inheritIssueField(draft.priority, existing.priority),
+                assigneeAgentId: draft.assigneeAgentId ?? null,
+                assigneeUserId: draft.assigneeUserId ?? null,
+                requestDepth: inheritIssueField(draft.requestDepth, existing.requestDepth + 1),
+                billingCode: inheritIssueField(draft.billingCode, existing.billingCode),
+                assigneeAdapterOverrides: draft.assigneeAdapterOverrides,
+                executionPolicy:
+                  draft.executionPolicy === undefined
+                    ? undefined
+                    : (normalizeIssueExecutionPolicy(draft.executionPolicy) as Record<string, unknown> | null),
+                executionWorkspaceId: draft.executionWorkspaceId,
+                executionWorkspacePreference: draft.executionWorkspacePreference,
+                executionWorkspaceSettings: draft.executionWorkspaceSettings,
+                labelIds: draft.labelIds,
+                createdByAgentId: actor.agentId ?? null,
+                createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              tx,
+            );
+            createdBlockers.push(blocker);
+          }
+          createdBlockerIssues = createdBlockers;
+          const nextBlockedByIssueIds =
+            explicitBlockedByIssueIds !== undefined || createdBlockers.length > 0
+              ? [
+                  ...new Set([
+                    ...(explicitBlockedByIssueIds ?? inheritedBlockedByIssueIds),
+                    ...createdBlockers.map((blocker) => blocker.id),
+                  ]),
+                ]
+              : undefined;
+          effectiveBlockedByIssueIds = nextBlockedByIssueIds;
           const updated = await svc.update(
             id,
             {
               ...updateFields,
+              ...(nextBlockedByIssueIds !== undefined ? { blockedByIssueIds: nextBlockedByIssueIds } : {}),
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
             },
@@ -1936,10 +2032,62 @@ export function issueRoutes(
           return updated;
         });
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        issue = await db.transaction(async (tx) => {
+          const createdBlockers = [];
+          for (const draft of blockerIssueDrafts) {
+            const blocker = await svc.create(
+              existing.companyId,
+              {
+                projectId: inheritIssueField(draft.projectId, existing.projectId),
+                projectWorkspaceId: inheritIssueField(draft.projectWorkspaceId, existing.projectWorkspaceId),
+                goalId: inheritIssueField(draft.goalId, existing.goalId),
+                parentId: draft.parentId,
+                inheritExecutionWorkspaceFromIssueId: draft.inheritExecutionWorkspaceFromIssueId,
+                title: draft.title,
+                description: draft.description ?? null,
+                status: draft.status ?? "todo",
+                priority: inheritIssueField(draft.priority, existing.priority),
+                assigneeAgentId: draft.assigneeAgentId ?? null,
+                assigneeUserId: draft.assigneeUserId ?? null,
+                requestDepth: inheritIssueField(draft.requestDepth, existing.requestDepth + 1),
+                billingCode: inheritIssueField(draft.billingCode, existing.billingCode),
+                assigneeAdapterOverrides: draft.assigneeAdapterOverrides,
+                executionPolicy:
+                  draft.executionPolicy === undefined
+                    ? undefined
+                    : (normalizeIssueExecutionPolicy(draft.executionPolicy) as Record<string, unknown> | null),
+                executionWorkspaceId: draft.executionWorkspaceId,
+                executionWorkspacePreference: draft.executionWorkspacePreference,
+                executionWorkspaceSettings: draft.executionWorkspaceSettings,
+                labelIds: draft.labelIds,
+                createdByAgentId: actor.agentId ?? null,
+                createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              tx,
+            );
+            createdBlockers.push(blocker);
+          }
+          createdBlockerIssues = createdBlockers;
+          const nextBlockedByIssueIds =
+            explicitBlockedByIssueIds !== undefined || createdBlockers.length > 0
+              ? [
+                  ...new Set([
+                    ...(explicitBlockedByIssueIds ?? inheritedBlockedByIssueIds),
+                    ...createdBlockers.map((blocker) => blocker.id),
+                  ]),
+                ]
+              : undefined;
+          effectiveBlockedByIssueIds = nextBlockedByIssueIds;
+          return svc.update(
+            id,
+            {
+              ...updateFields,
+              ...(nextBlockedByIssueIds !== undefined ? { blockedByIssueIds: nextBlockedByIssueIds } : {}),
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            tx,
+          );
         });
       }
     } catch (err) {
@@ -1985,7 +2133,7 @@ export function issueRoutes(
       referencedIssueIdentifiers?: string[];
     } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
-    if (issue && Array.isArray(req.body.blockedByIssueIds)) {
+    if (issue && effectiveBlockedByIssueIds !== undefined) {
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
@@ -2007,7 +2155,7 @@ export function issueRoutes(
         previous[key] = (existing as Record<string, unknown>)[key];
       }
     }
-    if (Array.isArray(req.body.blockedByIssueIds)) {
+    if (effectiveBlockedByIssueIds !== undefined) {
       previous.blockedByIssueIds = existingRelations?.blockedBy.map((relation) => relation.id) ?? [];
     }
 
@@ -2047,9 +2195,46 @@ export function issueRoutes(
       },
     });
 
-    if (Array.isArray(req.body.blockedByIssueIds)) {
+    for (const blocker of createdBlockerIssues) {
+      await logActivity(db, {
+        companyId: blocker.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.created",
+        entityType: "issue",
+        entityId: blocker.id,
+        details: {
+          title: blocker.title,
+          identifier: blocker.identifier,
+          createdAsBlockerForIssueId: issue.id,
+          createdAsBlockerForIdentifier: issue.identifier,
+        },
+      });
+    }
+
+    if (createdBlockerIssues.length > 0) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.blocker_issues_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          createdBlockedByIssueIds: createdBlockerIssues.map((blocker) => blocker.id),
+          createdBlockedByIssues: createdBlockerIssues.map(summarizeIssueRelationForActivity),
+        },
+      });
+    }
+
+    if (effectiveBlockedByIssueIds !== undefined) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
-      const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
+      const nextBlockedByIds = new Set(effectiveBlockedByIssueIds);
       const addedBlockedByIssueIds = [...nextBlockedByIds].filter((candidate) => !previousBlockedByIds.has(candidate));
       const removedBlockedByIssueIds = [...previousBlockedByIds].filter((candidate) => !nextBlockedByIds.has(candidate));
       const nextBlockedByRelations = updatedRelations?.blockedBy ?? [];
@@ -2066,7 +2251,7 @@ export function issueRoutes(
           entityId: issue.id,
           details: {
             identifier: issue.identifier,
-            blockedByIssueIds: req.body.blockedByIssueIds,
+            blockedByIssueIds: effectiveBlockedByIssueIds,
             addedBlockedByIssueIds,
             removedBlockedByIssueIds,
             blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
@@ -2079,6 +2264,18 @@ export function issueRoutes(
           },
         });
       }
+    }
+
+    for (const blocker of createdBlockerIssues) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: blocker,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.blocker.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
     }
 
     const reviewerChanges = diffExecutionParticipants(previousExecutionPolicy, nextExecutionPolicy, "review");

@@ -6,6 +6,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  create: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -77,6 +78,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
+      resolveByReference: vi.fn(async () => ({ agent: null, ambiguous: false })),
     }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
@@ -111,6 +113,14 @@ async function createApp() {
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+  const db = {
+    transaction: async (callback: (tx: { insert: () => { values: () => Promise<void> } }) => Promise<unknown>) =>
+      callback({
+        insert: () => ({
+          values: async () => undefined,
+        }),
+      }),
+  };
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -123,7 +133,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -329,6 +339,135 @@ describe("issue activity event routes", () => {
             participants: [{ type: "user", agentId: null, userId: "local-board" }],
             addedParticipants: [{ type: "user", agentId: null, userId: "local-board" }],
             removedParticipants: [{ type: "agent", agentId: "66666666-7777-4888-8999-aaaaaaaaaaaa", userId: null }],
+          }),
+        }),
+      );
+    });
+  });
+
+  it("creates blocker issues during a blocked update and links them to the current issue", async () => {
+    const issue = {
+      ...makeIssue(),
+      status: "in_progress",
+      projectId: "33333333-3333-4333-8333-333333333333",
+      projectWorkspaceId: null,
+      goalId: null,
+      priority: "high",
+      requestDepth: 2,
+      billingCode: "ENG",
+    };
+    const blockerIssue = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      companyId: "company-1",
+      identifier: "PAP-581",
+      title: "Implement prerequisite",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      status: "todo",
+    };
+
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({ blockedBy: [], blocks: [] })
+      .mockResolvedValueOnce({
+        blockedBy: [
+          {
+            id: blockerIssue.id,
+            identifier: blockerIssue.identifier,
+            title: blockerIssue.title,
+            status: "todo",
+            priority: "high",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+        blocks: [],
+      });
+    mockIssueService.create.mockResolvedValue(blockerIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        createBlockedByIssues: [
+          {
+            title: "Implement prerequisite",
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId: "33333333-3333-4333-8333-333333333333",
+        priority: "high",
+        requestDepth: 3,
+        billingCode: "ENG",
+        title: "Implement prerequisite",
+        status: "todo",
+      }),
+      expect.anything(),
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "blocked",
+        blockedByIssueIds: [blockerIssue.id],
+      }),
+      expect.anything(),
+    );
+    expect(res.body.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blockerIssue.id,
+        identifier: blockerIssue.identifier,
+        title: blockerIssue.title,
+      }),
+    ]);
+
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.blocker_issues_created",
+          entityId: issue.id,
+          details: expect.objectContaining({
+            createdBlockedByIssueIds: [blockerIssue.id],
+            createdBlockedByIssues: [
+              {
+                id: blockerIssue.id,
+                identifier: blockerIssue.identifier,
+                title: blockerIssue.title,
+              },
+            ],
+          }),
+        }),
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.created",
+          entityId: blockerIssue.id,
+          details: expect.objectContaining({
+            identifier: blockerIssue.identifier,
+            createdAsBlockerForIssueId: issue.id,
+            createdAsBlockerForIdentifier: issue.identifier,
+          }),
+        }),
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.blockers_updated",
+          entityId: issue.id,
+          details: expect.objectContaining({
+            blockedByIssueIds: [blockerIssue.id],
+            addedBlockedByIssueIds: [blockerIssue.id],
+            removedBlockedByIssueIds: [],
           }),
         }),
       );

@@ -1401,6 +1401,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     crlfDelay: Infinity,
   });
 
+  // Keep the worker alive on pipe-backed stdin after initialization.
+  // In production plugin workers the host keeps stdin open for RPC traffic,
+  // but without explicitly resuming the stream the process can exit cleanly
+  // once initialization completes if the event loop has no other active work.
+  if (typeof (stdinStream as NodeJS.ReadableStream).resume === "function") {
+    (stdinStream as NodeJS.ReadableStream).resume();
+  }
+
   readline.on("line", handleLine);
 
   // If stdin closes, we should exit gracefully
