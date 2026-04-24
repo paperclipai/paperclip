@@ -1,0 +1,8 @@
+kind: command
+visible_commands:
+  - pnpm test
+  - pnpm -r typecheck
+hidden_commands:
+  - pnpm test:e2e:audit-log
+notes:
+  - Hidden tests stay outside the agent workspace once evaluator wiring lands.

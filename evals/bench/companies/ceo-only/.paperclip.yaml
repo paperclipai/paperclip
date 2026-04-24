@@ -1,0 +1,5 @@
+version: 1
+company_name: CEO Only
+benchmark:
+  enable_agent_timers: false
+  intended_runner: paperclip

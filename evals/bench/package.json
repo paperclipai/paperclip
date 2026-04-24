@@ -1,0 +1,16 @@
+{
+  "name": "paperclip-bench",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Scaffold for Paperclip benchmark suites, tasks, and runner assets.",
+  "scripts": {
+    "validate:manifests": "node ./scripts/validate-manifests.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.8.1"
+  },
+  "packageManager": "pnpm@9.15.4"
+}

@@ -1,0 +1,49 @@
+$schema: ../../../../bench.schema.json#/$defs/taskV1
+schema: paperclip-bench/task/v1
+id: pclip-native-001-audit-log-mission
+family: paperclip-native
+summary: Add organization-level audit logs to a demo SaaS app through a small engineering squad.
+description: Native smoke task focused on implementation, verification, and final review artifacts.
+repo:
+  kind: local-fixture
+  url: ../../../../fixtures/repos/demo-saas
+  ref: scaffold
+  workdir: .
+prompt:
+  path: ./issue.md
+starter_company:
+  package: ../../../../companies/eng-squad-basic
+runner:
+  kind: paperclip
+  mode: isolated-instance
+budget:
+  max_wall_clock_minutes: 120
+  max_cost_usd: 10
+  max_tool_calls: 300
+  max_test_runs: 20
+stop:
+  stable_idle_minutes: 5
+  require_terminal_issue_state: true
+  allow_human_intervention: false
+evaluator:
+  kind: command
+  manifest: ./evaluator.yaml
+  visible_commands:
+    - pnpm test
+    - pnpm -r typecheck
+  hidden_commands:
+    - pnpm test:e2e:audit-log
+required_artifacts:
+  - prediction.patch
+  - final_summary.md
+  - tests_run.md
+  - risks.md
+metrics_profile:
+  - patch
+  - cost
+  - paperclip-control-plane
+  - liveness
+  - reviewability
+tags:
+  - native
+  - smoke

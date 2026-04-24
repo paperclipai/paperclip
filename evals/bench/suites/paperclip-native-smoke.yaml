@@ -1,0 +1,24 @@
+$schema: ../bench.schema.json#/$defs/suiteV1
+schema: paperclip-bench/suite/v1
+id: paperclip-native-smoke
+title: Paperclip-native smoke
+description: Small native task suite for control-plane behavior, artifact generation, and starter-company wiring.
+runner:
+  kind: paperclip
+  mode: isolated-instance
+paperclip_version: current
+model: anthropic/claude-sonnet-4.5
+tasks:
+  - ../benchmarks/paperclip-native/tasks/pclip-native-001-audit-log-mission/task.yaml
+defaults:
+  budget:
+    max_wall_clock_minutes: 120
+    max_cost_usd: 10
+    max_tool_calls: 300
+    max_test_runs: 20
+  stop:
+    stable_idle_minutes: 5
+    require_terminal_issue_state: true
+    allow_human_intervention: false
+notes:
+  - Uses the eng-squad-basic starter company package.

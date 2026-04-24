@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.ai/schemas/paperclip-bench/bench.schema.json",
+  "title": "paperclip-bench manifest schema",
+  "$defs": {
+    "pathRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runnerKind": {
+      "type": "string",
+      "enum": ["paperclip", "direct-agent", "noop", "prepare"]
+    },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "url", "ref"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["git", "local-fixture"]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workdir": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_wall_clock_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_test_runs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stable_idle_minutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_terminal_issue_state": {
+          "type": "boolean"
+        },
+        "allow_human_intervention": {
+          "type": "boolean"
+        }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/runnerKind"
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "evaluator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["command", "swebench", "swebench-pro", "paperclip-native"]
+        },
+        "manifest": {
+          "$ref": "#/$defs/pathRef"
+        },
+        "prediction_format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visible_commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hidden_commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "taskV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "family", "summary", "repo", "runner", "evaluator"],
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "type": "string",
+          "const": "paperclip-bench/task/v1"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "object"
+        },
+        "repo": {
+          "$ref": "#/$defs/repo"
+        },
+        "prompt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/pathRef"
+            }
+          }
+        },
+        "starter_company": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "package": {
+              "$ref": "#/$defs/pathRef"
+            }
+          }
+        },
+        "runner": {
+          "$ref": "#/$defs/runner"
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "stop": {
+          "$ref": "#/$defs/stop"
+        },
+        "evaluator": {
+          "$ref": "#/$defs/evaluator"
+        },
+        "required_artifacts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "metrics_profile": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "suiteV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "title", "tasks"],
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "type": "string",
+          "const": "paperclip-bench/suite/v1"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "runner": {
+          "$ref": "#/$defs/runner"
+        },
+        "paperclip_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/pathRef"
+          }
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "budget": {
+              "$ref": "#/$defs/budget"
+            },
+            "stop": {
+              "$ref": "#/$defs/stop"
+            }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

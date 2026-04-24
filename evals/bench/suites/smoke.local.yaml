@@ -1,0 +1,20 @@
+$schema: ../bench.schema.json#/$defs/suiteV1
+schema: paperclip-bench/suite/v1
+id: smoke.local
+title: Local scaffold smoke
+description: Validate the manifest contract and exercise both imported and native task lanes with a placeholder runner.
+runner:
+  kind: noop
+paperclip_version: current
+model: noop
+tasks:
+  - ../benchmarks/imported/swebench-lite/tasks/pytest-dev__pytest-6116.yaml
+  - ../benchmarks/paperclip-native/tasks/pclip-native-001-audit-log-mission/task.yaml
+defaults:
+  budget:
+    max_wall_clock_minutes: 15
+    max_cost_usd: 0
+  stop:
+    stable_idle_minutes: 1
+notes:
+  - Phase 1 smoke suite for schema validation and scaffold review.

@@ -1,0 +1,22 @@
+$schema: ../bench.schema.json#/$defs/suiteV1
+schema: paperclip-bench/suite/v1
+id: swebench-lite-smoke
+title: SWE-bench Lite smoke
+description: Minimal imported-task suite that proves where SWE-bench Lite manifests belong and how they are referenced.
+runner:
+  kind: prepare
+  mode: isolated-instance
+paperclip_version: current
+model: anthropic/claude-sonnet-4.5
+tasks:
+  - ../benchmarks/imported/swebench-lite/tasks/pytest-dev__pytest-6116.yaml
+defaults:
+  budget:
+    max_wall_clock_minutes: 60
+    max_cost_usd: 5
+    max_tool_calls: 150
+  stop:
+    stable_idle_minutes: 5
+    require_terminal_issue_state: true
+notes:
+  - Emits normalized metadata for imported tasks before the evaluator bridge lands.

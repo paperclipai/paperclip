@@ -1,0 +1,39 @@
+$schema: ../../../../bench.schema.json#/$defs/taskV1
+schema: paperclip-bench/task/v1
+id: swebench-lite:pytest-dev__pytest-6116
+family: swebench-lite
+summary: Fix a small pytest CLI behavior regression imported from SWE-bench Lite.
+description: Imported smoke task used to validate the scaffold and preserve upstream task metadata.
+source:
+  dataset: SWE-bench/SWE-bench_Lite
+  instance_id: pytest-dev__pytest-6116
+  repo: pytest-dev/pytest
+  base_commit: 17f7b44f2f1b8b1a6b2cb67f7e6f01a8a5b9ea12
+  version: "6.0"
+repo:
+  kind: git
+  url: https://github.com/pytest-dev/pytest.git
+  ref: 17f7b44f2f1b8b1a6b2cb67f7e6f01a8a5b9ea12
+runner:
+  kind: prepare
+  mode: isolated-instance
+budget:
+  max_wall_clock_minutes: 60
+  max_cost_usd: 5
+  max_tool_calls: 150
+stop:
+  stable_idle_minutes: 5
+  require_terminal_issue_state: true
+evaluator:
+  kind: swebench
+  prediction_format: swebench-jsonl
+required_artifacts:
+  - prediction.patch
+  - results.json
+metrics_profile:
+  - patch
+  - cost
+  - evaluator
+tags:
+  - imported
+  - smoke
