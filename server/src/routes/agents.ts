@@ -79,6 +79,11 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
+import {
+  collectUnresolvedBlockerIds,
+  computeSharedInboxLiteAssignmentOutcome,
+  fetchAssigneesForIssueIds,
+} from "../lib/wake-assignment-outcome.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
@@ -1213,6 +1218,21 @@ export function agentRoutes(db: Db) {
       rows.map((issue) => issue.id),
     );
 
+    const blockerIds = collectUnresolvedBlockerIds(dependencyReadiness);
+    const blockerAssignees = await fetchAssigneesForIssueIds(db, req.actor.companyId, blockerIds);
+    const rowLite = rows.map((issue) => ({
+      id: issue.id,
+      status: issue.status,
+      assigneeAgentId: issue.assigneeAgentId,
+    }));
+    const assignmentOutcome = computeSharedInboxLiteAssignmentOutcome({
+      rows: rowLite,
+      dependencyReadiness,
+      blockerAssigneeByIssueId: blockerAssignees,
+      retryAttempt: 0,
+      maxRetries: 3,
+    });
+
     res.json(
       rows.map((issue) => ({
         id: issue.id,
@@ -1228,6 +1248,7 @@ export function agentRoutes(db: Db) {
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
         unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
+        assignmentOutcome,
       })),
     );
   });
