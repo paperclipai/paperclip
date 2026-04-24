@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared";
-import { buildPresetServerConfig } from "../config/server-bind.js";
+
+vi.mock("node:child_process", () => ({
+  execFileSync: vi.fn(() => ""),
+}));
+
+const { buildPresetServerConfig } = await import("../config/server-bind.js");
 
 describe("network bind helpers", () => {
   it("rejects non-loopback bind modes in local_trusted", () => {

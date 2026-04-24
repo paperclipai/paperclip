@@ -363,7 +363,6 @@ function buildWakeText(
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -394,9 +393,9 @@ function buildWakeText(
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    "If you need to call the Paperclip API in this run, you must have a valid PAPERCLIP_API_KEY (Bearer token).",
+    "If PAPERCLIP_API_KEY is not available, do NOT attempt API calls; instead, report the missing auth and complete the run.",
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -408,7 +407,7 @@ function buildWakeText(
     `linked_issue_ids=${payload.issueIds.join(",")}`,
     "",
     "HTTP rules:",
-    "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
+    "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call (when available).",
     "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
@@ -1182,6 +1181,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
+  let paperclipPayloadRetryAttempted = false;
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
@@ -1310,9 +1310,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
-        timeoutMs: connectTimeoutMs,
-      });
+      const requestAgent = async (params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        return await client.request<Record<string, unknown>>("agent", params, {
+          timeoutMs: connectTimeoutMs,
+        });
+      };
+
+      const sentPaperclipPayload = Object.prototype.hasOwnProperty.call(agentParams, "paperclip");
+
+      let acceptedPayload: Record<string, unknown>;
+      try {
+        acceptedPayload = await requestAgent(agentParams);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const lower = message.toLowerCase();
+        const paperclipRejected =
+          lower.includes("unexpected property 'paperclip'") || lower.includes('unexpected property "paperclip"');
+
+        if (!paperclipRejected) throw err;
+
+        const retryParams = { ...agentParams };
+        delete retryParams.paperclip;
+        await ctx.onLog(
+          "stdout",
+          "[openclaw-gateway] gateway rejected paperclip payload; retrying agent request without paperclip\n",
+        );
+        acceptedPayload = await requestAgent(retryParams);
+      }
 
       latestResultPayload = acceptedPayload;
 
@@ -1328,6 +1352,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (acceptedStatus === "error") {
         const errorMessage =
           nonEmpty(acceptedPayload?.summary) ?? lifecycleError ?? "OpenClaw gateway agent request failed";
+
+        if (sentPaperclipPayload) {
+          const lower = errorMessage.toLowerCase();
+          const paperclipRejected =
+            lower.includes("unexpected property 'paperclip'") || lower.includes('unexpected property "paperclip"');
+          if (paperclipRejected) {
+            const retryParams = { ...agentParams };
+            delete retryParams.paperclip;
+            await ctx.onLog(
+              "stdout",
+              "[openclaw-gateway] gateway rejected paperclip payload; retrying agent request without paperclip\n",
+            );
+            acceptedPayload = await requestAgent(retryParams);
+            latestResultPayload = acceptedPayload;
+
+            const retriedStatus = nonEmpty(acceptedPayload?.status)?.toLowerCase() ?? "";
+            const retriedRunId = nonEmpty(acceptedPayload?.runId) ?? acceptedRunId;
+            trackedRunIds.add(retriedRunId);
+            await ctx.onLog(
+              "stdout",
+              `[openclaw-gateway] agent accepted runId=${retriedRunId} status=${retriedStatus || "unknown"}\n`,
+            );
+
+            if (retriedStatus !== "error") {
+              // Continue normal flow below with updated acceptedPayload/latestResultPayload.
+            } else {
+              const retriedError =
+                nonEmpty(acceptedPayload?.summary) ?? lifecycleError ?? "OpenClaw gateway agent request failed";
+              return {
+                exitCode: 1,
+                signal: null,
+                timedOut: false,
+                errorMessage: retriedError,
+                errorCode: "openclaw_gateway_agent_error",
+                resultJson: acceptedPayload,
+              };
+            }
+          }
+        }
+
         return {
           exitCode: 1,
           signal: null,
@@ -1434,6 +1498,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const lower = message.toLowerCase();
       const timedOut = lower.includes("timeout");
       const pairingRequired = lower.includes("pairing required");
+      const paperclipRejected =
+        lower.includes("unexpected property 'paperclip'") || lower.includes('unexpected property "paperclip"');
 
       if (
         pairingRequired &&
@@ -1469,6 +1535,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           "stderr",
           `[openclaw-gateway] auto-pairing failed: ${pairResult.reason}\n`,
         );
+      }
+
+      if (paperclipRejected && !paperclipPayloadRetryAttempted) {
+        paperclipPayloadRetryAttempted = true;
+        await ctx.onLog(
+          "stdout",
+          "[openclaw-gateway] gateway rejected paperclip payload; retrying without paperclip\n",
+        );
+        delete agentParams.paperclip;
+        continue;
       }
 
       const detailedMessage = pairingRequired
