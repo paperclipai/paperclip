@@ -1,16 +1,18 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildInternalApiUrl, mcpRoutes } from "../routes/mcp.js";
 
+type ActorSource = Express.Request["actor"] | (() => Express.Request["actor"]);
+
 function createApp(
-  actor: Express.Request["actor"],
+  actor: ActorSource,
   opts: { bindHost?: string; sessionIdleTimeoutMs?: number; maxSessions?: number } = {},
 ) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = actor;
+    req.actor = typeof actor === "function" ? actor() : actor;
     next();
   });
   app.use(
@@ -72,6 +74,11 @@ async function initializeSession(
 describe("mcp routes", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("builds internal API URLs from the configured bind host", () => {
@@ -218,27 +225,29 @@ describe("mcp routes", () => {
     );
   });
 
-  it("expires idle sessions", async () => {
-    const app = createApp(
-      {
-        type: "board",
-        userId: "board-user",
-        source: "session",
-      },
-      { sessionIdleTimeoutMs: 10 },
-    );
+  it("rejects reuse of a session by a different actor", async () => {
+    let actor: Express.Request["actor"] = {
+      type: "board",
+      userId: "board-user-1",
+      source: "session",
+    };
+    const app = createApp(() => actor);
 
     const sessionId = await initializeSession(app, {
       Authorization: "Bearer token-123",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    actor = {
+      type: "board",
+      userId: "board-user-2",
+      source: "session",
+    };
 
-    await request(app)
+    const response = await request(app)
       .post("/mcp")
       .set({
         Accept: "application/json, text/event-stream",
-        Authorization: "Bearer token-123",
+        Authorization: "Bearer token-456",
         "mcp-session-id": sessionId,
       })
       .send({
@@ -246,8 +255,55 @@ describe("mcp routes", () => {
         id: 4,
         method: "tools/list",
         params: {},
-      })
-      .expect(400);
+      });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: -32001,
+          message: expect.stringContaining("different actor"),
+        }),
+      }),
+    );
+  });
+
+  it("expires idle sessions", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    try {
+      const app = createApp(
+        {
+          type: "board",
+          userId: "board-user",
+          source: "session",
+        },
+        { sessionIdleTimeoutMs: 10 },
+      );
+
+      const sessionId = await initializeSession(app, {
+        Authorization: "Bearer token-123",
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      await request(app)
+        .post("/mcp")
+        .set({
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer token-123",
+          "mcp-session-id": sessionId,
+        })
+        .send({
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/list",
+          params: {},
+        })
+        .expect(400);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("evicts the oldest session when the session cap is reached", async () => {
@@ -276,7 +332,7 @@ describe("mcp routes", () => {
       })
       .send({
         jsonrpc: "2.0",
-        id: 5,
+        id: 6,
         method: "tools/list",
         params: {},
       })
@@ -291,7 +347,7 @@ describe("mcp routes", () => {
       })
       .send({
         jsonrpc: "2.0",
-        id: 6,
+        id: 7,
         method: "tools/list",
         params: {},
       });

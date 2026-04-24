@@ -11,6 +11,7 @@ type McpSession = {
   server: Awaited<ReturnType<typeof createPaperclipMcpServer>>["server"];
   transport: StreamableHTTPServerTransport;
   timeout: ReturnType<typeof setTimeout>;
+  actorFingerprint: string;
 };
 
 export const MCP_SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -63,14 +64,49 @@ function readSessionId(req: Request): string | null {
 }
 
 function sendBadRequest(res: Response, message: string) {
-  res.status(400).json({
+  sendJsonRpcError(res, 400, -32000, message);
+}
+
+function sendJsonRpcError(res: Response, status: number, code: number, message: string) {
+  res.status(status).json({
     jsonrpc: "2.0",
     error: {
-      code: -32000,
+      code,
       message,
     },
     id: null,
   });
+}
+
+function sendInternalError(res: Response, error: unknown) {
+  if (res.headersSent) return;
+  sendJsonRpcError(
+    res,
+    500,
+    -32603,
+    error instanceof Error ? error.message : "Internal server error",
+  );
+}
+
+function actorFingerprint(actor: Request["actor"]): string {
+  if (actor.type === "board") {
+    return JSON.stringify({
+      type: actor.type,
+      userId: actor.userId ?? null,
+      source: actor.source ?? null,
+      keyId: actor.keyId ?? null,
+    });
+  }
+  if (actor.type === "agent") {
+    return JSON.stringify({
+      type: actor.type,
+      agentId: actor.agentId ?? null,
+      companyId: actor.companyId ?? null,
+      source: actor.source ?? null,
+      keyId: actor.keyId ?? null,
+    });
+  }
+  return JSON.stringify({ type: actor.type });
 }
 
 export function mcpRoutes(opts: {
@@ -115,14 +151,32 @@ export function mcpRoutes(opts: {
     }
   }
 
+  function lookupSession(req: Request, res: Response, sessionId: string): McpSession | null {
+    const existing = sessions.get(sessionId);
+    if (!existing) {
+      sendBadRequest(res, "Bad Request: Invalid session ID");
+      return null;
+    }
+    if (existing.actorFingerprint !== actorFingerprint(req.actor)) {
+      sendJsonRpcError(res, 403, -32001, "Forbidden: MCP session belongs to a different actor");
+      return null;
+    }
+    return existing;
+  }
+
   async function createSession(req: Request) {
     const config = buildPaperclipMcpConfig(req, opts.serverPort, opts.bindHost);
     const { server } = createPaperclipMcpServer(config);
+    const sessionActorFingerprint = actorFingerprint(req.actor);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
-        enforceSessionLimit();
-        sessions.set(sessionId, { server, transport, timeout: scheduleSessionTimeout(sessionId) });
+        sessions.set(sessionId, {
+          server,
+          transport,
+          timeout: scheduleSessionTimeout(sessionId),
+          actorFingerprint: sessionActorFingerprint,
+        });
       },
     });
 
@@ -133,6 +187,7 @@ export function mcpRoutes(opts: {
       }
     };
 
+    enforceSessionLimit();
     await server.connect(transport);
     return { server, transport };
   }
@@ -149,11 +204,8 @@ export function mcpRoutes(opts: {
     const sessionId = readSessionId(req);
     try {
       if (sessionId) {
-        const existing = sessions.get(sessionId);
-        if (!existing) {
-          sendBadRequest(res, "Bad Request: Invalid session ID");
-          return;
-        }
+        const existing = lookupSession(req, res, sessionId);
+        if (!existing) return;
         touchSession(sessionId, existing);
         await existing.transport.handleRequest(req, res, req.body);
         return;
@@ -167,16 +219,7 @@ export function mcpRoutes(opts: {
       const created = await createSession(req);
       await created.transport.handleRequest(req, res, req.body);
     } catch (error) {
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: error instanceof Error ? error.message : "Internal server error",
-          },
-          id: null,
-        });
-      }
+      sendInternalError(res, error);
     }
   });
 
@@ -188,13 +231,14 @@ export function mcpRoutes(opts: {
       sendBadRequest(res, "Bad Request: Missing session ID");
       return;
     }
-    const existing = sessions.get(sessionId);
-    if (!existing) {
-      sendBadRequest(res, "Bad Request: Invalid session ID");
-      return;
+    try {
+      const existing = lookupSession(req, res, sessionId);
+      if (!existing) return;
+      touchSession(sessionId, existing);
+      await existing.transport.handleRequest(req, res);
+    } catch (error) {
+      sendInternalError(res, error);
     }
-    touchSession(sessionId, existing);
-    await existing.transport.handleRequest(req, res);
   });
 
   router.delete("/", async (req, res) => {
@@ -205,13 +249,14 @@ export function mcpRoutes(opts: {
       sendBadRequest(res, "Bad Request: Missing session ID");
       return;
     }
-    const existing = sessions.get(sessionId);
-    if (!existing) {
-      sendBadRequest(res, "Bad Request: Invalid session ID");
-      return;
+    try {
+      const existing = lookupSession(req, res, sessionId);
+      if (!existing) return;
+      await existing.transport.handleRequest(req, res);
+      removeSession(sessionId);
+    } catch (error) {
+      sendInternalError(res, error);
     }
-    touchSession(sessionId, existing);
-    await existing.transport.handleRequest(req, res);
   });
 
   return router;
