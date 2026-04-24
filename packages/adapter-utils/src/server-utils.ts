@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { constants as fsConstants, promises as fs, watch as fsWatch, type Dirent, type FSWatcher } from "node:fs";
 import path from "node:path";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import type {
@@ -1415,6 +1415,16 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    /**
+     * Optional file-system paths to watch for activity. When provided, the
+     * timeout becomes *inactivity-based*: the timer resets whenever stdout,
+     * stderr, or file-system activity is detected in the watched paths.
+     * Without this, the timeout is a hard wall-clock limit from process start.
+     *
+     * Useful for adapters like Copilot CLI that write their thinking stream
+     * to session files (e.g. `~/.copilot/session-state/`) instead of stdout.
+     */
+    activityPaths?: string[];
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -1517,17 +1527,66 @@ export async function runChildProcess(
           }, graceMs);
         };
 
-        const timeout =
-          opts.timeoutSec > 0
-            ? setTimeout(() => {
-                timedOut = true;
-                clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
-              }, opts.timeoutSec * 1000)
-            : null;
+        const useActivityTimeout =
+          opts.timeoutSec > 0 &&
+          Array.isArray(opts.activityPaths) &&
+          opts.activityPaths.length > 0;
+
+        // ---- Timeout logic ----
+        // When activityPaths are provided the timeout becomes inactivity-based:
+        // the timer resets every time stdout, stderr, or a watched file-system
+        // path produces activity.  Without activityPaths the behaviour is the
+        // original wall-clock timeout.
+
+        const fireTimeout = () => {
+          timedOut = true;
+          clearTerminalCleanupTimers();
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          setTimeout(() => {
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        const fsWatchers: FSWatcher[] = [];
+
+        const resetIdleTimer = useActivityTimeout
+          ? () => {
+              if (timeout) clearTimeout(timeout);
+              timeout = setTimeout(fireTimeout, opts.timeoutSec * 1000);
+            }
+          : undefined;
+
+        if (opts.timeoutSec > 0) {
+          timeout = setTimeout(fireTimeout, opts.timeoutSec * 1000);
+        }
+
+        // Set up file-system watchers for activity-based timeout
+        if (useActivityTimeout) {
+          for (const watchPath of opts.activityPaths!) {
+            try {
+              const watcher = fsWatch(watchPath, { recursive: true }, () => {
+                resetIdleTimer!();
+              });
+              watcher.on("error", () => {
+                // Ignore watcher errors (path may not exist yet, etc.)
+              });
+              fsWatchers.push(watcher);
+            } catch {
+              // Path doesn't exist or isn't watchable – ignore
+            }
+          }
+        }
+
+        const cleanup = () => {
+          if (timeout) clearTimeout(timeout);
+          for (const w of fsWatchers) {
+            try { w.close(); } catch { /* ignore */ }
+          }
+          fsWatchers.length = 0;
+          clearTerminalCleanupTimers();
+          runningProcesses.delete(runId);
+        };
 
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
@@ -1536,6 +1595,7 @@ export async function runChildProcess(
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
+          resetIdleTimer?.();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
@@ -1552,6 +1612,7 @@ export async function runChildProcess(
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
+          resetIdleTimer?.();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
@@ -1571,9 +1632,7 @@ export async function runChildProcess(
         }
 
         child.on("error", (err: Error) => {
-          if (timeout) clearTimeout(timeout);
-          clearTerminalCleanupTimers();
-          runningProcesses.delete(runId);
+          cleanup();
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -1589,9 +1648,7 @@ export async function runChildProcess(
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-          if (timeout) clearTimeout(timeout);
-          clearTerminalCleanupTimers();
-          runningProcesses.delete(runId);
+          cleanup();
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())

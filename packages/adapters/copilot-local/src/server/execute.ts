@@ -18,6 +18,7 @@ import {
   resolveCommandForLogs,
   renderTemplate,
   joinPromptSections,
+  renderPaperclipWakePrompt,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -67,7 +68,30 @@ interface CopilotRuntimeConfig {
   graceSec: number;
   extraArgs: string[];
   instructionsRootPath: string;
-  companyFolder: string;
+  companyFolder: string | null;
+}
+
+async function resolveCompanyFolderPath(input: {
+  paperclipHome: string;
+  instanceId: string;
+  companyId: string;
+}): Promise<string | null> {
+  const base = path.resolve(input.paperclipHome, "instances", input.instanceId);
+  const candidates = [
+    path.resolve(base, "projects", input.companyId),
+    path.resolve(base, "companies", input.companyId),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.isDirectory()) return candidate;
+    } catch {
+      // ignore missing candidate
+    }
+  }
+
+  return null;
 }
 
 async function buildCopilotRuntimeConfig(input: {
@@ -137,7 +161,11 @@ async function buildCopilotRuntimeConfig(input: {
     return path.resolve(raw);
   })();
   const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
-  const companyFolder = path.resolve(paperclipHome, "instances", instanceId, "companies", agent.companyId);
+  const companyFolder = await resolveCompanyFolderPath({
+    paperclipHome,
+    instanceId,
+    companyId: agent.companyId,
+  });
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -243,7 +271,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const model = asString(config.model, "");
+  const model = asString(config.model, "").trim();
   const effort = asString(config.effort, "");
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
 
@@ -296,11 +324,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedPrompt = renderTemplate(promptTemplate, templateData);
   const renderedBootstrapPrompt =
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+  const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
@@ -326,6 +356,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
+    wakePrompt,
     sessionHandoffNote,
     renderedPrompt,
   ]);
@@ -333,6 +364,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptChars: prompt.length,
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
+    wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
@@ -404,6 +436,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog,
+      // Copilot CLI streams its thinking to session-state files rather than
+      // stdout, so watch that directory for activity to avoid false timeouts.
+      activityPaths: [
+        path.join(env.HOME ?? os.homedir(), ".copilot", "session-state"),
+      ],
     });
 
     const parsedStream = parseCopilotStreamJson(proc.stdout);
