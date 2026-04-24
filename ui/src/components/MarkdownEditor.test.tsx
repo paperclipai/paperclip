@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
@@ -16,7 +16,15 @@ import {
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
+  emitMountParseError: false,
+  emitMountSilentEmptyState: false,
+  markdownValues: [] as string[],
+  suppressHtmlProcessingValues: [] as boolean[],
 }));
+
+function containsHtmlLikeTag(markdown: string) {
+  return /<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^>]*)?\/?>/.test(markdown);
+}
 
 vi.mock("@mdxeditor/editor", async () => {
   const React = await import("react");
@@ -36,18 +44,39 @@ vi.mock("@mdxeditor/editor", async () => {
       markdown,
       placeholder,
       onChange,
+      onError,
+      className,
+      suppressHtmlProcessing,
     }: {
       markdown: string;
       placeholder?: string;
       onChange?: (value: string) => void;
+      onError?: (error: unknown) => void;
+      suppressHtmlProcessing?: boolean;
+      className?: string;
     },
     forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
   ) {
+    mdxEditorMockState.markdownValues.push(markdown);
+    mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
+    const editableRef = React.useRef<HTMLDivElement>(null);
     const handle = React.useMemo(() => ({
       setMarkdown: (value: string) => setContent(value),
-      focus: () => {},
+      focus: () => editableRef.current?.focus(),
     }), []);
+
+    React.useEffect(() => {
+      if (!suppressHtmlProcessing && containsHtmlLikeTag(markdown)) {
+        setContent("");
+        onError?.({
+          error: "Error parsing markdown: HTML-like formatting requires suppressHtmlProcessing",
+          source: markdown,
+        });
+        return;
+      }
+      setContent(markdown);
+    }, [markdown, onError, suppressHtmlProcessing]);
 
     React.useEffect(() => {
       setForwardedRef(forwardedRef, null);
@@ -57,6 +86,16 @@ vi.mock("@mdxeditor/editor", async () => {
           setContent("");
           onChange?.("");
         }
+        if (mdxEditorMockState.emitMountSilentEmptyState) {
+          setContent("");
+        }
+        if (mdxEditorMockState.emitMountParseError) {
+          setContent("");
+          onError?.({
+            error: "Unsupported markdown syntax",
+            source: markdown,
+          });
+        }
       }, 0);
       return () => {
         window.clearTimeout(timer);
@@ -64,7 +103,17 @@ vi.mock("@mdxeditor/editor", async () => {
       };
     }, []);
 
-    return <div data-testid="mdx-editor">{content || placeholder || ""}</div>;
+    return (
+      <div
+        ref={editableRef}
+        data-testid="mdx-editor"
+        className={className}
+        contentEditable
+        suppressContentEditableWarning
+      >
+        {content || placeholder || ""}
+      </div>
+    );
   });
 
   return {
@@ -103,18 +152,47 @@ async function flush() {
   });
 }
 
+function createFileDragEvent(type: string) {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+    dataTransfer: { types: string[]; files: File[]; dropEffect?: string };
+  };
+  event.dataTransfer = {
+    types: ["Files"],
+    files: [],
+  };
+  return event;
+}
+
 describe("MarkdownEditor", () => {
   let container: HTMLDivElement;
+  let originalRangeRect: typeof Range.prototype.getBoundingClientRect;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    originalRangeRect = Range.prototype.getBoundingClientRect;
+    Range.prototype.getBoundingClientRect = () => ({
+      x: 32,
+      y: 24,
+      width: 12,
+      height: 18,
+      top: 24,
+      right: 44,
+      bottom: 42,
+      left: 32,
+      toJSON: () => ({}),
+    });
   });
 
   afterEach(() => {
     container.remove();
+    Range.prototype.getBoundingClientRect = originalRangeRect;
     vi.clearAllMocks();
     mdxEditorMockState.emitMountEmptyReset = false;
+    mdxEditorMockState.emitMountParseError = false;
+    mdxEditorMockState.emitMountSilentEmptyState = false;
+    mdxEditorMockState.markdownValues = [];
+    mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {
@@ -166,6 +244,234 @@ describe("MarkdownEditor", () => {
     await flush();
     expect(container.textContent).toContain("Loaded plan body");
     expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("converts advisory-style html image tags to markdown image syntax before mounting the editor", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={`Before\n\n<img width="10" height="10" alt="image" src="https://example.com/test.png" />\n\nAfter`}
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.markdownValues.at(-1)).toContain("![image](https://example.com/test.png)");
+    expect(mdxEditorMockState.markdownValues.at(-1)).not.toContain("<img");
+    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(true);
+    expect(container.textContent).toContain("Before");
+    expect(container.textContent).toContain("After");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps arbitrary HTML-like tags in the rich editor instead of falling back to raw source", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={'<section data-source="paste">\n## My take\n\n<p>Benchmark notes</p>\n</section>'}
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(true);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Benchmark notes");
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps scriptable pasted HTML inert in the rich editor", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={'<script>fetch("/api/secrets")</script>\n<iframe src="https://example.com"></iframe>\n<p onclick="steal()">Plain text</p>'}
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(true);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("script, iframe, p[onclick]")).toBeNull();
+    expect(container.textContent).toContain('fetch("/api/secrets")');
+    expect(container.textContent).toContain("Plain text");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("falls back to a raw textarea when the rich parser rejects the markdown", async () => {
+    mdxEditorMockState.emitMountParseError = true;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Affected versions: <= v0.3.1"
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("Affected versions: <= v0.3.1");
+    expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("falls back to a raw textarea when the rich editor mounts into the placeholder without callbacks", async () => {
+    mdxEditorMockState.emitMountSilentEmptyState = true;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Affected versions: <= v0.3.1"
+          onChange={handleChange}
+          placeholder="Add a description..."
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("Affected versions: <= v0.3.1");
+    expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the editor-scoped dropzone by default when files are dragged over it", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value=""
+          onChange={() => {}}
+          placeholder="Markdown body"
+          imageUploadHandler={async () => "https://example.com/image.png"}
+        />,
+      );
+    });
+
+    await flush();
+
+    const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
+    expect(scope).not.toBeNull();
+
+    act(() => {
+      scope?.dispatchEvent(createFileDragEvent("dragenter"));
+    });
+
+    expect(scope?.className).toContain("ring-1");
+    expect(container.textContent).toContain("Drop image to upload");
+
+    act(() => {
+      scope?.dispatchEvent(createFileDragEvent("dragleave"));
+    });
+
+    expect(scope?.className).not.toContain("ring-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("defers file-drop visuals to a parent container when requested", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value=""
+          onChange={() => {}}
+          placeholder="Markdown body"
+          imageUploadHandler={async () => "https://example.com/image.png"}
+          fileDropTarget="parent"
+        />,
+      );
+    });
+
+    await flush();
+
+    const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
+    expect(scope).not.toBeNull();
+
+    act(() => {
+      scope?.dispatchEvent(createFileDragEvent("dragenter"));
+    });
+
+    expect(scope?.className).not.toContain("ring-1");
+    expect(container.textContent).not.toContain("Drop image to upload");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the raw fallback while image-only markdown is settling", async () => {
+    mdxEditorMockState.emitMountSilentEmptyState = true;
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="![Screenshot](/api/attachments/image/content)"
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await flush();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
 
     await act(async () => {
       root.unmount();
@@ -311,5 +617,65 @@ describe("MarkdownEditor", () => {
     expect(selection?.anchorOffset).toBe(1);
 
     editable.remove();
+  });
+
+  it("accepts mention selection from touchstart taps", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="@Pap"
+          onChange={handleChange}
+          mentions={[
+            {
+              id: "project:project-123",
+              kind: "project",
+              name: "Paperclip App",
+              projectId: "project-123",
+              projectColor: "#336699",
+            },
+          ]}
+        />,
+      );
+    });
+
+    await flush();
+
+    const editable = container.querySelector('[contenteditable="true"]');
+    expect(editable).not.toBeNull();
+
+    const textNode = editable?.firstChild;
+    expect(textNode?.nodeType).toBe(Node.TEXT_NODE);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(textNode!, "@Pap".length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+
+    await flush();
+
+    const option = Array.from(document.body.querySelectorAll('button[type="button"]'))
+      .find((node) => node.textContent?.includes("Paperclip App"));
+    expect(option).toBeTruthy();
+
+    act(() => {
+      option?.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
+    });
+
+    expect(handleChange).toHaveBeenCalledWith(
+      `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 });

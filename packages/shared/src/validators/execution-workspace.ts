@@ -9,11 +9,19 @@ export const executionWorkspaceStatusSchema = z.enum([
 ]);
 
 export const executionWorkspaceConfigSchema = z.object({
+  environmentId: z.string().uuid().optional().nullable(),
   provisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
   workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-  desiredState: z.enum(["running", "stopped"]).optional().nullable(),
+  desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
+  serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
+}).strict();
+
+export const workspaceRuntimeControlTargetSchema = z.object({
+  workspaceCommandId: z.string().min(1).optional().nullable(),
+  runtimeServiceId: z.string().uuid().optional().nullable(),
+  serviceIndex: z.number().int().nonnegative().optional().nullable(),
 }).strict();
 
 export const executionWorkspaceCloseReadinessStateSchema = z.enum([
@@ -88,10 +96,10 @@ export const workspaceRuntimeServiceSchema = z.object({
   stoppedAt: z.coerce.date().nullable(),
   stopPolicy: z.record(z.unknown()).nullable(),
   healthStatus: z.enum(["unknown", "healthy", "unhealthy"]),
+  configIndex: z.number().int().nonnegative().nullable().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).strict();
-
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().uuid(),
   state: executionWorkspaceCloseReadinessStateSchema,

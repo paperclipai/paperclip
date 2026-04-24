@@ -84,6 +84,20 @@ export async function fetchIssueDetail(
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 
+export function getIssueDetailQueryOptions(
+  queryClient: QueryClient,
+  issueRef: string,
+  options?: {
+    placeholderIssue?: Pick<Issue, "id" | "identifier"> | null;
+  },
+) {
+  return {
+    queryKey: queryKeys.issues.detail(issueRef),
+    queryFn: () => fetchIssueDetail(queryClient, issueRef),
+    placeholderData: getCachedIssueDetail(queryClient, issueRef, options?.placeholderIssue ?? undefined),
+  };
+}
+
 export function prefetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,

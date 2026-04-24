@@ -1,8 +1,7 @@
+import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { accessRoutes } from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAccessService = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
@@ -36,7 +35,39 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn((name: string) => name),
 }));
 
-function createApp(actor: any) {
+let currentServer: Server | null = null;
+
+async function closeCurrentServer() {
+  if (!currentServer) return;
+  const server = currentServer;
+  currentServer = null;
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+    deduplicateAgentName: vi.fn((name: string) => name),
+  }));
+}
+
+async function createApp(actor: any, db: any = {} as any) {
+  await closeCurrentServer();
+  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -45,7 +76,7 @@ function createApp(actor: any) {
   });
   app.use(
     "/api",
-    accessRoutes({} as any, {
+    accessRoutes(db, {
       deploymentMode: "authenticated",
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
@@ -53,11 +84,20 @@ function createApp(actor: any) {
     }),
   );
   app.use(errorHandler);
-  return app;
+  currentServer = app.listen(0);
+  return currentServer;
 }
 
 describe("cli auth routes", () => {
+  afterEach(closeCurrentServer);
+
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
   });
 
@@ -71,7 +111,7 @@ describe("cli auth routes", () => {
       pendingBoardToken: "pcp_board_token",
     });
 
-    const app = createApp({ type: "none", source: "none" });
+    const app = await createApp({ type: "none", source: "none" });
     const res = await request(app)
       .post("/api/cli-auth/challenges")
       .send({
@@ -84,12 +124,54 @@ describe("cli auth routes", () => {
     expect(res.body).toMatchObject({
       id: "challenge-1",
       token: "pcp_cli_auth_secret",
-      boardApiToken: "pcp_board_token",
       approvalPath: "/cli-auth/challenge-1?token=pcp_cli_auth_secret",
       pollPath: "/cli-auth/challenges/challenge-1",
       expiresAt: "2026-03-23T13:00:00.000Z",
     });
+    expect(res.body.boardApiToken).toBe("pcp_board_token");
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
+  });
+
+  it("rejects anonymous access to generic skill documents", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const [indexRes, skillRes] = await Promise.all([
+      request(app).get("/api/skills/index"),
+      request(app).get("/api/skills/paperclip"),
+    ]);
+
+    expect(indexRes.status).toBe(401);
+    expect(skillRes.status).toBe(401);
+  });
+
+  it("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
+    const invite = {
+      id: "invite-1",
+      companyId: "company-1",
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      tokenHash: "hash",
+      defaultsPayload: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      invitedByUserId: null,
+      revokedAt: null,
+      acceptedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([invite]),
+        })),
+      })),
+    };
+
+    const app = await createApp({ type: "none", source: "none" }, db);
+    const res = await request(app).get("/api/invites/token-123/skills/paperclip");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/markdown");
+    expect(res.text).toContain("# Paperclip Skill");
   });
 
   it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
@@ -107,7 +189,7 @@ describe("cli auth routes", () => {
       approvedByUser: null,
     });
 
-    const app = createApp({ type: "none", source: "none" });
+    const app = await createApp({ type: "none", source: "none" });
     const res = await request(app).get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret");
 
     expect(res.status).toBe(200);
@@ -133,7 +215,7 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-1"]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -173,7 +255,7 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-a", "company-b"]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "admin-1",
       source: "session",
@@ -200,7 +282,7 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-z"]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "admin-2",
       keyId: "board-key-3",

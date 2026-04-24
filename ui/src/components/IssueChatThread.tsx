@@ -1,13 +1,13 @@
 import {
   AssistantRuntimeProvider,
-  ActionBarPrimitive,
-  MessagePrimitive,
-  ThreadPrimitive,
   useAui,
-  useAuiState,
-  useMessage,
 } from "@assistant-ui/react";
-import type { ToolCallMessagePart } from "@assistant-ui/react";
+import type {
+  ReasoningMessagePart,
+  TextMessagePart,
+  ThreadMessage,
+  ToolCallMessagePart,
+} from "@assistant-ui/react";
 import {
   createContext,
   Component,
@@ -15,10 +15,12 @@ import {
   useContext,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
+  type DragEvent as ReactDragEvent,
   type ErrorInfo,
   type Ref,
   type ReactNode,
@@ -29,6 +31,8 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueAttachment,
+  IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -36,15 +40,25 @@ import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from
 import {
   buildIssueChatMessages,
   formatDurationWords,
+  stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
+  type StableThreadMessageCacheEntry,
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
+import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
@@ -63,9 +77,17 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
+import {
+  captureComposerViewportSnapshot,
+  restoreComposerViewportSnapshot,
+  shouldPreserveComposerViewport,
+} from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import type { CompanyUserProfile } from "../lib/company-members";
+import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { timeAgo } from "../lib/timeAgo";
 import {
   describeToolInput,
@@ -80,7 +102,8 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -88,20 +111,39 @@ interface IssueChatMessageContext {
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+  activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
+  onStopRun?: (runId: string) => Promise<void>;
+  stoppingRunId?: string | null;
   onInterruptQueued?: (runId: string) => Promise<void>;
+  onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackVoteByTargetId: new Map(),
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  activeRunIds: new Set<string>(),
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -123,6 +165,17 @@ export function resolveAssistantMessageFoldedState(args: {
   if (!isFoldable) return false;
   if (!previousIsFoldable) return true;
   return currentFolded;
+}
+
+export function canStopIssueChatRun(args: {
+  runId: string | null;
+  runStatus: string | null;
+  activeRunIds: ReadonlySet<string>;
+}) {
+  const { runId, runStatus, activeRunIds } = args;
+  if (!runId) return false;
+  if (activeRunIds.has(runId)) return true;
+  return runStatus === "queued" || runStatus === "running";
 }
 
 function findCoTSegmentIndex(
@@ -162,11 +215,12 @@ interface CommentReassignment {
 
 export interface IssueChatComposerHandle {
   focus: () => void;
+  restoreDraft: (submittedBody: string) => void;
 }
 
 interface IssueChatComposerProps {
   onImageUpload?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
@@ -175,11 +229,13 @@ interface IssueChatComposerProps {
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
   composerDisabledReason?: string | null;
+  composerHint?: string | null;
   issueStatus?: string;
 }
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -187,11 +243,14 @@ interface IssueChatThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
+  blockedBy?: IssueRelationIssueSummary[];
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -199,8 +258,9 @@ interface IssueChatThreadProps {
   ) => Promise<void>;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
+  onStopRun?: (runId: string) => Promise<void>;
   imageUploadHandler?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
@@ -208,6 +268,7 @@ interface IssueChatThreadProps {
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
+  composerHint?: string | null;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
@@ -217,14 +278,28 @@ interface IssueChatThreadProps {
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
+  onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
+  stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
+  onAcceptInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    selectedClientKeys?: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
 
 type IssueChatErrorBoundaryProps = {
   resetKey: string;
-  messages: readonly import("@assistant-ui/react").ThreadMessage[];
+  messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
   children: ReactNode;
@@ -268,7 +343,76 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
   }
 }
 
-function fallbackAuthorLabel(message: import("@assistant-ui/react").ThreadMessage) {
+function IssueBlockedNotice({
+  issueStatus,
+  blockers,
+}: {
+  issueStatus?: string;
+  blockers: IssueRelationIssueSummary[];
+}) {
+  if (blockers.length === 0 && issueStatus !== "blocked") return null;
+
+  const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+
+  return (
+    <div className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+        <div className="min-w-0 space-y-1.5">
+          <p className="leading-5">
+            {blockers.length > 0
+              ? <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
+              : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+          </p>
+          {blockers.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {blockers.map((blocker) => {
+                const issuePathId = blocker.identifier ?? blocker.id;
+                return (
+                  <IssueLinkQuicklook
+                    key={blocker.id}
+                    issuePathId={issuePathId}
+                    to={createIssueDetailPath(issuePathId)}
+                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+                  >
+                    <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+                    <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+                      {blocker.title}
+                    </span>
+                  </IssueLinkQuicklook>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+  if (!agent || agent.status !== "paused") return null;
+
+  const pauseDetail =
+    agent.pauseReason === "budget"
+      ? "It was paused by a budget hard stop."
+      : agent.pauseReason === "system"
+        ? "It was paused by the system."
+        : "It was paused manually.";
+
+  return (
+    <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
+      <div className="flex items-start gap-2">
+        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
+        <p className="min-w-0 leading-5">
+          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function fallbackAuthorLabel(message: ThreadMessage) {
   const custom = message.metadata?.custom as Record<string, unknown> | undefined;
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
   if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
@@ -277,7 +421,7 @@ function fallbackAuthorLabel(message: import("@assistant-ui/react").ThreadMessag
   return "System";
 }
 
-function fallbackTextParts(message: import("@assistant-ui/react").ThreadMessage) {
+function fallbackTextParts(message: ThreadMessage) {
   const contentLines: string[] = [];
   for (const part of message.content) {
     if (part.type === "text" || part.type === "reasoning") {
@@ -304,7 +448,7 @@ function IssueChatFallbackThread({
   emptyMessage,
   variant,
 }: {
-  messages: readonly import("@assistant-ui/react").ThreadMessage[];
+  messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
 }) {
@@ -363,6 +507,28 @@ function IssueChatFallbackThread({
 
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
+const SUBMIT_SCROLL_RESERVE_VH = 0.4;
+
+type ComposerAttachmentItem = {
+  id: string;
+  name: string;
+  size: number;
+  status: "uploading" | "attached" | "error";
+  inline: boolean;
+  contentPath?: string;
+  error?: string;
+};
+
+function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
+  return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
+}
+
+function formatAttachmentSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
@@ -412,6 +578,11 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
   return null;
 }
 
+function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  return resumesToTodo && assigneeValue.startsWith("agent:");
+}
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function commentDateLabel(date: Date | string | undefined): string {
@@ -444,12 +615,13 @@ function formatTimelineAssigneeLabel(
   assignee: IssueTimelineAssignee,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
+  userLabelMap?: ReadonlyMap<string, string> | null,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
   }
   return "Unassigned";
 }
@@ -460,6 +632,43 @@ function initialsForName(name: string) {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
   return name.slice(0, 2).toUpperCase();
+}
+
+function formatInteractionActorLabel(args: {
+  agentId?: string | null;
+  userId?: string | null;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+}) {
+  const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
+  if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
+  if (userId) {
+    return userLabelMap?.get(userId)
+      ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
+      ?? "Board";
+  }
+  return "System";
+}
+
+export function resolveIssueChatHumanAuthor(args: {
+  authorName?: string | null;
+  authorUserId?: string | null;
+  currentUserId?: string | null;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+}) {
+  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
+  const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
+  const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
+  const resolvedAuthorName = profile?.label?.trim()
+    || authorName?.trim()
+    || (authorUserId === "local-board" ? "Board" : (isCurrentUser ? "You" : "User"));
+
+  return {
+    isCurrentUser,
+    authorName: resolvedAuthorName,
+    avatarUrl: profile?.image ?? null,
+  };
 }
 
 function formatRunStatusLabel(status: string) {
@@ -515,17 +724,22 @@ function cleanToolDisplayText(tool: ToolCallMessagePart): string {
   return summary ? `${name} ${summary}` : name;
 }
 
-function IssueChatChainOfThought() {
+type IssueChatCoTPart = ReasoningMessagePart | ToolCallMessagePart;
+
+function IssueChatChainOfThought({
+  message,
+  cotParts,
+}: {
+  message: ThreadMessage;
+  cotParts: readonly IssueChatCoTPart[];
+}) {
   const { agentMap } = useContext(IssueChatCtx);
-  const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const isMessageRunning = message.role === "assistant" && message.status?.type === "running";
-
-  const cotParts = useAuiState((s) => s.chainOfThought?.parts ?? []) as ReadonlyArray<{ type: string; text?: string; toolName?: string; toolCallId?: string; args?: unknown; argsText?: string; result?: unknown; isError?: boolean }>;
 
   const myIndex = useMemo(
     () => findCoTSegmentIndex(message.content, cotParts),
@@ -872,112 +1086,261 @@ function IssueChatToolPart({
   );
 }
 
-function IssueChatUserMessage() {
-  const { onInterruptQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
-  const message = useMessage();
-  const custom = message.metadata.custom as Record<string, unknown>;
-  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
-  const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
-  const pending = custom.clientStatus === "pending";
-  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
-  const [copied, setCopied] = useState(false);
+function getThreadMessageCopyText(message: ThreadMessage) {
+  return message.content
+    .filter((part): part is TextMessagePart => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+}
 
+function IssueChatTextParts({
+  message,
+  recessed = false,
+}: {
+  message: ThreadMessage;
+  recessed?: boolean;
+}) {
   return (
-    <MessagePrimitive.Root id={anchorId}>
-      <div className="group flex items-start justify-end gap-2.5">
-        <div className="flex min-w-0 max-w-[85%] flex-col items-end">
-          <div
-            className={cn(
-              "min-w-0 break-all rounded-2xl px-4 py-2.5",
-              queued
-                ? "bg-amber-50/80 dark:bg-amber-500/10"
-                : "bg-muted",
-              pending && "opacity-80",
-            )}
-          >
-            {queued ? (
-              <div className="mb-1.5 flex items-center gap-2">
-                <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-                  Queued
-                </span>
-                {queueTargetRunId && onInterruptQueued ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                    disabled={interruptingQueuedRunId === queueTargetRunId}
-                    onClick={() => void onInterruptQueued(queueTargetRunId)}
-                  >
-                    {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="space-y-3">
-              <MessagePrimitive.Parts
-                components={{
-                  Text: ({ text }) => <IssueChatTextPart text={text} />,
-                }}
-              />
-            </div>
-          </div>
-
-          {pending ? (
-            <div className="mt-1 flex justify-end px-1 text-[11px] text-muted-foreground">Sending...</div>
-          ) : (
-            <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <a
-                    href={anchorId ? `#${anchorId}` : undefined}
-                    className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                  >
-                    {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                  </a>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  {message.createdAt ? formatDateTime(message.createdAt) : ""}
-                </TooltipContent>
-              </Tooltip>
-              <button
-                type="button"
-                className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-                title="Copy message"
-                aria-label="Copy message"
-                onClick={() => {
-                  const text = message.content
-                    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                    .map((p) => p.text)
-                    .join("\n\n");
-                  void navigator.clipboard.writeText(text).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  });
-                }}
-              >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              </button>
-            </div>
-          )}
-        </div>
-
-        <Avatar size="sm" className="mt-1 shrink-0">
-          <AvatarFallback>You</AvatarFallback>
-        </Avatar>
-      </div>
-    </MessagePrimitive.Root>
+    <>
+      {message.content
+        .filter((part): part is TextMessagePart => part.type === "text")
+        .map((part, index) => (
+          <IssueChatTextPart
+            key={`${message.id}:text:${index}`}
+            text={part.text}
+            recessed={recessed}
+          />
+        ))}
+    </>
   );
 }
 
-function IssueChatAssistantMessage() {
+function groupAssistantParts(
+  content: readonly ThreadMessage["content"][number][],
+): Array<
+  | { type: "text"; part: TextMessagePart; index: number }
+  | { type: "cot"; parts: IssueChatCoTPart[]; startIndex: number }
+> {
+  const groups: Array<
+    | { type: "text"; part: TextMessagePart; index: number }
+    | { type: "cot"; parts: IssueChatCoTPart[]; startIndex: number }
+  > = [];
+  let pendingCoT: IssueChatCoTPart[] = [];
+  let pendingStartIndex = -1;
+
+  const flushCoT = () => {
+    if (pendingCoT.length === 0) return;
+    groups.push({ type: "cot", parts: pendingCoT, startIndex: pendingStartIndex });
+    pendingCoT = [];
+    pendingStartIndex = -1;
+  };
+
+  content.forEach((part, index) => {
+    if (part.type === "reasoning" || part.type === "tool-call") {
+      if (pendingCoT.length === 0) pendingStartIndex = index;
+      pendingCoT.push(part);
+      return;
+    }
+    flushCoT();
+    if (part.type === "text") {
+      groups.push({ type: "text", part, index });
+    }
+  });
+  flushCoT();
+
+  return groups;
+}
+
+function IssueChatAssistantParts({
+  message,
+  hasCoT,
+}: {
+  message: ThreadMessage;
+  hasCoT: boolean;
+}) {
+  return (
+    <>
+      {groupAssistantParts(message.content).map((group) => {
+        if (group.type === "text") {
+          return (
+            <IssueChatTextPart
+              key={`${message.id}:text:${group.index}`}
+              text={group.part.text}
+              recessed={hasCoT}
+            />
+          );
+        }
+        return (
+          <IssueChatChainOfThought
+            key={`${message.id}:cot:${group.startIndex}`}
+            message={message}
+            cotParts={group.parts}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
+  const {
+    onInterruptQueued,
+    onCancelQueued,
+    interruptingQueuedRunId,
+    currentUserId,
+    userProfileMap,
+  } = useContext(IssueChatCtx);
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
+  const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
+  const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
+  const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
+  const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
+  const pending = custom.clientStatus === "pending";
+  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  const [copied, setCopied] = useState(false);
+  const {
+    isCurrentUser,
+    authorName: resolvedAuthorName,
+    avatarUrl,
+  } = resolveIssueChatHumanAuthor({
+    authorName,
+    authorUserId,
+    currentUserId,
+    userProfileMap,
+  });
+  const authorAvatar = (
+    <Avatar size="sm" className="shrink-0">
+      {avatarUrl ? <AvatarImage src={avatarUrl} alt={resolvedAuthorName} /> : null}
+      <AvatarFallback>{initialsForName(resolvedAuthorName)}</AvatarFallback>
+    </Avatar>
+  );
+  const messageBody = (
+    <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
+      <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
+        <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+      </div>
+      <div
+        className={cn(
+          "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
+          queued
+            ? "bg-amber-50/80 dark:bg-amber-500/10"
+            : "bg-muted",
+          pending && "opacity-80",
+        )}
+      >
+        {queued ? (
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+              {queueBadgeLabel}
+            </span>
+            {queueTargetRunId && onInterruptQueued ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                disabled={interruptingQueuedRunId === queueTargetRunId}
+                onClick={() => void onInterruptQueued(queueTargetRunId)}
+              >
+                {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+              </Button>
+            ) : null}
+            {onCancelQueued ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                onClick={() => onCancelQueued(commentId)}
+              >
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="min-w-0 max-w-full space-y-3">
+          <IssueChatTextParts message={message} />
+        </div>
+      </div>
+
+      {pending ? (
+        <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
+          Sending...
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "mt-1 flex items-center gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100",
+            isCurrentUser ? "justify-end" : "justify-start",
+          )}
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={anchorId ? `#${anchorId}` : undefined}
+                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+            </TooltipContent>
+          </Tooltip>
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+            title="Copy message"
+            aria-label="Copy message"
+            onClick={() => {
+              const text = message.content
+                .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                .map((p) => p.text)
+                .join("\n\n");
+              void navigator.clipboard.writeText(text).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              });
+            }}
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div id={anchorId}>
+      <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
+        {isCurrentUser ? (
+          <>
+            {messageBody}
+            {authorAvatar}
+          </>
+        ) : (
+          <>
+            {authorAvatar}
+            {messageBody}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
   const {
     feedbackVoteByTargetId,
     feedbackDataSharingPreference,
     feedbackTermsUrl,
     onVote,
     agentMap,
+    activeRunIds,
+    onStopRun,
+    stoppingRunId,
   } = useContext(IssueChatCtx);
-  const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const authorName = typeof custom.authorName === "string"
@@ -988,6 +1351,7 @@ function IssueChatAssistantMessage() {
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
@@ -997,11 +1361,14 @@ function IssueChatAssistantMessage() {
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
+  const canStopRun = canStopIssueChatRun({ runId, runStatus, activeRunIds });
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
+  const [copied, setCopied] = useState(false);
+  const copyText = getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
@@ -1031,9 +1398,9 @@ function IssueChatAssistantMessage() {
   const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
 
   return (
-    <MessagePrimitive.Root id={anchorId}>
+    <div id={anchorId}>
       <div className="flex items-start gap-2.5 py-1.5">
-        <Avatar size="sm" className="mt-0.5 shrink-0">
+        <Avatar size="sm" className="shrink-0">
           {agentIcon ? (
             <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
           ) : (
@@ -1074,12 +1441,7 @@ function IssueChatAssistantMessage() {
           {!folded ? (
             <>
               <div className="space-y-3">
-                <MessagePrimitive.Parts
-                  components={{
-                    Text: ({ text }) => <IssueChatTextPart text={text} recessed={hasCoT} />,
-                    ChainOfThought: IssueChatChainOfThought,
-                  }}
-                />
+                <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
                 {message.content.length === 0 && waitingText ? (
                   <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
                     <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
@@ -1107,15 +1469,20 @@ function IssueChatAssistantMessage() {
               </div>
 
               <div className="mt-2 flex items-center gap-1">
-                <ActionBarPrimitive.Copy
-                  copiedDuration={2000}
-                  className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   title="Copy message"
                   aria-label="Copy message"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(copyText).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    });
+                  }}
                 >
-                  <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
-                  <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
-                </ActionBarPrimitive.Copy>
+                  {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
                 {commentId && onVote ? (
                   <IssueChatFeedbackButtons
                     activeVote={activeVote}
@@ -1152,16 +1519,24 @@ function IssueChatAssistantMessage() {
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       onClick={() => {
-                        const text = message.content
-                          .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                          .map((p) => p.text)
-                          .join("\n\n");
-                        void navigator.clipboard.writeText(text);
+                        void navigator.clipboard.writeText(copyText);
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
                       Copy message
                     </DropdownMenuItem>
+                    {canStopRun && onStopRun && runId ? (
+                      <DropdownMenuItem
+                        disabled={stoppingRunId === runId}
+                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                        onSelect={() => {
+                          void onStopRun(runId);
+                        }}
+                      >
+                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                        {stoppingRunId === runId ? "Stopping…" : "Stop run"}
+                      </DropdownMenuItem>
+                    ) : null}
                     {runHref ? (
                       <DropdownMenuItem asChild>
                         <Link to={runHref} target="_blank" rel="noreferrer noopener">
@@ -1177,7 +1552,7 @@ function IssueChatAssistantMessage() {
           ) : null}
         </div>
       </div>
-    </MessagePrimitive.Root>
+    </div>
   );
 }
 
@@ -1401,9 +1776,115 @@ function IssueChatFeedbackButtons({
   );
 }
 
-function IssueChatSystemMessage() {
-  const { agentMap, currentUserId } = useContext(IssueChatCtx);
-  const message = useMessage();
+function ExpiredRequestConfirmationActivity({
+  message,
+  anchorId,
+  interaction,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+  interaction: RequestConfirmationInteraction;
+}) {
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+  } = useContext(IssueChatCtx);
+  const [expanded, setExpanded] = useState(false);
+  const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
+  const actorAgentId = hasResolvedActor
+    ? interaction.resolvedByAgentId ?? null
+    : interaction.createdByAgentId ?? null;
+  const actorUserId = hasResolvedActor
+    ? interaction.resolvedByUserId ?? null
+    : interaction.createdByUserId ?? null;
+  const actorName = formatInteractionActorLabel({
+    agentId: actorAgentId,
+    userId: actorUserId,
+    agentMap,
+    currentUserId,
+    userLabelMap,
+  });
+  const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
+  const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
+  const detailsId = anchorId ? `${anchorId}-details` : `${interaction.id}-details`;
+  const summary = buildIssueThreadInteractionSummary(interaction);
+
+  const rowContent = (
+    <div className="min-w-0 flex-1">
+      <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
+        <span className="font-medium text-foreground">{actorName}</span>
+        <span className="text-muted-foreground">updated this task</span>
+        <a
+          href={anchorId ? `#${anchorId}` : undefined}
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+        >
+          {timeAgo(message.createdAt)}
+        </a>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+          {expanded ? "Hide confirmation" : "Expired confirmation"}
+        </button>
+      </div>
+      {expanded ? (
+        <p className={cn("mt-1 text-xs text-muted-foreground", isCurrentUser && "text-right")}>
+          {summary}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <div id={anchorId}>
+      {isCurrentUser ? (
+        <div className="flex items-start justify-end gap-2 py-1">
+          {rowContent}
+        </div>
+      ) : (
+        <div className="flex items-start gap-2.5 py-1">
+          <Avatar size="sm" className="mt-0.5">
+            {actorIcon ? (
+              <AvatarFallback><AgentIcon icon={actorIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            )}
+          </Avatar>
+          {rowContent}
+        </div>
+      )}
+      {expanded ? (
+        <div id={detailsId} className="mt-2">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+  } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -1422,6 +1903,37 @@ function IssueChatSystemMessage() {
         to: IssueTimelineAssignee;
       }
     : null;
+  const interaction = isIssueThreadInteraction(custom.interaction)
+    ? custom.interaction
+    : null;
+
+  if (custom.kind === "interaction" && interaction) {
+    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+      return (
+        <ExpiredRequestConfirmationActivity
+          message={message}
+          anchorId={anchorId}
+          interaction={interaction}
+        />
+      );
+    }
+
+    return (
+      <div id={anchorId}>
+        <div className="py-1.5">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (custom.kind === "event" && actorName) {
     const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
@@ -1458,11 +1970,11 @@ function IssueChatSystemMessage() {
               Assignee
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
             </span>
           </div>
         ) : null}
@@ -1471,16 +1983,16 @@ function IssueChatSystemMessage() {
 
     if (isCurrentUser) {
       return (
-        <MessagePrimitive.Root id={anchorId}>
+        <div id={anchorId}>
           <div className="flex items-start justify-end gap-2 py-1">
             {eventContent}
           </div>
-        </MessagePrimitive.Root>
+        </div>
       );
     }
 
     return (
-      <MessagePrimitive.Root id={anchorId}>
+      <div id={anchorId}>
         <div className="flex items-start gap-2.5 py-1">
           <Avatar size="sm" className="mt-0.5">
             {agentIcon ? (
@@ -1493,7 +2005,7 @@ function IssueChatSystemMessage() {
             {eventContent}
           </div>
         </div>
-      </MessagePrimitive.Root>
+      </div>
     );
   }
 
@@ -1501,7 +2013,7 @@ function IssueChatSystemMessage() {
   const runAgentIcon = runAgentId ? agentMap?.get(runAgentId)?.icon : undefined;
   if (custom.kind === "run" && runId && runAgentId && displayedRunAgentName && runStatus) {
     return (
-      <MessagePrimitive.Root id={anchorId}>
+      <div id={anchorId}>
         <div className="flex items-center gap-2.5 py-1">
           <Avatar size="sm">
             {runAgentIcon ? (
@@ -1535,7 +2047,7 @@ function IssueChatSystemMessage() {
             </div>
           </div>
         </div>
-      </MessagePrimitive.Root>
+      </div>
     );
   }
 
@@ -1553,19 +2065,40 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   mentions = [],
   agentMap,
   composerDisabledReason = null,
+  composerHint = null,
   issueStatus,
 }, forwardedRef) {
   const api = useAui();
   const [body, setBody] = useState("");
-  const [reopen, setReopen] = useState(issueStatus === "done" || issueStatus === "cancelled");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentItem[]>([]);
+  const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canAcceptFiles = Boolean(onImageUpload || onAttachImage);
+
+  function queueViewportRestore(snapshot: ReturnType<typeof captureComposerViewportSnapshot>) {
+    if (!snapshot) return;
+    requestAnimationFrame(() => {
+      restoreComposerViewportSnapshot(snapshot, composerContainerRef.current);
+    });
+  }
+
+  function focusComposer() {
+    if (typeof composerContainerRef.current?.scrollIntoView === "function") {
+      composerContainerRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    requestAnimationFrame(() => {
+      window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
+      editorRef.current?.focus();
+    });
+  }
 
   useEffect(() => {
     if (!draftKey) return;
@@ -1591,12 +2124,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }, [effectiveSuggestedAssigneeValue]);
 
   useImperativeHandle(forwardedRef, () => ({
-    focus: () => {
-      composerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      requestAnimationFrame(() => {
-        window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
-        editorRef.current?.focus();
-      });
+    focus: focusComposer,
+    restoreDraft: (submittedBody: string) => {
+      setBody((current) =>
+        restoreSubmittedCommentDraft({
+          currentBody: current,
+          submittedBody,
+        }),
+      );
+      focusComposer();
     },
   }), []);
 
@@ -1606,12 +2142,17 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
+    const reopen = shouldImplicitlyReopenComment(
+      issueStatus,
+      hasReassignment ? reassignTarget : currentAssigneeValue,
+    ) ? true : undefined;
     const submittedBody = trimmed;
+    const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
     setSubmitting(true);
     setBody("");
     try {
-      await api.thread().append({
+      const appendPromise = api.thread().append({
         role: "user",
         content: [{ type: "text", text: submittedBody }],
         metadata: { custom: {} },
@@ -1623,8 +2164,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           },
         },
       });
+      queueViewportRestore(viewportSnapshot);
+      await appendPromise;
       if (draftKey) clearDraft(draftKey);
-      setReopen(issueStatus === "done" || issueStatus === "cancelled");
+      setComposerAttachments([]);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -1635,6 +2178,64 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       );
     } finally {
       setSubmitting(false);
+      queueViewportRestore(viewportSnapshot);
+    }
+  }
+
+  async function attachFile(file: File) {
+    const attachmentId = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
+    const inline = Boolean(onImageUpload && file.type.startsWith("image/"));
+    setComposerAttachments((prev) => [
+      ...prev,
+      {
+        id: attachmentId,
+        name: file.name,
+        size: file.size,
+        status: "uploading",
+        inline,
+      },
+    ]);
+
+    try {
+      if (onImageUpload && file.type.startsWith("image/")) {
+        const url = await onImageUpload(file);
+        const safeName = file.name.replace(/[[\]]/g, "\\$&");
+        const markdown = `![${safeName}](${url})`;
+        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? { ...item, status: "attached", contentPath: url }
+            : item,
+        ));
+      } else if (onAttachImage) {
+        const attachment = await onAttachImage(file);
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? {
+                ...item,
+                status: "attached",
+                contentPath: attachment?.contentPath,
+                name: attachment?.originalFilename ?? item.name,
+              }
+            : item,
+        ));
+      } else {
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? { ...item, status: "error", error: "This file type cannot be attached here" }
+            : item,
+        ));
+      }
+    } catch (err) {
+      setComposerAttachments((prev) => prev.map((item) =>
+        item.id === attachmentId
+          ? {
+              ...item,
+              status: "error",
+              error: err instanceof Error ? err.message : "Upload failed",
+            }
+          : item,
+      ));
     }
   }
 
@@ -1643,18 +2244,59 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     if (!file) return;
     setAttaching(true);
     try {
-      if (onImageUpload) {
-        const url = await onImageUpload(file);
-        const safeName = file.name.replace(/[[\]]/g, "\\$&");
-        const markdown = `![${safeName}](${url})`;
-        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
-      } else if (onAttachImage) {
-        await onAttachImage(file);
-      }
+      await attachFile(file);
     } finally {
       setAttaching(false);
       if (attachInputRef.current) attachInputRef.current.value = "";
     }
+  }
+
+  async function handleDroppedFiles(files: FileList | null | undefined) {
+    if (!files || files.length === 0) return;
+    setAttaching(true);
+    try {
+      for (const file of Array.from(files)) {
+        await attachFile(file);
+      }
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  function resetDragState() {
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+  }
+
+  function handleFileDragEnter(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  }
+
+  function handleFileDragOver(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    evt.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleFileDragLeave(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragOver(false);
+  }
+
+  function handleFileDrop(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    resetDragState();
+    void handleDroppedFiles(evt.dataTransfer?.files);
   }
 
   const canSubmit = !submitting && !!body.trim();
@@ -1671,8 +2313,34 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
-      className="space-y-3 pt-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)]"
+      className={cn(
+        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
+      )}
+      onDragEnterCapture={handleFileDragEnter}
+      onDragOverCapture={handleFileDragOver}
+      onDragLeaveCapture={handleFileDragLeave}
+      onDropCapture={handleFileDrop}
     >
+      {isDragOver && canAcceptFiles ? (
+        <div
+          data-testid="issue-chat-composer-drop-overlay"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+        >
+          <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Paperclip className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Images insert into the reply. Other files are added to this issue.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <MarkdownEditor
         ref={editorRef}
         value={body}
@@ -1681,9 +2349,61 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
-        bordered
-        contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
+        fileDropTarget="parent"
+        bordered={false}
+        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
+
+      {composerHint ? (
+        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+          {composerHint}
+        </div>
+      ) : null}
+
+      {composerAttachments.length > 0 ? (
+        <div
+          data-testid="issue-chat-composer-attachments"
+          className="mb-3 mt-2 space-y-1.5 rounded-md border border-dashed border-border/80 bg-muted/20 p-2"
+        >
+          {composerAttachments.map((attachment) => {
+            const sizeLabel = formatAttachmentSize(attachment.size);
+            const statusLabel =
+              attachment.status === "uploading"
+                ? "Uploading to issue"
+                : attachment.status === "error"
+                  ? attachment.error ?? "Upload failed"
+                  : attachment.inline
+                    ? "Inserted inline"
+                    : "Attached to issue";
+            return (
+              <div
+                key={attachment.id}
+                className={cn(
+                  "flex min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-xs",
+                  attachment.status === "error"
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-background/70 text-muted-foreground",
+                )}
+              >
+                {attachment.status === "uploading" ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                ) : attachment.status === "attached" ? (
+                  <Check className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                ) : (
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                  {attachment.name}
+                </span>
+                {sizeLabel ? (
+                  <span className="shrink-0 text-muted-foreground">{sizeLabel}</span>
+                ) : null}
+                <span className="shrink-0 text-muted-foreground">{statusLabel}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
         {(onImageUpload || onAttachImage) ? (
@@ -1691,7 +2411,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             <input
               ref={attachInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
               className="hidden"
               onChange={handleAttachFile}
             />
@@ -1700,22 +2419,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               size="icon-sm"
               onClick={() => attachInputRef.current?.click()}
               disabled={attaching}
-              title="Attach image"
+              title="Attach file"
             >
               <Paperclip className="h-4 w-4" />
             </Button>
           </div>
         ) : null}
-
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={reopen}
-            onChange={(event) => setReopen(event.target.checked)}
-            className="rounded border-border"
-          />
-          Re-open
-        </label>
 
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
@@ -1766,6 +2475,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
 export function IssueChatThread({
   comments,
+  interactions = [],
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -1773,14 +2483,18 @@ export function IssueChatThread({
   timelineEvents = [],
   liveRuns = [],
   activeRun = null,
+  blockedBy = [],
   companyId,
   projectId,
   issueStatus,
   agentMap,
   currentUserId,
+  userLabelMap,
+  userProfileMap,
   onVote,
   onAdd,
   onCancelRun,
+  onStopRun,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -1790,6 +2504,7 @@ export function IssueChatThread({
   suggestedAssigneeValue,
   mentions = [],
   composerDisabledReason = null,
+  composerHint = null,
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
@@ -1799,13 +2514,26 @@ export function IssueChatThread({
   hasOutputForRun: hasOutputForRunOverride,
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
+  onCancelQueued,
   interruptingQueuedRunId = null,
+  stoppingRunId = null,
   onImageClick,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onSubmitInteractionAnswers,
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const hasScrolledRef = useRef(false);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
+  const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
+  const preserveComposerViewportRef = useRef(false);
+  const pendingSubmitScrollRef = useRef(false);
+  const lastUserMessageIdRef = useRef<string | null>(null);
+  const spacerBaselineAnchorRef = useRef<string | null>(null);
+  const spacerInitialReserveRef = useRef(0);
+  const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -1834,17 +2562,26 @@ export function IssueChatThread({
       activeRun,
     });
   }, [activeRun, displayLiveRuns, linkedRuns]);
+  const activeRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of displayLiveRuns) {
+      if (run.status === "queued" || run.status === "running") {
+        ids.add(run.id);
+      }
+    }
+    return ids;
+  }, [displayLiveRuns]);
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
   const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
-
-  const messages = useMemo(
+  const rawMessages = useMemo(
     () =>
       buildIssueChatMessages({
         comments,
+        interactions,
         timelineEvents,
         linkedRuns,
         liveRuns,
@@ -1856,9 +2593,11 @@ export function IssueChatThread({
         projectId,
         agentMap,
         currentUserId,
+        userLabelMap,
       }),
     [
       comments,
+      interactions,
       timelineEvents,
       linkedRuns,
       liveRuns,
@@ -1870,10 +2609,32 @@ export function IssueChatThread({
       projectId,
       agentMap,
       currentUserId,
+      userLabelMap,
     ],
   );
+  const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
+  const stableMessageCacheRef = useRef<Map<string, StableThreadMessageCacheEntry>>(new Map());
+  const messages = useMemo(() => {
+    const stabilized = stabilizeThreadMessages(
+      rawMessages,
+      stableMessagesRef.current,
+      stableMessageCacheRef.current,
+    );
+    stableMessagesRef.current = stabilized.messages;
+    stableMessageCacheRef.current = stabilized.cache;
+    return stabilized.messages;
+  }, [rawMessages]);
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
+  const unresolvedBlockers = useMemo(
+    () => blockedBy.filter((blocker) => blocker.status !== "done" && blocker.status !== "cancelled"),
+    [blockedBy],
+  );
+  const assignedAgent = useMemo(() => {
+    if (!currentAssigneeValue.startsWith("agent:")) return null;
+    const assigneeAgentId = currentAssigneeValue.slice("agent:".length);
+    return agentMap?.get(assigneeAgentId) ?? null;
+  }, [agentMap, currentAssigneeValue]);
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
     for (const feedbackVote of feedbackVotes) {
@@ -1886,13 +2647,80 @@ export function IssueChatThread({
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment }) => onAdd(body, reopen, reassignment),
+    onSend: ({ body, reopen, reassignment }) => {
+      pendingSubmitScrollRef.current = true;
+      return onAdd(body, reopen, reassignment);
+    },
     onCancel: onCancelRun,
   });
 
   useEffect(() => {
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    const lastUserId = lastUserMessage?.id ?? null;
+
+    if (
+      pendingSubmitScrollRef.current
+      && lastUserId
+      && lastUserId !== lastUserMessageIdRef.current
+    ) {
+      pendingSubmitScrollRef.current = false;
+      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+      const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
+      if (anchorId) {
+        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
+        spacerBaselineAnchorRef.current = anchorId;
+        spacerInitialReserveRef.current = reserve;
+        setBottomSpacerHeight(reserve);
+        requestAnimationFrame(() => {
+          const el = document.getElementById(anchorId);
+          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    }
+
+    lastUserMessageIdRef.current = lastUserId;
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const anchorId = spacerBaselineAnchorRef.current;
+    if (!anchorId || spacerInitialReserveRef.current <= 0) return;
+    const userEl = document.getElementById(anchorId);
+    const bottomEl = bottomAnchorRef.current;
+    if (!userEl || !bottomEl) return;
+    const contentBelow = Math.max(
+      0,
+      bottomEl.getBoundingClientRect().top - userEl.getBoundingClientRect().bottom,
+    );
+    const next = Math.max(0, spacerInitialReserveRef.current - contentBelow);
+    setBottomSpacerHeight((prev) => (prev === next ? prev : next));
+    if (next === 0) {
+      spacerBaselineAnchorRef.current = null;
+      spacerInitialReserveRef.current = 0;
+    }
+  }, [messages]);
+  useLayoutEffect(() => {
+    const composerElement = composerViewportAnchorRef.current;
+    if (preserveComposerViewportRef.current) {
+      restoreComposerViewportSnapshot(
+        composerViewportSnapshotRef.current,
+        composerElement,
+      );
+    }
+
+    composerViewportSnapshotRef.current = captureComposerViewportSnapshot(composerElement);
+    preserveComposerViewportRef.current = shouldPreserveComposerViewport(composerElement);
+  }, [messages]);
+
+  useEffect(() => {
     const hash = location.hash;
-    if (!(hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
+    if (
+      !(
+        hash.startsWith("#comment-")
+        || hash.startsWith("#activity-")
+        || hash.startsWith("#run-")
+        || hash.startsWith("#interaction-")
+      )
+    ) return;
     if (messages.length === 0 || hasScrolledRef.current) return;
     const targetId = hash.slice(1);
     const element = document.getElementById(targetId);
@@ -1912,10 +2740,19 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      userLabelMap,
+      userProfileMap,
+      activeRunIds,
       onVote,
+      onStopRun,
+      stoppingRunId,
       onInterruptQueued,
+      onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     }),
     [
       feedbackVoteByTargetId,
@@ -1923,20 +2760,20 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      userLabelMap,
+      userProfileMap,
+      activeRunIds,
       onVote,
+      onStopRun,
+      stoppingRunId,
       onInterruptQueued,
+      onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
     ],
-  );
-
-  const components = useMemo(
-    () => ({
-      UserMessage: IssueChatUserMessage,
-      AssistantMessage: IssueChatAssistantMessage,
-      SystemMessage: IssueChatSystemMessage,
-    }),
-    [],
   );
 
   const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
@@ -1971,9 +2808,12 @@ export function IssueChatThread({
           emptyMessage={resolvedEmptyMessage}
           variant={variant}
         >
-          <ThreadPrimitive.Root className="">
-            <ThreadPrimitive.Viewport className={variant === "embedded" ? "space-y-3" : "space-y-4"}>
-              <ThreadPrimitive.Empty>
+          <div data-testid="thread-root">
+            <div
+              data-testid="thread-viewport"
+              className={variant === "embedded" ? "space-y-3" : "space-y-4"}
+            >
+              {messages.length === 0 ? (
                 <div className={cn(
                   "text-center text-sm text-muted-foreground",
                   variant === "embedded"
@@ -1982,28 +2822,60 @@ export function IssueChatThread({
                 )}>
                   {resolvedEmptyMessage}
                 </div>
-              </ThreadPrimitive.Empty>
-              <ThreadPrimitive.Messages components={components} />
+              ) : (
+                // Keep transcript rendering independent from assistant-ui's
+                // index-scoped message providers; live transcripts can shrink
+                // or regroup while the runtime still holds stale indices.
+                messages.map((message) => {
+                  if (message.role === "user") {
+                    return <IssueChatUserMessage key={message.id} message={message} />;
+                  }
+                  if (message.role === "assistant") {
+                    return <IssueChatAssistantMessage key={message.id} message={message} />;
+                  }
+                  return <IssueChatSystemMessage key={message.id} message={message} />;
+                })
+              )}
+              {showComposer ? (
+                <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
+                  <IssueAssigneePausedNotice agent={assignedAgent} />
+                </div>
+              ) : null}
               <div ref={bottomAnchorRef} />
-            </ThreadPrimitive.Viewport>
-          </ThreadPrimitive.Root>
+              {showComposer ? (
+                <div
+                  aria-hidden
+                  data-testid="issue-chat-bottom-spacer"
+                  style={{ height: bottomSpacerHeight }}
+                />
+              ) : null}
+            </div>
+          </div>
         </IssueChatErrorBoundary>
 
         {showComposer ? (
-          <IssueChatComposer
-            ref={composerRef}
-            onImageUpload={imageUploadHandler}
-            onAttachImage={onAttachImage}
-            draftKey={draftKey}
-            enableReassign={enableReassign}
-            reassignOptions={reassignOptions}
-            currentAssigneeValue={currentAssigneeValue}
-            suggestedAssigneeValue={suggestedAssigneeValue}
-            mentions={mentions}
-            agentMap={agentMap}
-            composerDisabledReason={composerDisabledReason}
-            issueStatus={issueStatus}
-          />
+          <div
+            ref={composerViewportAnchorRef}
+            data-testid="issue-chat-composer-dock"
+            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+          >
+            <IssueChatComposer
+              ref={composerRef}
+              onImageUpload={imageUploadHandler}
+              onAttachImage={onAttachImage}
+              draftKey={draftKey}
+              enableReassign={enableReassign}
+              reassignOptions={reassignOptions}
+              currentAssigneeValue={currentAssigneeValue}
+              suggestedAssigneeValue={suggestedAssigneeValue}
+              mentions={mentions}
+              agentMap={agentMap}
+              composerDisabledReason={composerDisabledReason}
+              composerHint={composerHint}
+              issueStatus={issueStatus}
+            />
+          </div>
         ) : null}
       </div>
       </IssueChatCtx.Provider>
