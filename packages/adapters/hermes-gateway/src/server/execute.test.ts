@@ -122,7 +122,7 @@ describe("hermes_gateway execute", () => {
       store: true,
       conversation: "paperclip:agent:agent-1:issue:issue-1",
       input: expect.any(String),
-      instructions: expect.stringContaining("paperclip_*"),
+      instructions: expect.stringContaining("local native tools, plugins, or MCP-exposed tools"),
     });
     expect(metas[0]?.commandArgs).toEqual(
       expect.arrayContaining([

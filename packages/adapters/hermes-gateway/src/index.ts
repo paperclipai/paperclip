@@ -23,5 +23,5 @@ Core fields:
 Behavior notes:
 - This adapter stays within Hermes' OpenAI-compatible API surface.
 - It prefers the Hermes Responses API when configured so Paperclip can get issue-scoped conversation continuity via \`conversation\`.
-- When Hermes has the \`hermes-paperclip-plugin\` installed, the adapter prompt instructs Hermes to prefer first-class \`paperclip_*\` tools over raw HTTP.
+- When Hermes has local native tools, plugin tools, or MCP-exposed tools for Paperclip, the adapter prompt instructs Hermes to prefer those first-class \`paperclip_*\` tools over raw HTTP.
 `;
