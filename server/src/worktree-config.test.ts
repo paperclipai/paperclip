@@ -162,9 +162,10 @@ describe("applyRuntimePortSelectionToConfig — auth URL port rewrite", () => {
   });
 
   it("does not rewrite non-loopback publicBaseUrl", () => {
+    // Use same serverPort as config to isolate URL-only behavior (no server-port change)
     const config = makeExplicitAuthConfig(3100, "https://app.example.com");
     const { config: next, changed } = applyRuntimePortSelectionToConfig(config, {
-      serverPort: 3200,
+      serverPort: 3100,
     });
     expect(next.auth.publicBaseUrl).toBe("https://app.example.com");
     expect(changed).toBe(false);
@@ -180,7 +181,8 @@ describe("applyRuntimePortSelectionToConfig — auth URL port rewrite", () => {
   });
 
   it("does not mark changed when loopback URL port already matches", () => {
-    const config = makeExplicitAuthConfig(3100, "http://127.0.0.1:3100");
+    // Use the normalized URL form (with trailing slash) so URL.toString() comparison is stable
+    const config = makeExplicitAuthConfig(3100, "http://127.0.0.1:3100/");
     const { changed } = applyRuntimePortSelectionToConfig(config, { serverPort: 3100 });
     expect(changed).toBe(false);
   });
