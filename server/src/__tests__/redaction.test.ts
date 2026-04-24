@@ -109,4 +109,24 @@ describe("redaction", () => {
     expect(result.userId).toBe("user-123");
     expect(result.email).toBe("user@example.com");
   });
+
+  it("redacts token embedded in URL query params (reset-password link pattern)", () => {
+    const reqQuery = {
+      token: "reset-abc123xyz",
+      redirect: "/dashboard",
+    };
+    const result = sanitizeRecord(reqQuery);
+    expect(result.token).toBe(REDACTED_EVENT_VALUE);
+    expect(result.redirect).toBe("/dashboard");
+  });
+
+  it("redacts credential fields in URL path params", () => {
+    const reqParams = {
+      secret: "shared-secret-value",
+      instanceId: "inst-001",
+    };
+    const result = sanitizeRecord(reqParams);
+    expect(result.secret).toBe(REDACTED_EVENT_VALUE);
+    expect(result.instanceId).toBe("inst-001");
+  });
 });

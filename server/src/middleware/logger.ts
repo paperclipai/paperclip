@@ -53,6 +53,36 @@ export const logger = pino({
   ],
 }));
 
+export function httpLoggerCustomProps(req: any, res: any): Record<string, unknown> {
+  if (res.statusCode >= 400) {
+    const ctx = res.__errorContext;
+    if (ctx) {
+      return {
+        errorContext: ctx.error,
+        reqBody: ctx.reqBody && typeof ctx.reqBody === "object" ? sanitizeRecord(ctx.reqBody) : ctx.reqBody,
+        reqParams: ctx.reqParams && typeof ctx.reqParams === "object" ? sanitizeRecord(ctx.reqParams) : ctx.reqParams,
+        reqQuery: ctx.reqQuery && typeof ctx.reqQuery === "object" ? sanitizeRecord(ctx.reqQuery) : ctx.reqQuery,
+      };
+    }
+    const props: Record<string, unknown> = {};
+    const { body, params, query } = req;
+    if (body && typeof body === "object" && Object.keys(body).length > 0) {
+      props.reqBody = sanitizeRecord(body);
+    }
+    if (params && typeof params === "object" && Object.keys(params).length > 0) {
+      props.reqParams = sanitizeRecord(params);
+    }
+    if (query && typeof query === "object" && Object.keys(query).length > 0) {
+      props.reqQuery = sanitizeRecord(query);
+    }
+    if (req.route?.path) {
+      props.routePath = req.route.path;
+    }
+    return props;
+  }
+  return {};
+}
+
 export const httpLogger = pinoHttp({
   logger,
   customLogLevel(_req, res, err) {
@@ -71,33 +101,5 @@ export const httpLogger = pinoHttp({
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
     return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
   },
-  customProps(req, res) {
-    if (res.statusCode >= 400) {
-      const ctx = (res as any).__errorContext;
-      if (ctx) {
-        return {
-          errorContext: ctx.error,
-          reqBody: ctx.reqBody && typeof ctx.reqBody === "object" ? sanitizeRecord(ctx.reqBody) : ctx.reqBody,
-          reqParams: ctx.reqParams,
-          reqQuery: ctx.reqQuery,
-        };
-      }
-      const props: Record<string, unknown> = {};
-      const { body, params, query } = req as any;
-      if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = sanitizeRecord(body);
-      }
-      if (params && typeof params === "object" && Object.keys(params).length > 0) {
-        props.reqParams = params;
-      }
-      if (query && typeof query === "object" && Object.keys(query).length > 0) {
-        props.reqQuery = query;
-      }
-      if ((req as any).route?.path) {
-        props.routePath = (req as any).route.path;
-      }
-      return props;
-    }
-    return {};
-  },
+  customProps: httpLoggerCustomProps,
 });
