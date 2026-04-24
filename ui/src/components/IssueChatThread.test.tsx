@@ -318,6 +318,50 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("shows explicit follow-up badges and event copy", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "local-board",
+              body: "Please continue validation.",
+              followUpRequested: true,
+              createdAt: new Date("2026-03-11T10:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T10:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[{
+              id: "event-1",
+              actorType: "agent",
+              actorId: "agent-1",
+              createdAt: new Date("2026-03-11T10:00:00.000Z"),
+              commentId: "comment-1",
+              followUpRequested: true,
+            }]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Follow-up");
+    expect(container.textContent).toContain("requested follow-up");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows unresolved blocker context above the composer", () => {
     const root = createRoot(container);
 
@@ -353,6 +397,59 @@ describe("IssueChatThread", () => {
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
     expect(container.querySelector('[data-issue-path-id="PAP-1723"]')).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows terminal blocker context when an immediate blocker is transitively blocked", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueStatus="blocked"
+            blockedBy={[
+              {
+                id: "blocker-1",
+                identifier: "PAP-2167",
+                title: "Phase 7 review",
+                status: "blocked",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+                terminalBlockers: [
+                  {
+                    id: "terminal-1",
+                    identifier: "PAP-2201",
+                    title: "Security sign-off",
+                    status: "todo",
+                    priority: "high",
+                    assigneeAgentId: "agent-2",
+                    assigneeUserId: null,
+                  },
+                ],
+              },
+            ]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("PAP-2167");
+    expect(container.textContent).toContain("Phase 7 review");
+    expect(container.textContent).toContain("Ultimately waiting on");
+    expect(container.textContent).toContain("PAP-2201");
+    expect(container.textContent).toContain("Security sign-off");
+    expect(container.querySelector('[data-issue-path-id="PAP-2201"]')).not.toBeNull();
 
     act(() => {
       root.unmount();
@@ -1358,6 +1455,66 @@ describe("IssueChatThread", () => {
     expect(restoreComposerViewportSnapshotMock).toHaveBeenCalled();
 
     scrollByMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps a running chain-of-thought in the Working state between commands", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
+            transcriptsByRunId={new Map([
+              [
+                "run-1",
+                [
+                  {
+                    kind: "tool_call",
+                    ts: "2026-04-06T12:00:10.000Z",
+                    name: "command_execution",
+                    toolUseId: "tool-1",
+                    input: { command: "pnpm test" },
+                  },
+                  {
+                    kind: "tool_result",
+                    ts: "2026-04-06T12:00:20.000Z",
+                    toolUseId: "tool-1",
+                    toolName: "command_execution",
+                    content: "Tests passed",
+                    isError: false,
+                  },
+                ],
+              ],
+            ])}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Working");
+    expect(container.textContent).not.toContain("Worked");
+
     act(() => {
       root.unmount();
     });

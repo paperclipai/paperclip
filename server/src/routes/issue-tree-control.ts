@@ -10,6 +10,26 @@ import { validate } from "../middleware/validate.js";
 import { heartbeatService, issueService, issueTreeControlService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
+const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
+
+function errorToMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function waitForRunCancellationTasks(tasks: Promise<void>[]) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await Promise.race([
+      Promise.all(tasks),
+      new Promise((resolve) => {
+        timeout = setTimeout(resolve, TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export function issueTreeControlRoutes(db: Db) {
   const router = Router();
   const issuesSvc = issueService(db);
@@ -91,25 +111,48 @@ export function issueTreeControlRoutes(db: Db) {
       },
     });
 
+    const runCancellationTasks: Promise<void>[] = [];
     if (result.hold.mode === "pause" || result.hold.mode === "cancel") {
       const interruptedRunIds = [...new Set(result.preview.activeRuns.map((run) => run.id))];
-      for (const runId of interruptedRunIds) {
-        await heartbeat.cancelRun(runId);
-        await logActivity(db, {
-          companyId: root.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: runId,
-          details: {
-            holdId: result.hold.id,
-            rootIssueId: root.id,
-            reason: result.hold.mode === "pause" ? "active_subtree_pause_hold" : "subtree_cancel_operation",
-          },
-        });
+      for (const heartbeatRunId of interruptedRunIds) {
+        const cancellationTask = (async () => {
+          try {
+            await heartbeat.cancelRun(heartbeatRunId);
+            await logActivity(db, {
+              companyId: root.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.tree_hold_run_interrupted",
+              entityType: "heartbeat_run",
+              entityId: heartbeatRunId,
+              details: {
+                holdId: result.hold.id,
+                rootIssueId: root.id,
+                reason: result.hold.mode === "pause" ? "active_subtree_pause_hold" : "subtree_cancel_operation",
+              },
+            });
+          } catch (error) {
+            await Promise.resolve(logActivity(db, {
+              companyId: root.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.tree_hold_run_interrupt_failed",
+              entityType: "heartbeat_run",
+              entityId: heartbeatRunId,
+              details: {
+                holdId: result.hold.id,
+                rootIssueId: root.id,
+                reason: result.hold.mode === "pause" ? "active_subtree_pause_hold" : "subtree_cancel_operation",
+                error: errorToMessage(error),
+              },
+            })).catch(() => null);
+          }
+        })();
+        runCancellationTasks.push(cancellationTask);
       }
 
       const cancelledWakeups = await treeControlSvc.cancelUnclaimedWakeupsForTree(
@@ -156,6 +199,10 @@ export function issueTreeControlRoutes(db: Db) {
           cancelledIssueCount: statusUpdate.updatedIssueIds.length,
         },
       });
+    }
+
+    if (runCancellationTasks.length > 0) {
+      await waitForRunCancellationTasks(runCancellationTasks);
     }
 
     if (result.hold.mode === "restore") {

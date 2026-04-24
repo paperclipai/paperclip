@@ -23,6 +23,7 @@ import {
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -826,6 +827,7 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
     refetchInterval: 5000,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -845,12 +847,12 @@ export function Inbox() {
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true),
-    [mineIssues, issueFilters, currentUserId],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true),
-    [touchedIssues, issueFilters, currentUserId],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -1004,14 +1006,6 @@ export function Inbox() {
       ),
     [heartbeatRuns, dismissedAtByKey],
   );
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
-
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
     if (tab === "mine") {
@@ -1159,12 +1153,14 @@ export function Inbox() {
         issueFilters,
         currentUserId,
         enableRoutineVisibilityFilter: true,
+        liveIssueIds,
       }),
     [
       archivedSearchIssues,
       currentUserId,
       filteredWorkItems,
       issueFilters,
+      liveIssueIds,
       normalizedSearchQuery,
       remoteIssueSearchResults,
     ],

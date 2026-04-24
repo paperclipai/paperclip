@@ -229,7 +229,9 @@ vi.mock("../components/ScrollToBottom", () => ({
 }));
 
 vi.mock("../components/StatusIcon", () => ({
-  StatusIcon: ({ status }: { status: string }) => <span>{status}</span>,
+  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
+    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
+  ),
 }));
 
 vi.mock("../components/PriorityIcon", () => ({
@@ -814,6 +816,31 @@ describe("IssueDetail", () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
+  it("passes blocker attention to the issue detail header status icon", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "blocked",
+      blockerAttention: {
+        state: "covered",
+        reason: "active_child",
+        unresolvedBlockerCount: 1,
+        coveredBlockerCount: 1,
+        attentionBlockerCount: 0,
+        sampleBlockerIdentifier: "PAP-2",
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
+  });
+
   it("refreshes subtree pause state after resuming a hold", async () => {
     const childIssue = createIssue({
       id: "child-1",
@@ -1150,10 +1177,23 @@ describe("IssueDetail", () => {
       .find((element) =>
         typeof element.className === "string"
         && element.className.includes("overflow-y-auto")
-        && element.textContent?.includes("Reason (required)"),
+        && element.textContent?.includes("Reason (optional)"),
       );
     expect(bodyScrollRegion?.className).toContain("min-h-0");
     expect(bodyScrollRegion?.className).toContain("overscroll-contain");
+
+    const cancelApplyButton = Array.from(dialogContent!.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Cancel 24 issues") as HTMLButtonElement | undefined;
+    expect(cancelApplyButton).toBeTruthy();
+    expect(cancelApplyButton!.disabled).toBe(true);
+
+    const confirmationCheckbox = dialogContent!.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+    expect(confirmationCheckbox).toBeTruthy();
+    await act(async () => {
+      confirmationCheckbox!.click();
+    });
+    await flushReact();
+    expect(cancelApplyButton!.disabled).toBe(false);
 
     const footer = Array.from(dialogContent!.querySelectorAll("div"))
       .find((element) =>

@@ -1401,6 +1401,49 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("adds terminal blockers to immediate blocked-by summaries", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    const issueC = randomUUID();
+    const issueD = randomUUID();
+    await db.insert(issues).values([
+      { id: issueA, companyId, identifier: "PAP-1", title: "Issue A", status: "blocked", priority: "medium" },
+      { id: issueB, companyId, identifier: "PAP-2", title: "Issue B", status: "blocked", priority: "medium" },
+      { id: issueC, companyId, identifier: "PAP-3", title: "Issue C", status: "blocked", priority: "medium" },
+      { id: issueD, companyId, identifier: "PAP-4", title: "Issue D", status: "todo", priority: "high" },
+    ]);
+
+    await svc.update(issueC, { blockedByIssueIds: [issueD] });
+    await svc.update(issueB, { blockedByIssueIds: [issueC] });
+    await svc.update(issueA, { blockedByIssueIds: [issueB] });
+
+    const relations = await svc.getRelationSummaries(issueA);
+
+    expect(relations.blockedBy).toHaveLength(1);
+    expect(relations.blockedBy[0]).toMatchObject({
+      id: issueB,
+      identifier: "PAP-2",
+      title: "Issue B",
+      terminalBlockers: [
+        expect.objectContaining({
+          id: issueD,
+          identifier: "PAP-4",
+          title: "Issue D",
+          status: "todo",
+          priority: "high",
+        }),
+      ],
+    });
+  });
+
   it("rejects blocking cycles", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

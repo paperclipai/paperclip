@@ -2270,11 +2270,14 @@ export function setInviteResolutionNetworkForTest(
     : defaultInviteResolutionNetwork;
 }
 
-async function lookupInviteResolutionHostname(hostname: string) {
+async function lookupInviteResolutionHostname(
+  hostname: string,
+  network: InviteResolutionNetwork = inviteResolutionNetwork
+) {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
-      inviteResolutionNetwork.lookup(hostname),
+      network.lookup(hostname),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
           () =>
@@ -2296,7 +2299,8 @@ async function lookupInviteResolutionHostname(hostname: string) {
 }
 
 async function resolveInviteResolutionTarget(
-  url: URL
+  url: URL,
+  network: InviteResolutionNetwork = inviteResolutionNetwork
 ): Promise<ResolvedInviteResolutionTarget> {
   const hostname = hostnameForResolution(url);
   if (parseIpv4Address(hostname)) {
@@ -2328,7 +2332,7 @@ async function resolveInviteResolutionTarget(
       tlsServername: undefined,
     };
   }
-  const results = await lookupInviteResolutionHostname(hostname);
+  const results = await lookupInviteResolutionHostname(hostname, network);
   if (results.length === 0) {
     throw badRequest("url hostname did not resolve to any addresses");
   }
@@ -2354,11 +2358,12 @@ async function resolveInviteResolutionTarget(
 
 async function probeInviteResolutionTarget(
   target: ResolvedInviteResolutionTarget,
-  timeoutMs: number
+  timeoutMs: number,
+  network: InviteResolutionNetwork = inviteResolutionNetwork
 ): Promise<InviteResolutionProbe> {
   const startedAt = Date.now();
   try {
-    const response = await inviteResolutionNetwork.requestHead(target, timeoutMs);
+    const response = await network.requestHead(target, timeoutMs);
     const durationMs = Date.now() - startedAt;
     if (
       response.httpStatus !== null &&
@@ -2421,12 +2426,16 @@ export function accessRoutes(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
   }
 ) {
   const router = Router();
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
+    ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
+    : inviteResolutionNetwork;
 
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
@@ -3175,8 +3184,8 @@ export function accessRoutes(
     const timeoutMs = Number.isFinite(parsedTimeoutMs)
       ? Math.max(1000, Math.min(15000, Math.floor(parsedTimeoutMs)))
       : 5000;
-    const resolvedTarget = await resolveInviteResolutionTarget(target);
-    const probe = await probeInviteResolutionTarget(resolvedTarget, timeoutMs);
+    const resolvedTarget = await resolveInviteResolutionTarget(target, routeInviteResolutionNetwork);
+    const probe = await probeInviteResolutionTarget(resolvedTarget, timeoutMs, routeInviteResolutionNetwork);
     res.json({
       inviteId: invite.id,
       testResolutionPath: `/api/invites/${token}/test-resolution`,

@@ -110,4 +110,23 @@ describe("RunTranscriptView", () => {
     expect(html).toMatch(/<li[^>]*>posted issue update<\/li>/);
     expect(html).not.toContain("result");
   });
+
+  it("windows large raw transcripts instead of rendering every entry at once", () => {
+    const entries: TranscriptEntry[] = Array.from({ length: 500 }, (_, index) => ({
+      kind: "stdout",
+      ts: `2026-03-12T00:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      text: `line-${index}`,
+    }));
+
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView mode="raw" entries={entries} />
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain("line-0");
+    expect(html).toContain("line-179");
+    expect(html).not.toContain("line-250");
+    expect(html).not.toContain("line-499");
+  });
 });
