@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { testEnvironment } from "./index.js";
+import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
+
+function createTestContext(config: Record<string, unknown>): AdapterEnvironmentTestContext {
+  return {
+    companyId: "company-1",
+    adapterType: "hermes_gateway",
+    config,
+  };
+}
 
 describe("hermes_gateway testEnvironment", () => {
   it("fails when the Hermes API URL is missing", async () => {
-    const result = await testEnvironment({
-      adapterType: "hermes_gateway",
-      config: {},
-    });
+    const result = await testEnvironment(createTestContext({}));
 
     expect(result.status).toBe("fail");
     expect(result.checks).toEqual([
@@ -19,12 +25,9 @@ describe("hermes_gateway testEnvironment", () => {
   });
 
   it("fails when the Hermes API URL is invalid", async () => {
-    const result = await testEnvironment({
-      adapterType: "hermes_gateway",
-      config: {
-        url: "hermes-gateway.local",
-      },
-    });
+    const result = await testEnvironment(createTestContext({
+      url: "hermes-gateway.local",
+    }));
 
     expect(result.status).toBe("fail");
     expect(result.checks).toEqual([
@@ -37,12 +40,9 @@ describe("hermes_gateway testEnvironment", () => {
   });
 
   it("accepts a /v1 base URL", async () => {
-    const result = await testEnvironment({
-      adapterType: "hermes_gateway",
-      config: {
-        url: "http://hermes-gateway.local/v1",
-      },
-    });
+    const result = await testEnvironment(createTestContext({
+      url: "http://hermes-gateway.local/v1",
+    }));
 
     expect(result.status).toBe("pass");
     expect(result.checks).toEqual([
@@ -54,12 +54,9 @@ describe("hermes_gateway testEnvironment", () => {
   });
 
   it("accepts a legacy full endpoint URL for backwards compatibility", async () => {
-    const result = await testEnvironment({
-      adapterType: "hermes_gateway",
-      config: {
-        url: "https://hermes-service.example/v1/chat/completions",
-      },
-    });
+    const result = await testEnvironment(createTestContext({
+      url: "https://hermes-service.example/v1/chat/completions",
+    }));
 
     expect(result.status).toBe("pass");
     expect(result.checks).toEqual([
