@@ -18,6 +18,7 @@ import {
   issueDocuments,
   issueRelations,
   issues,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -323,6 +324,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
       try {
@@ -758,6 +760,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
+  });
+
+  it("does not block a standing rollup issue during terminal-run release when recovery also fails", async () => {
+    mockAdapterExecute.mockRejectedValueOnce(new Error("continuation recovery failed"));
+
+    const { agentId, companyId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    await db.insert(routines).values({
+      id: randomUUID(),
+      companyId,
+      parentIssueId: issueId,
+      title: "Daily standing rollup",
+      assigneeAgentId: agentId,
+      status: "active",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const finalIssue = await waitForValue(async () => {
+      const rows = await db.select().from(issues).where(eq(issues.id, issueId));
+      const issue = rows[0] ?? null;
+      return issue && issue.executionRunId === null ? issue : null;
+    });
+    expect(finalIssue?.status).toBe("in_progress");
+    expect(finalIssue?.executionRunId).toBeNull();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.filter((c) => c.body.includes("Moving it to `blocked`"))).toHaveLength(0);
+
+    const auditEntries = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(auditEntries.some((entry) => entry.action === "issue.auto_block_skipped_standing_rollup")).toBe(true);
   });
 
   it("schedules a bounded retry for codex transient upstream failures instead of blocking the issue immediately", async () => {
@@ -1216,6 +1255,91 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+  });
+
+  it("skips auto-block for standing rollup in-progress issues that parent an active routine", async () => {
+    const { agentId, companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db.insert(routines).values({
+      id: randomUUID(),
+      companyId,
+      parentIssueId: issueId,
+      title: "Daily standing rollup",
+      assigneeAgentId: agentId,
+      status: "active",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.standingRollupSkipped).toBe(1);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+
+    const auditEntries = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(auditEntries.some((entry) => entry.action === "issue.auto_block_skipped_standing_rollup")).toBe(true);
+  });
+
+  it("skips auto-block for standing rollup todo issues that parent an active routine", async () => {
+    const { agentId, companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+    });
+    await db.insert(routines).values({
+      id: randomUUID(),
+      companyId,
+      parentIssueId: issueId,
+      title: "Daily standing rollup",
+      assigneeAgentId: agentId,
+      status: "active",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.standingRollupSkipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("still blocks stranded work when the only matching routine is paused", async () => {
+    const { agentId, companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db.insert(routines).values({
+      id: randomUUID(),
+      companyId,
+      parentIssueId: issueId,
+      title: "Paused rollup",
+      assigneeAgentId: agentId,
+      status: "paused",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.standingRollupSkipped).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
   });
 
   it("re-enqueues continuation when the latest automatic continuation succeeded without closing the issue", async () => {
