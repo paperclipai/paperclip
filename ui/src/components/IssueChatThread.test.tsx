@@ -571,6 +571,73 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("shows deferred wake badge only for hold-deferred queued comments", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-hold",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              body: "Need a quick update",
+              queueState: "queued",
+              queueReason: "hold",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Deferred wake");
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-active-run",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              body: "Queue behind active run",
+              queueState: "queued",
+              queueReason: "active_run",
+              createdAt: new Date("2026-04-06T12:01:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).not.toContain("Deferred wake");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("stores and restores the composer draft per issue key", () => {
     vi.useFakeTimers();
     const root = createRoot(container);

@@ -456,6 +456,34 @@
       "when": 1776780002000,
       "tag": "0064_issue_thread_interaction_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1776903900000,
+      "tag": "0065_environments",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1776903901000,
+      "tag": "0066_issue_tree_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776904200000,
+      "tag": "0067_agent_default_environment",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776959400000,
+      "tag": "0068_environment_local_driver_unique",
+      "breakpoints": true
     }
   ]
 }

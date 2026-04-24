@@ -2,6 +2,9 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { AdapterExecutionTarget } from "./execution-target.js";
+
 export interface AdapterAgent {
   id: string;
   companyId: string;
@@ -118,6 +121,14 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Legacy remote transport view. Prefer `executionTarget`, which is the
+   * provider-neutral contract produced by core runtime code.
+   */
+  executionTransport?: {
+    remoteExecution?: Record<string, unknown> | null;
+  };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -417,6 +428,7 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

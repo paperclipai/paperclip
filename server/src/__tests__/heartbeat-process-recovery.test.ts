@@ -752,7 +752,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(blockedIssue?.executionRunId).toBeNull();
     expect(blockedIssue?.checkoutRunId).toBe(continuationRun?.id ?? null);
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.length > 0 ? rows : null;
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
   });
