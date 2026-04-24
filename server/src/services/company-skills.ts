@@ -1713,6 +1713,9 @@ export function companySkillService(db: Db) {
       adapterType: agent.adapterType,
       desired: true,
       // Runtime adapter state is intentionally omitted from this bounded metadata read.
+      // The detail view is operator-facing and must stay responsive; adapter probes are
+      // relatively expensive (filesystem scans per agent). Callers that need the live
+      // state should query `GET /api/agents/:id/skills` which is cheap for a single agent.
       actualState: null,
     }));
   }
