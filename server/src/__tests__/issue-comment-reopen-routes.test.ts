@@ -461,6 +461,143 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  // AKS-1563 AC-6: done issue assigned to agent X, agent X POSTs comment → no
+  // status flip, no reopen event, no wake. (Parent: AKS-1562 R1.)
+  it("does not reopen a done issue when the assignee agent posts their own comment", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        runId: "run-self",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "scan complete — no action" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({ reopened: true }),
+      }),
+    );
+  });
+
+  // AKS-1563 AC-6 (cancelled variant): same guard applies to cancelled issues.
+  it("does not reopen a cancelled issue when the assignee agent posts their own comment", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(makeIssue("done")); // reuse shape
+    mockIssueService.getById.mockResolvedValueOnce({ ...makeIssue("done"), status: "cancelled" });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      status: "cancelled",
+      ...patch,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        runId: "run-self",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "noted" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
+  // AKS-1563 AC-7: done issue assigned to agent X, agent Y (different) POSTs
+  // comment → flip + reopen event fires. Preserves external-caller reopen contract.
+  it("still reopens a done issue when a different agent posts the comment", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    const otherAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: otherAgentId,
+        companyId: "company-1",
+        runId: "run-other",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please take another look" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({ reopenedFrom: "done" }),
+      }),
+    );
+  });
+
+  // AKS-1563 AC-1 (PATCH variant): the guard must also block explicit
+  // reopen=true + comment by the assignee agent on their own done issue.
+  it("does not reopen via PATCH comment+reopen when the assignee agent is the actor on a done issue", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        runId: "run-self",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "log line", reopen: true });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({ reopened: true }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
   it("moves assigned blocked issues back to todo via POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
