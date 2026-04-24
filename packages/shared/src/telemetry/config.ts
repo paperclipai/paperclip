@@ -7,19 +7,9 @@ function isCI(): boolean {
 }
 
 export function resolveTelemetryConfig(fileConfig?: { enabled?: boolean }): TelemetryConfig {
-  if (process.env.PAPERCLIP_TELEMETRY_DISABLED === "1") {
-    return { enabled: false };
+  if (fileConfig?.enabled === true) {
+    const endpoint = process.env.PAPERCLIP_TELEMETRY_ENDPOINT || undefined;
+    return { enabled: true, endpoint };
   }
-  if (process.env.DO_NOT_TRACK === "1") {
-    return { enabled: false };
-  }
-  if (isCI()) {
-    return { enabled: false };
-  }
-  if (fileConfig?.enabled === false) {
-    return { enabled: false };
-  }
-
-  const endpoint = process.env.PAPERCLIP_TELEMETRY_ENDPOINT || undefined;
-  return { enabled: true, endpoint };
+  return { enabled: false };
 }

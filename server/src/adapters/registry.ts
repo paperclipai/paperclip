@@ -80,6 +80,15 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as mistralExecute,
+  testEnvironment as mistralTestEnvironment,
+  sessionCodec as mistralSessionCodec,
+} from "@paperclipai/adapter-mistral-api/server";
+import {
+  agentConfigurationDoc as mistralAgentConfigurationDoc,
+  models as mistralModels,
+} from "@paperclipai/adapter-mistral-api";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -297,6 +306,18 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+
+const mistralApiAdapter: ServerAdapterModule = {
+  type: "mistral_api",
+  execute: mistralExecute,
+  testEnvironment: mistralTestEnvironment
+  sessionCodec: mistralSessionCodec,
+  models: mistralModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: mistralAgentConfigurationDoc,
+};
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -318,6 +339,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    mistralApiAdapter,
     processAdapter,
     httpAdapter,
   ]) {
@@ -545,3 +567,5 @@ export function findActiveServerAdapter(type: string): ServerAdapterModule | nul
   }
   return adaptersByType.get(type) ?? null;
 }
+
+
