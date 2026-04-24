@@ -25,6 +25,7 @@ import {
   parseObject,
   buildPaperclipEnv,
   joinPromptSections,
+  buildLanguageInstruction,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
@@ -429,11 +430,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
   const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const languageInstruction = buildLanguageInstruction(config);
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     renderedHeartbeatPrompt,
+    languageInstruction,
   ]);
   const promptMetrics = {
     systemPromptChars: renderedSystemPromptExtension.length,

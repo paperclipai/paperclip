@@ -263,6 +263,12 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export function buildLanguageInstruction(config: Record<string, unknown>): string {
+  const language = asString(config.language, "").trim();
+  if (!language) return "";
+  return `IMPORTANT: You MUST write all your responses, comments, commit messages, and any other output in ${language}. This includes explanations, summaries, and any text you produce.`;
+}
+
 type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;

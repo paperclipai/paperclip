@@ -37,6 +37,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  buildLanguageInstruction,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -166,7 +167,7 @@ export async function ensureCursorSkillsInjected(
       `[paperclip] Removed maintainer-only Cursor skill "${skillName}" from ${skillsHome}\n`,
     );
   }
-  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
+  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined));
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
@@ -464,6 +465,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const languageInstruction = buildLanguageInstruction(config);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
@@ -471,6 +473,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionHandoffNote,
     paperclipEnvNote,
     renderedPrompt,
+    languageInstruction,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
