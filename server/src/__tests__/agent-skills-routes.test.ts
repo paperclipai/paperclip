@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -140,6 +141,33 @@ function createApp(db: Record<string, unknown> = createDb()) {
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
 function makeAgent(adapterType: string) {
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -158,11 +186,12 @@ function makeAgent(adapterType: string) {
   };
 }
 
-describe("agent skill routes", () => {
+describe.sequential("agent skill routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.update.mockReset();
@@ -199,6 +228,12 @@ describe("agent skill routes", () => {
     mockAdapter.syncSkills.mockReset();
     mockRoleRequiresQaCoverage.mockReturnValue(false);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockNormalizeRuntimeConfigForCooHeartbeatModel.mockImplementation(
+      ({ runtimeConfig }: { runtimeConfig?: Record<string, unknown> }) => runtimeConfig ?? {},
+    );
+    mockResolveRoleForCooCoordinatorModel.mockImplementation(
+      ({ role }: { role?: string }) => role ?? "general",
+    );
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: makeAgent("claude_local"),
@@ -282,11 +317,12 @@ describe("agent skill routes", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
   });
 
-  it("skips runtime materialization when listing Claude skills", async () => {
+  it.sequential("skips runtime materialization when listing Claude skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
 
-    const res = await request(createApp())
-      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
@@ -302,7 +338,7 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("skips runtime materialization when listing Codex skills", async () => {
+  it.sequential("skips runtime materialization when listing Codex skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("codex_local"));
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "codex_local",
@@ -313,8 +349,9 @@ describe("agent skill routes", () => {
       warnings: [],
     });
 
-    const res = await request(createApp())
-      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
@@ -322,7 +359,7 @@ describe("agent skill routes", () => {
     });
   });
 
-  it("keeps runtime materialization for persistent skill adapters", async () => {
+  it.sequential("keeps runtime materialization for persistent skill adapters", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("cursor"));
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "cursor",
@@ -333,8 +370,9 @@ describe("agent skill routes", () => {
       warnings: [],
     });
 
-    const res = await request(createApp())
-      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
@@ -342,12 +380,14 @@ describe("agent skill routes", () => {
     });
   });
 
-  it("skips runtime materialization when syncing Claude skills", async () => {
+  it.sequential("skips runtime materialization when syncing Claude skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
 
-    const res = await request(createApp())
-      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] });
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+        .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
@@ -356,12 +396,14 @@ describe("agent skill routes", () => {
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
   });
 
-  it("canonicalizes desired skill references before syncing", async () => {
+  it.sequential("canonicalizes desired skill references before syncing", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
 
-    const res = await request(createApp())
-      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclip"] });
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+        .send({ desiredSkills: ["paperclip"] }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -377,16 +419,16 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("persists canonical desired skills when creating an agent directly", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
+  it.sequential("persists canonical desired skills when creating an agent directly", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agents").send({
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
         desiredSkills: ["paperclip"],
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", ["paperclip"]);
@@ -405,15 +447,15 @@ describe("agent skill routes", () => {
     });
   });
 
-  it("normalizes the legacy operations role to coo when creating an agent directly", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
+  it.sequential("normalizes the legacy operations role to coo when creating an agent directly", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agents").send({
         name: "Operations Agent",
         role: "operations",
         adapterType: "claude_local",
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create).toHaveBeenCalledWith(
@@ -433,17 +475,17 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("materializes a managed AGENTS.md for directly created local agents", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
+  it.sequential("materializes a managed AGENTS.md for directly created local agents", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agents").send({
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
         adapterConfig: {
           promptTemplate: "You are QA.",
         },
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
@@ -471,15 +513,15 @@ describe("agent skill routes", () => {
     });
   });
 
-  it("materializes the bundled CEO instruction set for default CEO agents", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
+  it.sequential("materializes the bundled CEO instruction set for default CEO agents", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agents").send({
         name: "CEO",
         role: "ceo",
         adapterType: "claude_local",
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
@@ -498,15 +540,15 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("materializes the bundled engineer instruction set for default engineer agents with no prompt template", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
+  it.sequential("materializes the bundled engineer instruction set for default engineer agents with no prompt template", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agents").send({
         name: "Engineer",
         role: "engineer",
         adapterType: "claude_local",
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
@@ -522,18 +564,18 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("includes canonical desired skills in hire approvals", async () => {
+  it.sequential("includes canonical desired skills in hire approvals", async () => {
     const db = createDb(true);
 
-    const res = await request(createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
+    const res = await requestWithApp(createApp(db), (agent) =>
+      agent.post("/api/companies/company-1/agent-hires").send({
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
         desiredSkills: ["paperclip"],
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", ["paperclip"]);
@@ -550,17 +592,17 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("uses managed AGENTS config in hire approval payloads", async () => {
-    const res = await request(createApp(createDb(true)))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
+  it.sequential("uses managed AGENTS config in hire approval payloads", async () => {
+    const res = await requestWithApp(createApp(createDb(true)), (agent) =>
+      agent.post("/api/companies/company-1/agent-hires").send({
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
         adapterConfig: {
           promptTemplate: "You are QA.",
         },
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
@@ -581,15 +623,15 @@ describe("agent skill routes", () => {
     expect(approvalInput?.payload?.adapterConfig?.promptTemplate).toBeUndefined();
   });
 
-  it("normalizes the legacy operations role to coo in hire approval payloads", async () => {
-    const res = await request(createApp(createDb(true)))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
+  it.sequential("normalizes the legacy operations role to coo in hire approval payloads", async () => {
+    const res = await requestWithApp(createApp(createDb(true)), (agent) =>
+      agent.post("/api/companies/company-1/agent-hires").send({
         name: "Operations Agent",
         role: "operations",
         adapterType: "claude_local",
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
@@ -602,7 +644,7 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("rejects creating a second singleton executive role", async () => {
+  it.sequential("rejects creating a second singleton executive role", async () => {
     mockAgentService.list.mockResolvedValue([
       {
         ...makeAgent("claude_local"),
@@ -612,20 +654,24 @@ describe("agent skill routes", () => {
       },
     ]);
 
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agents").send({
         name: "Second CMO",
         role: "cmo",
         adapterType: "claude_local",
         adapterConfig: {},
-      });
+      }),
+    );
 
-    expect(res.status).toBe(409);
+    expect(res.status, JSON.stringify({
+      body: res.body,
+      listCalls: mockAgentService.list.mock.calls,
+      updateCalls: mockAgentService.update.mock.calls,
+    })).toBe(409);
     expect(String(res.body?.error ?? "")).toContain("Only one CMO");
   });
 
-  it("rejects hiring a second singleton executive role", async () => {
+  it.sequential("rejects hiring a second singleton executive role", async () => {
     mockAgentService.list.mockResolvedValue([
       {
         ...makeAgent("claude_local"),
@@ -635,20 +681,20 @@ describe("agent skill routes", () => {
       },
     ]);
 
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agent-hires")
-      .send({
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/companies/company-1/agent-hires").send({
         name: "Second CMO",
         role: "cmo",
         adapterType: "claude_local",
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status).toBe(409);
     expect(String(res.body?.error ?? "")).toContain("Only one CMO");
   });
 
-  it("rejects patching an agent into an already-occupied singleton executive role", async () => {
+  it.sequential("rejects patching an agent into an already-occupied singleton executive role", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent("claude_local"),
       id: "agent-1",
@@ -671,11 +717,11 @@ describe("agent skill routes", () => {
       },
     ]);
 
-    const res = await request(createApp())
-      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
-      .send({
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.patch("/api/agents/11111111-1111-4111-8111-111111111111").send({
         role: "cmo",
-      });
+      }),
+    );
 
     expect(res.status).toBe(409);
     expect(String(res.body?.error ?? "")).toContain("Only one CMO");

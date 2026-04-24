@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -63,7 +64,34 @@ function createApp(actor: any) {
   return app;
 }
 
-describe("cli auth routes", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+describe.sequential("cli auth routes", () => {
   beforeAll(async () => {
     ({ accessRoutes } = await import("../routes/access.js"));
     ({ errorHandler } = await import("../middleware/index.js"));
@@ -79,7 +107,7 @@ describe("cli auth routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("creates a CLI auth challenge with approval metadata", async () => {
+  it.sequential("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {
         id: "challenge-1",
@@ -89,14 +117,15 @@ describe("cli auth routes", () => {
       pendingBoardToken: "pcp_board_token",
     });
 
-    const app = createApp({ type: "none", source: "none" });
-    const res = await request(app)
-      .post("/api/cli-auth/challenges")
-      .send({
-        command: "paperclipai company import",
-        clientName: "paperclipai cli",
-        requestedAccess: "board",
-      });
+    const res = await requestWithApp(createApp({ type: "none", source: "none" }), (agent) =>
+      agent
+        .post("/api/cli-auth/challenges")
+        .send({
+          command: "paperclipai company import",
+          clientName: "paperclipai cli",
+          requestedAccess: "board",
+        })
+    );
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -110,7 +139,7 @@ describe("cli auth routes", () => {
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
   }, 30_000);
 
-  it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
+  it.sequential("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
       id: "challenge-1",
       status: "pending",
@@ -125,15 +154,16 @@ describe("cli auth routes", () => {
       approvedByUser: null,
     });
 
-    const app = createApp({ type: "none", source: "none" });
-    const res = await request(app).get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret");
+    const res = await requestWithApp(createApp({ type: "none", source: "none" }), (agent) =>
+      agent.get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret")
+    );
 
     expect(res.status).toBe(200);
     expect(res.body.requiresSignIn).toBe(true);
     expect(res.body.canApprove).toBe(false);
   }, 15_000);
 
-  it("approves a CLI auth challenge for a signed-in board user", async () => {
+  it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -151,16 +181,17 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-1"]);
 
-    const app = createApp({
+    const res = await requestWithApp(createApp({
       type: "board",
       userId: "user-1",
       source: "session",
       isInstanceAdmin: false,
       companyIds: ["company-1"],
-    });
-    const res = await request(app)
-      .post("/api/cli-auth/challenges/challenge-1/approve")
-      .send({ token: "pcp_cli_auth_secret" });
+    }), (agent) =>
+      agent
+        .post("/api/cli-auth/challenges/challenge-1/approve")
+        .send({ token: "pcp_cli_auth_secret" })
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -180,7 +211,7 @@ describe("cli auth routes", () => {
     );
   });
 
-  it("logs approve activity for instance admins without company memberships", async () => {
+  it.sequential("logs approve activity for instance admins without company memberships", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -193,16 +224,17 @@ describe("cli auth routes", () => {
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-a", "company-b"]);
 
-    const app = createApp({
+    const res = await requestWithApp(createApp({
       type: "board",
       userId: "admin-1",
       source: "session",
       isInstanceAdmin: true,
       companyIds: [],
-    });
-    const res = await request(app)
-      .post("/api/cli-auth/challenges/challenge-2/approve")
-      .send({ token: "pcp_cli_auth_secret" });
+    }), (agent) =>
+      agent
+        .post("/api/cli-auth/challenges/challenge-2/approve")
+        .send({ token: "pcp_cli_auth_secret" })
+    );
 
     expect(res.status).toBe(200);
     expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
@@ -213,22 +245,21 @@ describe("cli auth routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("logs revoke activity with resolved audit company ids", async () => {
+  it.sequential("logs revoke activity with resolved audit company ids", async () => {
     mockBoardAuthService.assertCurrentBoardKey.mockResolvedValue({
       id: "board-key-3",
       userId: "admin-2",
     });
     mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-z"]);
 
-    const app = createApp({
+    const res = await requestWithApp(createApp({
       type: "board",
       userId: "admin-2",
       keyId: "board-key-3",
       source: "board_key",
       isInstanceAdmin: true,
       companyIds: [],
-    });
-    const res = await request(app).post("/api/cli-auth/revoke-current").send({});
+    }), (agent) => agent.post("/api/cli-auth/revoke-current").send({}));
 
     expect(res.status).toBe(200);
     expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({

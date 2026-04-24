@@ -57,6 +57,7 @@ Read tools:
 Write tools:
 
 - `paperclipCreateIssue`
+- `paperclipActOnIssue`
 - `paperclipUpdateIssue`
 - `paperclipCheckoutIssue`
 - `paperclipReleaseIssue`
@@ -75,3 +76,17 @@ Escape hatch:
 
 `paperclipApiRequest` is limited to paths under `/api` and JSON bodies. It is
 meant for endpoints that do not yet have a dedicated MCP tool.
+
+## Workflow Guidance
+
+Prefer `paperclipActOnIssue` for workflow-control intent:
+
+- `enter_review`
+- `submit_qa_verdict`
+- `complete_issue`
+- `reopen_issue`
+- `handoff_issue`
+- `append_note`
+
+Use `paperclipUpdateIssue` for ordinary metadata or compound patches that are
+not yet modeled as typed actions, such as assignee/property updates.

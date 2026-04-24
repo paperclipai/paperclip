@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assetRoutes } from "../routes/assets.js";
@@ -80,6 +81,33 @@ function createApp(storage: ReturnType<typeof createStorageService>) {
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
 describe("POST /api/companies/:companyId/assets/images", () => {
   afterEach(() => {
     createAssetMock.mockReset();
@@ -89,14 +117,15 @@ describe("POST /api/companies/:companyId/assets/images", () => {
 
   it("accepts PNG image uploads and returns an asset path", async () => {
     const png = createStorageService("image/png");
-    const app = createApp(png);
 
     createAssetMock.mockResolvedValue(createAsset());
 
-    const res = await request(app)
-      .post("/api/companies/company-1/assets/images")
-      .field("namespace", "goals")
-      .attach("file", Buffer.from("png"), "logo.png");
+    const res = await requestWithApp(createApp(png), (agent) =>
+      agent
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", "goals")
+        .attach("file", Buffer.from("png"), "logo.png")
+    );
 
     expect(res.status).toBe(201);
     expect(res.body.contentPath).toBe("/api/assets/asset-1/content");
@@ -112,7 +141,6 @@ describe("POST /api/companies/:companyId/assets/images", () => {
 
   it("allows supported non-image attachments outside the company logo flow", async () => {
     const text = createStorageService("text/plain");
-    const app = createApp(text);
 
     createAssetMock.mockResolvedValue({
       ...createAsset(),
@@ -120,10 +148,12 @@ describe("POST /api/companies/:companyId/assets/images", () => {
       originalFilename: "note.txt",
     });
 
-    const res = await request(app)
-      .post("/api/companies/company-1/assets/images")
-      .field("namespace", "issues/drafts")
-      .attach("file", Buffer.from("hello"), { filename: "note.txt", contentType: "text/plain" });
+    const res = await requestWithApp(createApp(text), (agent) =>
+      agent
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", "issues/drafts")
+        .attach("file", Buffer.from("hello"), { filename: "note.txt", contentType: "text/plain" })
+    );
 
     expect(res.status).toBe(201);
     expect(text.putFile).toHaveBeenCalledWith({
@@ -145,13 +175,14 @@ describe("POST /api/companies/:companyId/logo", () => {
 
   it("accepts PNG logo uploads and returns an asset path", async () => {
     const png = createStorageService("image/png");
-    const app = createApp(png);
 
     createAssetMock.mockResolvedValue(createAsset());
 
-    const res = await request(app)
-      .post("/api/companies/company-1/logo")
-      .attach("file", Buffer.from("png"), "logo.png");
+    const res = await requestWithApp(createApp(png), (agent) =>
+      agent
+        .post("/api/companies/company-1/logo")
+        .attach("file", Buffer.from("png"), "logo.png")
+    );
 
     expect(res.status).toBe(201);
     expect(res.body.contentPath).toBe("/api/assets/asset-1/content");
@@ -167,7 +198,6 @@ describe("POST /api/companies/:companyId/logo", () => {
 
   it("sanitizes SVG logo uploads before storing them", async () => {
     const svg = createStorageService("image/svg+xml");
-    const app = createApp(svg);
 
     createAssetMock.mockResolvedValue({
       ...createAsset(),
@@ -175,15 +205,17 @@ describe("POST /api/companies/:companyId/logo", () => {
       originalFilename: "logo.svg",
     });
 
-    const res = await request(app)
-      .post("/api/companies/company-1/logo")
-      .attach(
+    const res = await requestWithApp(createApp(svg), (agent) =>
+      agent
+        .post("/api/companies/company-1/logo")
+        .attach(
         "file",
         Buffer.from(
           "<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'><script>alert(1)</script><a href='https://evil.example/'><circle cx='12' cy='12' r='10'/></a></svg>",
         ),
         "logo.svg",
-      );
+        )
+    );
 
     expect(res.status).toBe(201);
     expect(svg.putFile).toHaveBeenCalledTimes(1);
@@ -200,37 +232,40 @@ describe("POST /api/companies/:companyId/logo", () => {
 
   it("allows logo uploads within the general attachment limit", async () => {
     const png = createStorageService("image/png");
-    const app = createApp(png);
     createAssetMock.mockResolvedValue(createAsset());
 
     const file = Buffer.alloc(150 * 1024, "a");
-    const res = await request(app)
-      .post("/api/companies/company-1/logo")
-      .attach("file", file, "within-limit.png");
+    const res = await requestWithApp(createApp(png), (agent) =>
+      agent
+        .post("/api/companies/company-1/logo")
+        .attach("file", file, "within-limit.png")
+    );
 
     expect(res.status).toBe(201);
   });
 
   it("rejects logo files larger than the general attachment limit", async () => {
-    const app = createApp(createStorageService());
     createAssetMock.mockResolvedValue(createAsset());
 
     const file = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, "a");
-    const res = await request(app)
-      .post("/api/companies/company-1/logo")
-      .attach("file", file, "too-large.png");
+    const res = await requestWithApp(createApp(createStorageService()), (agent) =>
+      agent
+        .post("/api/companies/company-1/logo")
+        .attach("file", file, "too-large.png")
+    );
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe(`Image exceeds ${MAX_ATTACHMENT_BYTES} bytes`);
   });
 
   it("rejects unsupported image types", async () => {
-    const app = createApp(createStorageService("text/plain"));
     createAssetMock.mockResolvedValue(createAsset());
 
-    const res = await request(app)
-      .post("/api/companies/company-1/logo")
-      .attach("file", Buffer.from("not an image"), "note.txt");
+    const res = await requestWithApp(createApp(createStorageService("text/plain")), (agent) =>
+      agent
+        .post("/api/companies/company-1/logo")
+        .attach("file", Buffer.from("not an image"), "note.txt")
+    );
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("Unsupported image type: text/plain");
@@ -238,12 +273,13 @@ describe("POST /api/companies/:companyId/logo", () => {
   });
 
   it("rejects SVG image uploads that cannot be sanitized", async () => {
-    const app = createApp(createStorageService("image/svg+xml"));
     createAssetMock.mockResolvedValue(createAsset());
 
-    const res = await request(app)
-      .post("/api/companies/company-1/logo")
-      .attach("file", Buffer.from("not actually svg"), "logo.svg");
+    const res = await requestWithApp(createApp(createStorageService("image/svg+xml")), (agent) =>
+      agent
+        .post("/api/companies/company-1/logo")
+        .attach("file", Buffer.from("not actually svg"), "logo.svg")
+    );
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("SVG could not be sanitized");

@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issueRoutes } from "../routes/issues.js";
@@ -123,6 +124,33 @@ function createApp(
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function sendIssueRouteRequest(
+  app: express.Express,
+  action: (agent: request.SuperTest<request.Test>) => Promise<request.Response>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await action(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
 function makeIssue(status: "todo" | "done" | "cancelled") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -136,7 +164,7 @@ function makeIssue(status: "todo" | "done" | "cancelled") {
   };
 }
 
-describe("issue comment reopen routes", () => {
+describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -180,16 +208,18 @@ describe("issue comment reopen routes", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
 
-  it("treats reopen=true as a no-op when the issue is already open", async () => {
+  it.sequential("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("todo"),
       ...patch,
     }));
 
-    const res = await request(createApp())
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+    const res = await sendIssueRouteRequest(createApp(), (agent) =>
+      agent
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update.mock.calls[0]?.[0]).toBe("11111111-1111-4111-8111-111111111111");
@@ -209,16 +239,18 @@ describe("issue comment reopen routes", () => {
     );
   });
 
-  it("reopens closed issues via the PATCH comment path", async () => {
+  it.sequential("reopens closed issues via the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
       ...patch,
     }));
 
-    const res = await request(createApp())
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+    const res = await sendIssueRouteRequest(createApp(), (agent) =>
+      agent
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -243,7 +275,7 @@ describe("issue comment reopen routes", () => {
     );
   });
 
-  it("rejects agent PATCH comments on closed issues unless reopening", async () => {
+  it.sequential("rejects agent PATCH comments on closed issues unless reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     const app = createApp({
       type: "agent",
@@ -253,9 +285,11 @@ describe("issue comment reopen routes", () => {
       runId: "run-1",
     });
 
-    const res = await request(app)
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "still working" });
+    const res = await sendIssueRouteRequest(app, (agent) =>
+      agent
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ comment: "still working" }),
+    );
 
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ error: "Issue is closed. Reopen it before posting agent updates." });
@@ -263,7 +297,7 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("rejects agent POST comments on closed issues unless reopening", async () => {
+  it.sequential("rejects agent POST comments on closed issues unless reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     const app = createApp({
       type: "agent",
@@ -273,9 +307,11 @@ describe("issue comment reopen routes", () => {
       runId: "run-1",
     });
 
-    const res = await request(app)
-      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "still working" });
+    const res = await sendIssueRouteRequest(app, (agent) =>
+      agent
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "still working" }),
+    );
 
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ error: "Issue is closed. Reopen it before posting agent updates." });
@@ -283,7 +319,7 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("does not wake assignees when reassignment keeps the issue cancelled", async () => {
+  it.sequential("does not wake assignees when reassignment keeps the issue cancelled", async () => {
     const issue = makeIssue("cancelled");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockResolvedValue({
@@ -291,16 +327,18 @@ describe("issue comment reopen routes", () => {
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
     });
 
-    const res = await request(createApp())
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+    const res = await sendIssueRouteRequest(createApp(), (agent) =>
+      agent
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ assigneeAgentId: "33333333-3333-4333-8333-333333333333" }),
+    );
 
     expect(res.status).toBe(200);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("interrupts an active run before a combined comment update", async () => {
+  it.sequential("interrupts an active run before a combined comment update", async () => {
     const issue = {
       ...makeIssue("todo"),
       executionRunId: "run-1",
@@ -323,9 +361,11 @@ describe("issue comment reopen routes", () => {
       status: "cancelled",
     });
 
-    const res = await request(createApp())
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", interrupt: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+    const res = await sendIssueRouteRequest(createApp(), (agent) =>
+      agent
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ comment: "hello", interrupt: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" }),
+    );
 
     expect(res.status).toBe(200);
     expect(
@@ -347,7 +387,7 @@ describe("issue comment reopen routes", () => {
     );
   });
 
-  it("rewrites recovery-source completion comments from successor-scoped runs to make the relationship explicit", async () => {
+  it.sequential("rewrites recovery-source completion comments from successor-scoped runs to make the relationship explicit", async () => {
     const sourceIssue = {
       ...makeIssue("blocked" as any),
       id: "11111111-1111-4111-8111-111111111111",
@@ -393,11 +433,13 @@ describe("issue comment reopen routes", () => {
       runId: "run-qa-1",
     });
 
-    const res = await request(app)
-      .post(`/api/issues/${sourceIssue.id}/comments`)
-      .send({
-        body: "QA Runner completed 33333333-3333-4333-8333-333333333333. COMA-1120 closed as done.",
-      });
+    const res = await sendIssueRouteRequest(app, (agent) =>
+      agent
+        .post(`/api/issues/${sourceIssue.id}/comments`)
+        .send({
+          body: "QA Runner completed 33333333-3333-4333-8333-333333333333. COMA-1120 closed as done.",
+        }),
+    );
 
     expect(res.status).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
@@ -414,7 +456,7 @@ describe("issue comment reopen routes", () => {
     expect(persistedBody).toContain("COMA-1120 closed as done.");
   });
 
-  it("rewrites recovery-source completion comments on issue patch mutations too", async () => {
+  it.sequential("rewrites recovery-source completion comments on issue patch mutations too", async () => {
     const sourceIssue = {
       ...makeIssue("todo"),
       id: "11111111-1111-4111-8111-111111111111",
@@ -461,11 +503,13 @@ describe("issue comment reopen routes", () => {
       runId: "run-qa-1",
     });
 
-    const res = await request(app)
-      .patch(`/api/issues/${sourceIssue.id}`)
-      .send({
-        comment: "QA Runner completed 33333333-3333-4333-8333-333333333333. COMA-1120 closed as done.",
-      });
+    const res = await sendIssueRouteRequest(app, (agent) =>
+      agent
+        .patch(`/api/issues/${sourceIssue.id}`)
+        .send({
+          comment: "QA Runner completed 33333333-3333-4333-8333-333333333333. COMA-1120 closed as done.",
+        }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
@@ -482,7 +526,7 @@ describe("issue comment reopen routes", () => {
     expect(persistedBody).toContain("COMA-1120 closed as done.");
   });
 
-  it("writes decision ids into executionState when completing an approval stage", async () => {
+  it.sequential("writes decision ids into executionState when completing an approval stage", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
         {
@@ -548,9 +592,11 @@ describe("issue comment reopen routes", () => {
       },
     ]);
 
-    const res = await request(createApp())
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done", comment: "Approved for ship" });
+    const res = await sendIssueRouteRequest(createApp(), (agent) =>
+      agent
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ status: "done", comment: "Approved for ship" }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(

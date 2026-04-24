@@ -52,6 +52,67 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("posts typed issue workflow actions to the action endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ type: "complete_issue", issue: { id: "PAP-1135" }, comment: null }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipActOnIssue");
+    await tool.execute({
+      issueId: "PAP-1135",
+      type: "complete_issue",
+      payload: {
+        body: "QA passed",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/actions");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer token-123");
+    expect((init.headers as Record<string, string>)["X-PrivateClip-Run-Id"]).toBe(
+      "33333333-3333-3333-3333-333333333333",
+    );
+    expect(JSON.parse(String(init.body))).toEqual({
+      type: "complete_issue",
+      payload: {
+        body: "QA passed",
+      },
+    });
+  });
+
+  it("accepts typed handoff_issue actions with structured payloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ type: "handoff_issue", issue: { id: "PAP-1135" }, comment: { id: "comment-1" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipActOnIssue");
+    await tool.execute({
+      issueId: "PAP-1135",
+      type: "handoff_issue",
+      payload: {
+        assigneeAgentId: "44444444-4444-4444-4444-444444444444",
+        reopen: true,
+        body: "[HANDOFF] Taking the follow-up implementation.",
+      },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/actions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      type: "handoff_issue",
+      payload: {
+        assigneeAgentId: "44444444-4444-4444-4444-444444444444",
+        reopen: true,
+        body: "[HANDOFF] Taking the follow-up implementation.",
+      },
+    });
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),

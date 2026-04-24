@@ -92,7 +92,7 @@ function createApp() {
   return app;
 }
 
-describe("company shell state routes", () => {
+describe.sequential("company shell state routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.countUnreadTouchedByUser.mockResolvedValue(2);
@@ -132,7 +132,7 @@ describe("company shell state routes", () => {
     });
   });
 
-  it("returns rail state for visible non-archived companies", async () => {
+  it.sequential("returns rail state for visible non-archived companies", async () => {
     const res = await request(createApp()).get("/api/companies/rail-state");
 
     expect(res.status).toBe(200);
@@ -146,7 +146,7 @@ describe("company shell state routes", () => {
     ]);
   });
 
-  it("returns inbox summary for a company", async () => {
+  it.sequential("returns inbox summary for a company", async () => {
     const res = await request(createApp()).get("/api/companies/company-1/inbox-summary");
 
     expect(res.status).toBe(200);
@@ -164,7 +164,7 @@ describe("company shell state routes", () => {
     });
   });
 
-  it("returns run activity buckets with a bounded days query", async () => {
+  it.sequential("returns run activity buckets with a bounded days query", async () => {
     const res = await request(createApp()).get("/api/companies/company-1/run-activity?days=14");
 
     expect(res.status).toBe(200);

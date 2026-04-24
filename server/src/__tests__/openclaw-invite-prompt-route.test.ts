@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -124,18 +125,45 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
   return app;
 }
 
-describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(async () => {
-    vi.resetAllMocks();
     vi.resetModules();
     ({ accessRoutes: accessRoutesFactory } = await import("../routes/access.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    mockAccessService.canUser.mockReset();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
   }, 30_000);
 
-  it("rejects non-CEO agent callers", async () => {
+  it.sequential("rejects non-CEO agent callers", async () => {
     const db = createDbStub();
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
@@ -152,15 +180,15 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({});
+    const res = await requestWithApp(app, (agent) =>
+      agent.post("/api/companies/company-1/openclaw/invite-prompt").send({}),
+    );
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");
   });
 
-  it("allows CEO agent callers and creates an agent-only invite", async () => {
+  it.sequential("allows CEO agent callers and creates an agent-only invite", async () => {
     const db = createDbStub();
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
@@ -177,9 +205,11 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({ agentMessage: "Join and configure OpenClaw gateway." });
+    const res = await requestWithApp(app, (agent) =>
+      agent
+        .post("/api/companies/company-1/openclaw/invite-prompt")
+        .send({ agentMessage: "Join and configure OpenClaw gateway." }),
+    );
 
     expect([200, 201]).toContain(res.status);
     expect(res.body.allowedJoinTypes).toBe("agent");
@@ -188,7 +218,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
   });
 
-  it("includes companyName in invite summary responses", async () => {
+  it.sequential("includes companyName in invite summary responses", async () => {
     const db = createDbStub();
     const app = createApp(
       {
@@ -201,14 +231,14 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app).get("/api/invites/pcp_invite_test");
+    const res = await requestWithApp(app, (agent) => agent.get("/api/invites/pcp_invite_test"));
 
     expect(res.status).toBe(200);
     expect(res.body.companyId).toBe("company-1");
     expect(res.body.companyName).toBe("Acme AI");
   });
 
-  it("allows board callers with invite permission", async () => {
+  it.sequential("allows board callers with invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(true);
     const app = createApp(
@@ -222,15 +252,15 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({});
+    const res = await requestWithApp(app, (agent) =>
+      agent.post("/api/companies/company-1/openclaw/invite-prompt").send({}),
+    );
 
     expect(res.status).toBe(201);
     expect(res.body.allowedJoinTypes).toBe("agent");
   });
 
-  it("rejects board callers without invite permission", async () => {
+  it.sequential("rejects board callers without invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(false);
     const app = createApp(
@@ -244,9 +274,9 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({});
+    const res = await requestWithApp(app, (agent) =>
+      agent.post("/api/companies/company-1/openclaw/invite-prompt").send({}),
+    );
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Permission denied");

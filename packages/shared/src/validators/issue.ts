@@ -8,6 +8,7 @@ import {
   ISSUE_RECOVERY_DISPOSITIONS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
+  ISSUE_WORK_INTENTS,
   ISSUE_WORKFLOW_LANE_ROLES,
   ISSUE_WORKFLOW_TEMPLATE_KEYS,
 } from "../constants.js";
@@ -168,6 +169,7 @@ const createIssueCoreSchema = z.object({
   priority: issuePrioritySchema.optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
+  workIntent: z.enum(ISSUE_WORK_INTENTS).optional().nullable(),
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),

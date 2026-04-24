@@ -40,17 +40,17 @@ export function normalizeRoadmapPathInput(value: string): string | null {
 function describeReleaseGateQaSource(source: string | null | undefined) {
   switch (source) {
     case "configured":
-      return { label: "Configured owner", variant: "secondary" as const };
+      return { label: "Configured preference", variant: "secondary" as const };
     case "canonical":
-      return { label: "Canonical owner", variant: "outline" as const };
+      return { label: "Canonical preference", variant: "outline" as const };
     case "single_fallback":
       return { label: "Single QA fallback", variant: "outline" as const };
     case "configured_unavailable":
-      return { label: "Configured owner unavailable", variant: "destructive" as const };
+      return { label: "Configured preference unavailable", variant: "destructive" as const };
     case "ambiguous":
-      return { label: "Needs explicit owner", variant: "destructive" as const };
+      return { label: "Pool only", variant: "outline" as const };
     case "none":
-      return { label: "No eligible QA owner", variant: "destructive" as const };
+      return { label: "No healthy QA reviewers", variant: "destructive" as const };
     default:
       return { label: "Resolution pending", variant: "outline" as const };
   }
@@ -619,24 +619,28 @@ export function CompanySettings() {
             <Badge variant={qaResolution.variant}>{qaResolution.label}</Badge>
             {resolvedQaAgent ? (
               <span className="text-sm text-foreground" data-testid="company-settings-release-gate-qa-resolved-agent">
-                Effective owner: {resolvedQaAgent.name}
+                Preferred reviewer hint: {resolvedQaAgent.name}
               </span>
             ) : selectedCompany.resolvedReleaseGateQaAgentId ? (
               <span className="text-sm text-foreground" data-testid="company-settings-release-gate-qa-resolved-agent">
-                Effective owner: {selectedCompany.resolvedReleaseGateQaAgentId}
+                Preferred reviewer hint: {selectedCompany.resolvedReleaseGateQaAgentId}
+              </span>
+            ) : selectedCompany.releaseGateQaResolutionSource === "ambiguous" ? (
+              <span className="text-sm text-muted-foreground" data-testid="company-settings-release-gate-qa-no-owner">
+                Pooled QA routing will use load-aware selection until a preferred reviewer is configured.
               </span>
             ) : (
               <span className="text-sm text-muted-foreground" data-testid="company-settings-release-gate-qa-no-owner">
-                No release-gate QA owner resolves right now.
+                No preferred release-gate QA reviewer resolves right now.
               </span>
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            Pick the QA agent who owns release-gate verdicts for delivery and workflow QA. Leave this on auto to use canonical-name detection or a single eligible QA fallback.
+            Pick the QA agent to use as a preferred reviewer hint for pooled QA routing. Leave this on auto to prefer the canonical-name reviewer when load is tied.
           </p>
           <Field
-            label="Release-gate QA owner"
-            hint="Controls who can receive release-gate QA routing and whose latest QA verdict can close workflow QA."
+            label="Preferred QA reviewer"
+            hint="Used as a tiebreaker for pooled QA routing. Other eligible QA reviewers can still be selected when they have less load."
           >
             <select
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -659,14 +663,14 @@ export function CompanySettings() {
           </Field>
           {configuredQaAgent ? (
             <p className="text-xs text-muted-foreground" data-testid="company-settings-release-gate-qa-configured-agent">
-              Configured owner: {configuredQaAgent.name}
+              Configured preferred reviewer: {configuredQaAgent.name}
             </p>
           ) : selectedCompany.releaseGateQaAgentId ? (
             <p className="text-xs text-muted-foreground" data-testid="company-settings-release-gate-qa-configured-agent">
-              Configured owner: {selectedCompany.releaseGateQaAgentId}
+              Configured preferred reviewer: {selectedCompany.releaseGateQaAgentId}
             </p>
           ) : null}
-          {selectedCompany.releaseGateQaBlockingReason ? (
+          {selectedCompany.releaseGateQaBlockingReason && selectedCompany.releaseGateQaResolutionSource !== "ambiguous" ? (
             <p
               className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
               data-testid="company-settings-release-gate-qa-blocking-reason"
@@ -687,7 +691,7 @@ export function CompanySettings() {
                 disabled={releaseGateQaMutation.isPending}
                 data-testid="company-settings-release-gate-qa-save"
               >
-                {releaseGateQaMutation.isPending ? "Saving..." : "Save release QA owner"}
+                {releaseGateQaMutation.isPending ? "Saving..." : "Save QA preference"}
               </Button>
               {releaseGateQaMutation.isError ? (
                 <span className="text-xs text-destructive">

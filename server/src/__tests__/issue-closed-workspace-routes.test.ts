@@ -1,8 +1,7 @@
 import express from "express";
-import request from "supertest";
+import { createServer } from "node:http";
+import supertest from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const closedWorkspaceId = "33333333-3333-4333-8333-333333333333";
@@ -42,6 +41,9 @@ const mockProjectService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+
+let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -101,9 +103,19 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
-  app.use(errorHandler);
+  app.use("/api", issueRoutesFactory({} as any, {} as any));
+  app.use(errorHandlerMiddleware);
   return app;
+}
+
+function request(app: express.Express) {
+  return supertest(createServer(app));
+}
+
+function resetMockObject(mockObject: Record<string, { mockReset: () => unknown }>) {
+  for (const value of Object.values(mockObject)) {
+    value.mockReset();
+  }
 }
 
 function makeIssue() {
@@ -134,14 +146,33 @@ function makeClosedWorkspace() {
   };
 }
 
-describe("closed isolated workspace issue routes", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe.sequential("closed isolated workspace issue routes", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    resetMockObject(mockIssueService);
+    resetMockObject(mockExecutionWorkspaceService);
+    resetMockObject(mockExecutionGateService);
+    resetMockObject(mockAccessService);
+    resetMockObject(mockHeartbeatService);
+    resetMockObject(mockProjectService);
+    mockLogActivity.mockReset();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockProjectService.getById.mockResolvedValue(null);
+    mockLogActivity.mockResolvedValue(undefined);
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
   });
 
-  it("rejects new issue comments when the linked isolated workspace is closed", async () => {
+  it.sequential("rejects new issue comments when the linked isolated workspace is closed", async () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "hello" });
@@ -151,7 +182,7 @@ describe("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("rejects comment updates when the linked isolated workspace is closed", async () => {
+  it.sequential("rejects comment updates when the linked isolated workspace is closed", async () => {
     const res = await request(createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
@@ -162,7 +193,7 @@ describe("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("rejects checkout when the linked isolated workspace is closed", async () => {
+  it.sequential("rejects checkout when the linked isolated workspace is closed", async () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
@@ -175,7 +206,7 @@ describe("closed isolated workspace issue routes", () => {
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 
-  it("still allows non-comment board updates so the issue can be moved to a new workspace", async () => {
+  it.sequential("still allows non-comment board updates so the issue can be moved to a new workspace", async () => {
     mockIssueService.update.mockResolvedValue({
       ...makeIssue(),
       executionWorkspaceId: nextWorkspaceId,

@@ -470,6 +470,27 @@
       "when": 1776715523290,
       "tag": "0066_perfect_carnage",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776837567184,
+      "tag": "0067_freezing_captain_flint",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776864172979,
+      "tag": "0068_gorgeous_the_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776970991554,
+      "tag": "0069_huge_black_crow",
+      "breakpoints": true
     }
   ]
 }

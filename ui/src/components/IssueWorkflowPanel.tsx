@@ -7,6 +7,7 @@ import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 const ROLE_LABELS: Record<string, string> = {
   pm: "PM",
   designer: "Design",
+  cto: "CTO",
   engineer: "Build",
   security: "Security",
   qa: "QA",

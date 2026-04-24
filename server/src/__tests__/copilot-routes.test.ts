@@ -1,6 +1,7 @@
 import express from "express";
-import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import supertest from "supertest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -98,14 +99,90 @@ function createApp(actor: Record<string, unknown>, db: unknown) {
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function createRequestChain(
+  app: express.Express,
+  method: "get" | "post",
+  path: string,
+) {
+  let bodySet = false;
+  let body: unknown;
+  let querySet = false;
+  let queryParams: unknown;
+  let promise: Promise<supertest.Response> | null = null;
+  const run = async () => {
+    const server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const test = supertest(server)[method](path);
+      if (querySet) test.query(queryParams as Record<string, unknown>);
+      if (bodySet) test.send(body);
+      return await test;
+    } finally {
+      await closeServer(server);
+    }
+  };
+  const chain = {
+    query(nextQuery: unknown) {
+      querySet = true;
+      queryParams = nextQuery;
+      return chain;
+    },
+    send(nextBody: unknown) {
+      bodySet = true;
+      body = nextBody;
+      return chain;
+    },
+    then<TResult1 = supertest.Response, TResult2 = never>(
+      onFulfilled?: ((value: supertest.Response) => TResult1 | PromiseLike<TResult1>) | null,
+      onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ) {
+      promise ??= run();
+      return promise.then(onFulfilled, onRejected);
+    },
+    catch<TResult = never>(
+      onRejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+    ) {
+      promise ??= run();
+      return promise.catch(onRejected);
+    },
+    finally(onFinally?: (() => void) | null) {
+      promise ??= run();
+      return promise.finally(onFinally ?? undefined);
+    },
+  };
+  return chain;
+}
+
+function request(app: express.Express) {
+  return {
+    get: (path: string) => createRequestChain(app, "get", path),
+    post: (path: string) => createRequestChain(app, "post", path),
+  };
+}
+
 describe.sequential("copilot routes", () => {
-  beforeEach(async () => {
-    vi.resetAllMocks();
-    vi.resetModules();
+  beforeAll(async () => {
     ({ copilotRoutes: copilotRoutesFactory } = await import("../routes/copilot.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
     ({ issues: issuesTable, issueComments: issueCommentsTable } = await import("@paperclipai/db"));
     ({ logger: loggerInstance } = await import("../middleware/logger.js"));
+  });
+
+  beforeEach(async () => {
     mockIssueService.getById.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.update.mockReset();
@@ -160,7 +237,13 @@ describe.sequential("copilot routes", () => {
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
   });
 
-  it("creates a per-user copilot thread and prefers context issue assignee when available", async () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
+  it.sequential("creates a per-user copilot thread and prefers context issue assignee when available", async () => {
     const { db } = createDbMock({
       issueRows: [[]],
     });
@@ -215,7 +298,7 @@ describe.sequential("copilot routes", () => {
     expect(mockAgentService.list).not.toHaveBeenCalled();
   });
 
-  it("creates a fresh board copilot thread when requested", async () => {
+  it.sequential("creates a fresh board copilot thread when requested", async () => {
     const { db } = createDbMock({
       issueRows: [
         [
@@ -294,7 +377,7 @@ describe.sequential("copilot routes", () => {
     );
   });
 
-  it("creates a fresh board copilot thread when no active thread exists", async () => {
+  it.sequential("creates a fresh board copilot thread when no active thread exists", async () => {
     const { db } = createDbMock({
       issueRows: [[], []],
     });
@@ -329,7 +412,7 @@ describe.sequential("copilot routes", () => {
     expect(mockIssueService.create).toHaveBeenCalledTimes(1);
   });
 
-  it("reuses the raced board copilot thread when postgres reports constraint_name on creation", async () => {
+  it.sequential("reuses the raced board copilot thread when postgres reports constraint_name on creation", async () => {
     const { db } = createDbMock({
       issueRows: [[], []],
     });
@@ -375,7 +458,7 @@ describe.sequential("copilot routes", () => {
     );
   });
 
-  it("lists board copilot thread history including archived threads", async () => {
+  it.sequential("lists board copilot thread history including archived threads", async () => {
     const { db } = createDbMock({
       issueRows: [
         [
@@ -434,7 +517,7 @@ describe.sequential("copilot routes", () => {
     expect(typeof res.body[1]?.hiddenAt).toBe("string");
   });
 
-  it("posts a contextual message and enqueues a high-priority dedicated wakeup", async () => {
+  it.sequential("posts a contextual message and enqueues a high-priority dedicated wakeup", async () => {
     const { db } = createDbMock({
       issueRows: [
         [
@@ -524,7 +607,7 @@ describe.sequential("copilot routes", () => {
     );
   });
 
-  it("preempts foreign live runs for the assignee before waking board copilot", async () => {
+  it.sequential("preempts foreign live runs for the assignee before waking board copilot", async () => {
     const { db } = createDbMock({
       issueRows: [
         [
@@ -645,7 +728,7 @@ describe.sequential("copilot routes", () => {
     );
   });
 
-  it("continues preempting other runs when one cancellation attempt fails", async () => {
+  it.sequential("continues preempting other runs when one cancellation attempt fails", async () => {
     const warnSpy = vi.spyOn(loggerInstance, "warn").mockImplementation(() => undefined);
     const { db } = createDbMock({
       issueRows: [
@@ -775,7 +858,7 @@ describe.sequential("copilot routes", () => {
     warnSpy.mockRestore();
   });
 
-  it("keeps an existing wakeable assignee stable on thread bootstrap", async () => {
+  it.sequential("keeps an existing wakeable assignee stable on thread bootstrap", async () => {
     const { db } = createDbMock({
       issueRows: [
         [
@@ -836,7 +919,7 @@ describe.sequential("copilot routes", () => {
     expect(mockIssueService.getById).not.toHaveBeenCalledWith("PAP-42");
   });
 
-  it("suppresses duplicate message posts in the short dedupe window", async () => {
+  it.sequential("suppresses duplicate message posts in the short dedupe window", async () => {
     const context = {
       pageKind: "issues",
       pagePath: "/issues/PAP-42",
@@ -934,7 +1017,7 @@ describe.sequential("copilot routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
-  it("does not reopen a closed thread when duplicate suppression triggers", async () => {
+  it.sequential("does not reopen a closed thread when duplicate suppression triggers", async () => {
     const context = {
       pageKind: "issues",
       pagePath: "/issues/PAP-42",
@@ -1021,7 +1104,7 @@ describe.sequential("copilot routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("escapes context comment markers before persisting copilot messages", async () => {
+  it.sequential("escapes context comment markers before persisting copilot messages", async () => {
     const context = {
       pageKind: "issues",
       pagePath: "/issues/PAP-42",
@@ -1094,7 +1177,7 @@ describe.sequential("copilot routes", () => {
     expect(persistedBody?.indexOf("-->", (persistedBody?.indexOf("-->") ?? -1) + 3)).toBe(-1);
   });
 
-  it("rejects oversized context filter maps", async () => {
+  it.sequential("rejects oversized context filter maps", async () => {
     const { db } = createDbMock({});
     const app = createApp(
       {
@@ -1123,7 +1206,7 @@ describe.sequential("copilot routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("rejects non-board actors from accessing the copilot thread endpoints", async () => {
+  it.sequential("rejects non-board actors from accessing the copilot thread endpoints", async () => {
     const { db } = createDbMock({});
     const app = createApp(
       {

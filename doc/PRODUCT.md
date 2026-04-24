@@ -147,13 +147,14 @@ Orchestrero’s core identity is a **control plane for autonomous AI companies**
 
 ## Specialist workflow foundations
 
-Paperclip now includes one built-in specialist workflow template: `engineering_delivery_v1`.
+Paperclip now includes a default specialist workflow template, `engineering_delivery_v1`, and a forward-compatible CTO handoff variant, `engineering_delivery_v2`.
 
 Operators do not need to choose this per issue in the composer anymore. Each company now has a default root-issue delivery mode (`engineering` or `simple`), and each project can inherit that default or override it. In engineering mode, new root issues automatically enter the specialist workflow. In simple mode, they remain plain issues until an operator explicitly applies the workflow later.
 
 When applied to a root issue, the template creates real child issues for:
 - PM
 - Designer
+- CTO (`engineering_delivery_v2`)
 - Engineer
 - Security
 - QA
@@ -161,17 +162,46 @@ When applied to a root issue, the template creates real child issues for:
 The parent issue remains the coordination hub. Child lanes carry explicit role metadata and required artifact contracts. Review now depends on deliverables, not only comments:
 - PM: `plan` document
 - Designer: `design` document or design work product
+- CTO: `technical-plan` document (`engineering_delivery_v2`)
 - Engineer: `implementation-summary` document or implementation work product
 - Security: `threat-review` document
-- QA: a non-stale `qa-verdict` document plus the latest valid authorized release-gate QA verdict comment. Canonical ship-marker comments still require the strict Smart Review + verification format on write, but workflow/read-time reconciliation also tolerates structured prose or `DONE:`-style verdicts when they clearly express QA pass/release confirmation with explicit verification evidence, including bold Markdown `**Smart Review Summary**` headings and equality-style verification lines such as `TYPECHECK=pass` and `SMOKE/NA=pass`.
+- QA: a non-stale `qa-verdict` document plus the latest valid verdict comment from the active QA reviewer. Workflow QA lane completion requires the canonical Smart Review and verification token format, including `[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass|na]`; equality-style verification lines are tolerated only by legacy standalone delivery read-time reconciliation and cannot close a workflow QA lane.
   For canonical Smart Review tokens, `TC` must be an explicit ship verdict (`pass`, `warn`, or `fail`) and `DOC:na` means docs were reviewed with no docs change required.
 
 The lane graph is explicit and operator-visible: `PM -> Design -> Build`, then `Security` and `QA` run in parallel after Build completes. Only dependency-free lanes wake at template creation time; downstream lanes stay blocked until their upstream lane reaches a terminal state.
 
-Security is a first-class blocking lane. Applying the engineering workflow requires an available security specialist; if none is available, Paperclip rejects the workflow apply instead of creating an unowned Security lane or silently falling back into QA. In engineering-mode root issue creation, that rejection aborts the whole create so no half-created root issue is left behind.
+`engineering_delivery_v2` inserts a CTO review between Design and Build. CTO lanes are strict-role lanes like Security and QA: if no eligible CTO exists, Paperclip leaves the lane explicitly capability-blocked instead of assigning generic engineering work.
 
-Workflow QA ownership is also explicit. The QA lane uses the same release-gate QA resolver as standalone delivery: a board-configured company QA owner if one is set and eligible, otherwise one canonical `QA and Release Engineer`, otherwise one other eligible QA specialist, otherwise an explicit owner-needed blocker.
+Workflow runtime metadata is now persisted separately from the main `issues` row. The control plane records dedicated workflow instance, lane, and lane-artifact rows so lane identity and artifact contracts do not depend only on nullable issue columns.
+
+Security is a first-class blocking lane. Applying the engineering workflow first tries to auto-provision a managed `security` specialist from the company's existing tech-team seed pattern only when the company has no non-terminated security specialist at all. If a security specialist exists but is paused, errored, pending approval, or otherwise unavailable, Paperclip reports unavailable capacity instead of creating duplicates. Only if provisioning cannot produce a usable specialist does Paperclip reject the workflow apply instead of creating an unowned Security lane or silently falling back into QA. In engineering-mode root issue creation, that rejection still aborts the whole create so no half-created root issue is left behind.
+
+If legacy or drifted state ever leaves a specialist-only lane unowned while no eligible specialist exists, Paperclip first checks whether the specialist role already exists in an unavailable state. Existing unavailable specialists are surfaced as unavailable capacity, not multiplied. Only a truly missing managed specialist may be auto-provisioned from the company's existing tech-team seed pattern. If that still cannot produce an assignable specialist, the lane remains unassigned, surfaces explicit capability-blocked operator attention, and returns to normal routing once staffing becomes available again.
+
+Workflow QA ownership is also explicit. The QA lane uses pooled QA routing: keep the current assigned reviewer when still eligible, otherwise choose the least-loaded eligible QA reviewer, using the configured or canonical release-gate reviewer only as a load-tie preference. Workflow QA typed verdicts and ship-marker comments are authorized by the assigned lane owner only; `qaReviewerAgentId` is reviewer memory for routing and repair, not fallback authority for an unassigned workflow lane. Standalone delivery review still uses the configured release-gate QA owner. The lane blocks when no eligible QA reviewer exists and must never fall back to a generic engineer or PM just to appear allocated.
+
+QA-like allocation is strict outside workflow lanes too. When an issue title, description, or preferred role explicitly asks for QA, the COO routes it only to eligible QA candidates; if none exist, the ticket remains unassigned with blocked-capability semantics instead of creating false flow on a non-QA owner.
+
+QA evidence must be fresh after workflow handback. Once upstream changes invalidate downstream lanes, the `qa-verdict` document and the assigned QA verdict comment markers both need to be refreshed after the invalidation point before the QA lane can close.
+
+Guarded completion is enforced at the issue-service boundary too. Workflow roots, workflow lanes, and standalone delivery issues cannot be marked `done` through a generic status update unless the caller has already gone through the domain completion path that checks artifacts, QA evidence, or an explicit board override. The guard recomputes delivery intent on every `done` transition so older rows with `workIntent=null` fail closed when their title, assignee, or workflow metadata identifies them as delivery work.
 
 Review-stage refill is also explicit. When delivery work is already in `in_review`, the COO should continue filling any spare release-gate QA heartbeat slots from that waiting review queue; a visible `[READY FOR QA]`, later QA completion truth on an issue that is still open, or a prior wake that was skipped only because the live-run limit was full are routing and recovery signals, not reasons to leave review work idle once capacity opens up.
 
+Standalone delivery review uses that same model now. A simple delivery issue entering `in_review` carries explicit execution-policy review state plus sticky issue-scoped reviewer memory, so review ownership survives repair and reconciliation without relying on the assignee column alone. If an old or drifted review row loses that canonical state, COO repairs the issue in place instead of leaving it stranded.
+
+That standalone review state is intentionally separate from workflow lanes. Non-QA workflow lanes are not allowed to live in pooled QA review ownership; if drift pushes a Security or other non-QA lane into `in_review` or leaves behind QA review metadata, COO clears that state and returns the lane to normal lane execution before specialist routing continues.
+
+That canonical review state must stay live, not just well-formed. If a delivery issue is still in review but no execution run is linked anymore, COO treats it as actionable work and re-wakes the reviewer instead of suppressing it as a healthy review row.
+
+COO recovery is now stabilization-first. Before it assigns or re-wakes work, the operations sweep runs a bounded same-issue convergence loop: finalize QA-complete review rows, repair invalid review ownership/state, then re-evaluate the open queue from the repaired state. Target selection happens after that convergence pass, not from the stale pre-repair snapshot.
+
+That loop also has a hard control-plane invariant: if a company has open issues but the sweep produces no new work, Paperclip must be able to explain every remaining open issue with an explicit blocked reason such as human-owned, dependency-blocked, capability-blocked, cooldown, or waiting on external truth. “Open queue, no target, no explanation” is invalid state. A stricter allocation invariant also applies after assignment/refill: if actionable owned or unassigned work remains while eligible capacity exists, the sweep emits an explicit allocation-invariant warning instead of silently leaving tickets idle.
+
+COO flow is now reported as a first-class ledger. Each COO sweep records ready issue counts, blocked reasons, free and unavailable slots by role, planned and executed actions, unused-capacity explanations, and allocation invariant breaches in the heartbeat context. The board brief surfaces the latest ledger so operators can distinguish real constraints from avoidable idle work. Allocation and ownership-rebalance starts are planner-selected and atomically claimed, so overlapping COO sweeps do not create duplicate starts from stale assignment reads.
+
+That delivery path is issue-scoped, not just role-scoped. Ticket-authoring audits and other explicitly non-implementation issues that say not to change code do not auto-enter QA delivery review just because they are temporarily assigned to an engineer or QA agent. Paperclip now persists that intent on the issue itself (`workIntent`) so routing and reconciliation do not have to keep re-inferring it from the current assignee alone.
+
 Review remediation is also workflow-native. A failing Security lane hands work back to Build. A failing QA lane also hands work back to Build. That handback reopens the upstream lane, blocks downstream lanes again, and marks their earlier artifacts as stale until they are refreshed. Paperclip treats this as visible control-plane state, not hidden recursive thinking inside one heartbeat run.
+
+The same handback rule now applies to standalone delivery review. When QA leaves a failing review or verification verdict on a simple issue, the follow-up work returns to the original builder on the same issue. QA validates and signs off; engineering fixes.

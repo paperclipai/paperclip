@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { agentRoutes } from "../routes/agents.js";
@@ -126,7 +127,34 @@ function createApp() {
   return app;
 }
 
-describe("agent routes adapter validation", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+describe.sequential("agent routes adapter validation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     unregisterServerAdapter("external_test");
@@ -168,27 +196,31 @@ describe("agent routes adapter validation", () => {
     unregisterServerAdapter("external_test");
   });
 
-  it("creates agents for dynamically registered external adapter types", async () => {
+  it.sequential("creates agents for dynamically registered external adapter types", async () => {
     registerServerAdapter(externalAdapter);
 
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
-        name: "External Agent",
-        adapterType: "external_test",
-      });
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "External Agent",
+          adapterType: "external_test",
+        })
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.adapterType).toBe("external_test");
   });
 
-  it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/agents")
-      .send({
-        name: "Missing Adapter",
-        adapterType: "missing_adapter",
-      });
+  it.sequential("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Missing Adapter",
+          adapterType: "missing_adapter",
+        })
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain("Unknown adapter type: missing_adapter");

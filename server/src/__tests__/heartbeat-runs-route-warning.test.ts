@@ -100,7 +100,7 @@ function createApp() {
   return app;
 }
 
-describe("heartbeat runs route guardrail", () => {
+describe.sequential("heartbeat runs route guardrail", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
@@ -115,7 +115,7 @@ describe("heartbeat runs route guardrail", () => {
     ]);
   });
 
-  it("logs a structured warning when company heartbeat history is requested without a limit", async () => {
+  it.sequential("logs a structured warning when company heartbeat history is requested without a limit", async () => {
     const res = await request(createApp()).get("/api/companies/company-1/heartbeat-runs");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -131,7 +131,7 @@ describe("heartbeat runs route guardrail", () => {
     );
   });
 
-  it("does not warn when the route is explicitly bounded", async () => {
+  it.sequential("does not warn when the route is explicitly bounded", async () => {
     const res = await request(createApp()).get("/api/companies/company-1/heartbeat-runs?limit=10");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);

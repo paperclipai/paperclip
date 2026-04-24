@@ -145,11 +145,21 @@ Current high-signal ops events include:
 - `heartbeat.wakeup.failed`
 - `heartbeat.retry.scheduled`
 - `heartbeat.retry.exhausted`
+- `heartbeat.operations.allocation_invariant_broken`
 - `workflow.root.close_blocked`
 - `workflow.lane.close_blocked`
 - `workflow.handback`
 - `workflow.lane.invalidated`
 - `workflow.lane.unblocked`
+
+COO heartbeat runs also persist `contextSnapshot.operationsHeartbeatSweep.operationsFlow`.
+That object is the current flow-control ledger: ready issue count, blocker counts,
+free and unavailable slots by role, planned/executed actions, unused capacity
+reasons, and any allocation invariant breaches. Board brief surfaces the latest
+ledger as `operationsFlow` so operators can see whether idle tickets are blocked
+by real constraints or by allocation drift. Planner-selected assignment and
+reassignment actions must execute through the issue service compare-and-set
+allocation methods so stale COO sweeps cannot double-start the same ticket.
 
 The core emission points live in:
 
@@ -625,6 +635,7 @@ Operator visibility matters for workflow automation too:
 - workflow lane unblocks and downstream invalidations should emit issue activity so the company activity feed and live query invalidation reflect DAG changes immediately
 - child-lane issue activity should carry `parentId` context so an open root workflow issue refreshes when one of its lanes changes state
 - root workflow issues should be treated as orchestration containers, not same-issue QA tickets: completion, QA auto-fix, and QA auto-merge assertions need explicit regression coverage for `workflowTemplateKey` without `workflowLaneRole`
+- guarded completion belongs on a domain path: direct `issueService.update(..., { status: "done" })` calls for workflow or delivery-scoped issues must be rejected unless that caller has already evaluated workflow artifacts, QA evidence, or an explicit board override
 
 Current worktree caveats observed during implementation:
 - In restricted desktop sandboxes, `pnpm paperclipai worktree init --name <name>` can fail when it tries to mirror hooks under `.git/worktrees/...` because those hook writes may be blocked. Feature development in the worktree still works, but hook mirroring may need to be skipped in that environment.
@@ -632,5 +643,5 @@ Current worktree caveats observed during implementation:
 
 For this feature, the minimum final verification bar remains:
 - `pnpm -r typecheck`
-- `pnpm test:run`
+- `pnpm test:run` (server test files run once; route nondeterminism should fail visibly instead of relying on retries)
 - `pnpm build`

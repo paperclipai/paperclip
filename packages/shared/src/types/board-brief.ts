@@ -105,6 +105,20 @@ export interface BoardBriefOutput {
   updatedAt: Date;
 }
 
+export interface BoardBriefOperationsFlow {
+  generatedAt: Date | null;
+  readyIssueCount: number;
+  residualReadyIssueCount: number;
+  blockedReasonCounts: Record<string, number>;
+  freeSlotsByRole: Record<string, number>;
+  unavailableSlotsByRole: Record<string, number>;
+  unavailableCapacityReasonsByRole: Record<string, Record<string, number>>;
+  plannedActionCounts: Record<string, number>;
+  executedActionCounts: Record<string, number>;
+  unusedCapacityReasons: Record<string, string>;
+  invariantBreaches: string[];
+}
+
 export interface BoardBrief {
   meta: {
     companyId: string;
@@ -135,6 +149,7 @@ export interface BoardBrief {
   incidents: BoardBriefIncident[];
   outputs: BoardBriefOutput[];
   manualKpis: CompanyKpi[];
+  operationsFlow: BoardBriefOperationsFlow | null;
 }
 
 export interface BoardBriefSnapshot {

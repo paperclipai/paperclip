@@ -14,6 +14,7 @@ import {
   documents,
   heartbeatRuns,
   issueDocuments,
+  issueRelations,
   issueWorkProducts,
   issues,
   joinRequests,
@@ -24,6 +25,7 @@ import type {
   BoardBriefActionItem,
   BoardBriefFocusArea,
   BoardBriefIncident,
+  BoardBriefOperationsFlow,
   BoardBriefOutput,
   BoardBriefSnapshot,
   CompanyKpi,
@@ -39,6 +41,7 @@ import { boardBriefSnapshotSchema } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 import { budgetService } from "./budgets.js";
+import { classifyCapabilityBlockedIssue } from "./issue-capability-blocks.js";
 import { parseSchedulerHeartbeatPolicy } from "./scheduler-heartbeat-policy.js";
 
 const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
@@ -314,6 +317,87 @@ function linkedApprovalIssueId(payload: Record<string, unknown> | null): string 
   if (typeof direct === "string" && direct.length > 0) return direct;
   const linked = payload?.linkedIssueId;
   return typeof linked === "string" && linked.length > 0 ? linked : null;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function nonnegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : 0;
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+  const record = plainRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(
+    Object.entries(record)
+      .map(([key, entry]) => [key, nonnegativeNumber(entry)] as const)
+      .filter(([, entry]) => entry >= 0),
+  );
+}
+
+function nestedNumberRecord(value: unknown): Record<string, Record<string, number>> {
+  const record = plainRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(
+    Object.entries(record)
+      .map(([key, entry]) => [key, numberRecord(entry)] as const)
+      .filter(([, entry]) => Object.keys(entry).length > 0),
+  );
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  const record = plainRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(
+    Object.entries(record)
+      .filter(([, entry]) => typeof entry === "string")
+      .map(([key, entry]) => [key, entry as string]),
+  );
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function latestRunTimestamp(run: Pick<LatestRunRow, "finishedAt" | "startedAt" | "createdAt">) {
+  return maxDate(run.finishedAt, run.startedAt, run.createdAt) ?? run.createdAt;
+}
+
+function extractOperationsFlowReport(rows: LatestRunRow[]): BoardBriefOperationsFlow | null {
+  const flowEntries = rows
+    .map((run) => {
+      const sweep = plainRecord(plainRecord(run.contextSnapshot)?.operationsHeartbeatSweep);
+      const flow = plainRecord(sweep?.operationsFlow);
+      if (!flow) return null;
+      return { run, flow };
+    })
+    .filter((entry): entry is { run: LatestRunRow; flow: Record<string, unknown> } => entry !== null)
+    .sort((left, right) => latestRunTimestamp(right.run).getTime() - latestRunTimestamp(left.run).getTime());
+
+  const latest = flowEntries[0] ?? null;
+  if (!latest) return null;
+
+  return {
+    generatedAt: latestRunTimestamp(latest.run),
+    readyIssueCount: nonnegativeNumber(latest.flow.readyIssueCount),
+    residualReadyIssueCount: nonnegativeNumber(latest.flow.residualReadyIssueCount),
+    blockedReasonCounts: numberRecord(latest.flow.blockedReasonCounts),
+    freeSlotsByRole: numberRecord(latest.flow.freeSlotsByRole),
+    unavailableSlotsByRole: numberRecord(latest.flow.unavailableSlotsByRole),
+    unavailableCapacityReasonsByRole: nestedNumberRecord(latest.flow.unavailableCapacityReasonsByRole),
+    plannedActionCounts: numberRecord(latest.flow.plannedActionCounts),
+    executedActionCounts: numberRecord(latest.flow.executedActionCounts),
+    unusedCapacityReasons: stringRecord(latest.flow.unusedCapacityReasons),
+    invariantBreaches: stringArray(latest.flow.invariantBreaches),
+  };
 }
 
 function topAncestorIssue(issue: IssueRow, issueById: ReadonlyMap<string, IssueRow>): IssueRow {
@@ -747,9 +831,38 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
 
   const allIssueRows = issueRows as IssueRow[];
   const openIssueRows = allIssueRows.filter((issue) => isOpenIssueStatus(issue.status));
-  const hasAssignableSecuritySpecialist = (agentRows as AgentRow[]).some((agent) => (
-    agent.role === "security" && isAgentAssignableStatus(agent.status)
-  ));
+  const activeBlockerRows: Array<{ blockedIssueId: string; blockerStatus: string }> = openIssueRows.length === 0
+    ? []
+    : await database
+      .select({
+        blockedIssueId: issueRelations.relatedIssueId,
+        blockerStatus: issues.status,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, openIssueRows.map((issue) => issue.id)),
+        ),
+      );
+  const eligibleSpecialistRoleIds = {
+    security: (agentRows as AgentRow[])
+      .filter((agent) => agent.role === "security" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+    qa: (agentRows as AgentRow[])
+      .filter((agent) => agent.role === "qa" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+    cto: (agentRows as AgentRow[])
+      .filter((agent) => agent.role === "cto" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+  };
+  const issuesWithActiveBlockers = new Set(
+    activeBlockerRows
+      .filter((row) => isOpenIssueStatus(row.blockerStatus))
+      .map((row) => row.blockedIssueId),
+  );
   const issueById = new Map(openIssueRows.map((issue) => [issue.id, issue]));
   const issueActivityById = new Map<string, Date>();
   const workProductMovementByIssueId = new Map<string, Date>();
@@ -854,6 +967,7 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
 
   const latestRunByAgentId = new Map<string, LatestRunRow>();
   for (const row of latestRunRows as LatestRunRow[]) latestRunByAgentId.set(row.agentId, row);
+  const operationsFlow = extractOperationsFlowReport(latestRunRows as LatestRunRow[]);
 
   const failedRuns = (recentFailedRunRows as LatestRunRow[])
     .filter((row) => FAILED_RUN_STATUSES.has(row.status))
@@ -999,35 +1113,49 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         href: `/issues/${issue.identifier ?? issue.id}`,
         ctaLabel: "Open issue",
       };
-    } else if (
-      !issue.assigneeAgentId
-      && !issue.assigneeUserId
-      && issue.workflowLaneRole === "security"
-      && !hasAssignableSecuritySpecialist
-    ) {
-      issueActionItem = {
-        key: `issue:missing-security:${issue.id}`,
-        kind: "issue",
-        entityId: issue.id,
-        title: issueLabel,
-        reason: "No security specialist available",
-        severity: "high",
-        timestamp: movementAt,
-        href: `/issues/${issue.identifier ?? issue.id}`,
-        ctaLabel: "Open issue",
-      };
-    } else if (!issue.assigneeAgentId && !issue.assigneeUserId && recentMovementIssueIds.has(issue.id)) {
-      issueActionItem = {
-        key: `issue:routing:${issue.id}`,
-        kind: "issue",
-        entityId: issue.id,
-        title: issueLabel,
-        reason: "Needs routing",
-        severity: "medium",
-        timestamp: movementAt,
-        href: `/issues/${issue.identifier ?? issue.id}`,
-        ctaLabel: "Open issue",
-      };
+    } else {
+      const capabilityBlock = classifyCapabilityBlockedIssue({
+        issue: {
+          status: issue.status,
+          identifier: issue.identifier,
+          title: issue.title,
+          workflowLaneRole: issue.workflowLaneRole,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          hasActiveBlockers: issuesWithActiveBlockers.has(issue.id),
+        },
+        eligibleSpecialistRoleIds,
+      });
+      if (capabilityBlock) {
+        issueActionItem = {
+          key: `issue:capability-blocked:${issue.id}`,
+          kind: "issue",
+          entityId: issue.id,
+          title: issueLabel,
+          reason: capabilityBlock.headline,
+          severity: "high",
+          timestamp: movementAt,
+          href: `/issues/${issue.identifier ?? issue.id}`,
+          ctaLabel: "Open issue",
+        };
+      } else if (
+        !issue.assigneeAgentId &&
+        !issue.assigneeUserId &&
+        recentMovementIssueIds.has(issue.id) &&
+        !issuesWithActiveBlockers.has(issue.id)
+      ) {
+        issueActionItem = {
+          key: `issue:routing:${issue.id}`,
+          kind: "issue",
+          entityId: issue.id,
+          title: issueLabel,
+          reason: "Needs routing",
+          severity: "medium",
+          timestamp: movementAt,
+          href: `/issues/${issue.identifier ?? issue.id}`,
+          ctaLabel: "Open issue",
+        };
+      }
     }
 
     if (issueActionItem) issueActionItems.push(issueActionItem);
@@ -1484,6 +1612,7 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
     incidents: uniqueIncidents,
     outputs,
     manualKpis,
+    operationsFlow,
   };
 
   const issueTransitionsRaw: Array<{

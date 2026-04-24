@@ -15,6 +15,7 @@ export type {
   BoardBriefActionItem,
   BoardBriefIncident,
   BoardBriefOutput,
+  BoardBriefOperationsFlow,
   BoardBriefSnapshot,
   BoardBriefAlertEvent,
 } from "./board-brief.js";
@@ -131,6 +132,26 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
 } from "./work-product.js";
+export type {
+  IssueActionRequest,
+  IssueActionResult,
+  IssueActionWarning,
+  IssueActionQaSummary,
+  IssueActionQaVerification,
+  IssueActionQaVerdictState,
+  IssueActionOpenStatus,
+  EnterReviewIssueActionPayload,
+  SubmitQaVerdictIssueActionPayload,
+  CompleteIssueActionPayload,
+  ReopenIssueActionPayload,
+  HandoffIssueActionPayload,
+  AppendNoteIssueActionPayload,
+} from "./issue-action.js";
+export type {
+  IssueWorkflowInstance,
+  IssueWorkflowLane,
+  IssueWorkflowLaneArtifact,
+} from "./issue-workflow.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

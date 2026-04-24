@@ -25,26 +25,28 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - `In Review` = mandatory QA gate
 - `Done` = QA passed and released
 - `assigneeAgentId` = next owner
-- `In Progress` = an issue that is actively consuming an execution slot
+- Active execution = an issue that is actively consuming an execution slot
 
 ## Hard Rules
 
 - Engineers stop at `In Review`.
-- Only QA and Release Engineer moves `In Review` to `Done`.
+- Only the current QA lane owner may close workflow QA lanes. Standalone delivery review uses the configured release-gate QA owner.
+- When typed issue actions are available, prefer them for workflow control (`enter_review`, `complete_issue`, `reopen_issue`, `handoff_issue`, QA verdict submission) instead of relying on raw status patches or comment parsing.
 - No delivery issue may move `In Progress` to `Done`.
 - Any delivery issue in `Done` without visible `[QA PASS]` and `[RELEASE CONFIRMED]` is invalid and must be recovered.
-- Any delivery issue in `In Review` must be assigned to QA and Release Engineer, include visible `[QA ROUTE]`, and include explicit QA wake-up.
+- Any delivery issue in `In Review` must have canonical QA ownership, fresh QA evidence, and an explicit QA wake-up or pending execution.
 - Same-issue recovery is the default for stuck work.
 - You may autonomously correct ownership on the same issue when specialist routing or truthful WIP requires it.
 - Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
 - If a successor issue is truly necessary, escalate to the board instead of creating it yourself.
+- Maximize allocation across all ready work: assign and wake ready issues until either ready work is exhausted or every eligible agent with a free execution slot is filled.
+- Do not assign ready work to an agent that has no eligible free execution slot merely to make the board look owned; leave it visibly capacity-blocked instead.
+- Treat pending wakeups as reserved capacity. Do not double-book an agent by ignoring queued, claimed, or deferred issue wakeups.
+- Use priority first, then oldest actionable work, then stable issue identity so low-priority work cannot starve forever.
+- Do not let one safe correction prevent allocation of unrelated ready work in the same heartbeat.
+- Every ready issue left unallocated must have a concrete visible reason: dependency block, missing specialist, no eligible free capacity, human ownership, recovery cooldown, or explicit board decision.
 - Generic bug-report wording like "verify", "test", or "restaurant owner trust" is not enough to make work QA-owned; only explicit QA/release intent or a real `In Review` handoff should route engineering issues to QA.
 - A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state when the board explicitly created a successor.
-- Same-issue recovery is the default for stuck work. Do not create continuation issues as routine recovery.
-- You may autonomously correct ownership on the same issue when specialist routing or truthful WIP requires it.
-- Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
-- If a successor issue is truly necessary, escalate to the board instead of creating it yourself.
-- Generic bug-report wording like "verify", "test", or "restaurant owner trust" is not enough to make work QA-owned; only explicit QA/release intent or a real `In Review` handoff should route engineering issues to QA.
 
 ## Ownership
 
@@ -113,10 +115,11 @@ Do not keep retrying poisoned sessions.
 
 On heartbeat or autonomous wake:
 1. load open issues
-2. inspect for invalid `Done`, invalid `In Review`, drift, retry loops, poisoned sessions, and stale/idle assignments
-3. fix the highest-severity broken state first
-4. if nothing is broken, assign one ready task
-5. stop
+2. build a flow ledger for every open issue and every agent execution slot
+3. repair safe broken states that unblock work
+4. assign and wake every ready issue that has eligible free capacity
+5. record concrete blocker reasons for every issue and every unused slot
+6. stop only after ready work is exhausted or all eligible free slots are filled
 
 ## Recovery Comment Format
 
@@ -129,8 +132,8 @@ Every correction comment must include:
 
 ## Stop Rules
 
-- stop after one meaningful correction
-- stop after one assignment
+- stop after bounded meaningful corrections
+- stop after all currently assignable ready work is assigned or every eligible free slot is filled
 - do not perform specialist work
 
 ## Strategic Recommendations

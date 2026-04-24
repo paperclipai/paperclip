@@ -23,6 +23,7 @@ const toastState = vi.hoisted(() => ({
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   update: vi.fn(),
+  updateWorkflowAware: vi.fn(),
   archiveClosed: vi.fn(),
 }));
 
@@ -153,6 +154,7 @@ describe("Issues page", () => {
     toastState.pushToast.mockReset();
     mockIssuesApi.list.mockReset();
     mockIssuesApi.update.mockReset();
+    mockIssuesApi.updateWorkflowAware.mockReset();
     mockIssuesApi.archiveClosed.mockReset();
     mockAgentsApi.list.mockReset();
     mockProjectsApi.list.mockReset();
@@ -160,6 +162,7 @@ describe("Issues page", () => {
     issuesListPropsState.latest = null;
 
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.updateWorkflowAware.mockResolvedValue({});
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
@@ -187,6 +190,74 @@ describe("Issues page", () => {
         excludeRecoverySourcesWithOpenSuccessors: true,
       });
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("routes review and completion status changes through the workflow-aware issue updater", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1000",
+        companyId: "company-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        goalId: null,
+        parentId: null,
+        title: "Issue one",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        issueNumber: 1000,
+        originKind: null,
+        originId: null,
+        originRunId: null,
+        requestDepth: 0,
+        billingCode: null,
+        assigneeAdapterOverrides: null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        startedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        hiddenAt: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        labels: [],
+        labelIds: [],
+        myLastTouchAt: null,
+        lastExternalCommentAt: null,
+        lastActivityAt: new Date("2026-04-01T00:00:00.000Z"),
+        isUnreadForMe: false,
+      },
+    ]);
+    const { root } = renderIssuesPage(container);
+
+    await waitForAssertion(() => {
+      expect((issuesListPropsState.latest?.issues as unknown[] | undefined)?.length).toBe(1);
+    });
+
+    await act(async () => {
+      const onUpdateIssue = issuesListPropsState.latest?.onUpdateIssue as
+        | ((id: string, data: Record<string, unknown>) => void)
+        | undefined;
+      onUpdateIssue?.("issue-1", { status: "done" });
+      await flush();
+    });
+
+    expect(mockIssuesApi.updateWorkflowAware).toHaveBeenCalledWith("issue-1", "in_progress", { status: "done" });
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
 
     act(() => {
       root.unmount();

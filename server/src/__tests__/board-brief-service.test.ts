@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   invites,
   issueDocuments,
+  issueRelations,
   issueWorkProducts,
   issues,
   joinRequests,
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("boardBriefService", () => {
     await db.delete(approvals);
     await db.delete(issueWorkProducts);
     await db.delete(issueDocuments);
+    await db.delete(issueRelations);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(costEvents);
@@ -369,6 +371,75 @@ describeEmbeddedPostgres("boardBriefService", () => {
     expect(attentionItem?.title).toContain(identifier);
   });
 
+  it("keeps dependency-blocked specialist lanes out of capability-blocked attention until blockers clear", async () => {
+    const now = new Date("2026-04-15T12:00:00.000Z");
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const issueId = randomUUID();
+    const identifier = `SEC${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}-2`;
+    const blockerIdentifier = `SEC${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}-3`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Security Precedence Co",
+      issuePrefix: "SEC",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: operationsAgentId,
+      companyId,
+      name: "Ops COO",
+      role: "coo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 600 } },
+      permissions: {},
+      lastHeartbeatAt: new Date("2026-04-15T11:40:00.000Z"),
+    });
+
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Implementation still running",
+        identifier: blockerIdentifier,
+        issueNumber: 3,
+        status: "in_progress",
+        priority: "high",
+        updatedAt: new Date("2026-04-15T11:58:00.000Z"),
+        createdAt: new Date("2026-04-15T11:50:00.000Z"),
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Security lane is still dependency-blocked",
+        identifier,
+        issueNumber: 2,
+        status: "blocked",
+        priority: "high",
+        workflowTemplateKey: "engineering_delivery_v1",
+        workflowLaneRole: "security",
+        updatedAt: new Date("2026-04-15T11:59:00.000Z"),
+        createdAt: new Date("2026-04-15T11:55:00.000Z"),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+      createdByUserId: "user-1",
+    });
+
+    const summary = await boardBriefService(db).buildDashboardSummary(companyId, now);
+    const attentionItem = summary.brief.needsAttention.find((item) => item.entityId === issueId);
+
+    expect(attentionItem).toBeUndefined();
+  });
+
   it("keeps the full canonical action queue even when more than seven actions are pending", async () => {
     const now = new Date("2026-04-15T12:00:00.000Z");
     const companyId = randomUUID();
@@ -408,5 +479,68 @@ describeEmbeddedPostgres("boardBriefService", () => {
       "approval",
       "approval",
     ]);
+  });
+
+  it("surfaces the latest COO operations flow report", async () => {
+    const now = new Date("2026-04-15T12:00:00.000Z");
+    const companyId = randomUUID();
+    const opsAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Flow Co",
+      issuePrefix: `FLO${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: opsAgentId,
+      companyId,
+      name: "COO",
+      role: "coo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: opsAgentId,
+      invocationSource: "scheduler",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-15T11:40:00.000Z"),
+      finishedAt: new Date("2026-04-15T11:45:00.000Z"),
+      contextSnapshot: {
+        operationsHeartbeatSweep: {
+          operationsFlow: {
+            readyIssueCount: 3,
+            residualReadyIssueCount: 1,
+            blockedReasonCounts: { no_free_slot: 1 },
+            freeSlotsByRole: { engineer: 0, qa: 1 },
+            plannedActionCounts: { assign_issue: 2, wake_owner: 1, repair_issue: 0, record_block: 1 },
+            executedActionCounts: { assign_issue: 2, wake_owner: 1, repair_issue: 0, record_block: 1 },
+            unusedCapacityReasons: { qa: "no_ready_work_for_role" },
+            invariantBreaches: ["ready work remains while engineer capacity is free"],
+          },
+        },
+      },
+      createdAt: new Date("2026-04-15T11:40:00.000Z"),
+      updatedAt: new Date("2026-04-15T11:45:00.000Z"),
+    });
+
+    const brief = await boardBriefService(db).build(companyId, now, db);
+
+    expect(brief.operationsFlow).toMatchObject({
+      readyIssueCount: 3,
+      residualReadyIssueCount: 1,
+      blockedReasonCounts: { no_free_slot: 1 },
+      freeSlotsByRole: { engineer: 0, qa: 1 },
+      unusedCapacityReasons: { qa: "no_ready_work_for_role" },
+      invariantBreaches: ["ready work remains while engineer capacity is free"],
+    });
   });
 });

@@ -23,7 +23,7 @@ describe("operations heartbeat target helpers", () => {
     ).toBe(false);
   });
 
-  it("prefers highest-priority ready unassigned work before recency", () => {
+  it("prefers highest-priority ready unassigned work before age", () => {
     const selected = selectReadyUnassignedCandidate([
       {
         id: "urgent",
@@ -57,7 +57,7 @@ describe("operations heartbeat target helpers", () => {
     expect(selected?.id).toBe("critical");
   });
 
-  it("treats legacy urgent as equivalent to critical and falls back to recency", () => {
+  it("treats legacy urgent as equivalent to critical and falls back to age", () => {
     const selected = selectReadyUnassignedCandidate([
       {
         id: "urgent",
@@ -71,10 +71,10 @@ describe("operations heartbeat target helpers", () => {
       },
     ]);
 
-    expect(selected?.id).toBe("critical");
+    expect(selected?.id).toBe("urgent");
   });
 
-  it("uses recency as the tiebreaker when priorities match", () => {
+  it("uses age as the tiebreaker when priorities match", () => {
     const selected = selectReadyUnassignedCandidate([
       {
         id: "older",
@@ -88,6 +88,6 @@ describe("operations heartbeat target helpers", () => {
       },
     ]);
 
-    expect(selected?.id).toBe("newer");
+    expect(selected?.id).toBe("older");
   });
 });

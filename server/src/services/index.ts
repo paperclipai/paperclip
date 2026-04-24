@@ -17,6 +17,7 @@ export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";
+export { issueActionService } from "./issue-actions.js";
 export { issueWorkflowService, synthesizeWorkflowBoardState } from "./issue-workflows.js";
 export { issueMergeService, attemptQaPassAutoMerge, getIssueMergeStatus } from "./issue-merge.js";
 export { issueApprovalService } from "./issue-approvals.js";

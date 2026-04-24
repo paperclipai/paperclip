@@ -7,9 +7,7 @@ import type {
   IssueQaReviewOverall,
   IssueStatus,
 } from "@paperclipai/shared";
-import { isLikelyTechnicalIssueText } from "./issue-routing-heuristics.js";
-
-const DELIVERY_SCOPED_ASSIGNEE_ROLES = new Set(["engineer", "qa", "devops", "cto"]);
+import { isDeliveryWorkIntent, resolveIssueWorkIntent } from "./issue-routing-heuristics.js";
 const QA_SUMMARY_TOKEN_REGEX = /\[(CQ|EH|TC|CM|DOC)\s*:\s*(pass|warn|fail|na)\]/gi;
 const QA_CANONICAL_VERIFICATION_TOKEN_REGEX =
   /\[(TYPECHECK|TESTS|BUILD|SMOKE)\s*:\s*(pass|warn|fail|na)\]/gi;
@@ -416,8 +414,17 @@ function sortCommentsDesc(a: Pick<IssueComment, "createdAt" | "id">, b: Pick<Iss
 }
 
 export function isDeliveryScopedAssigneeRole(role: string | null | undefined) {
-  if (!role) return true;
-  return DELIVERY_SCOPED_ASSIGNEE_ROLES.has(role);
+  return isDeliveryWorkIntent(resolveIssueWorkIntent({ assigneeRole: role }));
+}
+
+export function isDeliveryScopedIssue(input: {
+  workIntent?: string | null | undefined;
+  assigneeRole: string | null | undefined;
+  issueText?: string | null | undefined;
+  workflowTemplateKey?: string | null | undefined;
+  workflowLaneRole?: string | null | undefined;
+}) {
+  return isDeliveryWorkIntent(resolveIssueWorkIntent(input));
 }
 
 export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): string {
@@ -425,9 +432,9 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
     case "invalid_status_transition":
       return "Invalid issue status transition";
     case "qa_gate_requires_qa_assignee":
-      return "Delivery issues must be assigned to a QA agent before entering in_review";
+      return "Delivery issues in review must stay assigned to the active QA reviewer";
     case "qa_gate_no_eligible_qa_agent":
-      return "No eligible QA agent is available to own this in_review issue";
+      return "No eligible QA reviewer is available to own this in_review issue";
     case "qa_gate_requires_in_review":
       return "Delivery issues can only move to done from in_review";
     case "qa_gate_missing_qa_comment":
@@ -453,6 +460,7 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
 
 export function buildIssueQaGate(input: {
   issue: Pick<{ status: IssueStatus }, "status">;
+  workIntent?: string | null | undefined;
   assigneeRole: string | null | undefined;
   issueText?: string | null | undefined;
   qaComments: Array<Pick<IssueComment, "id" | "body" | "createdAt">>;
@@ -460,8 +468,11 @@ export function buildIssueQaGate(input: {
   now?: Date;
 }): IssueQaGate {
   const now = input.now ?? new Date();
-  const isDeliveryScoped =
-    isDeliveryScopedAssigneeRole(input.assigneeRole) || isLikelyTechnicalIssueText(input.issueText);
+  const isDeliveryScoped = isDeliveryScopedIssue({
+    workIntent: input.workIntent,
+    assigneeRole: input.assigneeRole,
+    issueText: input.issueText,
+  });
   const qaComments = [...input.qaComments].sort(sortCommentsDesc);
   const latestQaComment = selectLatestRelevantQaComment(qaComments);
   const latestBody = latestQaComment?.body ?? "";

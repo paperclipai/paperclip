@@ -104,7 +104,7 @@ describe("IssueWorkflowPanel", () => {
               templateKey: "engineering_delivery_v1",
               isBlocked: true,
               blockingReasons: ["SECURITY: Lane has no assigned owner."],
-              activeRoles: ["pm"],
+              activeRoles: ["pm", "cto"],
               waitingRoles: ["security"],
               ownerNeededRoles: ["qa"],
               lanes: [
@@ -149,6 +149,21 @@ describe("IssueWorkflowPanel", () => {
                   blockingReasons: ["Lane has no assigned owner."],
                 },
                 {
+                  issueId: "issue-cto",
+                  role: "cto",
+                  title: "CTO: Issue title",
+                  status: "todo",
+                  phase: "ready",
+                  assigneeAgentId: "agent-cto",
+                  assigneeUserId: null,
+                  workspaceMode: null,
+                  blockedByRoles: [],
+                  ready: true,
+                  unresolvedOwnership: false,
+                  artifactStatuses: [],
+                  blockingReasons: [],
+                },
+                {
                   issueId: "issue-qa",
                   role: "qa",
                   title: "QA: Issue title",
@@ -161,7 +176,7 @@ describe("IssueWorkflowPanel", () => {
                   ready: true,
                   unresolvedOwnership: true,
                   artifactStatuses: [],
-                  blockingReasons: ["Workflow QA lane requires an authorized release-gate QA owner."],
+                  blockingReasons: ["Workflow QA lane must be assigned to an active QA reviewer."],
                 },
               ],
             },
@@ -173,6 +188,7 @@ describe("IssueWorkflowPanel", () => {
 
     expect(container.textContent).toContain("Specialist delivery lanes");
     expect(container.textContent).toContain("PM: Issue title");
+    expect(container.textContent).toContain("CTO: Issue title");
     expect(container.textContent).toContain("Security: Issue title");
     expect(container.textContent).toContain("QA: Issue title");
     expect(container.textContent).toContain("SECURITY: Lane has no assigned owner.");

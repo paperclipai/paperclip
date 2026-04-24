@@ -10,38 +10,24 @@ function printHeader(label) {
   process.stdout.write(`\n[test:run] ${label}\n`);
 }
 
-async function runCommand(cwd, args, label, attempts = 1) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    if (attempt > 1) {
-      printHeader(`${label} retry ${attempt}/${attempts}`);
-    } else {
-      printHeader(label);
-    }
+async function runCommand(cwd, args, label) {
+  printHeader(label);
 
-    try {
-      await new Promise((resolve, reject) => {
-        const child = spawn(pnpmBin, args, {
-          cwd,
-          stdio: "inherit",
-          env: process.env,
-        });
-        child.on("error", reject);
-        child.on("exit", (code, signal) => {
-          if (code === 0) {
-            resolve();
-            return;
-          }
-          reject(new Error(`${label} failed with ${signal ? `signal ${signal}` : `exit code ${code}`}`));
-        });
-      });
-      return;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError;
+  await new Promise((resolve, reject) => {
+    const child = spawn(pnpmBin, args, {
+      cwd,
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${label} failed with ${signal ? `signal ${signal}` : `exit code ${code}`}`));
+    });
+  });
 }
 
 async function runVitestProject(projectDir) {
@@ -63,8 +49,8 @@ async function runServerTests() {
       serverDir,
       ["exec", "vitest", "run", "--config", path.join(serverDir, "vitest.config.ts"), relativePath],
       `server vitest ${relativePath}`,
-      2,
     );
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
 

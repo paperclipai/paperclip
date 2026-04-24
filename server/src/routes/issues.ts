@@ -7,12 +7,21 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueExecutionDecisions } from "@paperclipai/db";
-import type { IssueExecutionDecisionOutcome, IssueListSort, IssueQaGateReasonCode, IssueStatus } from "@paperclipai/shared";
+import type {
+  IssueExecutionDecisionOutcome,
+  IssueExecutionPolicy,
+  IssueExecutionState,
+  IssueListSort,
+  IssueQaGateReasonCode,
+  IssueStatus,
+  IssueWorkflowTemplateKey,
+} from "@paperclipai/shared";
 import {
   ISSUE_LIST_SORTS,
   addIssueCommentSchema,
   applyIssueWorkflowTemplateSchema,
   buildAgentMentionHref,
+  issueActionSchema,
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
@@ -28,9 +37,10 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  type IssueActionRequest,
+  type IssueActionResult,
   type IssueComment,
   getClosedIsolatedExecutionWorkspaceMessage,
-  resolveReleaseGateQaAgent as resolveSharedReleaseGateQaAgent,
   isClosedIsolatedExecutionWorkspace,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
@@ -78,7 +88,7 @@ import { issueMergeService } from "../services/issue-merge.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../services/wakeup-errors.js";
 import {
   buildIssueQaGate,
-  isDeliveryScopedAssigneeRole,
+  isDeliveryScopedIssue,
   issueQaGateReasonMessage,
   qaCommentHasQaPassMarker,
   qaCommentHasReleaseConfirmedMarker,
@@ -95,6 +105,13 @@ import { buildIssueRoutingText } from "../services/issue-routing-heuristics.js";
 import { computeIssueBoardStateMap } from "../services/issue-board-state.js";
 import { synthesizeWorkflowBoardState } from "../services/issue-workflows.js";
 import { finalizeQaValidatedIssueFromComment } from "../services/issue-qa-finalization.js";
+import {
+  buildDeliveryQaExecutionPolicy,
+  buildQaOpenIssueCountByAgentId,
+  orderPooledQaReviewers,
+  QA_OPEN_LOAD_STATUSES,
+  resolvePreferredQaReviewerAgentId,
+} from "../services/qa-reviewer-pool.js";
 import {
   classifyIssueTruthFromCommentBody,
   hasReadyForQaTruthFromCommentBody,
@@ -176,6 +193,7 @@ export function issueRoutes(
   db: Db,
   storage: StorageService,
   opts?: {
+    awaitAsyncPostResponseHooks?: boolean;
     feedbackExportService?: {
       flushPendingFeedbackTraces(input?: {
         companyId?: string;
@@ -208,8 +226,27 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const issueWorkflowsSvc = issueWorkflowService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
-  const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const issueActionServiceFactory =
+    Object.prototype.hasOwnProperty.call(services, "issueActionService")
+      ? services.issueActionService
+      : undefined;
+  const issueActions =
+    typeof issueActionServiceFactory === "function"
+      ? issueActionServiceFactory({
+        db,
+        issues: svc,
+        agents: agentsSvc,
+        companies: companiesSvc,
+        projects: projectsSvc,
+        issueWorkflow: issueWorkflowsSvc,
+        issueMerge,
+        executionWorkspaces: executionWorkspacesSvc,
+        documents: documentsSvc,
+        logActivity,
+      })
+      : null;
+  const workProductsSvc = workProductService(db);
   const routinesSvc = routineService(db);
   const feedbackExportService = opts?.feedbackExportService;
   type PersistedIssue = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
@@ -217,6 +254,14 @@ export function issueRoutes(
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
+
+  async function settleAsyncRouteTask(task: Promise<unknown>) {
+    if (opts?.awaitAsyncPostResponseHooks) {
+      await task;
+      return;
+    }
+    void task;
+  }
 
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
@@ -380,20 +425,50 @@ export function issueRoutes(
     });
   }
 
-  async function getAgentRole(agentId: string, companyId: string) {
+  function maybeRespondIssueAction422(res: Response, err: unknown) {
+    if (!(err instanceof HttpError) || err.status !== 422) return false;
+    const reasonCode =
+      err.details &&
+      typeof err.details === "object" &&
+      typeof (err.details as Record<string, unknown>).reasonCode === "string"
+        ? ((err.details as Record<string, unknown>).reasonCode as string)
+        : null;
+    if (!reasonCode) return false;
+    respondIssueUpdate422(res, reasonCode as IssueQaGateReasonCode, err.message);
+    return true;
+  }
+
+  async function getAgentRecord(agentId: string, companyId: string) {
     if (typeof (agentsSvc as { getById?: unknown }).getById !== "function") return null;
-    return Promise.resolve((agentsSvc as { getById: (id: string) => unknown }).getById(agentId))
+    return await Promise.resolve((agentsSvc as { getById: (id: string) => unknown }).getById(agentId))
       .then((agent) => {
-        const candidate = agent as { companyId?: unknown; role?: unknown } | null;
+        const candidate = agent as {
+          companyId?: unknown;
+          role?: unknown;
+          name?: unknown;
+          status?: unknown;
+        } | null;
         if (!candidate || typeof candidate.companyId !== "string") return null;
         if (candidate.companyId !== companyId) return null;
-        return typeof candidate.role === "string" ? candidate.role : null;
+        return {
+          role: typeof candidate.role === "string" ? candidate.role : null,
+          name: typeof candidate.name === "string" ? candidate.name : null,
+          status: typeof candidate.status === "string" ? candidate.status : null,
+        };
       })
       .catch(() => null);
   }
 
-  async function resolveReleaseGateQaAgent(companyId: string) {
-    const [company, companyAgents] = await Promise.all([
+  async function getAgentRole(agentId: string, companyId: string) {
+    return (await getAgentRecord(agentId, companyId))?.role ?? null;
+  }
+
+  async function getAgentName(agentId: string, companyId: string) {
+    return (await getAgentRecord(agentId, companyId))?.name ?? null;
+  }
+
+  async function listCompanyQaReviewerPool(companyId: string) {
+    const [company, companyAgents, openIssues] = await Promise.all([
       companiesSvc.getById(companyId),
       typeof (agentsSvc as { list?: unknown }).list === "function"
         ? Promise.resolve(
@@ -409,24 +484,41 @@ export function issueRoutes(
             }).list(companyId),
           )
         : Promise.resolve([]),
+      Promise.resolve(svc.list(companyId, { status: QA_OPEN_LOAD_STATUSES.join(",") }))
+        .then((rows) => rows ?? [])
+        .catch(() => []),
     ]);
 
-    const qaAgents = companyAgents.filter((agent) =>
+    const reviewers = companyAgents.filter((agent) =>
       agent.companyId === companyId
       && agent.role === "qa");
-    const resolution = resolveSharedReleaseGateQaAgent(qaAgents, {
-      configuredAgentId: company?.releaseGateQaAgentId ?? null,
+    return {
+      reviewers,
+      preferredReviewerAgentId: resolvePreferredQaReviewerAgentId(
+        reviewers,
+        company?.releaseGateQaAgentId ?? null,
+      ),
+      openIssueCountByAgentId: buildQaOpenIssueCountByAgentId(
+        openIssues,
+        reviewers.map((reviewer) => reviewer.id),
+      ),
+    };
+  }
+
+  async function buildDeliveryQaReviewPlan(input: {
+    companyId: string;
+    stickyReviewerAgentId?: string | null;
+  }) {
+    const pool = await listCompanyQaReviewerPool(input.companyId);
+    const selection = orderPooledQaReviewers({
+      reviewers: pool.reviewers,
+      stickyReviewerAgentId: input.stickyReviewerAgentId ?? null,
+      preferredReviewerAgentId: pool.preferredReviewerAgentId,
+      openIssueCountByAgentId: pool.openIssueCountByAgentId,
     });
     return {
-      ...resolution,
-      blockingReason:
-        resolution.resolution === "configured_unavailable"
-          ? "Configured release-gate QA owner is unavailable."
-          : resolution.resolution === "none"
-            ? "No eligible QA agent is available for the release gate."
-            : resolution.resolution === "ambiguous"
-              ? "Release-gate QA ownership is ambiguous and must be configured explicitly."
-              : null,
+      ...selection,
+      executionPolicy: buildDeliveryQaExecutionPolicy(selection.orderedReviewers),
     };
   }
 
@@ -478,21 +570,17 @@ export function issueRoutes(
   }) {
     const reason =
       input.blockingReason
-      ?? (
-        input.eligibleQaAgents.length === 0
-          ? "No healthy QA agent is currently available for automatic routing."
-          : `Automatic routing is ambiguous because ${input.eligibleQaAgents.length} healthy QA agents are currently eligible.`
-      );
+      ?? "No healthy QA reviewer is currently available for automatic routing.";
     const eligibleQaNames = input.eligibleQaAgents
       .map((agent) => agent.name?.trim())
       .filter((name): name is string => Boolean(name));
 
     return [
       QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER,
-      "Workflow gate: requires QA assignee before entering in_review.",
+      "Workflow gate: waiting for an eligible QA reviewer before entering in_review.",
       reason,
       eligibleQaNames.length > 0 ? `Eligible QA agents: ${eligibleQaNames.join(", ")}.` : null,
-      "Board action required: configure the release-gate QA owner or reduce the eligible QA roster, then resume QA routing.",
+      "Board action required: add or resume QA capacity, then retry QA routing.",
     ].filter((line): line is string => Boolean(line)).join("\n");
   }
 
@@ -580,10 +668,13 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      workIntent?: string | null;
+      qaReviewerAgentId?: string | null;
       identifier?: string | null;
       title?: string | null;
       description?: string | null;
-      executionPolicy?: unknown;
+      executionPolicy?: Record<string, unknown> | IssueExecutionPolicy | null;
+      executionState?: Record<string, unknown> | IssueExecutionState | null;
       workflowTemplateKey?: string | null;
       workflowLaneRole?: string | null;
     },
@@ -606,10 +697,6 @@ export function issueRoutes(
     if (input.issue.assigneeAgentId == null || input.comment.authorAgentId !== input.issue.assigneeAgentId) {
       return { issue: input.issue, qaAutoRouting: null };
     }
-    if (input.issue.executionPolicy != null) {
-      return { issue: input.issue, qaAutoRouting: null };
-    }
-
     const commentBody = input.comment.body ?? "";
     const truthType = classifyIssueTruthFromCommentBody(commentBody);
     const readyForQa =
@@ -620,25 +707,56 @@ export function issueRoutes(
     }
 
     const assigneeRole = await getAgentRole(input.issue.assigneeAgentId, input.issue.companyId);
-    if (!isDeliveryScopedAssigneeRole(assigneeRole)) {
+    const issueText = buildIssueRoutingText({
+      identifier: input.issue.identifier ?? null,
+      title: input.issue.title ?? "",
+      description: input.issue.description ?? null,
+    });
+    if (!isDeliveryScopedIssue({ workIntent: input.issue.workIntent, assigneeRole, issueText })) {
       return { issue: input.issue, qaAutoRouting: null };
     }
 
-    const qaResolution = await resolveReleaseGateQaAgent(input.issue.companyId);
-    if (!qaResolution.releaseGateQaAgent) {
+    const stickyReviewerAgentId =
+      input.issue.qaReviewerAgentId
+      ?? (assigneeRole === "qa" ? input.issue.assigneeAgentId : null);
+    const qaReviewPlan = await buildDeliveryQaReviewPlan({
+      companyId: input.issue.companyId,
+      stickyReviewerAgentId,
+    });
+    const effectiveExecutionPolicy = qaReviewPlan.executionPolicy;
+
+    if (!effectiveExecutionPolicy) {
       await maybeAddQaAssignmentRequiredComment({
         issueId: input.issue.id,
-        eligibleQaAgents: qaResolution.eligibleQaAgents,
-        blockingReason: qaResolution.blockingReason,
+        eligibleQaAgents: [],
+        blockingReason: "No eligible QA reviewer is available for automatic routing.",
       });
       return { issue: input.issue, qaAutoRouting: null };
     }
 
-    const qaAgent = qaResolution.releaseGateQaAgent;
+    const transition = applyIssueExecutionPolicyTransition({
+      issue: input.issue,
+      policy: effectiveExecutionPolicy,
+      requestedStatus: "in_review",
+      requestedAssigneePatch: {},
+      actor: {
+        agentId: input.actor.agentId ?? null,
+        userId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      },
+      commentBody,
+    });
+    const promotedReviewerAgentId =
+      typeof transition.patch.assigneeAgentId === "string"
+        ? transition.patch.assigneeAgentId
+        : null;
+    if (!promotedReviewerAgentId) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+
     const promotedIssue = await svc.update(input.issue.id, {
-      status: "in_review",
-      assigneeAgentId: qaAgent.id,
-      assigneeUserId: null,
+      ...transition.patch,
+      qaReviewerAgentId: promotedReviewerAgentId,
+      executionPolicy: effectiveExecutionPolicy as unknown as Record<string, unknown>,
       actorAgentId: input.actor.agentId ?? null,
       actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
     });
@@ -659,7 +777,7 @@ export function issueRoutes(
       entityId: promotedIssue.id,
       details: {
         status: "in_review",
-        assigneeAgentId: qaAgent.id,
+        assigneeAgentId: promotedReviewerAgentId,
         assigneeUserId: null,
         identifier: promotedIssue.identifier,
         source: "comment",
@@ -674,8 +792,8 @@ export function issueRoutes(
     return {
       issue: promotedIssue as unknown as TIssue,
       qaAutoRouting: {
-        agentId: qaAgent.id,
-        agentName: qaAgent.name ?? null,
+        agentId: promotedReviewerAgentId,
+        agentName: await getAgentName(promotedReviewerAgentId, input.issue.companyId),
       },
     };
   }
@@ -799,16 +917,37 @@ export function issueRoutes(
     }) satisfies IssueComment[];
   }
 
+  function getCurrentParticipantAgentId(executionState: unknown) {
+    if (!executionState || typeof executionState !== "object") return null;
+    const currentParticipant = (executionState as {
+      currentParticipant?: { type?: string; agentId?: string | null } | null;
+    }).currentParticipant ?? null;
+    if (currentParticipant?.type !== "agent") return null;
+    return currentParticipant.agentId ?? null;
+  }
+
+  function getLastDecisionOutcome(executionState: unknown) {
+    if (!executionState || typeof executionState !== "object") return null;
+    return (executionState as {
+      lastDecisionOutcome?: IssueExecutionDecisionOutcome | null;
+    }).lastDecisionOutcome ?? null;
+  }
+
   async function computeIssueQaGate(
     issue: {
       id: string;
       companyId: string;
       status: string;
       assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      workIntent?: string | null;
+      qaReviewerAgentId?: string | null;
       identifier?: string | null;
       title?: string;
+      description?: string | null;
       projectId?: string | null;
-      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+      workflowLaneRole?: string | null;
+      executionState?: Record<string, unknown> | IssueExecutionState | null;
     },
     opts?: { commentLimit?: number },
   ) {
@@ -819,23 +958,27 @@ export function issueRoutes(
       issue.projectId
         ? (await projectsSvc.getById(issue.projectId).catch(() => null))?.name ?? null
         : null;
-    const qaResolution = await resolveReleaseGateQaAgent(issue.companyId);
+    const authorizedReviewerAgentId =
+      issue.workflowLaneRole === "qa"
+        ? issue.assigneeAgentId
+        : getCurrentParticipantAgentId(issue.executionState)
+          ?? issue.qaReviewerAgentId
+          ?? (assigneeRole === "qa" ? issue.assigneeAgentId : null);
     const qaComments = await listQaCommentsForIssue({
       issueId: issue.id,
       companyId: issue.companyId,
       limit: opts?.commentLimit ?? MAX_ISSUE_COMMENT_LIMIT,
-      authorAgentId: qaResolution.releaseGateQaAgent?.id ?? null,
+      authorAgentId: authorizedReviewerAgentId,
     });
-    const latestDecisionOutcome =
-      issue.executionState && typeof issue.executionState === "object"
-        ? (issue.executionState.lastDecisionOutcome ?? null)
-        : null;
+    const latestDecisionOutcome = getLastDecisionOutcome(issue.executionState);
     const qaGate = buildIssueQaGate({
       issue: { status: issue.status as IssueStatus },
+      workIntent: issue.workIntent,
       assigneeRole,
       issueText: buildIssueRoutingText({
         identifier: issue.identifier ?? null,
         title: issue.title ?? "",
+        description: issue.description ?? null,
         projectName,
       }),
       qaComments,
@@ -846,13 +989,9 @@ export function issueRoutes(
     }
 
     const qaOwnershipFailure: IssueQaGateReasonCode | null =
-      qaResolution.releaseGateQaAgent == null
-        ? (qaResolution.eligibleQaAgents.length === 0
-          ? "qa_gate_no_eligible_qa_agent"
-          : "qa_gate_requires_qa_assignee")
-        : issue.assigneeAgentId !== qaResolution.releaseGateQaAgent.id
-          ? "qa_gate_requires_qa_assignee"
-          : null;
+      !authorizedReviewerAgentId || issue.assigneeUserId || issue.assigneeAgentId !== authorizedReviewerAgentId
+        ? "qa_gate_requires_qa_assignee"
+        : null;
     if (!qaOwnershipFailure || qaGate.missingRequirements.includes(qaOwnershipFailure)) {
       return qaGate;
     }
@@ -870,10 +1009,14 @@ export function issueRoutes(
       companyId: string;
       status: string;
       assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      workIntent?: string | null;
+      qaReviewerAgentId?: string | null;
       identifier?: string | null;
       title?: string;
+      description?: string | null;
       projectId?: string | null;
-      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+      executionState?: Record<string, unknown> | IssueExecutionState | null;
       workflowTemplateKey?: string | null;
       workflowLaneRole?: string | null;
     };
@@ -897,16 +1040,15 @@ export function issueRoutes(
       input.issue.projectId
         ? (await projectsSvc.getById(input.issue.projectId).catch(() => null))?.name ?? null
         : null;
-    const latestDecisionOutcome =
-      input.issue.executionState && typeof input.issue.executionState === "object"
-        ? (input.issue.executionState.lastDecisionOutcome ?? null)
-        : null;
+    const latestDecisionOutcome = getLastDecisionOutcome(input.issue.executionState);
     const qaScope = buildIssueQaGate({
       issue: { status: input.issue.status as IssueStatus },
+      workIntent: input.issue.workIntent,
       assigneeRole,
       issueText: buildIssueRoutingText({
         identifier: input.issue.identifier ?? null,
         title: input.issue.title ?? "",
+        description: input.issue.description ?? null,
         projectName,
       }),
       qaComments: [],
@@ -916,17 +1058,20 @@ export function issueRoutes(
       return null;
     }
 
-    const qaResolution = await resolveReleaseGateQaAgent(input.issue.companyId);
-    if (!qaResolution.releaseGateQaAgent) {
+    const authorizedReviewerAgentId =
+      input.issue.workflowLaneRole === "qa"
+        ? input.issue.assigneeAgentId
+        : getCurrentParticipantAgentId(input.issue.executionState)
+          ?? input.issue.qaReviewerAgentId
+          ?? (assigneeRole === "qa" ? input.issue.assigneeAgentId : null);
+    if (!authorizedReviewerAgentId || input.issue.assigneeUserId) {
       return {
-        error:
-          qaResolution.blockingReason
-          ?? "No authorized release-gate QA owner is available for this company.",
+        error: "No active QA reviewer is assigned to this issue.",
       };
     }
-    if (input.actor.agentId !== qaResolution.releaseGateQaAgent.id) {
+    if (input.actor.agentId !== authorizedReviewerAgentId) {
       return {
-        error: "Only the authorized release-gate QA agent can post [QA PASS] or [RELEASE CONFIRMED] verdict comments.",
+        error: "Only the active QA reviewer can post [QA PASS] or [RELEASE CONFIRMED] verdict comments.",
       };
     }
     if (!input.issue.workflowTemplateKey && !input.issue.workflowLaneRole && input.issue.status !== "in_review") {
@@ -986,6 +1131,127 @@ export function issueRoutes(
     return null;
   }
 
+  type LegacyWorkflowWriteRejection = {
+    suggestedActionType: IssueActionRequest["type"];
+    error: string;
+    details?: Record<string, unknown>;
+  };
+
+  function buildLegacyWorkflowWriteError(actionType: IssueActionRequest["type"], routeLabel: string) {
+    return `${routeLabel} no longer accepts workflow-control writes. Use POST /issues/:id/actions with type="${actionType}".`;
+  }
+
+  function detectLegacyWorkflowControlFromIssuePatch(input: {
+    issue: {
+      status: string;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+    };
+    reopenRequested?: boolean;
+    forceDoneRequested?: boolean;
+    updateFields: Record<string, unknown>;
+  }): LegacyWorkflowWriteRejection | null {
+    if (input.forceDoneRequested) return null;
+
+    const definedUpdateFieldEntries = Object.entries(input.updateFields)
+      .filter(([, value]) => value !== undefined);
+    const requestedStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : undefined;
+    const nextAssigneeAgentId =
+      input.updateFields.assigneeAgentId === undefined
+        ? input.issue.assigneeAgentId ?? null
+        : (input.updateFields.assigneeAgentId as string | null);
+    const nextAssigneeUserId =
+      input.updateFields.assigneeUserId === undefined
+        ? input.issue.assigneeUserId ?? null
+        : (input.updateFields.assigneeUserId as string | null);
+    const assigneeWillChange =
+      nextAssigneeAgentId !== (input.issue.assigneeAgentId ?? null)
+      || nextAssigneeUserId !== (input.issue.assigneeUserId ?? null);
+    const suggestedReopenAction = assigneeWillChange ? "handoff_issue" : "reopen_issue";
+
+    if (requestedStatus && requestedStatus !== input.issue.status) {
+      if (requestedStatus === "in_review") {
+        return {
+          suggestedActionType: "enter_review",
+          error: buildLegacyWorkflowWriteError("enter_review", "PATCH /issues/:id"),
+          details: { requestedStatus },
+        };
+      }
+      if (requestedStatus === "done") {
+        return {
+          suggestedActionType: "complete_issue",
+          error: buildLegacyWorkflowWriteError("complete_issue", "PATCH /issues/:id"),
+          details: { requestedStatus },
+        };
+      }
+      if (isTerminalIssueStatus(input.issue.status) && !isTerminalIssueStatus(requestedStatus)) {
+        return {
+          suggestedActionType: suggestedReopenAction,
+          error: buildLegacyWorkflowWriteError(suggestedReopenAction, "PATCH /issues/:id"),
+          details: { requestedStatus },
+        };
+      }
+    }
+
+    if (isTerminalIssueStatus(input.issue.status) && input.reopenRequested === true) {
+      return {
+        suggestedActionType: suggestedReopenAction,
+        error: buildLegacyWorkflowWriteError(suggestedReopenAction, "PATCH /issues/:id"),
+        details: { reopenRequested: true },
+      };
+    }
+
+    return null;
+  }
+
+  function detectLegacyWorkflowControlFromComment(input: {
+    body: string;
+    reopenRequested?: boolean;
+  }): LegacyWorkflowWriteRejection | null {
+    if (input.reopenRequested) {
+      return {
+        suggestedActionType: "reopen_issue",
+        error: buildLegacyWorkflowWriteError("reopen_issue", "POST /issues/:id/comments"),
+        details: { reopenRequested: true },
+      };
+    }
+    if (qaCommentHasQaPassMarker(input.body) || qaCommentHasReleaseConfirmedMarker(input.body)) {
+      return {
+        suggestedActionType: "submit_qa_verdict",
+        error: buildLegacyWorkflowWriteError("submit_qa_verdict", "POST /issues/:id/comments"),
+      };
+    }
+    return null;
+  }
+
+  function respondLegacyWorkflowWriteRejected(
+    res: Response,
+    input: {
+      issue: { id: string; companyId: string; status: string };
+      actor: { actorType: "agent" | "user"; actorId: string; agentId: string | null };
+      route: "patch" | "comment";
+      rejection: LegacyWorkflowWriteRejection;
+    },
+  ) {
+    logOpsWarn("issue.legacy_workflow_write_rejected", {
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      issueStatus: input.issue.status,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId ?? undefined,
+      route: input.route,
+      suggestedActionType: input.rejection.suggestedActionType,
+      ...input.rejection.details,
+    });
+    res.status(422).json({
+      error: input.rejection.error,
+      suggestedActionType: input.rejection.suggestedActionType,
+    });
+  }
+
   async function computeIssueMergeStatusSafe(
     issue: {
       id: string;
@@ -1029,7 +1295,7 @@ export function issueRoutes(
 
   async function applyWorkflowTemplateAndWakeChildren(input: {
     companyId: string;
-    templateKey: "engineering_delivery_v1";
+    templateKey: IssueWorkflowTemplateKey;
     parentIssue: {
       id: string;
       companyId: string;
@@ -1196,7 +1462,6 @@ export function issueRoutes(
       comment: input.comment,
       actor: input.actor,
       logActivity,
-      resolveReleaseGateQaAgent,
       issues: {
         update: async (issueId, patch) => await svc.update(issueId, patch),
         addComment: async (issueId, body, opts) => await svc.addComment(issueId, body, opts),
@@ -1210,10 +1475,16 @@ export function issueRoutes(
         getById: async (workspaceId) => await executionWorkspacesSvc.getById(workspaceId),
       },
       persistExecutionWorkspaceMergeStatus,
+      workflow: {
+        evaluateLaneCompletion: async (issue) => await issueWorkflowsSvc.evaluateLaneCompletion(issue),
+        getWakeableParentAfterChildCompletion: async (parentIssueId) =>
+          await svc.getWakeableParentAfterChildCompletion(parentIssueId),
+      },
     });
     return {
       issue: result.issue as unknown as TIssue,
       mergeStatus: result.mergeStatus,
+      parentWakeup: result.parentWakeup,
     };
   }
   async function computeIssueQaGateSafe(
@@ -1517,10 +1788,511 @@ export function issueRoutes(
     };
   }
 
+  async function maybeHandleStandaloneReviewHandbackFromComment<
+    TIssue extends {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      qaReviewerAgentId?: string | null;
+      identifier?: string | null;
+      title?: string;
+      workflowTemplateKey?: string | null;
+      workflowLaneRole?: string | null;
+      executionPolicy?: Record<string, unknown> | IssueExecutionPolicy | null;
+      executionState?: Record<string, unknown> | IssueExecutionState | null;
+    },
+  >(input: {
+    issue: TIssue;
+    comment: Pick<IssueComment, "body" | "id" | "authorAgentId" | "authorUserId">;
+    actor: {
+      actorType: "agent" | "user";
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+    };
+  }) {
+    if (input.issue.workflowTemplateKey || input.issue.workflowLaneRole) {
+      return { issue: input.issue, handbacked: false };
+    }
+    if (input.issue.status !== "in_review") {
+      return { issue: input.issue, handbacked: false };
+    }
+    if (input.actor.actorType !== "agent" || !input.comment.authorAgentId) {
+      return { issue: input.issue, handbacked: false };
+    }
+
+    const executionPolicy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+    if (!executionPolicy) {
+      return { issue: input.issue, handbacked: false };
+    }
+
+    const activeReviewerAgentId = getCurrentParticipantAgentId(input.issue.executionState);
+    if (!activeReviewerAgentId || input.comment.authorAgentId !== activeReviewerAgentId) {
+      return { issue: input.issue, handbacked: false };
+    }
+
+    const shouldHandback =
+      qaCommentHasFailingReview(input.comment.body)
+      || qaCommentHasFailingVerification(input.comment.body);
+    if (!shouldHandback) {
+      return { issue: input.issue, handbacked: false };
+    }
+
+    const transition = applyIssueExecutionPolicyTransition({
+      issue: input.issue,
+      policy: executionPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: {
+        agentId: input.actor.agentId ?? null,
+        userId: null,
+      },
+      commentBody: input.comment.body ?? null,
+    });
+    if (transition.patch.status !== "in_progress") {
+      return { issue: input.issue, handbacked: false };
+    }
+
+    const decisionId = transition.decision ? randomUUID() : null;
+    if (decisionId) {
+      const nextExecutionState = transition.patch.executionState;
+      if (!nextExecutionState || typeof nextExecutionState !== "object") {
+        throw new Error("Execution policy decision patch is missing executionState");
+      }
+      transition.patch.executionState = {
+        ...nextExecutionState,
+        lastDecisionId: decisionId,
+      };
+    }
+
+    const reviewerAgentId = input.issue.qaReviewerAgentId ?? activeReviewerAgentId;
+    const updatedIssue = await db.transaction(async (tx) => {
+      const updated = await svc.update(input.issue.id, {
+        ...transition.patch,
+        qaReviewerAgentId: reviewerAgentId,
+        actorAgentId: input.actor.agentId ?? null,
+        actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      }, tx);
+      if (!updated) return null;
+
+      if (transition.decision && decisionId) {
+        await tx.insert(issueExecutionDecisions).values({
+          id: decisionId,
+          companyId: updated.companyId,
+          issueId: updated.id,
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          actorAgentId: input.actor.agentId ?? null,
+          actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+          outcome: transition.decision.outcome,
+          body: transition.decision.body,
+          createdByRunId: input.actor.runId ?? null,
+        });
+      }
+
+      return updated;
+    });
+    if (!updatedIssue) {
+      return { issue: input.issue, handbacked: false };
+    }
+
+    await routinesSvc.syncRunStatusForIssue(updatedIssue.id);
+
+    await logActivity(db, {
+      companyId: updatedIssue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: updatedIssue.id,
+      details: {
+        status: updatedIssue.status,
+        assigneeAgentId: updatedIssue.assigneeAgentId,
+        assigneeUserId: updatedIssue.assigneeUserId,
+        qaReviewerAgentId: reviewerAgentId,
+        identifier: updatedIssue.identifier,
+        source: "comment",
+        _previous: {
+          status: input.issue.status,
+          assigneeAgentId: input.issue.assigneeAgentId,
+          assigneeUserId: input.issue.assigneeUserId ?? null,
+        },
+      },
+    });
+
+    return {
+      issue: updatedIssue as unknown as TIssue,
+      handbacked: true,
+    };
+  }
+
   function getWorkflowDependentBlockerIssueIds(candidate: unknown) {
     const value = (candidate as { blockedByIssueIds?: unknown } | null)?.blockedByIssueIds;
     if (!Array.isArray(value)) return undefined;
     return value.filter((entry): entry is string => typeof entry === "string");
+  }
+
+  function isTerminalIssueStatus(status: string) {
+    return status === "done" || status === "cancelled";
+  }
+
+  async function applyIssueActionFollowUps(input: {
+    existingIssue: PersistedIssue;
+    action: IssueActionRequest;
+    result: IssueActionResult;
+    commentBody?: string | null;
+    actor: {
+      actorType: "agent" | "user";
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+    };
+  }) {
+    const warnings = [...(input.result.warnings ?? [])];
+    let nextIssue = input.result.issue as PersistedIssue;
+    const assigneeChanged =
+      nextIssue.assigneeAgentId !== input.existingIssue.assigneeAgentId
+      || nextIssue.assigneeUserId !== input.existingIssue.assigneeUserId;
+    const statusChanged = nextIssue.status !== input.existingIssue.status;
+
+    if (statusChanged || assigneeChanged) {
+      await routinesSvc.syncRunStatusForIssue(nextIssue.id);
+    }
+
+    if (input.actor.runId) {
+      await heartbeat.reportRunActivity(input.actor.runId).catch((err) =>
+        logger.warn({ err, runId: input.actor.runId }, "failed to clear detached run warning after typed issue action"));
+    }
+
+    if (
+      assigneeChanged
+      && input.action.type !== "enter_review"
+      && nextIssue.assigneeAgentId
+      && nextIssue.status !== "backlog"
+      && !isTerminalIssueStatus(nextIssue.status)
+    ) {
+      const assigneeWakeup = await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: nextIssue,
+        reason: "issue_assigned",
+        mutation: "update",
+        contextSource: `issue.action.${input.action.type}`,
+        requestedByActorType: input.actor.actorType,
+        requestedByActorId: input.actor.actorId,
+      });
+      if (assigneeWakeup.status === "warning" && assigneeWakeup.warning) {
+        warnings.push(assigneeWakeup.warning);
+      }
+    }
+
+    if (
+      input.action.type === "enter_review"
+      && input.existingIssue.status !== "in_review"
+      && nextIssue.status === "in_review"
+      && nextIssue.assigneeAgentId
+      && nextIssue.assigneeAgentId !== input.actor.agentId
+    ) {
+      const assigneeWakeup = await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: nextIssue,
+        reason: assigneeChanged ? "issue_assigned" : "issue_status_changed",
+        mutation: "update",
+        contextSource: assigneeChanged ? "issue.action.enter_review.assignment" : "issue.action.enter_review",
+        requestedByActorType: input.actor.actorType,
+        requestedByActorId: input.actor.actorId,
+      });
+      if (assigneeWakeup.status === "warning" && assigneeWakeup.warning) {
+        warnings.push(assigneeWakeup.warning);
+      }
+    }
+
+    const reopenedWorkflowLane =
+      Boolean(nextIssue.workflowLaneRole)
+      && isTerminalIssueStatus(input.existingIssue.status)
+      && !isTerminalIssueStatus(nextIssue.status);
+    if (reopenedWorkflowLane) {
+      const invalidation = await issueWorkflowsSvc.invalidateWorkflowDescendants({
+        issueId: nextIssue.id,
+        invalidateSelf: true,
+      });
+      if (invalidation.invalidatedSelf) {
+        nextIssue = {
+          ...nextIssue,
+          ...invalidation.invalidatedSelf,
+        };
+      }
+      for (const invalidatedIssue of invalidation.invalidatedDescendants) {
+        logOpsInfo("workflow.lane.invalidated", {
+          companyId: invalidatedIssue.companyId,
+          issueId: invalidatedIssue.id,
+          rootIssueId: invalidatedIssue.parentId ?? nextIssue.parentId ?? null,
+          templateKey: invalidatedIssue.workflowTemplateKey ?? nextIssue.workflowTemplateKey,
+          laneRole: invalidatedIssue.workflowLaneRole ?? null,
+          sourceLaneRole: nextIssue.workflowLaneRole ?? null,
+          reason: "lane_reopened",
+          status: invalidatedIssue.status,
+        });
+        await logActivity(db, {
+          companyId: invalidatedIssue.companyId,
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          action: "issue.workflow_lane_invalidated",
+          entityType: "issue",
+          entityId: invalidatedIssue.id,
+          details: {
+            identifier: invalidatedIssue.identifier,
+            parentId: invalidatedIssue.parentId,
+            sourceIssueId: nextIssue.id,
+            sourceLaneRole: nextIssue.workflowLaneRole ?? null,
+            status: invalidatedIssue.status,
+            reason: "lane_reopened",
+          },
+        });
+      }
+    }
+
+    const becameTerminalForDependents =
+      !isTerminalIssueStatus(input.existingIssue.status) && isTerminalIssueStatus(nextIssue.status);
+    if (becameTerminalForDependents) {
+      const promotedWorkflowDependents = await issueWorkflowsSvc.advanceWorkflowDependents(nextIssue.id);
+      const promotedWorkflowDependentIds = new Set(promotedWorkflowDependents.map((dependent) => dependent.id));
+      for (const dependent of promotedWorkflowDependents) {
+        const blockerIssueIds = getWorkflowDependentBlockerIssueIds(dependent);
+        logOpsInfo("workflow.lane.unblocked", {
+          companyId: dependent.companyId,
+          issueId: dependent.id,
+          rootIssueId: dependent.parentId ?? null,
+          templateKey: dependent.workflowTemplateKey ?? nextIssue.workflowTemplateKey,
+          laneRole: dependent.workflowLaneRole ?? null,
+          resolvedBlockerIssueId: nextIssue.id,
+          blockerIssueIds,
+        });
+        await logActivity(db, {
+          companyId: dependent.companyId,
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          action: "issue.workflow_lane_unblocked",
+          entityType: "issue",
+          entityId: dependent.id,
+          details: {
+            identifier: dependent.identifier,
+            parentId: dependent.parentId,
+            resolvedBlockerIssueId: nextIssue.id,
+            blockerIssueIds,
+            laneRole: dependent.workflowLaneRole ?? null,
+          },
+        });
+        if (!dependent.assigneeAgentId) continue;
+        heartbeat
+          .wakeup(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: dependent.id,
+              resolvedBlockerIssueId: nextIssue.id,
+              blockerIssueIds,
+            },
+            requestedByActorType: input.actor.actorType,
+            requestedByActorId: input.actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              taskId: dependent.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved",
+              resolvedBlockerIssueId: nextIssue.id,
+              blockerIssueIds,
+            },
+          })
+          .catch((err) =>
+            logWakeupFailure(
+              err,
+              {
+                companyId: dependent.companyId,
+                issueId: dependent.id,
+                agentId: dependent.assigneeAgentId ?? undefined,
+                reason: "issue_blockers_resolved",
+              },
+              "failed to wake workflow dependent after typed issue action",
+            ));
+      }
+
+      const dependents = await svc.listWakeableBlockedDependents(nextIssue.id);
+      for (const dependent of dependents) {
+        if (promotedWorkflowDependentIds.has(dependent.id)) continue;
+        heartbeat
+          .wakeup(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: dependent.id,
+              resolvedBlockerIssueId: nextIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+            requestedByActorType: input.actor.actorType,
+            requestedByActorId: input.actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              taskId: dependent.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved",
+              resolvedBlockerIssueId: nextIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+          })
+          .catch((err) =>
+            logWakeupFailure(
+              err,
+              {
+                companyId: nextIssue.companyId,
+                issueId: dependent.id,
+                agentId: dependent.assigneeAgentId ?? undefined,
+                reason: "issue_blockers_resolved",
+              },
+              "failed to wake blocked dependent after typed issue action",
+            ));
+      }
+
+      if (nextIssue.parentId) {
+        const parent = await svc.getWakeableParentAfterChildCompletion(nextIssue.parentId);
+        if (parent?.assigneeAgentId) {
+          heartbeat
+            .wakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_children_completed",
+              payload: {
+                issueId: parent.id,
+                completedChildIssueId: nextIssue.id,
+                childIssueIds: parent.childIssueIds,
+              },
+              requestedByActorType: input.actor.actorType,
+              requestedByActorId: input.actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_children_completed",
+                source: "issue.children_completed",
+                completedChildIssueId: nextIssue.id,
+                childIssueIds: parent.childIssueIds,
+              },
+            })
+            .catch((err) =>
+              logWakeupFailure(
+                err,
+                {
+                  companyId: nextIssue.companyId,
+                  issueId: parent.id,
+                  agentId: parent.assigneeAgentId ?? undefined,
+                  reason: "issue_children_completed",
+                },
+                "failed to wake parent after typed issue completion",
+              ));
+        }
+      }
+    }
+
+    if (nextIssue.status === "done" && input.existingIssue.status !== "done") {
+      const tc = getTelemetryClient();
+      if (tc && input.actor.agentId) {
+        const actorAgent = await agentsSvc.getById(input.actor.agentId);
+        if (actorAgent) {
+          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role });
+        }
+      }
+    }
+
+    const reopenedViaTypedAction =
+      isTerminalIssueStatus(input.existingIssue.status) && !isTerminalIssueStatus(nextIssue.status);
+    if (
+      input.result.comment
+      && ["append_note", "reopen_issue", "handoff_issue"].includes(input.action.type)
+      && !assigneeChanged
+      && nextIssue.assigneeAgentId
+      && nextIssue.assigneeAgentId !== input.actor.agentId
+      && !isTerminalIssueStatus(nextIssue.status)
+    ) {
+      await heartbeat.wakeup(nextIssue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: reopenedViaTypedAction ? "issue_reopened_via_comment" : "issue_commented",
+        payload: {
+          issueId: nextIssue.id,
+          commentId: input.result.comment.id,
+          mutation: "comment",
+          source: "comment",
+          ...(reopenedViaTypedAction ? { reopenedFrom: input.existingIssue.status } : {}),
+        },
+        requestedByActorType: input.actor.actorType,
+        requestedByActorId: input.actor.actorId,
+        contextSnapshot: {
+          issueId: nextIssue.id,
+          taskId: nextIssue.id,
+          commentId: input.result.comment.id,
+          wakeCommentId: input.result.comment.id,
+          source: reopenedViaTypedAction ? "issue.action.reopen" : "issue.action.comment",
+          wakeReason: reopenedViaTypedAction ? "issue_reopened_via_comment" : "issue_commented",
+          ...(reopenedViaTypedAction ? { reopenedFrom: input.existingIssue.status } : {}),
+        },
+      }).catch((err) =>
+        logger.warn({ err, issueId: nextIssue.id }, "failed to wake assignee after typed issue note"));
+    }
+
+    if (input.result.comment && input.commentBody) {
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(nextIssue.companyId, input.commentBody);
+      } catch (err) {
+        logger.warn({ err, issueId: nextIssue.id }, "failed to resolve @-mentions for typed issue action");
+      }
+
+      for (const mentionedId of mentionedIds) {
+        if (input.actor.actorType === "agent" && input.actor.actorId === mentionedId) continue;
+        heartbeat
+          .wakeup(mentionedId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_comment_mentioned",
+            payload: { issueId: nextIssue.id, commentId: input.result.comment.id },
+            requestedByActorType: input.actor.actorType,
+            requestedByActorId: input.actor.actorId,
+            contextSnapshot: {
+              issueId: nextIssue.id,
+              taskId: nextIssue.id,
+              commentId: input.result.comment.id,
+              wakeCommentId: input.result.comment.id,
+              wakeReason: "issue_comment_mentioned",
+              source: "comment.mention",
+            },
+          })
+          .catch((err) =>
+            logWakeupFailure(
+              err,
+              {
+                companyId: nextIssue.companyId,
+                issueId: nextIssue.id,
+                agentId: mentionedId,
+                reason: "issue_comment_mentioned",
+              },
+              "failed to wake mentioned agent after typed issue action",
+            ));
+      }
+    }
+
+    return {
+      ...input.result,
+      issue: nextIssue,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
   }
 
   async function evaluateWorkflowRootCompletion(issue: PersistedIssue) {
@@ -1832,7 +2604,7 @@ export function issueRoutes(
     companyId: string;
     projectId: string | null;
     parentId: string | null | undefined;
-    explicitWorkflowTemplateKey: "engineering_delivery_v1" | null | undefined;
+    explicitWorkflowTemplateKey: IssueWorkflowTemplateKey | null | undefined;
   }) {
     if (input.parentId) return null;
     if (input.explicitWorkflowTemplateKey) {
@@ -3123,6 +3895,76 @@ export function issueRoutes(
     res.json(await decorateIssueDetailWithBoardState(decorated));
   });
 
+  router.post("/issues/:id/actions", validate(issueActionSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+    }))) return;
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    if (req.body.type === "handoff_issue") {
+      const nextAssigneeAgentId =
+        req.body.payload.assigneeAgentId === undefined ? issue.assigneeAgentId : req.body.payload.assigneeAgentId;
+      const nextAssigneeUserId =
+        req.body.payload.assigneeUserId === undefined ? issue.assigneeUserId : req.body.payload.assigneeUserId;
+      const assigneeWillChange =
+        nextAssigneeAgentId !== issue.assigneeAgentId || nextAssigneeUserId !== issue.assigneeUserId;
+      const isAgentReturningIssueToCreator =
+        req.actor.type === "agent"
+        && !!req.actor.agentId
+        && issue.assigneeAgentId === req.actor.agentId
+        && nextAssigneeAgentId === null
+        && typeof nextAssigneeUserId === "string"
+        && !!issue.createdByUserId
+        && nextAssigneeUserId === issue.createdByUserId;
+      if (assigneeWillChange && !isAgentReturningIssueToCreator) {
+        await assertCanAssignTasks(req, issue.companyId);
+      }
+    }
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    const allowsClosedWorkspaceReopenAction =
+      req.body.type === "reopen_issue"
+      || (req.body.type === "handoff_issue" && req.body.payload.reopen === true);
+    if (closedExecutionWorkspace && !allowsClosedWorkspaceReopenAction) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    if (!issueActions) {
+      throw new Error("Issue action service is not configured");
+    }
+
+    try {
+      const result = await issueActions.execute({
+        issue,
+        actor,
+        action: req.body,
+      });
+      const finalizedResult = await applyIssueActionFollowUps({
+        existingIssue: issue,
+        action: req.body,
+        result,
+        commentBody: "payload" in req.body && req.body.payload && typeof req.body.payload === "object"
+          && "body" in req.body.payload && typeof req.body.payload.body === "string"
+          ? req.body.payload.body
+          : null,
+        actor,
+      });
+      res.json(finalizedResult);
+    } catch (err) {
+      if (maybeRespondIssueAction422(res, err)) return;
+      throw err;
+    }
+  });
+
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -3143,32 +3985,6 @@ export function issueRoutes(
     if (req.actor.type !== "board" && req.body.recovery !== undefined) {
       throw forbidden("Only board users can create or apply recovery successor issues");
     }
-    const assigneeWillChange =
-      (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
-      (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
-
-    const isAgentReturningIssueToCreator =
-      req.actor.type === "agent" &&
-      !!req.actor.agentId &&
-      existing.assigneeAgentId === req.actor.agentId &&
-      req.body.assigneeAgentId === null &&
-      typeof req.body.assigneeUserId === "string" &&
-      !!existing.createdByUserId &&
-      req.body.assigneeUserId === existing.createdByUserId;
-
-    if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
-      }
-    }
-    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
-
-    const actor = getActorInfo(req);
-    const isClosed = existing.status === "done" || existing.status === "cancelled";
-    const existingRelations =
-      Array.isArray(req.body.blockedByIssueIds)
-        ? await svc.getRelationSummaries(existing.id)
-        : null;
     const {
       comment: commentBody,
       reopen: reopenRequested,
@@ -3178,11 +3994,54 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+
+    const actor = getActorInfo(req);
+    const assigneeWillChange =
+      (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
+      (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
+    const isAgentReturningIssueToCreator =
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.assigneeAgentId === req.actor.agentId &&
+      req.body.assigneeAgentId === null &&
+      typeof req.body.assigneeUserId === "string" &&
+      !!existing.createdByUserId &&
+      req.body.assigneeUserId === existing.createdByUserId;
+    const isClosed = existing.status === "done" || existing.status === "cancelled";
+    const existingRelations =
+      Array.isArray(req.body.blockedByIssueIds)
+        ? await svc.getRelationSummaries(existing.id)
+        : null;
     const forceDoneRequested = forceDoneRaw === true;
     const overrideReason = typeof overrideReasonRaw === "string" ? overrideReasonRaw.trim() : "";
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
+    const legacyWorkflowPatchRejection = issueActions
+      ? detectLegacyWorkflowControlFromIssuePatch({
+        issue: existing,
+        reopenRequested,
+        forceDoneRequested,
+        updateFields,
+      })
+      : null;
+
+    if (legacyWorkflowPatchRejection) {
+      respondLegacyWorkflowWriteRejected(res, {
+        issue: existing,
+        actor,
+        route: "patch",
+        rejection: legacyWorkflowPatchRejection,
+      });
+      return;
+    }
+
+    if (assigneeWillChange) {
+      if (!isAgentReturningIssueToCreator) {
+        await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -3262,10 +4121,66 @@ export function issueRoutes(
 
     const requestedStatusBeforeExecutionTransition =
       typeof updateFields.status === "string" ? updateFields.status : existing.status;
-    const effectiveExecutionPolicy =
+    let effectiveExecutionPolicy =
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NonNullable<typeof updateFields.executionPolicy> | null)
         : normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+    if (
+      requestedStatusBeforeExecutionTransition === "in_review"
+      && existing.status !== "in_review"
+      && effectiveExecutionPolicy == null
+      && !existing.workflowTemplateKey
+      && !existing.workflowLaneRole
+    ) {
+      const hasExplicitAssigneeAgentPatch = req.body.assigneeAgentId !== undefined;
+      const hasExplicitAssigneeUserPatch = req.body.assigneeUserId !== undefined;
+      const requestedAssigneeAgentId =
+        hasExplicitAssigneeAgentPatch ? (req.body.assigneeAgentId as string | null) : existing.assigneeAgentId;
+      const requestedAssigneeUserId =
+        hasExplicitAssigneeUserPatch ? (req.body.assigneeUserId as string | null) : existing.assigneeUserId;
+      const requestedAssigneeRole =
+        requestedAssigneeAgentId ? await getAgentRole(requestedAssigneeAgentId, existing.companyId) : null;
+      const prospectiveRole =
+        requestedAssigneeAgentId
+          ? requestedAssigneeRole
+          : requestedAssigneeUserId
+            ? "user"
+            : existing.assigneeAgentId
+              ? await getAgentRole(existing.assigneeAgentId, existing.companyId)
+              : existing.assigneeUserId
+                ? "user"
+                : null;
+
+      const issueText = buildIssueRoutingText({
+        identifier: existing.identifier ?? null,
+        title: existing.title ?? "",
+        description: existing.description ?? null,
+      });
+      if (isDeliveryScopedIssue({ workIntent: existing.workIntent, assigneeRole: prospectiveRole, issueText })) {
+        if (
+          (hasExplicitAssigneeUserPatch && requestedAssigneeUserId)
+          || (hasExplicitAssigneeAgentPatch && requestedAssigneeAgentId && requestedAssigneeRole !== "qa")
+        ) {
+          respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
+          return;
+        }
+
+        const existingQaAssigneeId =
+          existing.assigneeAgentId && await getAgentRole(existing.assigneeAgentId, existing.companyId) === "qa"
+            ? existing.assigneeAgentId
+            : null;
+        const qaReviewPlan = await buildDeliveryQaReviewPlan({
+          companyId: existing.companyId,
+          stickyReviewerAgentId: existing.qaReviewerAgentId ?? requestedAssigneeAgentId ?? existingQaAssigneeId,
+        });
+        if (!qaReviewPlan.executionPolicy || !qaReviewPlan.selectedReviewer) {
+          respondIssueUpdate422(res, "qa_gate_no_eligible_qa_agent");
+          return;
+        }
+        effectiveExecutionPolicy = qaReviewPlan.executionPolicy;
+        updateFields.executionPolicy = effectiveExecutionPolicy;
+      }
+    }
     const closesWithoutExecutionPolicy =
       existing.status !== "done"
       && requestedStatusBeforeExecutionTransition === "done"
@@ -3273,6 +4188,17 @@ export function issueRoutes(
       && !existing.workflowTemplateKey
       && !existing.workflowLaneRole;
     if (closesWithoutExecutionPolicy && !forceDoneRequested) {
+      const activeQaReviewerAgentId = getCurrentParticipantAgentId(existing.executionState);
+      if (
+        activeQaReviewerAgentId
+        && (
+          existing.assigneeUserId
+          || existing.assigneeAgentId !== activeQaReviewerAgentId
+        )
+      ) {
+        respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
+        return;
+      }
       const existingQaGate = await computeIssueQaGate(existing, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
       const gateFailure = existingQaGate.isDeliveryScoped
         ? (existingQaGate.missingRequirements[0] ?? null)
@@ -3311,6 +4237,12 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (transition.decision) {
+      updateFields.qaReviewerAgentId =
+        existing.qaReviewerAgentId
+        ?? getCurrentParticipantAgentId(existing.executionState)
+        ?? null;
+    }
     if (forceDoneRequested) {
       updateFields.status = "done";
     }
@@ -3319,14 +4251,12 @@ export function issueRoutes(
     const requestedNextStatus =
       typeof updateFields.status === "string" ? updateFields.status : existing.status;
     if (requestedNextStatus === "in_review" && existing.status !== "in_review") {
-      const hasExplicitAssigneeAgentPatch = updateFields.assigneeAgentId !== undefined;
-      const hasExplicitAssigneeUserPatch = updateFields.assigneeUserId !== undefined;
       const requestedAssigneeAgentId =
-        hasExplicitAssigneeAgentPatch
+        updateFields.assigneeAgentId !== undefined
           ? (updateFields.assigneeAgentId as string | null)
           : existing.assigneeAgentId;
       const requestedAssigneeUserId =
-        hasExplicitAssigneeUserPatch
+        updateFields.assigneeUserId !== undefined
           ? (updateFields.assigneeUserId as string | null)
           : existing.assigneeUserId;
       const prospectiveRole = requestedAssigneeAgentId
@@ -3335,58 +4265,30 @@ export function issueRoutes(
           ? "user"
           : existing.assigneeAgentId
             ? await getAgentRole(existing.assigneeAgentId, existing.companyId)
-            : existing.assigneeUserId
+          : existing.assigneeUserId
               ? "user"
               : null;
-      if (isDeliveryScopedAssigneeRole(prospectiveRole)) {
-        const qaResolution = await resolveReleaseGateQaAgent(existing.companyId);
-        if (hasExplicitAssigneeAgentPatch || hasExplicitAssigneeUserPatch) {
-          if (requestedAssigneeUserId || !requestedAssigneeAgentId) {
-            respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
-            return;
-          }
-          const assigneeRole = await getAgentRole(requestedAssigneeAgentId, existing.companyId);
-          if (assigneeRole !== "qa") {
-            respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
-            return;
-          }
-          if (!qaResolution.releaseGateQaAgent) {
-            respondIssueUpdate422(
-              res,
-              qaResolution.resolution === "none" ? "qa_gate_no_eligible_qa_agent" : "qa_gate_requires_qa_assignee",
-            );
-            return;
-          }
-          if (requestedAssigneeAgentId !== qaResolution.releaseGateQaAgent.id) {
-            respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
-            return;
-          }
-          qaAutoRouting = {
-            agentId: requestedAssigneeAgentId,
-            agentName: qaResolution.releaseGateQaAgent.name ?? null,
-            alreadyAssigned: requestedAssigneeAgentId === existing.assigneeAgentId,
-          };
-        } else {
-          if (qaResolution.releaseGateQaAgent && requestedAssigneeAgentId === qaResolution.releaseGateQaAgent.id && !requestedAssigneeUserId) {
-            qaAutoRouting = {
-              agentId: requestedAssigneeAgentId,
-              agentName: qaResolution.releaseGateQaAgent.name ?? null,
-              alreadyAssigned: true,
-            };
-          } else {
-            if (!qaResolution.releaseGateQaAgent) {
-              respondIssueUpdate422(
-                res,
-                qaResolution.resolution === "none" ? "qa_gate_no_eligible_qa_agent" : "qa_gate_requires_qa_assignee",
-              );
-              return;
-            }
-            const qaAgent = qaResolution.releaseGateQaAgent;
-            updateFields.assigneeAgentId = qaAgent.id;
-            updateFields.assigneeUserId = null;
-            qaAutoRouting = { agentId: qaAgent.id, agentName: qaAgent.name ?? null };
-          }
+      const issueText = buildIssueRoutingText({
+        identifier: existing.identifier ?? null,
+        title: existing.title ?? "",
+        description: existing.description ?? null,
+      });
+      if (isDeliveryScopedIssue({ workIntent: existing.workIntent, assigneeRole: prospectiveRole, issueText })) {
+        if (requestedAssigneeUserId || !requestedAssigneeAgentId) {
+          respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
+          return;
         }
+        const assigneeRole = await getAgentRole(requestedAssigneeAgentId, existing.companyId);
+        if (assigneeRole !== "qa") {
+          respondIssueUpdate422(res, "qa_gate_requires_qa_assignee");
+          return;
+        }
+        qaAutoRouting = {
+          agentId: requestedAssigneeAgentId,
+          agentName: await getAgentName(requestedAssigneeAgentId, existing.companyId),
+          alreadyAssigned: requestedAssigneeAgentId === existing.assigneeAgentId,
+        };
+        updateFields.qaReviewerAgentId = requestedAssigneeAgentId;
       }
     }
     const isDoneTransition = existing.status !== "done" && requestedNextStatus === "done";
@@ -3452,6 +4354,7 @@ export function issueRoutes(
               ...updateFields,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              completionGuardrailsSatisfied: isDoneTransition ? true : undefined,
             },
             tx,
           );
@@ -3477,6 +4380,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          completionGuardrailsSatisfied: isDoneTransition ? true : undefined,
         });
       }
     } catch (err) {
@@ -3767,6 +4671,14 @@ export function issueRoutes(
       });
       issue = workflowHandback.issue;
       issueResponse = { ...issueResponse, ...issue };
+
+      const standaloneHandback = await maybeHandleStandaloneReviewHandbackFromComment({
+        issue,
+        comment,
+        actor,
+      });
+      issue = standaloneHandback.issue;
+      issueResponse = { ...issueResponse, ...issue };
     }
 
     let mergeStatus = await computeIssueMergeStatusSafe(issue, { qaGate: qaGateSnapshot });
@@ -3810,7 +4722,7 @@ export function issueRoutes(
       req.body.status !== undefined;
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    await settleAsyncRouteTask((async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
@@ -4024,9 +4936,11 @@ export function issueRoutes(
               "failed to wake agent on issue update",
             ));
       }
-    })();
-    void maybeTriggerQaAutoFix(issue, actor, "patch_update").catch((err) =>
-      logger.warn({ err, issueId: issue.id }, "failed to trigger qa auto-fix after issue update"));
+    })());
+    await settleAsyncRouteTask(
+      maybeTriggerQaAutoFix(issue, actor, "patch_update").catch((err) =>
+        logger.warn({ err, issueId: issue.id }, "failed to trigger qa auto-fix after issue update")),
+    );
 
     const qaGate = await computeIssueQaGateSafe(issue);
     const finalMergeStatus = mergeStatus ?? await computeIssueMergeStatusSafe(issue, { qaGate });
@@ -4366,6 +5280,21 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
+    const legacyWorkflowCommentRejection = issueActions
+      ? detectLegacyWorkflowControlFromComment({
+        body: req.body.body,
+        reopenRequested,
+      })
+      : null;
+    if (legacyWorkflowCommentRejection) {
+      respondLegacyWorkflowWriteRejected(res, {
+        issue,
+        actor,
+        route: "comment",
+        rejection: legacyWorkflowCommentRejection,
+      });
+      return;
+    }
     const isClosed = issue.status === "done" || issue.status === "cancelled";
     if (isClosed && reopenRequested !== true && req.actor.type === "agent") {
       res.status(409).json({ error: "Issue is closed. Reopen it before posting agent updates." });
@@ -4531,6 +5460,13 @@ export function issueRoutes(
     });
     currentIssue = workflowHandback.issue;
 
+    const standaloneHandback = await maybeHandleStandaloneReviewHandbackFromComment({
+      issue: currentIssue,
+      comment,
+      actor,
+    });
+    currentIssue = standaloneHandback.issue;
+
     const mergeResult = await maybeAutoMergeValidatedIssue({
       issue: currentIssue,
       comment,
@@ -4539,7 +5475,7 @@ export function issueRoutes(
     currentIssue = mergeResult.issue;
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    await settleAsyncRouteTask((async () => {
       const wakeups = new Map<string, NonNullable<Parameters<typeof heartbeat.wakeup>[1]>>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
@@ -4547,6 +5483,28 @@ export function issueRoutes(
       const currentIssueIsClosed = currentIssue.status === "done" || currentIssue.status === "cancelled";
       const skipWake = selfComment || currentIssueIsClosed;
       const isBoardCopilotThread = currentIssue.originKind === "board_copilot_thread";
+      if (mergeResult.parentWakeup) {
+        wakeups.set(mergeResult.parentWakeup.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_children_completed",
+          payload: {
+            issueId: mergeResult.parentWakeup.id,
+            completedChildIssueId: currentIssue.id,
+            childIssueIds: mergeResult.parentWakeup.childIssueIds,
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: mergeResult.parentWakeup.id,
+            taskId: mergeResult.parentWakeup.id,
+            wakeReason: "issue_children_completed",
+            source: "issue.children_completed",
+            completedChildIssueId: currentIssue.id,
+            childIssueIds: mergeResult.parentWakeup.childIssueIds,
+          },
+        });
+      }
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
@@ -4651,10 +5609,11 @@ export function issueRoutes(
         });
       }
 
-      for (const [agentId, wakeup] of wakeups.entries()) {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) =>
+      await Promise.all(
+        Array.from(wakeups.entries()).map(async ([agentId, wakeup]) => {
+          try {
+            await heartbeat.wakeup(agentId, wakeup);
+          } catch (err) {
             logWakeupFailure(
               err,
               {
@@ -4664,11 +5623,15 @@ export function issueRoutes(
                 reason: wakeup.reason ?? null,
               },
               "failed to wake agent on issue comment",
-            ));
-      }
-    })();
-    void maybeTriggerQaAutoFix(currentIssue, actor, "comment").catch((err) =>
-      logger.warn({ err, issueId: currentIssue.id }, "failed to trigger qa auto-fix after issue comment"));
+            );
+          }
+        }),
+      );
+    })());
+    await settleAsyncRouteTask(
+      maybeTriggerQaAutoFix(currentIssue, actor, "comment").catch((err) =>
+        logger.warn({ err, issueId: currentIssue.id }, "failed to trigger qa auto-fix after issue comment")),
+    );
 
     res.status(201).json(comment);
   });

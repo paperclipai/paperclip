@@ -565,6 +565,55 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     });
   });
 
+  it("keeps todo issues with fresh blocker truth recoverable when the status does not match the blocker", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const assignedIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned todo issue with blocker truth that still needs recovery",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Unassigned TODO",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: assignedIssueId,
+      authorAgentId: workerAgentId,
+      body: [
+        "BLOCKED: tasks:assign DENIED — cannot route this issue to QA yet.",
+        "Workflow gate: requires QA assignee before entering in_review.",
+        "Board action required.",
+      ].join("\n"),
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: assignedIssueId,
+      mode: "cross_agent_recovery",
+      autoReissueEligible: false,
+    });
+    expect(target?.reason).toContain("contradictory issue truth");
+  });
+
   it("does not let incidental transcript prose suppress cross-agent recovery", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
     const assignedIssueId = randomUUID();
@@ -937,6 +986,95 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     expect(target?.reason).toContain("completion truth on non-completed status");
   });
 
+  it("prioritizes repair for QA-owned todo delivery work with fresh completion truth", async () => {
+    const { companyId, opsAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const recentCompletionAt = new Date(Date.now() - 4 * 60 * 1000);
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Runner",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: reviewIssueId,
+      companyId,
+      title: "QA-owned todo row lost canonical review state",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: reviewIssueId,
+      authorAgentId: qaAgentId,
+      body: [
+        "DONE: Checkout release gate validation is complete.",
+        "The old review row lost its reviewer state and needs repair.",
+      ].join("\n"),
+      createdAt: recentCompletionAt,
+      updatedAt: recentCompletionAt,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: reviewIssueId,
+      mode: "cross_agent_recovery",
+    });
+    expect(target?.reason).toContain("invalid delivery review state requires repair");
+  });
+
+  it("treats ticket-authoring audit review rows as contradictory truth, not delivery-review repair", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const auditIssueId = randomUUID();
+    const recentCompletionAt = new Date(Date.now() - 4 * 60 * 1000);
+
+    await db.insert(issues).values({
+      id: auditIssueId,
+      companyId,
+      title: "UI Audit - Review and incrementally improve the cart UI in this workspace using Hermes.",
+      description: [
+        "This is a ticket-authoring task, not an implementation task.",
+        "Do not change code. Write implementation tickets only.",
+      ].join("\n"),
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: auditIssueId,
+      authorAgentId: workerAgentId,
+      body: "DONE: Audit completed and implementation tickets are ready.",
+      createdAt: recentCompletionAt,
+      updatedAt: recentCompletionAt,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: auditIssueId,
+      mode: "cross_agent_recovery",
+    });
+    expect(target?.reason).toContain("completion truth on non-completed status");
+    expect(target?.reason).not.toContain("invalid delivery review state requires repair");
+  });
+
   it("keeps an urgent operations-owned watchdog ahead when it has the stronger recovery score", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
     const watchdogIssueId = randomUUID();
@@ -1303,6 +1441,170 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     expect(target?.issueId).toBe(genericIssueId);
     expect(target?.mode).toBe("ready_unassigned");
+  });
+
+  it("targets invalid in_review execution review issues for operations heartbeat recovery", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const invalidReviewIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: invalidReviewIssueId,
+        companyId,
+        title: "Delivery issue stranded in review without a valid review owner",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: null,
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog work remains in queue",
+        status: "backlog",
+        priority: "high",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, {
+      companyId,
+      operationsAgentId: opsAgentId,
+    });
+
+    expect(target).toMatchObject({
+      issueId: invalidReviewIssueId,
+      mode: "cross_agent_recovery",
+    });
+  });
+
+  it("suppresses healthy canonical execution review issues while ready backlog work exists", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const healthyReviewIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Runner",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: healthyReviewIssueId,
+        companyId,
+        title: "Healthy delivery review issue with canonical ownership",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: qaAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: workerAgentId, userId: null },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog work remains in queue",
+        status: "backlog",
+        priority: "high",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, {
+      companyId,
+      operationsAgentId: opsAgentId,
+    });
+
+    expect(target).toMatchObject({
+      issueId: backlogIssueId,
+      mode: "ready_unassigned",
+    });
+  });
+
+  it("treats canonical execution review with no linked run as actionable recovery", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const idleReviewIssueId = randomUUID();
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Runner",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: idleReviewIssueId,
+      companyId,
+      title: "Canonical QA review lost its linked execution run",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: workerAgentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, {
+      companyId,
+      operationsAgentId: opsAgentId,
+    });
+
+    expect(target).toMatchObject({
+      issueId: idleReviewIssueId,
+      mode: "cross_agent_recovery",
+    });
+    expect(target?.reason).toContain("canonical review is idle with no linked execution run");
   });
 
   it("returns null when there is no actionable work", async () => {

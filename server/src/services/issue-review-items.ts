@@ -410,6 +410,9 @@ function materialBoardStateSummary(boardState: IssueBoardState) {
     case "system_error":
       return "Fix the issue state or add the missing dependency before treating this review pack as complete.";
     case "blocked":
+      if (boardState.reasonCode === "capability_blocked") {
+        return "This review pack cannot advance because the required specialist role is unavailable.";
+      }
       return "A real dependency is still blocking review completion. Resolve the blocker before closing the loop.";
     default:
       return null;

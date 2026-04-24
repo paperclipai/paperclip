@@ -1,15 +1,15 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, issueComments, issueDocuments } from "@paperclipai/db";
+import { agents, documents, issueComments, issueDocuments } from "@paperclipai/db";
 import type { IssueWorkflowArtifactStatus } from "@paperclipai/shared";
 import {
   parseQaSummary,
   parseQaVerification,
+  qaCommentHasExplicitVerificationTokens,
   qaCommentHasQaPassMarker,
   qaCommentHasReleaseConfirmedMarker,
   sortIssueCommentsDesc,
 } from "./qa-gate.js";
-import { resolveCompanyReleaseGateQaAgent } from "./release-gate-qa.js";
 
 type ReadableDb = Pick<Db, "select">;
 
@@ -18,40 +18,42 @@ type WorkflowQaLaneIssue = {
   companyId: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  qaReviewerAgentId?: string | null;
   workflowInvalidatedAt?: Date | null;
 };
-
-type WorkflowQaOwnerResolution = Awaited<ReturnType<typeof resolveCompanyReleaseGateQaAgent>>;
 
 type WorkflowQaLaneGate = {
   artifactStatuses: IssueWorkflowArtifactStatus[];
   blockingReasons: string[];
   canComplete: boolean;
   authorizedOwnerAgentId: string | null;
-  ownerResolution: WorkflowQaOwnerResolution;
 };
 
 const QA_VERDICT_DOCUMENT_KEY = "qa-verdict";
 
 function workflowQaOwnerReason(input: {
-  ownerResolution: WorkflowQaOwnerResolution;
   issue: WorkflowQaLaneIssue;
+  assigneeRole: string | null;
 }) {
-  if (!input.ownerResolution.releaseGateQaAgent) {
-    if (input.ownerResolution.resolution === "configured_unavailable") {
-      return "Workflow QA lane configured release-gate QA owner is unavailable.";
-    }
-    return input.ownerResolution.resolution === "none"
-      ? "Workflow QA lane requires an eligible authorized release-gate QA owner."
-      : "Workflow QA lane requires a single authorized release-gate QA owner.";
+  if (input.issue.assigneeUserId || !input.issue.assigneeAgentId) {
+    return "Workflow QA lane must be assigned to an active QA reviewer.";
   }
-  if (
-    input.issue.assigneeUserId
-    || input.issue.assigneeAgentId !== input.ownerResolution.releaseGateQaAgent.id
-  ) {
-    return "Workflow QA lane must be assigned to the authorized release-gate QA owner.";
+  if (input.assigneeRole !== "qa") {
+    return "Workflow QA lane must be assigned to an active QA reviewer.";
   }
   return null;
+}
+
+async function getWorkflowQaAssigneeRole(db: ReadableDb, issue: WorkflowQaLaneIssue) {
+  if (!issue.assigneeAgentId) return null;
+  const assignee = await db
+    .select({
+      role: agents.role,
+    })
+    .from(agents)
+    .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
+    .then((rows) => rows[0] ?? null);
+  return assignee?.role ?? null;
 }
 
 async function listAuthorizedQaComments(db: ReadableDb, issueId: string, authorAgentId: string | null) {
@@ -112,16 +114,25 @@ export async function evaluateWorkflowQaLaneGate(
   db: ReadableDb,
   issue: WorkflowQaLaneIssue,
 ): Promise<WorkflowQaLaneGate> {
-  const ownerResolution = await resolveCompanyReleaseGateQaAgent(db, issue.companyId);
-  const authorizedOwnerAgentId = ownerResolution.releaseGateQaAgent?.id ?? null;
+  const assigneeRole = await getWorkflowQaAssigneeRole(db, issue);
+  const ownerReason = workflowQaOwnerReason({ issue, assigneeRole });
+  const authorizedOwnerAgentId = ownerReason
+    ? null
+    : issue.assigneeAgentId ?? null;
   const [qaVerdictUpdatedAt, authorizedComments] = await Promise.all([
     getQaVerdictDocumentUpdatedAt(db, issue.id),
     listAuthorizedQaComments(db, issue.id, authorizedOwnerAgentId),
   ]);
 
   const latestAuthorizedComment = authorizedComments[0] ?? null;
-  const latestBody = latestAuthorizedComment?.body ?? "";
   const invalidatedAt = issue.workflowInvalidatedAt ? new Date(issue.workflowInvalidatedAt) : null;
+  const latestAuthorizedCommentStale = Boolean(
+    latestAuthorizedComment
+    && invalidatedAt
+    && latestAuthorizedComment.createdAt.getTime() < invalidatedAt.getTime(),
+  );
+  const latestBody = latestAuthorizedCommentStale ? "" : (latestAuthorizedComment?.body ?? "");
+  const staleCommentDetail = "Latest assigned QA verdict comment is stale and must be refreshed after upstream changes.";
   const qaVerdictStale = Boolean(
     qaVerdictUpdatedAt
     && invalidatedAt
@@ -130,6 +141,7 @@ export async function evaluateWorkflowQaLaneGate(
   const qaVerdictSatisfied = Boolean(qaVerdictUpdatedAt) && !qaVerdictStale;
   const summary = parseQaSummary(latestBody);
   const verification = parseQaVerification(latestBody);
+  const hasExplicitVerification = qaCommentHasExplicitVerificationTokens(latestBody);
   const hasQaPass = qaCommentHasQaPassMarker(latestBody);
   const hasReleaseConfirmed = qaCommentHasReleaseConfirmedMarker(latestBody);
 
@@ -152,48 +164,59 @@ export async function evaluateWorkflowQaLaneGate(
       label: "Smart Review summary",
       kind: "comment_marker",
       satisfied: summary.hasSummary && summary.overall !== "fail",
+      stale: latestAuthorizedCommentStale,
       detail:
-        summary.hasSummary
+        latestAuthorizedCommentStale
+          ? staleCommentDetail
+          : summary.hasSummary
           ? summary.overall === "fail"
-            ? "Latest authorized QA verdict contains failing Smart Review findings."
+            ? "Latest assigned QA verdict contains failing Smart Review findings."
             : null
-          : "Latest authorized QA verdict must include the full Smart Review summary.",
+          : "Latest assigned QA verdict must include the full Smart Review summary.",
     }),
     makeArtifactStatus({
       key: "verification-line",
       label: "Verification evidence",
       kind: "comment_marker",
-      satisfied: verification.complete && verification.overall === "pass",
+      satisfied: hasExplicitVerification && verification.complete && verification.overall === "pass",
+      stale: latestAuthorizedCommentStale,
       detail:
-        verification.complete
+        latestAuthorizedCommentStale
+          ? staleCommentDetail
+          : hasExplicitVerification && verification.complete
           ? verification.overall === "pass"
             ? null
-            : "Latest authorized QA verdict must include passing verification evidence."
-          : "Latest authorized QA verdict must include passing verification evidence.",
+            : "Latest assigned QA verdict must include passing verification evidence."
+          : "Latest assigned QA verdict must include passing verification evidence.",
     }),
     makeArtifactStatus({
       key: "qa-pass",
       label: "[QA PASS] marker",
       kind: "comment_marker",
       satisfied: hasQaPass,
-      detail: hasQaPass ? null : "Latest authorized QA verdict must include [QA PASS].",
+      stale: latestAuthorizedCommentStale,
+      detail: latestAuthorizedCommentStale
+        ? staleCommentDetail
+        : hasQaPass ? null : "Latest assigned QA verdict must include [QA PASS].",
     }),
     makeArtifactStatus({
       key: "release-confirmed",
       label: "[RELEASE CONFIRMED] marker",
       kind: "comment_marker",
       satisfied: hasReleaseConfirmed,
+      stale: latestAuthorizedCommentStale,
       detail:
-        hasReleaseConfirmed
+        latestAuthorizedCommentStale
+          ? staleCommentDetail
+          : hasReleaseConfirmed
           ? null
-          : "Latest authorized QA verdict must include [RELEASE CONFIRMED].",
+          : "Latest assigned QA verdict must include [RELEASE CONFIRMED].",
     }),
   ];
 
   const blockingReasons = artifactStatuses
     .filter((artifact) => !artifact.satisfied)
     .map((artifact) => artifact.detail ?? `${artifact.label} is missing.`);
-  const ownerReason = workflowQaOwnerReason({ ownerResolution, issue });
   if (ownerReason) {
     blockingReasons.unshift(ownerReason);
   }
@@ -203,11 +226,5 @@ export async function evaluateWorkflowQaLaneGate(
     blockingReasons: Array.from(new Set(blockingReasons)),
     canComplete: !ownerReason && artifactStatuses.every((artifact) => artifact.satisfied),
     authorizedOwnerAgentId,
-    ownerResolution,
   };
-}
-
-export async function resolveAuthorizedWorkflowQaOwnerAgentId(db: ReadableDb, companyId: string) {
-  const ownerResolution = await resolveCompanyReleaseGateQaAgent(db, companyId);
-  return ownerResolution.releaseGateQaAgent?.id ?? null;
 }

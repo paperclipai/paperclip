@@ -131,6 +131,19 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Workflow runtime tables
+
+Specialist workflow execution now persists dedicated runtime tables:
+
+- `issue_workflow_instances`:
+  one row per workflow-applied root issue, keyed by the root issue id and template key
+- `issue_workflow_lanes`:
+  one row per workflow child lane, keyed by child issue id and lane role within the workflow instance
+- `issue_workflow_lane_artifacts`:
+  the canonical persisted artifact contract for each lane (`plan`, `design`, `implementation-summary`, `threat-review`, `qa-verdict`, and any future lane-scoped artifact requirements)
+
+The legacy workflow columns on `issues` still exist during the migration window for compatibility and board/UI hydration, but the dedicated workflow tables are now the authoritative runtime metadata store for lane identity and artifact requirements.
+
 ## Secret storage
 
 PrivateClip stores secret metadata and versions in:

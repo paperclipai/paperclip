@@ -12,9 +12,14 @@ let currentSearch = "";
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
 const issuesListMock = vi.fn<(companyId: string, filters?: Record<string, unknown>) => Promise<Issue[]>>();
-const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
-  <div data-testid="issues-list">{issues.map((issue) => issue.title).join(", ")}</div>
-));
+const issuesUpdateWorkflowAwareMock = vi.hoisted(() => vi.fn());
+const issuesListPropsState = vi.hoisted(() => ({
+  latest: null as Record<string, unknown> | null,
+}));
+const issuesListRenderMock = vi.fn((props: { issues: Issue[] }) => {
+  issuesListPropsState.latest = props;
+  return <div data-testid="issues-list">{props.issues.map((issue) => issue.title).join(", ")}</div>;
+});
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateMock,
@@ -47,6 +52,7 @@ vi.mock("../api/issues", () => ({
   issuesApi: {
     list: (companyId: string, filters?: Record<string, unknown>) => issuesListMock(companyId, filters),
     update: vi.fn(),
+    updateWorkflowAware: issuesUpdateWorkflowAwareMock,
   },
 }));
 
@@ -296,6 +302,22 @@ async function flush() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+
+  throw lastError;
+}
+
 describe("Routines page", () => {
   let container: HTMLDivElement;
 
@@ -306,7 +328,9 @@ describe("Routines page", () => {
     navigateMock.mockReset();
     routinesListMock.mockReset();
     issuesListMock.mockReset();
+    issuesUpdateWorkflowAwareMock.mockReset();
     issuesListRenderMock.mockClear();
+    issuesListPropsState.latest = null;
     localStorage.clear();
   });
 
@@ -362,6 +386,50 @@ describe("Routines page", () => {
     });
 
     expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("routes routine issue status changes through the workflow-aware updater", async () => {
+    currentSearch = "tab=runs";
+    routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1" })]);
+    issuesListMock.mockResolvedValue([
+      createIssue({ id: "issue-1", status: "done" }),
+    ]);
+    issuesUpdateWorkflowAwareMock.mockResolvedValue({});
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await waitForAssertion(() => {
+      expect((issuesListPropsState.latest?.issues as unknown[] | undefined)?.length).toBe(1);
+    });
+
+    await act(async () => {
+      const onUpdateIssue = issuesListPropsState.latest?.onUpdateIssue as
+        | ((id: string, data: Record<string, unknown>) => void)
+        | undefined;
+      onUpdateIssue?.("issue-1", { status: "todo" });
+      await flush();
+    });
+
+    expect(issuesUpdateWorkflowAwareMock).toHaveBeenCalledWith("issue-1", "done", { status: "todo" });
 
     await act(async () => {
       root.unmount();

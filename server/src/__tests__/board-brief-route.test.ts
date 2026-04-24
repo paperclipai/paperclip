@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAccessService = vi.hoisted(() => ({
   ensureMembership: vi.fn(),
@@ -38,12 +38,19 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-describe("board brief routes", () => {
-  beforeEach(async () => {
-    vi.resetModules();
+describe.sequential("board brief routes", () => {
+  beforeAll(async () => {
     ({ boardBriefRoutes: boardBriefRoutesFactory } = await import("../routes/board-brief.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-    vi.resetAllMocks();
+  });
+
+  beforeEach(() => {
+    mockAccessService.ensureMembership.mockReset();
+    mockAgentService.getById.mockReset();
+    mockBoardBriefService.build.mockReset();
+    mockBoardBriefService.listHistory.mockReset();
+    mockBoardBriefService.projectDashboardSummary.mockReset();
+    mockBoardBriefService.projectExecutiveSummary.mockReset();
     mockBoardBriefService.build.mockResolvedValue({
       meta: {
         companyId: "company-1",
@@ -84,7 +91,7 @@ describe("board brief routes", () => {
     mockBoardBriefService.listHistory.mockResolvedValue([]);
   });
 
-  it("allows board users to fetch the live board brief and history", async () => {
+  it.sequential("allows board users to fetch the live board brief and history", async () => {
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -98,7 +105,7 @@ describe("board brief routes", () => {
     expect(mockBoardBriefService.listHistory).toHaveBeenCalledWith("company-1", { limit: undefined, source: undefined });
   });
 
-  it("rejects cross-company agent access", async () => {
+  it.sequential("rejects cross-company agent access", async () => {
     const app = createApp({
       type: "agent",
       agentId: "agent-1",

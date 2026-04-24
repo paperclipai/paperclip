@@ -14,6 +14,7 @@ import {
   type IssueStatus,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentTaskSessions,
@@ -38,7 +39,6 @@ import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { resolveCompanyReleaseGateQaAgent } from "./release-gate-qa.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -54,8 +54,11 @@ import {
 } from "./operations-heartbeat-target.js";
 import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 import {
+  buildIssueRoutingText,
+  isQaLikeIssueText,
   pickOperationsAssignmentCandidate,
   resolveEligibleOperationsAssignmentCandidates,
+  resolveIssueWorkIntent,
   type OperationsAssignmentCandidate,
 } from "./issue-routing-heuristics.js";
 import { countLiveRunLimitRelevantRuns, hasReachedLiveRunLimit } from "./heartbeat-run-limit.js";
@@ -74,6 +77,7 @@ import {
   normalizeRunLinkedIssueCommentBody,
   summarizeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { buildDeliveryQaExecutionPolicy, selectCompanyPooledQaReviewers } from "./qa-reviewer-pool.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -98,11 +102,29 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
-import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { buildIssueQaGate, isDeliveryScopedAssigneeRole, selectLatestRelevantQaComment } from "./qa-gate.js";
+import { applyIssueExecutionPolicyTransition, parseIssueExecutionState } from "./issue-execution-policy.js";
+import { buildIssueQaGate, isDeliveryScopedIssue, selectLatestRelevantQaComment } from "./qa-gate.js";
 import { finalizeQaValidatedIssueFromComment } from "./issue-qa-finalization.js";
+import { qaCommentHasMergeBlockedMarker } from "./issue-qa-finalization.js";
+import { issueWorkflowService } from "./issue-workflows.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { roadmapEpicService } from "./roadmap-epics.js";
+import { classifyDeliveryIntegrity } from "./delivery-integrity.js";
+import { classifyOwnedIssueWakeActionability, isIdleCanonicalDeliveryReview } from "./issue-actionability.js";
+import {
+  planCooFlowAllocation,
+  type CooBlockedReason,
+  type CooCapacityLedger,
+  type CooIssueActionability,
+  type CooOwnershipCorrectionReason,
+} from "./coo-flow-planner.js";
+import { agentHeartbeatModelService } from "./agent-heartbeat-model.js";
+import {
+  classifyCapabilityBlockedIssue,
+  hasEligibleSpecialistForRequirement,
+  resolveOutstandingSpecialistCapabilityBlock,
+  resolveSpecialistLaneRequirement,
+} from "./issue-capability-blocks.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
   isOrchestratorOnlyAgent,
@@ -129,6 +151,7 @@ const WATCHDOG_RECOVERY_REPEAT_THRESHOLD = 1;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const READY_UNASSIGNED_STATUSES = ["backlog", "todo"] as const;
 const OPERATIONS_RECOVERY_RECENT_PROGRESS_COOLDOWN_MS = 15 * 60 * 1000;
+const OPERATIONS_STRUCTURED_TRUTH_FRESHNESS_WINDOW_MS = 6 * 60 * 60 * 1000;
 const PENDING_OPERATIONS_RECOVERY_WAKEUP_STATUSES = ["queued", "claimed", "deferred_issue_execution"] as const;
 const OPERATIONS_IDLE_WAKE_MARKER = "[operations-heartbeat-wakeup]";
 const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
@@ -141,6 +164,7 @@ const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP = 48;
+const MAX_OPERATIONS_STABILIZATION_PASSES = 4;
 const agentStartLockController = createAgentStartLockController();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -301,6 +325,10 @@ function hasExplicitIssueTruthFromCommentBody(body: string | null | undefined): 
   return classifyIssueTruthFromCommentBody(body) !== null || hasWaitStateTruthFromCommentBody(body);
 }
 
+function isIssueCommentRecoveryNoticeBody(body: string | null | undefined): boolean {
+  return typeof body === "string" && body.startsWith(ISSUE_COMMENT_RECOVERY_MARKER);
+}
+
 export function resolveLatestStructuredTruthComment<T extends { body: string | null | undefined }>(
   commentsNewestFirst: T[] | null | undefined,
 ): T | null {
@@ -372,6 +400,12 @@ export function getOperationsRecoverySuppressionReason(input: {
   if (input.hasRecentValidQaVerdict) {
     return "fresh valid QA verdict exists";
   }
+  if (
+    qaCommentHasMergeBlockedMarker(input.latestCommentBody)
+    && (input.status === "in_review" || input.status === "blocked")
+  ) {
+    return "QA merge is blocked pending external resolution";
+  }
 
   const nowMs = input.nowMs ?? Date.now();
   const hasRecentSuccessfulRun =
@@ -396,9 +430,19 @@ export function getOperationsRecoverySuppressionReason(input: {
   const hasFreshWaitStateTruth =
     hasWaitStateTruthFromCommentBody(input.latestCommentBody) && input.latestCommentAgeHours < 6;
   const hasFreshTruth = (truthType === "blocker" || truthType === "handoff") && input.latestCommentAgeHours < 6;
-  if (hasFreshWaitStateTruth) return "fresh blocker/handoff truth already covers the current wait state";
+  const statusCanLegitimatelyWait =
+    input.status === "blocked" ||
+    input.status === "in_progress" ||
+    input.status === "in_review";
+  if (hasFreshWaitStateTruth && statusCanLegitimatelyWait) {
+    return "fresh blocker/handoff truth already covers the current wait state";
+  }
   if (!hasFreshTruth) return null;
-  if (truthType === "handoff") return "fresh blocker/handoff truth already covers the current wait state";
+  if (truthType === "handoff") {
+    return statusCanLegitimatelyWait
+      ? "fresh blocker/handoff truth already covers the current wait state"
+      : null;
+  }
   return input.status === "blocked" && input.hasBlockers
     ? "fresh blocker/handoff truth already covers the current wait state"
     : null;
@@ -530,7 +574,9 @@ function buildOperationsOwnershipCorrectionComment(input: {
     | "fake_wip_demoted"
     | "slot_rebalanced"
     | "qa_release_gate_reassigned"
-    | "qa_release_gate_demotion";
+    | "qa_release_gate_demotion"
+    | "delivery_integrity_reconciled"
+    | "run_owner_mismatch_cancelled";
   wakeDeferred: boolean;
   detail: string;
   nextStatus: string;
@@ -564,6 +610,208 @@ function isExecutionPolicyReviewIssue(input: {
   );
 }
 
+function hasCanonicalExecutionReviewState(input: {
+  status: string;
+  executionState?: unknown;
+}) {
+  if (input.status !== "in_review") return false;
+  const executionState = parseIssueExecutionState(input.executionState);
+  if (!executionState) return false;
+  if (!executionState.currentStageType || !EXECUTION_REVIEW_STAGE_TYPES.has(executionState.currentStageType)) {
+    return false;
+  }
+  if (executionState.currentParticipant?.type !== "agent" || !executionState.currentParticipant.agentId) {
+    return false;
+  }
+  return executionState.returnAssignee != null;
+}
+
+function buildDeliveryScopeIssueText(input: {
+  identifier?: string | null;
+  title?: string | null;
+  description?: string | null;
+  projectName?: string | null;
+}) {
+  return buildIssueRoutingText({
+    identifier: input.identifier ?? null,
+    title: input.title ?? "",
+    description: input.description ?? null,
+    projectName: input.projectName ?? null,
+  });
+}
+
+function isSpecialistQaLikeIssue(input: {
+  identifier?: string | null;
+  title?: string | null;
+  description?: string | null;
+  projectName?: string | null;
+  workIntent?: string | null;
+  assigneeRole?: string | null;
+  workflowTemplateKey?: string | null;
+  workflowLaneRole?: string | null;
+}) {
+  const issueText = buildDeliveryScopeIssueText(input);
+  const workIntent = resolveIssueWorkIntent({
+    workIntent: input.workIntent ?? null,
+    assigneeRole: input.assigneeRole ?? null,
+    issueText,
+    workflowTemplateKey: input.workflowTemplateKey ?? null,
+    workflowLaneRole: input.workflowLaneRole ?? null,
+  });
+  if (workIntent === "ticket_authoring" || workIntent === "audit") {
+    return false;
+  }
+  return isQaLikeIssueText(issueText);
+}
+
+export function normalizeUnavailableSpecialistLaneStatus(status: string) {
+  return status === "in_progress" || status === "in_review" ? "todo" : status;
+}
+
+function needsStandaloneDeliveryReviewStateRepair(input: {
+  isWorkflowIssue: boolean;
+  status: string;
+  workIntent?: string | null;
+  assigneeRole?: string | null;
+  issueText?: string | null;
+  hasCanonicalReviewState: boolean;
+  truthType: string | null;
+}) {
+  if (input.isWorkflowIssue) return false;
+  if (!isDeliveryScopedIssue({
+    workIntent: input.workIntent,
+    assigneeRole: input.assigneeRole,
+    issueText: input.issueText,
+  })) return false;
+  if (input.hasCanonicalReviewState) return false;
+  if (input.status === "in_review") return true;
+  return (
+    input.assigneeRole === "qa"
+    && ["backlog", "todo"].includes(input.status)
+    && (input.truthType === "handoff" || input.truthType === "completion")
+  );
+}
+
+async function inferDeliveryReviewReturnAssignee(
+  db: Db,
+  issue: {
+    id: string;
+    companyId: string;
+    assigneeAgentId: string | null;
+    assigneeUserId?: string | null;
+    assigneeRole?: string | null;
+    executionState?: unknown;
+  },
+  activeReviewerAgentId: string | null,
+) {
+  const existingExecutionState = parseIssueExecutionState(issue.executionState);
+  const existingReturnAssignee = existingExecutionState?.returnAssignee ?? null;
+  if (existingReturnAssignee?.type === "agent" && existingReturnAssignee.agentId) {
+    if (existingReturnAssignee.agentId !== activeReviewerAgentId) {
+      return { type: "agent" as const, agentId: existingReturnAssignee.agentId, userId: null };
+    }
+  }
+  if (existingReturnAssignee?.type === "user" && existingReturnAssignee.userId) {
+    return { type: "user" as const, userId: existingReturnAssignee.userId, agentId: null };
+  }
+
+  if (issue.assigneeAgentId && issue.assigneeRole && issue.assigneeRole !== "qa") {
+    return { type: "agent" as const, agentId: issue.assigneeAgentId, userId: null };
+  }
+  if (issue.assigneeUserId) {
+    return { type: "user" as const, userId: issue.assigneeUserId, agentId: null };
+  }
+
+  const recentUpdates = await db
+    .select({
+      details: activityLog.details,
+    })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, issue.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issue.id),
+        eq(activityLog.action, "issue.updated"),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(25);
+
+  const candidatePreviousAssigneeAgentIds = Array.from(new Set(
+    recentUpdates.flatMap((row) => {
+      const details = (row.details ?? {}) as {
+        _previous?: { assigneeAgentId?: unknown } | null;
+      };
+      return typeof details._previous?.assigneeAgentId === "string"
+        ? [details._previous.assigneeAgentId]
+        : [];
+    }),
+  ));
+  const previousAssigneeRoleById = candidatePreviousAssigneeAgentIds.length > 0
+    ? new Map(
+      (await db
+        .select({
+          id: agents.id,
+          role: agents.role,
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, issue.companyId),
+            inArray(agents.id, candidatePreviousAssigneeAgentIds),
+          ),
+        ))
+        .map((row) => [row.id, row.role] as const),
+    )
+    : new Map<string, string | null>();
+
+  for (const row of recentUpdates) {
+    const details = (row.details ?? {}) as {
+      status?: unknown;
+      _previous?: {
+        assigneeAgentId?: unknown;
+        assigneeUserId?: unknown;
+        status?: unknown;
+      } | null;
+    };
+    if (details.status !== "in_review") continue;
+    const previous = details._previous ?? null;
+    if (!previous) continue;
+    if (typeof previous.assigneeAgentId === "string" && previous.assigneeAgentId !== activeReviewerAgentId) {
+      if (previousAssigneeRoleById.get(previous.assigneeAgentId) === "qa") {
+        continue;
+      }
+      return { type: "agent" as const, agentId: previous.assigneeAgentId, userId: null };
+    }
+    if (typeof previous.assigneeUserId === "string" && previous.assigneeUserId.trim().length > 0) {
+      return { type: "user" as const, userId: previous.assigneeUserId, agentId: null };
+    }
+  }
+
+  for (const row of recentUpdates) {
+    const details = (row.details ?? {}) as {
+      _previous?: {
+        assigneeAgentId?: unknown;
+        assigneeUserId?: unknown;
+      } | null;
+    };
+    const previous = details._previous ?? null;
+    if (!previous) continue;
+    if (typeof previous.assigneeAgentId === "string" && previous.assigneeAgentId !== activeReviewerAgentId) {
+      if (previousAssigneeRoleById.get(previous.assigneeAgentId) === "qa") {
+        continue;
+      }
+      return { type: "agent" as const, agentId: previous.assigneeAgentId, userId: null };
+    }
+    if (typeof previous.assigneeUserId === "string" && previous.assigneeUserId.trim().length > 0) {
+      return { type: "user" as const, userId: previous.assigneeUserId, agentId: null };
+    }
+  }
+
+  return null;
+}
+
 export function isOperationsOrchestratorAgent(agent: {
   role?: string | null;
   name?: string | null;
@@ -586,6 +834,65 @@ export async function resolveOperationsHeartbeatTarget(
 ): Promise<OperationsHeartbeatTarget | null> {
   const [first] = await resolveOperationsHeartbeatTargets(db, input);
   return first ?? null;
+}
+
+async function selectOperationsReadyUnassignedCandidate(db: Db, companyId: string) {
+  const readyUnassignedRows = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+      identifier: issues.identifier,
+      title: issues.title,
+      description: issues.description,
+      priority: issues.priority,
+      updatedAt: issues.updatedAt,
+      projectId: issues.projectId,
+      workflowLaneRole: issues.workflowLaneRole,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.status, READY_UNASSIGNED_STATUSES as unknown as string[]),
+        sql`${issues.hiddenAt} is null`,
+        sql`${issues.assigneeAgentId} is null`,
+        sql`${issues.assigneeUserId} is null`,
+      ),
+    );
+  const specialistAgentRows = await db
+    .select({
+      id: agents.id,
+      role: agents.role,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), inArray(agents.role, ["security", "qa", "cto"])));
+  const eligibleSpecialistRoleIds = {
+    security: specialistAgentRows
+      .filter((agent) => agent.role === "security" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+    qa: specialistAgentRows
+      .filter((agent) => agent.role === "qa" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+    cto: specialistAgentRows
+      .filter((agent) => agent.role === "cto" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+  };
+  const assignableReadyUnassignedRows = readyUnassignedRows.filter((issue) => (
+    !classifyCapabilityBlockedIssue({
+      issue: {
+        status: issue.status,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description,
+        workflowLaneRole: issue.workflowLaneRole,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      eligibleSpecialistRoleIds,
+    })
+  ));
+  return selectReadyUnassignedCandidate(assignableReadyUnassignedRows);
 }
 
 async function filterRoutineExecutionIssuesForOperations<T extends {
@@ -782,8 +1089,7 @@ async function resolveOperationsHeartbeatTargets(
   input: { companyId: string; operationsAgentId: string },
 ): Promise<OperationsHeartbeatTarget[]> {
   const now = Date.now();
-  const qaResolution = await resolveCompanyReleaseGateQaAgent(db, input.companyId);
-  const releaseGateQaAgentId = qaResolution.releaseGateQaAgent?.id ?? null;
+  const readyUnassigned = await selectOperationsReadyUnassignedCandidate(db, input.companyId);
 
   let openAssignedIssues = await db
     .select({
@@ -796,7 +1102,11 @@ async function resolveOperationsHeartbeatTargets(
       updatedAt: issues.updatedAt,
       executionRunId: issues.executionRunId,
       assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      workIntent: issues.workIntent,
+      qaReviewerAgentId: issues.qaReviewerAgentId,
       assigneeRole: agents.role,
+      executionPolicy: issues.executionPolicy,
       executionState: issues.executionState,
       originKind: issues.originKind,
       originId: issues.originId,
@@ -833,7 +1143,6 @@ async function resolveOperationsHeartbeatTargets(
   }
 
   openAssignedIssues = await filterRoutineExecutionIssuesForOperations(db, input.companyId, openAssignedIssues);
-  openAssignedIssues = openAssignedIssues.filter((issue) => !isExecutionPolicyReviewIssue(issue));
 
   if (openAssignedIssues.length > 0) {
     const runIds = Array.from(
@@ -973,9 +1282,27 @@ async function resolveOperationsHeartbeatTargets(
         const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
         const isWatchdogIssue = isWatchdogIssueLabel(watchdogLabel);
         const isWorkflowIssue = Boolean(issue.workflowTemplateKey || issue.workflowLaneRole);
-        const qaComments = releaseGateQaAgentId
+        const issueText = buildDeliveryScopeIssueText(issue);
+        const isDeliveryScopedForRecovery = isDeliveryScopedIssue({
+          workIntent: issue.workIntent ?? null,
+          assigneeRole: issue.assigneeRole,
+          issueText,
+        });
+        const currentParticipant =
+          issue.executionState && typeof issue.executionState === "object"
+            ? (issue.executionState as { currentParticipant?: { type?: string; agentId?: string | null } | null }).currentParticipant ?? null
+            : null;
+        const activeQaReviewerAgentId =
+          issue.workflowLaneRole === "qa"
+            ? issue.assigneeAgentId
+            : currentParticipant?.type === "agent" && typeof currentParticipant.agentId === "string"
+              ? currentParticipant.agentId
+              : issue.assigneeRole === "qa"
+                ? issue.assigneeAgentId
+                : null;
+        const qaComments = activeQaReviewerAgentId
           ? (nonOperationsCommentsByIssueId.get(issue.id) ?? []).filter(
-              (comment) => comment.authorAgentId === releaseGateQaAgentId,
+              (comment) => comment.authorAgentId === activeQaReviewerAgentId,
             )
           : [];
         const normalizedQaComments = qaComments.map((comment) => ({
@@ -990,44 +1317,105 @@ async function resolveOperationsHeartbeatTargets(
           issue.executionState && typeof issue.executionState === "object"
             ? ((issue.executionState as { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null }).lastDecisionOutcome ?? null)
             : null;
+        const qaGate =
+          activeQaReviewerAgentId
+            ? buildIssueQaGate({
+              issue: { status: issue.status as IssueStatus },
+              workIntent: issue.workIntent ?? null,
+              assigneeRole: issue.assigneeRole,
+              issueText: [issue.title, issue.description].filter(Boolean).join("\n\n"),
+              qaComments: normalizedQaComments,
+              latestDecisionOutcome,
+              now: new Date(now),
+            })
+            : null;
         const hasRecentValidQaVerdict =
           Boolean(
             !isWorkflowIssue
             && issue.assigneeRole === "qa"
             && latestQaComment
             && now - latestQaComment.createdAt.getTime() < OPERATIONS_RECOVERY_RECENT_PROGRESS_COOLDOWN_MS
-            && buildIssueQaGate({
-              issue: { status: issue.status as IssueStatus },
-              assigneeRole: issue.assigneeRole,
-              issueText: [issue.title, issue.description].filter(Boolean).join("\n\n"),
-              qaComments: normalizedQaComments,
-              latestDecisionOutcome,
-              now: new Date(now),
-            }).canShip,
+            && qaGate?.canShip,
           );
+        const hasCanonicalReviewState = hasCanonicalExecutionReviewState(issue);
+        const hasIdleCanonicalReviewGap = isIdleCanonicalDeliveryReview({
+          status: issue.status,
+          executionRunId: issue.executionRunId,
+          executionRunStatus: run?.status ?? (issue.executionRunId ? null : undefined),
+          executionState: issue.executionState,
+        });
+        const hasIssueCommentRecoveryNotice = isIssueCommentRecoveryNoticeBody(latestNonOperationsComment?.body);
+        const needsReviewStateRepair = needsStandaloneDeliveryReviewStateRepair({
+          isWorkflowIssue,
+          status: issue.status,
+          workIntent: issue.workIntent ?? null,
+          assigneeRole: issue.assigneeRole,
+          issueText,
+          hasCanonicalReviewState,
+          truthType,
+        });
+        const hasQaCompletionButUnsatisfiedGate =
+          issue.status === "in_review"
+          && issue.assigneeRole === "qa"
+          && latestQaComment != null
+          && classifyIssueTruthFromCommentBody(latestQaComment.body) === "completion"
+          && qaGate != null
+          && !qaGate.canShip;
 
         let score = 0;
         const reasons: string[] = [];
 
         const hasFreshBlockerOrHandoffTruth =
           (truthType === "blocker" || truthType === "handoff") && latestStructuredTruthAgeHours < 6;
+        const hasFreshWaitStateTruth =
+          hasWaitStateTruthFromCommentBody(latestTruthComment?.body) && latestStructuredTruthAgeHours < 6;
+        const waitStateTruthExplainsCurrentStatus =
+          hasFreshWaitStateTruth && ["blocked", "in_progress", "in_review"].includes(issue.status);
         const hasStuckAssignedSignals =
           (issue.status === "in_progress" && !issue.executionRunId)
+          || hasIdleCanonicalReviewGap
           || hasDependencyBlockedState
           || Boolean(run && (run.status === "failed" || run.status === "cancelled"));
         const hasFalseCompleteSignals = hasFalseCompleteRecoverySignal({
           runStatus: run?.status,
           truthType,
         });
+        const hasContradictoryCompletionTruth =
+          truthType === "completion"
+          && !waitStateTruthExplainsCurrentStatus
+          && (
+            issue.status !== "in_review"
+            || issue.assigneeRole !== "qa"
+            || !isDeliveryScopedForRecovery
+          );
         const hasContradictoryTruthSignals =
-          (truthType === "completion" && issue.status !== "in_review")
-          || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
-        const suppressRecoveryReason = !isOperationsOwned
+          hasContradictoryCompletionTruth
+          || ((truthType === "blocker" || truthType === "handoff") && ["backlog", "todo"].includes(issue.status));
+        const suppressHealthyCanonicalReview =
+          hasCanonicalReviewState
+          && !hasIdleCanonicalReviewGap
+          && !hasIssueCommentRecoveryNotice
+          && !needsReviewStateRepair
+          && !hasQaCompletionButUnsatisfiedGate
+          && !hasStuckAssignedSignals
+          && !hasFalseCompleteSignals
+          && !hasContradictoryTruthSignals;
+        const recoverySuppressionComment = qaCommentHasMergeBlockedMarker(latestNonOperationsComment?.body)
+          ? latestNonOperationsComment
+          : (latestAssigneeTruthComment ?? latestAssigneeActivityComment);
+        const bypassSuppressionForRecovery =
+          !hasRecentValidQaVerdict
+          && (
+            needsReviewStateRepair
+            || hasQaCompletionButUnsatisfiedGate
+            || hasContradictoryTruthSignals
+          );
+        const suppressRecoveryReason = !isOperationsOwned && !bypassSuppressionForRecovery
           ? getOperationsRecoverySuppressionReason({
               status: issue.status,
-              latestCommentBody: latestAssigneeTruthComment?.body ?? latestAssigneeActivityComment?.body,
-              latestCommentAgeHours: latestAssigneeTruthComment
-                ? Math.floor((now - latestAssigneeTruthComment.createdAt.getTime()) / (60 * 60 * 1000))
+              latestCommentBody: recoverySuppressionComment?.body,
+              latestCommentAgeHours: recoverySuppressionComment
+                ? Math.floor((now - recoverySuppressionComment.createdAt.getTime()) / (60 * 60 * 1000))
                 : Number.POSITIVE_INFINITY,
               latestAssigneeCommentAgeMs,
               hasBlockers,
@@ -1037,6 +1425,20 @@ async function resolveOperationsHeartbeatTargets(
               nowMs: now,
             })
           : null;
+
+        if (suppressHealthyCanonicalReview) {
+          return {
+            issue,
+            score: -200,
+            reasons: ["healthy canonical execution review is already active"],
+            issueAgeHours,
+            isOperationsOwned,
+            isWatchdogIssue,
+            hasStuckAssignedSignals: false,
+            hasFalseCompleteSignals,
+            hasContradictoryTruthSignals,
+          };
+        }
 
         if (suppressRecoveryReason) {
           return {
@@ -1050,6 +1452,21 @@ async function resolveOperationsHeartbeatTargets(
             hasFalseCompleteSignals,
             hasContradictoryTruthSignals,
           };
+        }
+
+        if (needsReviewStateRepair) {
+          score += 260;
+          reasons.push("invalid delivery review state requires repair");
+        }
+
+        if (hasIssueCommentRecoveryNotice) {
+          score += 320;
+          reasons.push("issue comment recovery was exhausted and needs follow-up");
+        }
+
+        if (hasQaCompletionButUnsatisfiedGate) {
+          score += 220;
+          reasons.push("QA completion truth exists but the QA gate is still unsatisfied");
         }
 
         if (hasInvalidBlockedState && !isWatchdogIssue && !hasStuckAssignedSignals && !hasFalseCompleteSignals && !hasContradictoryTruthSignals) {
@@ -1070,6 +1487,10 @@ async function resolveOperationsHeartbeatTargets(
           score += 180;
           reasons.push("stale or blocked assigned work: in_progress with no execution run");
         }
+        if (hasIdleCanonicalReviewGap) {
+          score += 180;
+          reasons.push("canonical review is idle with no linked execution run");
+        }
         if (hasDependencyBlockedState) {
           score += 170;
           reasons.push("stale or blocked assigned work: blocked by dependency");
@@ -1084,13 +1505,13 @@ async function resolveOperationsHeartbeatTargets(
           reasons.push("incomplete/false-complete assigned work: run completed without completion/blocker/handoff truth");
         }
 
-        if (truthType === "completion" && (issue.status !== "in_review" || issue.assigneeRole !== "qa")) {
+        if (hasContradictoryCompletionTruth) {
           score += 240;
           reasons.push("contradictory issue truth: completion truth on non-completed status");
         }
-        if ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog") {
+        if ((truthType === "blocker" || truthType === "handoff") && ["backlog", "todo"].includes(issue.status)) {
           score += 200;
-          reasons.push(`contradictory issue truth: ${truthType} truth while status is backlog`);
+          reasons.push(`contradictory issue truth: ${truthType} truth while status is ${issue.status}`);
         }
 
         if (!latestNonOperationsComment) {
@@ -1149,65 +1570,43 @@ async function resolveOperationsHeartbeatTargets(
           hasStuckAssignedSignals,
           hasFalseCompleteSignals,
           hasContradictoryTruthSignals,
+          hasAutoReissueContradictoryTruthSignals: hasContradictoryCompletionTruth,
+          isDeferableIdleCanonicalReview:
+            hasIdleCanonicalReviewGap
+            && !needsReviewStateRepair
+            && !hasIssueCommentRecoveryNotice
+            && !hasQaCompletionButUnsatisfiedGate
+            && !hasFalseCompleteSignals
+            && !hasContradictoryTruthSignals
+            && !isOperationsOwned
+            && !isWatchdogIssue,
         };
       })
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score || b.issueAgeHours - a.issueAgeHours);
 
-    if (ranked.length > 0) {
-      return ranked
+    const selectedRanked = readyUnassigned
+      ? ranked.filter((entry) => !entry.isDeferableIdleCanonicalReview)
+      : ranked;
+    if (selectedRanked.length > 0) {
+      return selectedRanked
         .slice(0, MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP)
         .map((entry) => ({
           issueId: entry.issue.id,
           mode: entry.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
           reason: entry.reasons.join("; "),
-          autoReissueEligible:
+          autoReissueEligible: Boolean(
             !entry.isOperationsOwned
             && !entry.isWatchdogIssue
             && (
               entry.hasStuckAssignedSignals
               || entry.hasFalseCompleteSignals
-              || entry.hasContradictoryTruthSignals
+              || entry.hasAutoReissueContradictoryTruthSignals
             ),
+          ),
         }));
     }
   }
-
-  const readyUnassignedRows = await db
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      description: issues.description,
-      priority: issues.priority,
-      updatedAt: issues.updatedAt,
-      projectId: issues.projectId,
-      workflowLaneRole: issues.workflowLaneRole,
-    })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, input.companyId),
-        inArray(issues.status, READY_UNASSIGNED_STATUSES as unknown as string[]),
-        sql`${issues.hiddenAt} is null`,
-        sql`${issues.assigneeAgentId} is null`,
-        sql`${issues.assigneeUserId} is null`,
-      ),
-    );
-  const securityAgentRows = await db
-    .select({
-      id: agents.id,
-      status: agents.status,
-    })
-    .from(agents)
-    .where(and(eq(agents.companyId, input.companyId), eq(agents.role, "security")));
-  const hasAssignableSecuritySpecialist = securityAgentRows.some((agent) => (
-    isAgentAssignableStatus(agent.status)
-  ));
-  const assignableReadyUnassignedRows = readyUnassignedRows.filter((issue) => (
-    issue.workflowLaneRole !== "security" || hasAssignableSecuritySpecialist
-  ));
-  const readyUnassigned = selectReadyUnassignedCandidate(assignableReadyUnassignedRows);
 
   if (readyUnassigned) {
     return [{
@@ -2430,9 +2829,11 @@ export function heartbeatService(db: Db) {
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const issueWorkflowsSvc = issueWorkflowService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const issueMerge = issueMergeService();
+  const heartbeatModel = agentHeartbeatModelService(db);
   const activeRunExecutions = new Set<string>();
   const executionGate = executionGateService(db);
   const budgetHooks = {
@@ -2464,8 +2865,8 @@ export function heartbeatService(db: Db) {
     return await executionWorkspacesSvc.update(workspace.id, { metadata });
   }
 
-  async function getAgent(agentId: string) {
-    return db
+  async function getAgent(agentId: string, executor: DbExecutor = db) {
+    return executor
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -3055,9 +3456,10 @@ export function heartbeatService(db: Db) {
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    executor: DbExecutor = db,
   ) {
     const sanitizedPatch = patch ? sanitizePostgresTextValue(patch) : patch;
-    const updated = await db
+    const updated = await executor
       .update(heartbeatRuns)
       .set({ status, ...sanitizedPatch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
@@ -3093,10 +3495,11 @@ export function heartbeatService(db: Db) {
     wakeupRequestId: string | null | undefined,
     status: string,
     patch?: Partial<typeof agentWakeupRequests.$inferInsert>,
+    executor: DbExecutor = db,
   ) {
     if (!wakeupRequestId) return;
     const sanitizedPatch = patch ? sanitizePostgresTextValue(patch) : patch;
-    await db
+    await executor
       .update(agentWakeupRequests)
       .set({ status, ...sanitizedPatch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
@@ -4349,8 +4752,8 @@ export function heartbeatService(db: Db) {
     };
   }
 
-  async function countRunningRunsForAgent(agentId: string) {
-    const runningRuns = await db
+  async function countRunningRunsForAgent(agentId: string, executor: DbExecutor = db) {
+    const runningRuns = await executor
       .select({
         status: heartbeatRuns.status,
         lastActivityAt: heartbeatRuns.lastActivityAt,
@@ -4547,8 +4950,9 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    executor: DbExecutor = db,
   ) {
-    const existing = await getAgent(agentId);
+    const existing = await getAgent(agentId, executor);
     if (!existing) return;
 
     if (existing.status === "paused" || existing.status === "terminated") {
@@ -4557,7 +4961,7 @@ export function heartbeatService(db: Db) {
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
-    const runningCount = await countRunningRunsForAgent(agentId);
+    const runningCount = await countRunningRunsForAgent(agentId, executor);
     const nextStatus =
       runningCount > 0
         ? "running"
@@ -4565,7 +4969,7 @@ export function heartbeatService(db: Db) {
           ? "idle"
           : "error";
 
-    const updated = await db
+    const updated = await executor
       .update(agents)
       .set({
         status: nextStatus,
@@ -4947,11 +5351,7 @@ export function heartbeatService(db: Db) {
       nowMs - OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS,
     ).toISOString();
 
-    const [targets, boardRows, rawOpenAssignedIssues, rawOpenUnassignedIssues] = await Promise.all([
-      resolveOperationsHeartbeatTargets(db, {
-        companyId,
-        operationsAgentId: input.agent.id,
-      }),
+    const [boardRows, rawOpenAssignedIssues, rawOpenUnassignedIssues, rawHumanOwnedOpenIssues] = await Promise.all([
       db
         .select({ id: projects.id })
         .from(projects)
@@ -4959,8 +5359,10 @@ export function heartbeatService(db: Db) {
       db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           priority: issues.priority,
+          updatedAt: issues.updatedAt,
           originKind: issues.originKind,
           originId: issues.originId,
           identifier: issues.identifier,
@@ -4968,10 +5370,15 @@ export function heartbeatService(db: Db) {
           description: issues.description,
           projectId: issues.projectId,
           projectName: projects.name,
+          workIntent: issues.workIntent,
+          workflowTemplateKey: issues.workflowTemplateKey,
           workflowLaneRole: issues.workflowLaneRole,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          qaReviewerAgentId: issues.qaReviewerAgentId,
           assigneeName: agents.name,
           assigneeRole: agents.role,
           assigneeStatus: agents.status,
@@ -4990,8 +5397,10 @@ export function heartbeatService(db: Db) {
       db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           priority: issues.priority,
+          updatedAt: issues.updatedAt,
           originKind: issues.originKind,
           originId: issues.originId,
           identifier: issues.identifier,
@@ -4999,6 +5408,8 @@ export function heartbeatService(db: Db) {
           description: issues.description,
           projectId: issues.projectId,
           projectName: projects.name,
+          workIntent: issues.workIntent,
+          workflowTemplateKey: issues.workflowTemplateKey,
           workflowLaneRole: issues.workflowLaneRole,
         })
         .from(issues)
@@ -5013,14 +5424,47 @@ export function heartbeatService(db: Db) {
           ),
         )
         .orderBy(desc(issues.updatedAt)),
+      db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          priority: issues.priority,
+          updatedAt: issues.updatedAt,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          identifier: issues.identifier,
+          title: issues.title,
+          description: issues.description,
+          projectId: issues.projectId,
+          projectName: projects.name,
+          workIntent: issues.workIntent,
+          workflowTemplateKey: issues.workflowTemplateKey,
+          workflowLaneRole: issues.workflowLaneRole,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+            sql`${issues.hiddenAt} is null`,
+            sql`${issues.assigneeAgentId} is null`,
+            sql`${issues.assigneeUserId} is not null`,
+          ),
+        )
+        .orderBy(desc(issues.updatedAt)),
     ]);
 
     let openAssignedIssues = rawOpenAssignedIssues;
     let openUnassignedIssues = rawOpenUnassignedIssues;
+    let humanOwnedOpenIssues = rawHumanOwnedOpenIssues;
     const recoveryCandidateIssueIds = Array.from(
       new Set([
         ...openAssignedIssues.map((issue) => issue.id),
         ...openUnassignedIssues.map((issue) => issue.id),
+        ...humanOwnedOpenIssues.map((issue) => issue.id),
       ]),
     );
     if (recoveryCandidateIssueIds.length > 0) {
@@ -5038,11 +5482,11 @@ export function heartbeatService(db: Db) {
         const recoveredSourceIssueIds = new Set(recoveredSourceRows.map((row) => row.issueId));
         openAssignedIssues = openAssignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
         openUnassignedIssues = openUnassignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
+        humanOwnedOpenIssues = humanOwnedOpenIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
       }
     }
     openAssignedIssues = await filterRoutineExecutionIssuesForOperations(db, companyId, openAssignedIssues);
     openUnassignedIssues = await filterRoutineExecutionIssuesForOperations(db, companyId, openUnassignedIssues);
-    openAssignedIssues = openAssignedIssues.filter((issue) => !isExecutionPolicyReviewIssue(issue));
     const issueIds = openAssignedIssues.map((issue) => issue.id);
     const issueExecutionRunIds = Array.from(
       new Set(openAssignedIssues.map((issue) => issue.executionRunId).filter((id): id is string => Boolean(id))),
@@ -5084,7 +5528,7 @@ export function heartbeatService(db: Db) {
                 inArray(heartbeatRuns.agentId, assigneeAgentIds),
               ),
             )
-            .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt))
+            .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
         : Promise.resolve([]),
       issueIds.length > 0
         ? db
@@ -5092,6 +5536,7 @@ export function heartbeatService(db: Db) {
               id: issueComments.id,
               issueId: issueComments.issueId,
               body: issueComments.body,
+              authorAgentId: issueComments.authorAgentId,
               createdAt: issueComments.createdAt,
             })
             .from(issueComments)
@@ -5112,6 +5557,7 @@ export function heartbeatService(db: Db) {
       issueIds.length > 0
         ? db
             .selectDistinctOn([issueComments.issueId], {
+              id: issueComments.id,
               issueId: issueComments.issueId,
               body: issueComments.body,
               createdAt: issueComments.createdAt,
@@ -5120,11 +5566,18 @@ export function heartbeatService(db: Db) {
             .where(
               and(
                 eq(issueComments.companyId, companyId),
-                eq(issueComments.authorAgentId, input.agent.id),
                 inArray(issueComments.issueId, issueIds),
+                or(
+                  sql`${issueComments.body} like ${`${OPERATIONS_IDLE_WAKE_MARKER}%`}`,
+                  sql`${issueComments.body} like ${`${OPERATIONS_RECOVERY_WAKE_MARKER}%`}`,
+                  sql`${issueComments.body} like ${`${OPERATIONS_OPERATOR_RECOVERY_MARKER}%`}`,
+                  sql`${issueComments.body} like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
+                  sql`${issueComments.body} like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
+                  sql`${issueComments.body} like ${`${OPERATIONS_OWNERSHIP_CORRECTION_MARKER}%`}`,
+                ),
               ),
             )
-            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
+            .orderBy(issueComments.issueId, desc(issueComments.createdAt), desc(issueComments.id))
         : Promise.resolve([]),
       issueIds.length > 0
         ? db
@@ -5189,11 +5642,8 @@ export function heartbeatService(db: Db) {
         .filter((row) => row.issueId)
         .map((row) => [row.issueId, row] as const),
     );
-    const autoReissueTargetIssueIds = new Set(
-      targets
-        .filter((target) => target.mode === "cross_agent_recovery" && target.autoReissueEligible)
-        .map((target) => target.issueId),
-    );
+    let targets: OperationsHeartbeatTarget[] = [];
+    let autoReissueTargetIssueIds = new Set<string>();
 
     const assignmentCandidateRows = await db
       .select({
@@ -5207,19 +5657,36 @@ export function heartbeatService(db: Db) {
       })
       .from(agents)
       .where(eq(agents.companyId, companyId));
-    const nonOperationsAssignmentCandidates = assignmentCandidateRows.filter((row) => (
+    const capacityLedgerCandidates = assignmentCandidateRows.filter((row) => (
       row.id !== input.agent.id &&
       row.status !== "terminated" &&
-      row.status !== "pending_approval" &&
       !isOrchestratorOnlyAgent(row)
     ));
+    const capacityLedgerCandidateById = new Map(capacityLedgerCandidates.map((row) => [row.id, row]));
+    const nonOperationsAssignmentCandidates = capacityLedgerCandidates.filter((row) => (
+      row.status !== "pending_approval"
+    ));
     const availableAssignmentCandidates = nonOperationsAssignmentCandidates.filter((row) => (
-      row.status !== "paused"
+      isAgentAssignableStatus(row.status)
     ));
     const availableAssignmentCandidateById = new Map(availableAssignmentCandidates.map((row) => [row.id, row]));
+    const eligibleSecurityAssignmentCandidateIds = availableAssignmentCandidates
+      .filter((candidate) => candidate.role === "security")
+      .map((candidate) => candidate.id);
+    const eligibleQaAssignmentCandidateIds = availableAssignmentCandidates
+      .filter((candidate) => candidate.role === "qa")
+      .map((candidate) => candidate.id);
+    const eligibleCtoAssignmentCandidateIds = availableAssignmentCandidates
+      .filter((candidate) => candidate.role === "cto")
+      .map((candidate) => candidate.id);
+    const buildEligibleSpecialistRoleIds = () => ({
+      security: eligibleSecurityAssignmentCandidateIds,
+      qa: eligibleQaAssignmentCandidateIds,
+      cto: eligibleCtoAssignmentCandidateIds,
+    });
     const assignmentCandidateById = new Map(nonOperationsAssignmentCandidates.map((row) => [row.id, row]));
-    const assignmentCandidateIds = availableAssignmentCandidates.map((row) => row.id);
-    const runningAssignmentCountRows = assignmentCandidateIds.length > 0
+    const capacityLedgerCandidateIds = capacityLedgerCandidates.map((row) => row.id);
+    const runningAssignmentCountRows = capacityLedgerCandidateIds.length > 0
       ? await db
           .select({
             agentId: heartbeatRuns.agentId,
@@ -5229,7 +5696,7 @@ export function heartbeatService(db: Db) {
           .where(
             and(
               eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.agentId, assignmentCandidateIds),
+              inArray(heartbeatRuns.agentId, capacityLedgerCandidateIds),
               eq(heartbeatRuns.status, "running"),
               sql`coalesce(${heartbeatRuns.lastActivityAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${blockingRunActivityCutoffIso}::timestamptz`,
             ),
@@ -5239,11 +5706,49 @@ export function heartbeatService(db: Db) {
     const runningAssignmentCountById = new Map(
       runningAssignmentCountRows.map((row) => [row.agentId, Number(row.runningCount ?? 0)]),
     );
+    const pendingWakeupReservationRows = capacityLedgerCandidateIds.length > 0
+      ? await db
+          .select({
+            agentId: agentWakeupRequests.agentId,
+            pendingCount: sql<number>`count(*)`,
+          })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              inArray(agentWakeupRequests.agentId, capacityLedgerCandidateIds),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            ),
+          )
+          .groupBy(agentWakeupRequests.agentId)
+      : [];
+    const pendingWakeupReservationCountById = new Map(
+      pendingWakeupReservationRows.map((row) => [row.agentId, Number(row.pendingCount ?? 0)]),
+    );
+    const totalSlotCountByAgentId = new Map(
+      capacityLedgerCandidates.map((candidate) => [
+        candidate.id,
+        parseHeartbeatPolicy(candidate as typeof agents.$inferSelect).maxConcurrentRuns,
+      ] as const),
+    );
+    const occupiedSlotCountByAgentId = new Map(
+      capacityLedgerCandidates.map((candidate) => [
+        candidate.id,
+        runningAssignmentCountById.get(candidate.id) ?? 0,
+      ] as const),
+    );
+    const reservedSlotCountByAgentId = new Map(
+      capacityLedgerCandidates.map((candidate) => [
+        candidate.id,
+        pendingWakeupReservationCountById.get(candidate.id) ?? 0,
+      ] as const),
+    );
     const freeSlotCountByAgentId = new Map(
       availableAssignmentCandidates.map((candidate) => {
-        const policy = parseHeartbeatPolicy(candidate as typeof agents.$inferSelect);
-        const runningCount = runningAssignmentCountById.get(candidate.id) ?? 0;
-        return [candidate.id, Math.max(0, policy.maxConcurrentRuns - runningCount)] as const;
+        const totalSlots = totalSlotCountByAgentId.get(candidate.id) ?? 0;
+        const occupiedSlots = occupiedSlotCountByAgentId.get(candidate.id) ?? 0;
+        const reservedSlots = reservedSlotCountByAgentId.get(candidate.id) ?? 0;
+        return [candidate.id, Math.max(0, totalSlots - occupiedSlots - reservedSlots)] as const;
       }),
     );
     const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
@@ -5257,27 +5762,50 @@ export function heartbeatService(db: Db) {
       if (!agentId) return;
       const currentFreeSlots = freeSlotCountByAgentId.get(agentId) ?? 0;
       freeSlotCountByAgentId.set(agentId, Math.max(0, currentFreeSlots - 1));
+      reservedSlotCountByAgentId.set(agentId, (reservedSlotCountByAgentId.get(agentId) ?? 0) + 1);
     };
+    const buildCooCapacityLedger = (): CooCapacityLedger => ({
+      agents: capacityLedgerCandidates.map((candidate) => ({
+        agentId: candidate.id,
+        role: candidate.role || "unknown",
+        totalSlots: totalSlotCountByAgentId.get(candidate.id) ?? 0,
+        occupiedSlots: occupiedSlotCountByAgentId.get(candidate.id) ?? 0,
+        reservedSlots: reservedSlotCountByAgentId.get(candidate.id) ?? 0,
+        unavailableReason: isAgentAssignableStatus(candidate.status) ? null : candidate.status,
+      })),
+    });
     const isWakeableOwnedIssue = (issue: {
       status: string;
       assigneeAgentId: string | null;
+      identifier?: string | null;
+      title?: string | null;
+      description?: string | null;
+      projectName?: string | null;
+      workIntent?: string | null;
       assigneeRole?: string | null;
-    }) => (
-      Boolean(issue.assigneeAgentId) &&
-      (
-        issue.status === "todo" ||
-        issue.status === "backlog" ||
-        (issue.status === "in_review" && isDeliveryScopedAssigneeRole(issue.assigneeRole))
-      )
-    );
-    const shouldWakeReadyOwnedIssue = (issue: {
-      status: string;
-      assigneeAgentId: string | null;
-      assigneeRole?: string | null;
-    }) => isWakeableOwnedIssue(issue) && hasFreeSlot(issue.assigneeAgentId);
+    }) => {
+      const issueText = buildDeliveryScopeIssueText(issue);
+      return (
+        Boolean(issue.assigneeAgentId) &&
+        (
+          issue.status === "todo" ||
+          issue.status === "backlog" ||
+          (issue.status === "in_review" && isDeliveryScopedIssue({
+            workIntent: issue.workIntent,
+            assigneeRole: issue.assigneeRole,
+            issueText,
+          }))
+        )
+      );
+    };
     const shouldDeferReadyOwnedIssueWake = (issue: {
       status: string;
       assigneeAgentId: string | null;
+      identifier?: string | null;
+      title?: string | null;
+      description?: string | null;
+      projectName?: string | null;
+      workIntent?: string | null;
       assigneeRole?: string | null;
     }) => isWakeableOwnedIssue(issue) && !hasFreeSlot(issue.assigneeAgentId);
     const buildRoutingIssueInput = (issue: {
@@ -5301,6 +5829,7 @@ export function heartbeatService(db: Db) {
         projectId: issue.projectId,
         projectName: issue.projectName,
         preferredRole: issue.workflowLaneRole ?? null,
+        workflowLaneRole: issue.workflowLaneRole ?? null,
       };
     };
     const resolveEligibleCandidatePool = (issue: {
@@ -5339,7 +5868,12 @@ export function heartbeatService(db: Db) {
     };
     const syncLocalAssignedIssue = (issueId: string, patch: {
       assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      workIntent?: string | null;
+      qaReviewerAgentId?: string | null;
       status?: string;
+      executionPolicy?: Record<string, unknown> | null;
+      executionState?: Record<string, unknown> | null;
     }) => {
       const existingAssigned = openAssignedIssueById.get(issueId) ?? null;
       const existingUnassigned = openUnassignedIssueById.get(issueId) ?? null;
@@ -5349,8 +5883,10 @@ export function heartbeatService(db: Db) {
       if (!patch.assigneeAgentId) {
         const nextUnassigned = {
           id: base.id,
+          companyId: base.companyId,
           status: patch.status ?? base.status,
           priority: base.priority,
+          updatedAt: base.updatedAt,
           originKind: base.originKind,
           originId: base.originId,
           identifier: base.identifier,
@@ -5358,6 +5894,8 @@ export function heartbeatService(db: Db) {
           description: base.description,
           projectId: base.projectId,
           projectName: base.projectName,
+          workIntent: patch.workIntent ?? (existingAssigned as { workIntent?: string | null } | null)?.workIntent ?? null,
+          workflowTemplateKey: base.workflowTemplateKey ?? null,
           workflowLaneRole: base.workflowLaneRole ?? null,
         };
         openAssignedIssueById.delete(issueId);
@@ -5374,8 +5912,10 @@ export function heartbeatService(db: Db) {
       const nextStatus = patch.status ?? base.status;
       const nextAssigned = {
         id: base.id,
+        companyId: base.companyId,
         status: nextStatus,
         priority: base.priority,
+        updatedAt: base.updatedAt,
         originKind: base.originKind,
         originId: base.originId,
         identifier: base.identifier,
@@ -5383,12 +5923,17 @@ export function heartbeatService(db: Db) {
         description: base.description,
         projectId: base.projectId,
         projectName: base.projectName,
+        workIntent: patch.workIntent ?? (existingAssigned as { workIntent?: string | null } | null)?.workIntent ?? null,
+        workflowTemplateKey: base.workflowTemplateKey ?? null,
         executionRunId:
           nextStatus === "in_progress" && existingAssigned?.assigneeAgentId === patch.assigneeAgentId
             ? (existingAssigned?.executionRunId ?? null)
             : null,
-        executionState: existingAssigned?.executionState ?? null,
+        executionPolicy: patch.executionPolicy ?? existingAssigned?.executionPolicy ?? null,
+        executionState: patch.executionState ?? existingAssigned?.executionState ?? null,
         assigneeAgentId: patch.assigneeAgentId,
+        assigneeUserId: patch.assigneeUserId ?? existingAssigned?.assigneeUserId ?? null,
+        qaReviewerAgentId: patch.qaReviewerAgentId ?? existingAssigned?.qaReviewerAgentId ?? null,
         assigneeName: assignee?.name ?? null,
         assigneeRole: assignee?.role ?? null,
         assigneeStatus: assignee?.status ?? null,
@@ -5403,6 +5948,12 @@ export function heartbeatService(db: Db) {
       openUnassignedIssues = openUnassignedIssues.filter((issue) => issue.id !== issueId);
       return nextAssigned;
     };
+    const syncLocalClosedIssue = (issueId: string) => {
+      openAssignedIssueById.delete(issueId);
+      openUnassignedIssueById.delete(issueId);
+      openAssignedIssues = openAssignedIssues.filter((issue) => issue.id !== issueId);
+      openUnassignedIssues = openUnassignedIssues.filter((issue) => issue.id !== issueId);
+    };
 
     let wakeCommentCount = 0;
     let wakeupCount = 0;
@@ -5412,6 +5963,7 @@ export function heartbeatService(db: Db) {
     let recoveryReissueWakeupCount = 0;
     let requeuedOperationsIssueCount = 0;
     let assignedIssueCount = 0;
+    let reassignedIssueCount = 0;
     let assignmentCommentCount = 0;
     let assignmentWakeupCount = 0;
     let ownershipCorrectionCommentCount = 0;
@@ -5422,44 +5974,188 @@ export function heartbeatService(db: Db) {
     let qaReleaseGateReassignCount = 0;
     let qaReleaseGateDemotionCount = 0;
     let ownershipCorrectedWakeDeferredCount = 0;
+    let finalizedIssueCount = 0;
+    let finalizedParentWakeupCount = 0;
+    let provisionedSecuritySpecialistCount = 0;
+    let stabilizationPassCount = 0;
+    let stabilizationActionCount = 0;
     const ownershipCorrectedIssueIds = new Set<string>();
     const targetReasonByIssueId = new Map<string, string>();
     const opsActiveTargetIssueIdsForAssignment = new Set<string>();
-    const releaseGateQaResolution = await resolveCompanyReleaseGateQaAgent(db, companyId);
-
-    const maybeWakeOwnedIssue = async (issue: (typeof openAssignedIssues)[number], reason: string) => {
-      if (!issue.assigneeAgentId || !shouldWakeReadyOwnedIssue(issue)) return false;
+    const attemptedSpecialistCoverageProvision = new Set<string>();
+    const registerAssignmentCandidate = (candidate: {
+      id: string;
+      name: string | null;
+      role: string | null;
+      title: string | null;
+      capabilities: string | null;
+      status: string;
+      runtimeConfig: Record<string, unknown> | null;
+    }) => {
+      const normalizedCandidate = {
+        ...candidate,
+        name: candidate.name ?? "",
+        role: candidate.role ?? "",
+        runtimeConfig: candidate.runtimeConfig ?? {},
+      };
+      if (
+        normalizedCandidate.id === input.agent.id
+        || normalizedCandidate.status === "terminated"
+        || isOrchestratorOnlyAgent(normalizedCandidate)
+      ) {
+        return;
+      }
+      if (!capacityLedgerCandidateById.has(normalizedCandidate.id)) {
+        capacityLedgerCandidates.push(normalizedCandidate);
+        capacityLedgerCandidateById.set(normalizedCandidate.id, normalizedCandidate);
+        const runningCount = runningAssignmentCountById.get(normalizedCandidate.id) ?? 0;
+        const policy = parseHeartbeatPolicy(normalizedCandidate as typeof agents.$inferSelect);
+        const reservedSlots = pendingWakeupReservationCountById.get(normalizedCandidate.id) ?? 0;
+        totalSlotCountByAgentId.set(normalizedCandidate.id, policy.maxConcurrentRuns);
+        occupiedSlotCountByAgentId.set(normalizedCandidate.id, runningCount);
+        reservedSlotCountByAgentId.set(normalizedCandidate.id, reservedSlots);
+      }
+      if (normalizedCandidate.status === "pending_approval") {
+        return;
+      }
+      if (!assignmentCandidateById.has(normalizedCandidate.id)) {
+        assignmentCandidateById.set(normalizedCandidate.id, normalizedCandidate);
+      }
+      if (!availableAssignmentCandidateById.has(normalizedCandidate.id) && isAgentAssignableStatus(normalizedCandidate.status)) {
+        availableAssignmentCandidates.push(normalizedCandidate);
+        availableAssignmentCandidateById.set(normalizedCandidate.id, normalizedCandidate);
+        freeSlotCountByAgentId.set(
+          normalizedCandidate.id,
+          Math.max(
+            0,
+            (totalSlotCountByAgentId.get(normalizedCandidate.id) ?? 0)
+            - (occupiedSlotCountByAgentId.get(normalizedCandidate.id) ?? 0)
+            - (reservedSlotCountByAgentId.get(normalizedCandidate.id) ?? 0),
+          ),
+        );
+        if (normalizedCandidate.role === "security") {
+          eligibleSecurityAssignmentCandidateIds.push(normalizedCandidate.id);
+        } else if (normalizedCandidate.role === "qa") {
+          eligibleQaAssignmentCandidateIds.push(normalizedCandidate.id);
+        } else if (normalizedCandidate.role === "cto") {
+          eligibleCtoAssignmentCandidateIds.push(normalizedCandidate.id);
+        }
+      }
+    };
+    const maybeProvisionSpecialistCoverage = async (
+      requirement: ReturnType<typeof resolveSpecialistLaneRequirement>,
+    ) => {
+      if (!requirement || requirement.blockingRole !== "security") return null;
+      if (eligibleSecurityAssignmentCandidateIds.length > 0) return null;
+      if (attemptedSpecialistCoverageProvision.has(requirement.blockingRole)) return null;
+      attemptedSpecialistCoverageProvision.add(requirement.blockingRole);
 
       try {
-        await enqueueWakeup(issue.assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "operations_assignment",
-          payload: {
-            issueId: issue.id,
-            mutation: "operations_assignment",
-            sourceRunId: input.run.id,
-            ownershipReason: reason,
-          },
-          requestedByActorType: "agent",
-          requestedByActorId: input.agent.id,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            source: "operations.heartbeat",
-            wakeReason: "operations_assignment",
-          },
-        });
-        consumeFreeSlot(issue.assigneeAgentId);
-        return true;
+        const result = await heartbeatModel.ensureCompanyHasSecurityEngineer(companyId, { apply: true });
+        if (!result.createdAgentId) return null;
+        const createdCandidate = await db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            role: agents.role,
+            title: agents.title,
+            capabilities: agents.capabilities,
+            status: agents.status,
+            runtimeConfig: agents.runtimeConfig,
+          })
+          .from(agents)
+          .where(eq(agents.id, result.createdAgentId))
+          .then((rows) => rows[0] ?? null);
+        if (!createdCandidate) return null;
+        registerAssignmentCandidate(createdCandidate);
+        if (createdCandidate.status !== "paused" && createdCandidate.role === "security") {
+          provisionedSecuritySpecialistCount += 1;
+        }
+        return createdCandidate;
       } catch (err) {
-        if (isAgentNotInvokableConflict(err)) return false;
         logger.warn(
-          { err, issueId: issue.id, assigneeAgentId: issue.assigneeAgentId },
-          "operations heartbeat failed to enqueue owned-issue wakeup",
+          { err, companyId, blockingRole: requirement.blockingRole },
+          "operations heartbeat failed to provision missing specialist coverage",
         );
-        return false;
+        return null;
       }
+    };
+    const rankEligibleCandidateIds = (issue: {
+      id: string;
+      identifier: string | null;
+      title: string;
+      description?: string | null;
+      projectId: string | null;
+      projectName?: string | null;
+      workflowLaneRole?: string | null;
+    }) => {
+      const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
+      const rankedIds: string[] = [];
+      let remainingCandidates = [...eligibleCandidatePool];
+      while (remainingCandidates.length > 0) {
+        const selected = pickAssignmentCandidate(issue, { candidatePool: remainingCandidates });
+        if (!selected) break;
+        rankedIds.push(selected.id);
+        remainingCandidates = remainingCandidates.filter((candidate) => candidate.id !== selected.id);
+      }
+      for (const candidate of eligibleCandidatePool) {
+        if (!rankedIds.includes(candidate.id)) rankedIds.push(candidate.id);
+      }
+      return rankedIds;
+    };
+    const buildOwnedReassignmentActionability = (
+      issue: (typeof openAssignedIssues)[number],
+    ): Extract<CooIssueActionability, { kind: "ready_reassignable" }> | null => {
+      if (!issue.assigneeAgentId || issue.assigneeAgentId === input.agent.id) return null;
+      if (ownershipCorrectedIssueIds.has(issue.id) || autoReissueTargetIssueIds.has(issue.id)) return null;
+      const specialistRequirement = resolveSpecialistLaneRequirement({
+        workflowLaneRole: issue.workflowLaneRole,
+        qaLikeIssue: isSpecialistQaLikeIssue(issue),
+      });
+      if (
+        specialistRequirement
+        && !hasEligibleSpecialistForRequirement(specialistRequirement, buildEligibleSpecialistRoleIds())
+      ) {
+        return null;
+      }
+      const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
+      if (eligibleCandidatePool.length === 0) return null;
+      const eligibleCandidateIds = new Set(eligibleCandidatePool.map((candidate) => candidate.id));
+      const currentAssigneeIsEligible = eligibleCandidateIds.has(issue.assigneeAgentId);
+      const rankedEligibleCandidateIds = rankEligibleCandidateIds(issue)
+        .filter((agentId) => agentId !== issue.assigneeAgentId);
+      if (rankedEligibleCandidateIds.length === 0) return null;
+      const freeSlotEligibleCandidates = eligibleCandidatePool.filter((candidate) => (
+        candidate.id !== issue.assigneeAgentId && hasFreeSlot(candidate.id)
+      ));
+      const bestFreeSlotCandidate = pickAssignmentCandidate(issue, { candidatePool: freeSlotEligibleCandidates });
+      const makeActionability = (
+        correctionReason: CooOwnershipCorrectionReason,
+        reason: string,
+      ): Extract<CooIssueActionability, { kind: "ready_reassignable" }> => ({
+        kind: "ready_reassignable",
+        issueId: issue.id,
+        currentAssigneeAgentId: issue.assigneeAgentId!,
+        eligibleAgentIds: rankedEligibleCandidateIds,
+        preferredAgentId: bestFreeSlotCandidate?.id ?? rankedEligibleCandidateIds[0] ?? null,
+        priority: issue.priority,
+        updatedAt: issue.updatedAt,
+        correctionReason,
+        reason,
+      });
+      if (!currentAssigneeIsEligible) {
+        return makeActionability(
+          "wrong_specialist_reassigned",
+          "assigned specialist no longer matches project, description, or structured routing truth",
+        );
+      }
+      if (!hasFreeSlot(issue.assigneeAgentId) && bestFreeSlotCandidate) {
+        return makeActionability(
+          "slot_rebalanced",
+          "current owner had no free heartbeat slot while another eligible specialist did",
+        );
+      }
+      return null;
     };
     const recordOwnershipCorrection = async (inputCorrection: {
       issue: (typeof openAssignedIssues)[number];
@@ -5468,7 +6164,9 @@ export function heartbeatService(db: Db) {
         | "fake_wip_demoted"
         | "slot_rebalanced"
         | "qa_release_gate_reassigned"
-        | "qa_release_gate_demotion";
+        | "qa_release_gate_demotion"
+        | "delivery_integrity_reconciled"
+        | "run_owner_mismatch_cancelled";
       detail: string;
     }) => {
       const wakeDeferred = shouldDeferReadyOwnedIssueWake(inputCorrection.issue);
@@ -5493,9 +6191,7 @@ export function heartbeatService(db: Db) {
         );
       }
 
-      if (await maybeWakeOwnedIssue(inputCorrection.issue, inputCorrection.correctionReason)) {
-        ownershipCorrectionWakeupCount += 1;
-      } else if (wakeDeferred) {
+      if (wakeDeferred) {
         ownershipCorrectedWakeDeferredCount += 1;
       }
     };
@@ -5503,12 +6199,22 @@ export function heartbeatService(db: Db) {
       issue: (typeof openAssignedIssues)[number],
       patch: {
         assigneeAgentId: string | null;
+        assigneeUserId?: string | null;
+        workIntent?: string | null;
+        qaReviewerAgentId?: string | null;
         status?: string;
+        executionPolicy?: Record<string, unknown> | null;
+        executionState?: Record<string, unknown> | null;
       },
     ) => {
       const updated = await issuesSvc.update(issue.id, {
         assigneeAgentId: patch.assigneeAgentId,
+        ...(patch.assigneeUserId !== undefined ? { assigneeUserId: patch.assigneeUserId } : {}),
+        ...(patch.workIntent !== undefined ? { workIntent: patch.workIntent } : {}),
+        ...(patch.qaReviewerAgentId !== undefined ? { qaReviewerAgentId: patch.qaReviewerAgentId } : {}),
         ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.executionPolicy !== undefined ? { executionPolicy: patch.executionPolicy } : {}),
+        ...(patch.executionState !== undefined ? { executionState: patch.executionState } : {}),
         actorAgentId: input.agent.id,
       });
       if (!updated) return updated;
@@ -5521,6 +6227,18 @@ export function heartbeatService(db: Db) {
       if (patch.assigneeAgentId !== issue.assigneeAgentId) {
         previous.assigneeAgentId = issue.assigneeAgentId;
         details.assigneeAgentId = updated.assigneeAgentId;
+      }
+      if (patch.assigneeUserId !== undefined && patch.assigneeUserId !== issue.assigneeUserId) {
+        previous.assigneeUserId = issue.assigneeUserId ?? null;
+        details.assigneeUserId = updated.assigneeUserId ?? null;
+      }
+      if (patch.workIntent !== undefined && patch.workIntent !== (issue as { workIntent?: string | null }).workIntent) {
+        previous.workIntent = (issue as { workIntent?: string | null }).workIntent ?? null;
+        details.workIntent = (updated as { workIntent?: string | null }).workIntent ?? null;
+      }
+      if (patch.qaReviewerAgentId !== undefined && patch.qaReviewerAgentId !== issue.qaReviewerAgentId) {
+        previous.qaReviewerAgentId = issue.qaReviewerAgentId ?? null;
+        details.qaReviewerAgentId = updated.qaReviewerAgentId ?? null;
       }
       if (patch.status !== undefined && patch.status !== issue.status) {
         previous.status = issue.status;
@@ -5543,13 +6261,149 @@ export function heartbeatService(db: Db) {
 
       return updated;
     };
-    for (const issue of [...openAssignedIssues]) {
+    const attemptIssueQaAutoFinalization = async (issue: (typeof openAssignedIssues)[number]) => {
+      if (
+        issue.status !== "in_review"
+        && !(issue.workflowLaneRole === "qa" && issue.status === "blocked")
+      ) {
+        return false;
+      }
+      const executionRun = issue.executionRunId ? issueExecutionRunById.get(issue.executionRunId) ?? null : null;
+      if (executionRun && (executionRun.status === "queued" || executionRun.status === "running")) {
+        return false;
+      }
+
+      const currentParticipant =
+        issue.executionState && typeof issue.executionState === "object"
+          ? (issue.executionState as { currentParticipant?: { type?: string; agentId?: string | null } | null }).currentParticipant ?? null
+          : null;
+      const authorizedQaReviewerAgentId =
+        issue.workflowLaneRole === "qa"
+          ? issue.assigneeAgentId ?? null
+          : currentParticipant?.type === "agent" && typeof currentParticipant.agentId === "string"
+            ? currentParticipant.agentId
+            : issue.qaReviewerAgentId
+              ?? (issue.assigneeRole === "qa" ? issue.assigneeAgentId : null);
+      if (!authorizedQaReviewerAgentId) {
+        return false;
+      }
+
+      const qaComments = (nonOperationsCommentsByIssueId.get(issue.id) ?? [])
+        .filter((comment) => comment.authorAgentId === authorizedQaReviewerAgentId)
+        .map((comment) => ({
+          id: comment.id,
+          body: comment.body ?? "",
+          authorAgentId: comment.authorAgentId ?? null,
+          createdAt: comment.createdAt,
+        }));
+      const selectedQaComment = selectLatestRelevantQaComment(qaComments);
+      if (!selectedQaComment) {
+        return false;
+      }
+
+      const currentIssue = await issuesSvc.getById(issue.id);
+      if (!currentIssue) {
+        return false;
+      }
+
+      const finalization = await finalizeQaValidatedIssueFromComment({
+        db,
+        issue: currentIssue,
+        comment: selectedQaComment,
+        actor: {
+          actorType: "agent",
+          actorId: input.agent.id,
+          agentId: input.agent.id,
+          runId: input.run.id,
+        },
+        logActivity,
+        issues: {
+          update: async (commentIssueId, patch) => await issuesSvc.update(commentIssueId, patch),
+          addComment: async (commentIssueId, body, actor) =>
+            await issuesSvc.addComment(commentIssueId, body, actor),
+          listComments: async (commentIssueId) =>
+            await issuesSvc.listComments(commentIssueId, { order: "desc", limit: 500 }),
+        },
+        issueMerge,
+        projects: {
+          getById: async (projectId) =>
+            await db
+              .select({
+                executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              })
+              .from(projects)
+              .where(eq(projects.id, projectId))
+              .then((rows) => rows[0] ?? null),
+        },
+        executionWorkspaces: {
+          getById: async (workspaceId) => await executionWorkspacesSvc.getById(workspaceId),
+        },
+        persistExecutionWorkspaceMergeStatus,
+        workflow: {
+          evaluateLaneCompletion: async (workflowIssue) => await issueWorkflowsSvc.evaluateLaneCompletion(workflowIssue),
+          getWakeableParentAfterChildCompletion: async (parentIssueId) =>
+            await issuesSvc.getWakeableParentAfterChildCompletion(parentIssueId),
+        },
+      });
+
+      let changed = false;
+      if (finalization.issue.status === "done") {
+        syncLocalClosedIssue(finalization.issue.id);
+        finalizedIssueCount += 1;
+        changed = true;
+      }
+
+      if (finalization.parentWakeup) {
+        try {
+          await enqueueWakeup(finalization.parentWakeup.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_children_completed",
+            payload: {
+              issueId: finalization.parentWakeup.id,
+              completedChildIssueId: issue.id,
+              childIssueIds: finalization.parentWakeup.childIssueIds,
+            },
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: {
+              issueId: finalization.parentWakeup.id,
+              taskId: finalization.parentWakeup.id,
+              wakeReason: "issue_children_completed",
+              source: "issue.children_completed",
+              completedChildIssueId: issue.id,
+              childIssueIds: finalization.parentWakeup.childIssueIds,
+            },
+          });
+          finalizedParentWakeupCount += 1;
+          changed = true;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: finalization.parentWakeup.id, assigneeAgentId: finalization.parentWakeup.assigneeAgentId },
+            "operations heartbeat failed to enqueue parent wakeup after QA finalization",
+          );
+        }
+      }
+
+      return changed;
+    };
+    const runOwnedIssueStabilizationPass = async () => {
+      let passActionCount = 0;
+
+      for (const issue of [...openAssignedIssues]) {
+        if (!issue.assigneeAgentId) continue;
+        if (issue.assigneeAgentId === input.agent.id) continue;
+        if (await attemptIssueQaAutoFinalization(issue)) {
+          passActionCount += 1;
+        }
+      }
+
+      for (const issue of [...openAssignedIssues]) {
       if (!issue.assigneeAgentId) continue;
       if (issue.assigneeAgentId === input.agent.id) continue;
       if (isWatchdogIssueLabel(`${issue.identifier ?? ""} ${issue.title}`)) continue;
 
       const executionRun = issue.executionRunId ? issueExecutionRunById.get(issue.executionRunId) ?? null : null;
-      if (executionRun?.status === "running") continue;
 
       const latestTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
       const latestTruthAgeHours = latestTruthComment
@@ -5562,15 +6416,372 @@ export function heartbeatService(db: Db) {
         (hasWaitStateTruthFromCommentBody(latestTruthComment.body) || truthType === "handoff")
       );
 
-      if (issue.status === "in_review" && isDeliveryScopedAssigneeRole(issue.assigneeRole)) {
-        if (releaseGateQaResolution.releaseGateQaAgent) {
-          if (issue.assigneeAgentId !== releaseGateQaResolution.releaseGateQaAgent.id) {
+      const isWorkflowIssue = Boolean(issue.workflowTemplateKey || issue.workflowLaneRole);
+      const issueText = buildDeliveryScopeIssueText(issue);
+      const deliveryIntegrity = classifyDeliveryIntegrity({
+        issue: {
+          status: issue.status,
+          title: issue.title,
+          description: issue.description,
+          identifier: issue.identifier,
+          projectName: issue.projectName,
+          workflowTemplateKey: issue.workflowTemplateKey,
+          workflowLaneRole: issue.workflowLaneRole,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeRole: issue.assigneeRole,
+          assigneeStatus: issue.assigneeStatus,
+          assigneeUserId: issue.assigneeUserId,
+          workIntent: issue.workIntent ?? null,
+          executionPolicy: issue.executionPolicy,
+          executionState: issue.executionState,
+          executionRunId: issue.executionRunId,
+        },
+        run: executionRun
+          ? {
+              id: executionRun.id,
+              agentId: executionRun.agentId,
+              status: executionRun.status,
+            }
+          : null,
+        eligibleSpecialistRoleIds: buildEligibleSpecialistRoleIds(),
+      });
+      if (
+        deliveryIntegrity.kind === "run_owner_mismatch"
+        && executionRun
+        && (executionRun.status === "queued" || executionRun.status === "running")
+      ) {
+        try {
+          await cancelRunInternal(
+            executionRun.id,
+            `Cancelled by operations heartbeat because issue ${issue.identifier ?? issue.id} is owned by ${deliveryIntegrity.canonicalAgentId ?? "another assignee"} but run ${executionRun.id} is still on ${deliveryIntegrity.runAgentId}`,
+          );
+          const updatedIssue = syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId ?? null,
+            workIntent: deliveryIntegrity.workIntent,
+            qaReviewerAgentId: issue.qaReviewerAgentId ?? null,
+            status: issue.status,
+            executionPolicy: issue.executionPolicy as Record<string, unknown> | null,
+            executionState: issue.executionState as Record<string, unknown> | null,
+          });
+          if (!updatedIssue) {
+            continue;
+          }
+          ownershipCorrectedIssueIds.add(issue.id);
+          await recordOwnershipCorrection({
+            issue: updatedIssue,
+            correctionReason: "run_owner_mismatch_cancelled",
+            detail: "execution run ownership no longer matched the issue's canonical owner; cancelled the stale run before re-waking the correct owner",
+          });
+          passActionCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, executionRunId: executionRun.id },
+            "operations heartbeat failed to cancel mismatched issue execution run",
+          );
+        }
+        continue;
+      }
+      if (deliveryIntegrity.kind === "normalize_non_delivery_review") {
+        try {
+          if (executionRun && (executionRun.status === "queued" || executionRun.status === "running")) {
+            await cancelRunInternal(
+              executionRun.id,
+              `Cancelled by operations heartbeat because issue ${issue.identifier ?? issue.id} is non-delivery work and cannot remain in review execution`,
+            );
+          }
+          await updateOwnedIssueWithActivity(issue, {
+            assigneeAgentId: deliveryIntegrity.assigneeAgentId,
+            assigneeUserId: deliveryIntegrity.assigneeUserId,
+            workIntent: deliveryIntegrity.workIntent,
+            qaReviewerAgentId: deliveryIntegrity.qaReviewerAgentId,
+            status: deliveryIntegrity.nextStatus,
+            executionPolicy: null,
+            executionState: null,
+          });
+          const updatedIssue = syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: deliveryIntegrity.assigneeAgentId,
+            assigneeUserId: deliveryIntegrity.assigneeUserId,
+            workIntent: deliveryIntegrity.workIntent,
+            qaReviewerAgentId: deliveryIntegrity.qaReviewerAgentId,
+            status: deliveryIntegrity.nextStatus,
+            executionPolicy: null,
+            executionState: null,
+          });
+          ownershipCorrectedIssueIds.add(issue.id);
+          if (updatedIssue) {
+            await recordOwnershipCorrection({
+              issue: updatedIssue,
+              correctionReason: "delivery_integrity_reconciled",
+              detail: "non-delivery work had drifted into review ownership; normalized it back to ordinary queued work",
+            });
+          } else {
+            try {
+              await issuesSvc.addComment(
+                issue.id,
+                buildOperationsOwnershipCorrectionComment({
+                  correctionReason: "delivery_integrity_reconciled",
+                  wakeDeferred: false,
+                  detail: "non-delivery work had drifted into review ownership and was returned to the unassigned queue",
+                  nextStatus: deliveryIntegrity.nextStatus,
+                  assigneeAgentId: null,
+                  assigneeName: null,
+                }),
+                { agentId: input.agent.id, runId: input.run.id },
+              );
+              ownershipCorrectionCommentCount += 1;
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id },
+                "operations heartbeat failed to post non-delivery review normalization comment",
+              );
+            }
+          }
+          passActionCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "operations heartbeat failed to normalize non-delivery review issue",
+          );
+        }
+        continue;
+      }
+      if (deliveryIntegrity.kind === "normalize_workflow_lane_review_drift") {
+        try {
+          if (executionRun && (executionRun.status === "queued" || executionRun.status === "running")) {
+            await cancelRunInternal(
+              executionRun.id,
+              `Cancelled by operations heartbeat because workflow lane ${issue.identifier ?? issue.id} had drifted into standalone delivery review state`,
+            );
+          }
+          const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
+          const eligibleCandidateIds = new Set(eligibleCandidatePool.map((candidate) => candidate.id));
+          const retainedAssigneeAgentId =
+            issue.assigneeAgentId && eligibleCandidateIds.has(issue.assigneeAgentId)
+              ? issue.assigneeAgentId
+              : null;
+          const nextStatus = issue.status === "in_review" ? "todo" : issue.status;
+          await updateOwnedIssueWithActivity(issue, {
+            assigneeAgentId: retainedAssigneeAgentId,
+            assigneeUserId: null,
+            workIntent: deliveryIntegrity.workIntent,
+            qaReviewerAgentId: null,
+            status: nextStatus,
+            executionPolicy: null,
+            executionState: null,
+          });
+          const updatedIssue = syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: retainedAssigneeAgentId,
+            assigneeUserId: null,
+            workIntent: deliveryIntegrity.workIntent,
+            qaReviewerAgentId: null,
+            status: nextStatus,
+            executionPolicy: null,
+            executionState: null,
+          });
+          ownershipCorrectedIssueIds.add(issue.id);
+          if (updatedIssue) {
+            await recordOwnershipCorrection({
+              issue: updatedIssue,
+              correctionReason: "delivery_integrity_reconciled",
+              detail: "workflow lane had drifted into standalone delivery review state; normalized it back to ordinary lane execution",
+            });
+          } else {
+            try {
+              await issuesSvc.addComment(
+                issue.id,
+                buildOperationsOwnershipCorrectionComment({
+                  correctionReason: "delivery_integrity_reconciled",
+                  wakeDeferred: false,
+                  detail: "workflow lane had drifted into standalone delivery review state and was returned to the lane execution queue",
+                  nextStatus,
+                  assigneeAgentId: null,
+                  assigneeName: null,
+                }),
+                { agentId: input.agent.id, runId: input.run.id },
+              );
+              ownershipCorrectionCommentCount += 1;
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id },
+                "operations heartbeat failed to post workflow lane review normalization comment",
+              );
+            }
+          }
+          passActionCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "operations heartbeat failed to normalize workflow lane review drift",
+          );
+        }
+        continue;
+      }
+      if (executionRun?.status === "running") continue;
+      const shouldRepairStandaloneReviewState = needsStandaloneDeliveryReviewStateRepair({
+        isWorkflowIssue,
+        status: issue.status,
+        workIntent: issue.workIntent ?? null,
+        assigneeRole: issue.assigneeRole,
+        issueText,
+        hasCanonicalReviewState: hasCanonicalExecutionReviewState(issue),
+        truthType,
+      });
+
+      const isDeliveryScopedReviewIssue =
+        issue.status === "in_review" && isDeliveryScopedIssue({
+          workIntent: issue.workIntent ?? null,
+          assigneeRole: issue.assigneeRole,
+          issueText,
+        });
+      const shouldHandleWorkflowQaLaneReview =
+        issue.workflowLaneRole === "qa"
+        && issue.assigneeRole === "qa"
+        && isDeliveryScopedReviewIssue;
+
+      if (
+        shouldHandleWorkflowQaLaneReview
+        || (
+          !isWorkflowIssue
+          && (
+            isDeliveryScopedReviewIssue
+            || shouldRepairStandaloneReviewState
+          )
+        )
+      ) {
+        if (issue.workflowLaneRole === "qa" && issue.assigneeRole === "qa") {
+          if (issue.assigneeAgentId && issue.qaReviewerAgentId !== issue.assigneeAgentId) {
             try {
               await updateOwnedIssueWithActivity(issue, {
-                assigneeAgentId: releaseGateQaResolution.releaseGateQaAgent.id,
+                assigneeAgentId: issue.assigneeAgentId,
+                qaReviewerAgentId: issue.assigneeAgentId,
+              });
+              syncLocalAssignedIssue(issue.id, {
+                assigneeAgentId: issue.assigneeAgentId,
+                qaReviewerAgentId: issue.assigneeAgentId,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id, assigneeAgentId: issue.assigneeAgentId },
+                "operations heartbeat failed to resync workflow QA reviewer memory",
+              );
+            }
+          }
+          continue;
+        }
+        const currentParticipant =
+          issue.executionState && typeof issue.executionState === "object"
+            ? (issue.executionState as { currentParticipant?: { type?: string; agentId?: string | null } | null }).currentParticipant ?? null
+            : null;
+        const activeQaReviewerAgentId =
+          currentParticipant?.type === "agent" && typeof currentParticipant.agentId === "string"
+            ? currentParticipant.agentId
+            : null;
+        const pooledQaSelection = await selectCompanyPooledQaReviewers(db, companyId, {
+          stickyReviewerAgentId:
+            activeQaReviewerAgentId
+            ?? issue.qaReviewerAgentId
+            ?? (issue.assigneeRole === "qa" ? issue.assigneeAgentId : null),
+        });
+        const activeQaReviewerEligible = Boolean(
+          activeQaReviewerAgentId
+          && pooledQaSelection.eligibleAgentIds.includes(activeQaReviewerAgentId),
+        );
+        const pooledQaReviewerAgentId =
+          (activeQaReviewerEligible ? activeQaReviewerAgentId : null)
+          ?? pooledQaSelection.selectedReviewer?.id
+          ?? null;
+        const reviewOwnerNeedsRepair =
+          activeQaReviewerAgentId != null
+          && !activeQaReviewerEligible;
+        const effectiveExecutionPolicy = buildDeliveryQaExecutionPolicy(pooledQaSelection.orderedReviewers);
+        const canonicalReviewState = hasCanonicalExecutionReviewState(issue);
+        const shouldUseIdleReviewRefillPath =
+          issue.status === "in_review" &&
+          !canonicalReviewState &&
+          issue.assigneeRole === "qa" &&
+          issue.assigneeAgentId != null &&
+          issue.assigneeAgentId === pooledQaReviewerAgentId &&
+          (truthType === "handoff" || truthType === "completion");
+
+        if (pooledQaReviewerAgentId && effectiveExecutionPolicy && !shouldUseIdleReviewRefillPath) {
+          if (!canonicalReviewState || reviewOwnerNeedsRepair) {
+            const returnAssignee = await inferDeliveryReviewReturnAssignee(db, issue, pooledQaReviewerAgentId);
+            if (returnAssignee) {
+              try {
+                const repairedTransition = applyIssueExecutionPolicyTransition({
+                  issue: {
+                    status: "in_progress",
+                    assigneeAgentId: returnAssignee.type === "agent" ? returnAssignee.agentId ?? null : null,
+                    assigneeUserId: returnAssignee.type === "user" ? returnAssignee.userId ?? null : null,
+                    executionState: null,
+                  },
+                  policy: effectiveExecutionPolicy,
+                  requestedStatus: "in_review",
+                  requestedAssigneePatch: {},
+                  actor: {},
+                  commentBody: null,
+                });
+                const repairedAssigneeAgentId =
+                  typeof repairedTransition.patch.assigneeAgentId === "string"
+                    ? repairedTransition.patch.assigneeAgentId
+                    : null;
+                const repairedAssigneeUserId =
+                  typeof repairedTransition.patch.assigneeUserId === "string"
+                    ? repairedTransition.patch.assigneeUserId
+                    : null;
+                const repairedExecutionState =
+                  repairedTransition.patch.executionState && typeof repairedTransition.patch.executionState === "object"
+                    ? repairedTransition.patch.executionState as Record<string, unknown>
+                    : null;
+                await updateOwnedIssueWithActivity(issue, {
+                  assigneeAgentId: repairedAssigneeAgentId,
+                  assigneeUserId: repairedAssigneeUserId,
+                  qaReviewerAgentId: pooledQaReviewerAgentId,
+                  status: "in_review",
+                  executionPolicy: effectiveExecutionPolicy as unknown as Record<string, unknown>,
+                  executionState: repairedExecutionState,
+                });
+                const updatedIssue = syncLocalAssignedIssue(issue.id, {
+                  assigneeAgentId: repairedAssigneeAgentId,
+                  assigneeUserId: repairedAssigneeUserId,
+                  qaReviewerAgentId: pooledQaReviewerAgentId,
+                  status: "in_review",
+                  executionPolicy: effectiveExecutionPolicy as unknown as Record<string, unknown>,
+                  executionState: repairedExecutionState,
+                });
+                if (!updatedIssue) {
+                  continue;
+                }
+                qaReleaseGateReassignCount += 1;
+                ownershipCorrectedIssueIds.add(issue.id);
+              await recordOwnershipCorrection({
+                issue: updatedIssue,
+                correctionReason: "qa_release_gate_reassigned",
+                detail: reviewOwnerNeedsRepair
+                  ? "delivery QA review state was repaired to an eligible pooled reviewer"
+                  : "delivery QA review state was repaired to canonical execution-policy ownership",
+              });
+              passActionCount += 1;
+              continue;
+            } catch (err) {
+              logger.warn(
+                  { err, issueId: issue.id, assigneeAgentId: pooledQaReviewerAgentId },
+                  "operations heartbeat failed to repair invalid delivery review state",
+                );
+              }
+            }
+          }
+
+          if (issue.assigneeAgentId !== pooledQaReviewerAgentId || issue.qaReviewerAgentId !== pooledQaReviewerAgentId) {
+            try {
+              await updateOwnedIssueWithActivity(issue, {
+                assigneeAgentId: pooledQaReviewerAgentId,
+                qaReviewerAgentId: pooledQaReviewerAgentId,
               });
               const updatedIssue = syncLocalAssignedIssue(issue.id, {
-                assigneeAgentId: releaseGateQaResolution.releaseGateQaAgent.id,
+                assigneeAgentId: pooledQaReviewerAgentId,
+                qaReviewerAgentId: pooledQaReviewerAgentId,
                 status: issue.status,
               });
               if (!updatedIssue) {
@@ -5581,23 +6792,28 @@ export function heartbeatService(db: Db) {
               await recordOwnershipCorrection({
                 issue: updatedIssue,
                 correctionReason: "qa_release_gate_reassigned",
-                detail: "release-gate QA ownership resolution requires reassignment to the configured, canonical, or single eligible QA owner",
+                detail: canonicalReviewState
+                  ? "delivery QA ownership was repaired to the active pooled reviewer"
+                  : "delivery QA reviewer memory was repaired to the active pooled reviewer",
               });
+              passActionCount += 1;
             } catch (err) {
               logger.warn(
-                { err, issueId: issue.id, assigneeAgentId: releaseGateQaResolution.releaseGateQaAgent.id },
-                "operations heartbeat failed to reassign delivery in_review issue to release-gate QA owner",
+                { err, issueId: issue.id, assigneeAgentId: pooledQaReviewerAgentId },
+                "operations heartbeat failed to reassign delivery in_review issue to the active QA reviewer",
               );
             }
           }
-        } else {
+        } else if (!shouldUseIdleReviewRefillPath) {
           try {
             await updateOwnedIssueWithActivity(issue, {
               assigneeAgentId: issue.assigneeAgentId,
+              qaReviewerAgentId: issue.qaReviewerAgentId ?? pooledQaReviewerAgentId ?? null,
               status: "todo",
             });
             const updatedIssue = syncLocalAssignedIssue(issue.id, {
               assigneeAgentId: issue.assigneeAgentId,
+              qaReviewerAgentId: issue.qaReviewerAgentId ?? pooledQaReviewerAgentId ?? null,
               status: "todo",
             });
             if (!updatedIssue) {
@@ -5608,25 +6824,37 @@ export function heartbeatService(db: Db) {
             await recordOwnershipCorrection({
               issue: updatedIssue,
               correctionReason: "qa_release_gate_demotion",
-              detail: "release-gate QA ownership is ambiguous or unresolved; moving the issue out of in_review",
+              detail: "no eligible QA reviewer is available; moving the issue out of in_review",
             });
+            passActionCount += 1;
           } catch (err) {
             logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to demote in_review delivery issue");
           }
         }
-        continue;
+        if (!shouldUseIdleReviewRefillPath) {
+          continue;
+        }
       }
 
+      const specialistRequirement = resolveSpecialistLaneRequirement({
+        workflowLaneRole: issue.workflowLaneRole,
+        qaLikeIssue: isSpecialistQaLikeIssue(issue),
+      });
+      if (
+        specialistRequirement
+        && !hasEligibleSpecialistForRequirement(specialistRequirement, buildEligibleSpecialistRoleIds())
+      ) {
+        await maybeProvisionSpecialistCoverage(specialistRequirement);
+      }
       const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
       const eligibleCandidateIds = new Set(eligibleCandidatePool.map((candidate) => candidate.id));
       const currentAssigneeIsEligible = eligibleCandidateIds.has(issue.assigneeAgentId);
-      const freeSlotEligibleCandidates = eligibleCandidatePool.filter((candidate) => hasFreeSlot(candidate.id));
-      const bestEligibleCandidate = pickAssignmentCandidate(issue, { candidatePool: eligibleCandidatePool });
-      const bestFreeSlotCandidate = pickAssignmentCandidate(issue, { candidatePool: freeSlotEligibleCandidates });
-      const currentAssigneeHasFreeSlot = hasFreeSlot(issue.assigneeAgentId);
 
-      if (issue.workflowLaneRole === "security" && eligibleCandidatePool.length === 0) {
-        const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
+      if (
+        specialistRequirement
+        && !hasEligibleSpecialistForRequirement(specialistRequirement, buildEligibleSpecialistRoleIds())
+      ) {
+        const nextStatus = normalizeUnavailableSpecialistLaneStatus(issue.status);
         try {
           await updateOwnedIssueWithActivity(issue, {
             assigneeAgentId: null,
@@ -5643,7 +6871,7 @@ export function heartbeatService(db: Db) {
               buildOperationsOwnershipCorrectionComment({
                 correctionReason: "wrong_specialist_reassigned",
                 wakeDeferred: false,
-                detail: "security workflow lane requires a security specialist, but none are currently available",
+                detail: specialistRequirement.detail,
                 nextStatus,
                 assigneeAgentId: null,
                 assigneeName: null,
@@ -5654,79 +6882,16 @@ export function heartbeatService(db: Db) {
           } catch (err) {
             logger.warn(
               { err, issueId: issue.id },
-              "operations heartbeat failed to post security-lane ownership correction comment",
+              "operations heartbeat failed to post specialist-lane ownership correction comment",
             );
           }
         } catch (err) {
           logger.warn(
             { err, issueId: issue.id },
-            "operations heartbeat failed to return security workflow lane to the unassigned queue",
+            "operations heartbeat failed to return specialist workflow lane to the unassigned queue",
           );
         }
-        continue;
-      }
-
-      if (eligibleCandidatePool.length > 0 && !currentAssigneeIsEligible) {
-        const nextOwner = bestFreeSlotCandidate ?? bestEligibleCandidate;
-        if (!nextOwner) continue;
-        const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
-        try {
-          await updateOwnedIssueWithActivity(issue, {
-            assigneeAgentId: nextOwner.id,
-            ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
-          });
-          const updatedIssue = syncLocalAssignedIssue(issue.id, {
-            assigneeAgentId: nextOwner.id,
-            status: nextStatus,
-          });
-          if (!updatedIssue) continue;
-          wrongSpecialistReassignCount += 1;
-          ownershipCorrectedIssueIds.add(issue.id);
-          await recordOwnershipCorrection({
-            issue: updatedIssue,
-            correctionReason: "wrong_specialist_reassigned",
-            detail: "assigned specialist no longer matches project, description, or structured routing truth",
-          });
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, assigneeAgentId: nextOwner.id },
-            "operations heartbeat failed to reassign wrong-specialist issue",
-          );
-        }
-        continue;
-      }
-
-      if (
-        issue.assigneeAgentId &&
-        currentAssigneeIsEligible &&
-        !currentAssigneeHasFreeSlot &&
-        bestFreeSlotCandidate &&
-        bestFreeSlotCandidate.id !== issue.assigneeAgentId
-      ) {
-        const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
-        try {
-          await updateOwnedIssueWithActivity(issue, {
-            assigneeAgentId: bestFreeSlotCandidate.id,
-            ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
-          });
-          const updatedIssue = syncLocalAssignedIssue(issue.id, {
-            assigneeAgentId: bestFreeSlotCandidate.id,
-            status: nextStatus,
-          });
-          if (!updatedIssue) continue;
-          slotRebalanceCount += 1;
-          ownershipCorrectedIssueIds.add(issue.id);
-          await recordOwnershipCorrection({
-            issue: updatedIssue,
-            correctionReason: "slot_rebalanced",
-            detail: "current owner had no free heartbeat slot while another eligible specialist did",
-          });
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, assigneeAgentId: bestFreeSlotCandidate.id },
-            "operations heartbeat failed to rebalance owned issue",
-          );
-        }
+        passActionCount += 1;
         continue;
       }
 
@@ -5736,8 +6901,7 @@ export function heartbeatService(db: Db) {
         }
         const nextOwnerId = currentAssigneeIsEligible
           ? issue.assigneeAgentId
-          : (bestEligibleCandidate?.id ?? issue.assigneeAgentId);
-        if (!nextOwnerId) continue;
+          : null;
         try {
           await updateOwnedIssueWithActivity(issue, {
             assigneeAgentId: nextOwnerId,
@@ -5747,122 +6911,116 @@ export function heartbeatService(db: Db) {
             assigneeAgentId: nextOwnerId,
             status: "todo",
           });
-          if (!updatedIssue) continue;
+          const detail = currentAssigneeIsEligible
+            ? "issue was marked in_progress without a live execution run or fresh structured wait/handoff truth"
+            : "issue was marked in_progress without a live execution run and the old owner no longer matches routing truth";
           fakeWipDemotionCount += 1;
           ownershipCorrectedIssueIds.add(issue.id);
-          await recordOwnershipCorrection({
-            issue: updatedIssue,
-            correctionReason: "fake_wip_demoted",
-            detail: "issue was marked in_progress without a live execution run or fresh structured wait/handoff truth",
-          });
+          if (updatedIssue) {
+            await recordOwnershipCorrection({
+              issue: updatedIssue,
+              correctionReason: "fake_wip_demoted",
+              detail,
+            });
+          } else {
+            try {
+              await issuesSvc.addComment(
+                issue.id,
+                buildOperationsOwnershipCorrectionComment({
+                  correctionReason: "fake_wip_demoted",
+                  wakeDeferred: false,
+                  detail,
+                  nextStatus: "todo",
+                  assigneeAgentId: null,
+                  assigneeName: null,
+                }),
+                { agentId: input.agent.id, runId: input.run.id },
+              );
+              ownershipCorrectionCommentCount += 1;
+            } catch (err) {
+              logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to post fake WIP demotion comment");
+            }
+          }
+          passActionCount += 1;
         } catch (err) {
           logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to demote fake WIP");
         }
       }
+      }
+
+      return passActionCount;
+    };
+    for (let pass = 0; pass < MAX_OPERATIONS_STABILIZATION_PASSES; pass += 1) {
+      const passActionCount = await runOwnedIssueStabilizationPass();
+      if (passActionCount === 0) {
+        break;
+      }
+      stabilizationPassCount = pass + 1;
+      stabilizationActionCount += passActionCount;
     }
 
+    targets = await resolveOperationsHeartbeatTargets(db, {
+      companyId,
+      operationsAgentId: input.agent.id,
+    });
+    autoReissueTargetIssueIds = new Set(
+      targets
+        .filter((target) => target.mode === "cross_agent_recovery" && target.autoReissueEligible)
+        .map((target) => target.issueId),
+    );
+
     const idleOwnedIssues = openAssignedIssues.filter((issue) => {
-      if (ownershipCorrectedIssueIds.has(issue.id)) return false;
       if (autoReissueTargetIssueIds.has(issue.id)) return false;
       const assigneeAgentId = issue.assigneeAgentId;
       if (!assigneeAgentId) return false;
       if (assigneeAgentId === input.agent.id) return false;
-      if (!hasFreeSlot(assigneeAgentId)) return false;
-
-      const assigneeUnavailable =
-        issue.assigneeStatus === "paused" ||
-        issue.assigneeStatus === "terminated" ||
-        issue.assigneeStatus === "pending_approval";
-      if (assigneeUnavailable) return false;
+      if (buildOwnedReassignmentActionability(issue)) return false;
 
       const latestStructuredTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
       const latestStructuredTruthType = classifyIssueTruthFromCommentBody(latestStructuredTruthComment?.body);
       const latestIssueWakeup = latestIssueWakeupByIssueId.get(issue.id);
-      const latestWakeWasSkippedForLiveLimit =
-        latestIssueWakeup?.agentId === assigneeAgentId &&
-        latestIssueWakeup.status === "skipped" &&
-        latestIssueWakeup.reason === "heartbeat.live_run_limit_reached";
-      const allowReviewRefillFromStructuredTruth =
-        issue.status === "in_review" &&
-        isDeliveryScopedAssigneeRole(issue.assigneeRole) &&
-        (
-          latestStructuredTruthType === "handoff" ||
-          latestStructuredTruthType === "completion"
-        );
-      if (latestStructuredTruthComment && !allowReviewRefillFromStructuredTruth) return false;
-
       const latestOpsComment = latestOpsCommentByIssueId.get(issue.id);
-      if (latestWakeWasSkippedForLiveLimit) return true;
-      if (!latestOpsComment?.body.includes(OPERATIONS_IDLE_WAKE_MARKER)) return true;
       const latestAssigneeRun = latestRunByAssigneeId.get(assigneeAgentId);
-      const latestOpsWakeAtMs = latestOpsComment.createdAt.getTime();
-      const assigneeFailedSinceLastWake = Boolean(
-        latestAssigneeRun &&
-        ["failed", "timed_out", "cancelled"].includes(latestAssigneeRun.status) &&
-        (latestAssigneeRun.finishedAt?.getTime() ?? latestAssigneeRun.createdAt.getTime()) >= latestOpsWakeAtMs
-      );
-      const wakeCooldownMs =
-        issue.assigneeStatus === "error" || assigneeFailedSinceLastWake
-          ? OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS
-          : OPERATIONS_IDLE_WAKE_COOLDOWN_MS;
-      return nowMs - latestOpsComment.createdAt.getTime() >= wakeCooldownMs;
+      return classifyOwnedIssueWakeActionability({
+        nowMs,
+        hasFreeSlot: hasFreeSlot(assigneeAgentId),
+        status: issue.status,
+        assigneeAgentId,
+        assigneeRole: issue.assigneeRole,
+        assigneeStatus: issue.assigneeStatus,
+        title: issue.title,
+        description: issue.description,
+        identifier: issue.identifier,
+        projectName: issue.projectName,
+        workIntent: issue.workIntent ?? null,
+        executionRunId: issue.executionRunId,
+        executionRunStatus: issue.executionRunId
+          ? (issueExecutionRunById.get(issue.executionRunId)?.status ?? null)
+          : undefined,
+        executionState: issue.executionState,
+        latestStructuredTruthType,
+        hasLatestStructuredTruthComment: Boolean(latestStructuredTruthComment),
+        latestStructuredTruthCreatedAtMs: latestStructuredTruthComment?.createdAt.getTime() ?? null,
+        latestNonOperationsCommentBody: nonOperationsCommentsByIssueId.get(issue.id)?.[0]?.body ?? null,
+        latestWakeAgentId: latestIssueWakeup?.agentId ?? null,
+        latestWakeStatus: latestIssueWakeup?.status ?? null,
+        latestWakeReason: latestIssueWakeup?.reason ?? null,
+        latestOpsCommentHasIdleWakeMarker: Boolean(latestOpsComment?.body?.includes(OPERATIONS_IDLE_WAKE_MARKER)),
+        latestOpsCommentCreatedAtMs: latestOpsComment?.createdAt.getTime() ?? null,
+        latestAssigneeRunStatus: latestAssigneeRun?.status ?? null,
+        latestAssigneeRunCreatedAtMs: latestAssigneeRun?.createdAt.getTime() ?? null,
+        latestAssigneeRunFinishedAtMs: latestAssigneeRun?.finishedAt?.getTime() ?? null,
+        idleWakeCooldownMs: OPERATIONS_IDLE_WAKE_COOLDOWN_MS,
+        recoveryRewakeCooldownMs: OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS,
+        structuredTruthFreshnessWindowMs: OPERATIONS_STRUCTURED_TRUTH_FRESHNESS_WINDOW_MS,
+      }).kind === "ready";
     });
 
-    for (const issue of idleOwnedIssues) {
-      const assigneeAgentId = issue.assigneeAgentId;
-      if (!assigneeAgentId) continue;
-      if (!hasFreeSlot(assigneeAgentId)) continue;
-
-      try {
-        await issuesSvc.addComment(
-          issue.id,
-          buildOperationsIdleWakeComment({
-            assigneeAgentId,
-            assigneeName: issue.assigneeName,
-          }),
-          { agentId: input.agent.id, runId: input.run.id },
-        );
-        wakeCommentCount += 1;
-      } catch (err) {
-        logger.warn(
-          { err, issueId: issue.id, assigneeAgentId },
-          "operations heartbeat failed to post idle wake comment",
-        );
-      }
-
-      try {
-        await enqueueWakeup(assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "operations_idle_assignment_wakeup",
-          payload: {
-            issueId: issue.id,
-            mutation: "operations_idle_assignment_wakeup",
-            sourceRunId: input.run.id,
-          },
-          requestedByActorType: "agent",
-          requestedByActorId: input.agent.id,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            source: "operations.heartbeat",
-            wakeReason: "operations_idle_assignment_wakeup",
-          },
-        });
-        consumeFreeSlot(assigneeAgentId);
-        wakeupCount += 1;
-      } catch (err) {
-        logger.warn(
-          { err, issueId: issue.id, assigneeAgentId },
-          "operations heartbeat failed to enqueue idle assignee wakeup",
-        );
-      }
-    }
-
-    const idleHandledIssueIds = new Set([
+    const idleTargetSuppressedIssueIds = new Set([
       ...idleOwnedIssues.map((issue) => issue.id),
       ...ownershipCorrectedIssueIds,
     ]);
+    const idleHandledIssueIds = new Set<string>();
 
     const requestCrossAgentRecoveryWake = async (targetIssue: (typeof openAssignedIssues)[number], reason: string) => {
       if (!targetIssue.assigneeAgentId) return;
@@ -5979,11 +7137,13 @@ export function heartbeatService(db: Db) {
       if (handledTargetIssueIds.has(target.issueId)) continue;
       const targetIssue = openAssignedIssueById.get(target.issueId) ?? null;
       if (!targetIssue) continue;
-      if (ownershipCorrectedIssueIds.has(targetIssue.id)) {
+      const correctedIssueStillNeedsRecovery =
+        target.mode === "cross_agent_recovery" && target.autoReissueEligible;
+      if (ownershipCorrectedIssueIds.has(targetIssue.id) && !correctedIssueStillNeedsRecovery) {
         handledTargetIssueIds.add(targetIssue.id);
         continue;
       }
-      if (idleHandledIssueIds.has(targetIssue.id)) {
+      if (idleTargetSuppressedIssueIds.has(targetIssue.id) && !correctedIssueStillNeedsRecovery) {
         handledTargetIssueIds.add(targetIssue.id);
         continue;
       }
@@ -6094,33 +7254,328 @@ export function heartbeatService(db: Db) {
           projectId: issue.projectId,
           projectName: issue.projectName,
           workflowLaneRole: issue.workflowLaneRole ?? null,
+          priority: issue.priority,
+          updatedAt: issue.updatedAt,
         }];
       }),
-    ];
-    const assignedIssueIds = new Set<string>();
+    ].sort((left, right) => {
+      const priorityDelta = issuePriorityWeight(right.priority) - issuePriorityWeight(left.priority);
+      if (priorityDelta !== 0) return priorityDelta;
+      const ageDelta = left.updatedAt.getTime() - right.updatedAt.getTime();
+      if (ageDelta !== 0) return ageDelta;
+      return left.id.localeCompare(right.id);
+      });
+      const assignedIssueIds = new Set<string>();
+      const reassignableOwnedIssues = openAssignedIssues
+        .map((issue) => buildOwnedReassignmentActionability(issue))
+        .filter((issue): issue is Extract<CooIssueActionability, { kind: "ready_reassignable" }> => Boolean(issue));
+
+      const allocationIssueIds = Array.from(new Set([
+        ...idleOwnedIssues.map((issue) => issue.id),
+        ...reassignableOwnedIssues.map((issue) => issue.issueId),
+        ...issuesNeedingAssignment.map((issue) => issue.id),
+      ]));
+    const allocationBlockerRows = allocationIssueIds.length > 0
+      ? await db
+          .select({ issueId: issueRelations.relatedIssueId })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, companyId),
+              eq(issueRelations.type, "blocks"),
+              inArray(issueRelations.relatedIssueId, allocationIssueIds),
+            ),
+          )
+        : [];
+      const allocationIssuesWithBlockers = new Set(allocationBlockerRows.map((row) => row.issueId));
+      const allocationIssueById = new Map(issuesNeedingAssignment.map((issue) => [issue.id, issue]));
+      const reassignableIssueById = new Map(reassignableOwnedIssues.map((issue) => [issue.issueId, issue]));
+      const flowAllocationIssues: CooIssueActionability[] = idleOwnedIssues
+        .flatMap((issue): CooIssueActionability[] => {
+        if (!issue.assigneeAgentId) return [];
+        return [{
+          kind: "ready_owned",
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          priority: issue.priority,
+          updatedAt: issue.updatedAt,
+          reason: "owned issue is idle and has available capacity",
+          }];
+        });
+
+      for (const issue of reassignableOwnedIssues) {
+        if (allocationIssuesWithBlockers.has(issue.issueId)) {
+          flowAllocationIssues.push({
+            kind: "blocked",
+            issueId: issue.issueId,
+            reason: "blocked_dependency",
+          });
+          continue;
+        }
+        flowAllocationIssues.push(issue);
+      }
 
     for (const issue of issuesNeedingAssignment) {
       if (assignedIssueIds.has(issue.id)) continue;
-      const freeSlotCandidates = availableAssignmentCandidates.filter((candidate) => hasFreeSlot(candidate.id));
-      const candidate = pickAssignmentCandidate(issue, { candidatePool: freeSlotCandidates })
-        ?? pickAssignmentCandidate(issue);
-      if (!candidate) continue;
-      const wakeDeferred = !hasFreeSlot(candidate.id);
+      if (allocationIssuesWithBlockers.has(issue.id)) {
+        flowAllocationIssues.push({
+          kind: "blocked",
+          issueId: issue.id,
+          reason: "blocked_dependency",
+        });
+        continue;
+      }
+      const specialistRequirement = resolveSpecialistLaneRequirement({
+        workflowLaneRole: issue.workflowLaneRole,
+        qaLikeIssue: isSpecialistQaLikeIssue(issue),
+      });
+      if (
+        specialistRequirement
+        && !hasEligibleSpecialistForRequirement(specialistRequirement, buildEligibleSpecialistRoleIds())
+      ) {
+        await maybeProvisionSpecialistCoverage(specialistRequirement);
+      }
+      if (
+        specialistRequirement
+        && !hasEligibleSpecialistForRequirement(specialistRequirement, buildEligibleSpecialistRoleIds())
+      ) {
+        const nextStatus = normalizeUnavailableSpecialistLaneStatus(issue.status);
+        if (nextStatus !== issue.status) {
+          try {
+            await issuesSvc.update(issue.id, {
+              assigneeAgentId: null,
+              status: nextStatus,
+              actorAgentId: input.agent.id,
+            });
+            syncLocalAssignedIssue(issue.id, {
+              assigneeAgentId: null,
+              status: nextStatus,
+            });
+            ownershipCorrectedIssueIds.add(issue.id);
+            wrongSpecialistReassignCount += 1;
+            try {
+              await issuesSvc.addComment(
+                issue.id,
+                buildOperationsOwnershipCorrectionComment({
+                  correctionReason: "wrong_specialist_reassigned",
+                  wakeDeferred: false,
+                  detail: specialistRequirement.detail,
+                  nextStatus,
+                  assigneeAgentId: null,
+                  assigneeName: null,
+                }),
+                { agentId: input.agent.id, runId: input.run.id },
+              );
+              ownershipCorrectionCommentCount += 1;
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id },
+                "operations heartbeat failed to post unassigned specialist-lane correction comment",
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "operations heartbeat failed to normalize unavailable specialist lane in the unassigned queue",
+            );
+          }
+        }
+        continue;
+      }
+      const eligibleCandidateIds = rankEligibleCandidateIds(issue);
+      flowAllocationIssues.push({
+        kind: "ready_unassigned",
+        issueId: issue.id,
+        eligibleAgentIds: eligibleCandidateIds,
+        priority: issue.priority,
+        updatedAt: issue.updatedAt,
+        preferredAgentId: eligibleCandidateIds[0] ?? null,
+        reason: targetReasonByIssueId.get(issue.id) ?? "ready unassigned work requires ownership",
+      });
+    }
+
+    const flowAllocationPlan = planCooFlowAllocation({
+      issues: flowAllocationIssues,
+      capacity: buildCooCapacityLedger(),
+    });
+
+    for (const action of flowAllocationPlan.actions) {
+      if (action.kind === "wake_owner") {
+        const issue = openAssignedIssueById.get(action.issueId) ?? null;
+        if (!issue?.assigneeAgentId || issue.assigneeAgentId !== action.agentId) continue;
+        if (!hasFreeSlot(action.agentId)) continue;
+
+        try {
+          await issuesSvc.addComment(
+            issue.id,
+            buildOperationsIdleWakeComment({
+              assigneeAgentId: action.agentId,
+              assigneeName: issue.assigneeName,
+            }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+          wakeCommentCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to post idle wake comment",
+          );
+        }
+
+        try {
+          await enqueueWakeup(action.agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "operations_idle_assignment_wakeup",
+            payload: {
+              issueId: issue.id,
+              mutation: "operations_idle_assignment_wakeup",
+              sourceRunId: input.run.id,
+            },
+            requestedByActorType: "agent",
+            requestedByActorId: input.agent.id,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              source: "operations.heartbeat",
+              wakeReason: "operations_idle_assignment_wakeup",
+            },
+          });
+          consumeFreeSlot(action.agentId);
+          idleHandledIssueIds.add(issue.id);
+          wakeupCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to enqueue idle assignee wakeup",
+          );
+        }
+        continue;
+      }
+
+      if (action.kind === "reassign_issue") {
+        if (assignedIssueIds.has(action.issueId)) continue;
+        const issue = openAssignedIssueById.get(action.issueId) ?? null;
+        const candidate = assignmentCandidateById.get(action.agentId) ?? availableAssignmentCandidateById.get(action.agentId) ?? null;
+        const reassignableIssue = reassignableIssueById.get(action.issueId) ?? null;
+        if (!issue?.assigneeAgentId || issue.assigneeAgentId !== action.fromAgentId || !candidate || !reassignableIssue) continue;
+        if (!hasFreeSlot(action.agentId)) continue;
+        const nextStatus = issue.status === "in_progress"
+          ? "todo"
+          : normalizeUnavailableSpecialistLaneStatus(issue.status);
+
+        try {
+          const updated = await issuesSvc.reassignForOperationsAllocation({
+            issueId: issue.id,
+            companyId,
+            currentAssigneeAgentId: action.fromAgentId,
+            assigneeAgentId: action.agentId,
+            status: nextStatus,
+            actorAgentId: input.agent.id,
+          });
+          if (!updated) continue;
+          syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: action.agentId,
+            status: updated.status,
+            workIntent: updated.workIntent ?? null,
+          });
+          assignedIssueIds.add(issue.id);
+          ownershipCorrectedIssueIds.add(issue.id);
+          reassignedIssueCount += 1;
+          if (action.correctionReason === "wrong_specialist_reassigned") {
+            wrongSpecialistReassignCount += 1;
+          } else {
+            slotRebalanceCount += 1;
+          }
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, fromAgentId: action.fromAgentId, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to claim issue reassignment",
+          );
+          continue;
+        }
+
+        try {
+          await issuesSvc.addComment(
+            issue.id,
+            buildOperationsOwnershipCorrectionComment({
+              correctionReason: action.correctionReason,
+              wakeDeferred: false,
+              detail: action.reason,
+              nextStatus,
+              assigneeAgentId: action.agentId,
+              assigneeName: candidate.name,
+            }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+          ownershipCorrectionCommentCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, fromAgentId: action.fromAgentId, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to post reassignment correction comment",
+          );
+        }
+
+        try {
+          await enqueueWakeup(action.agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "operations_assignment",
+            payload: {
+              issueId: issue.id,
+              mutation: "operations_reassignment",
+              sourceRunId: input.run.id,
+              ownershipReason: action.correctionReason,
+            },
+            requestedByActorType: "agent",
+            requestedByActorId: input.agent.id,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              source: "operations.heartbeat",
+              wakeReason: "operations_reassignment",
+            },
+          });
+          consumeFreeSlot(action.agentId);
+          ownershipCorrectionWakeupCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to enqueue reassigned issue wakeup",
+          );
+        }
+        continue;
+      }
+
+      if (action.kind !== "assign_issue") continue;
+      if (assignedIssueIds.has(action.issueId)) continue;
+      const issue = allocationIssueById.get(action.issueId) ?? null;
+      const candidate = assignmentCandidateById.get(action.agentId) ?? availableAssignmentCandidateById.get(action.agentId) ?? null;
+      if (!issue || !candidate) continue;
+      if (!hasFreeSlot(action.agentId)) continue;
+      const wakeDeferred = false;
+      const nextStatus = issue.status === "backlog"
+        ? "todo"
+        : normalizeUnavailableSpecialistLaneStatus(issue.status);
 
       try {
-        await issuesSvc.update(issue.id, {
-          assigneeAgentId: candidate.id,
-          ...(issue.status === "backlog" ? { status: "todo" } : {}),
+        const updated = await issuesSvc.claimForOperationsAllocation({
+          issueId: issue.id,
+          companyId,
+          assigneeAgentId: action.agentId,
+          status: nextStatus,
           actorAgentId: input.agent.id,
         });
+        if (!updated) continue;
         syncLocalAssignedIssue(issue.id, {
-          assigneeAgentId: candidate.id,
-          status: issue.status === "backlog" ? "todo" : issue.status,
+          assigneeAgentId: action.agentId,
+          status: updated.status,
+          workIntent: updated.workIntent ?? null,
         });
         assignedIssueCount += 1;
         assignedIssueIds.add(issue.id);
       } catch (err) {
-        logger.warn({ err, issueId: issue.id, assigneeAgentId: candidate.id }, "operations heartbeat failed to assign issue");
+        logger.warn({ err, issueId: issue.id, assigneeAgentId: action.agentId }, "operations heartbeat failed to claim issue assignment");
         continue;
       }
 
@@ -6128,9 +7583,9 @@ export function heartbeatService(db: Db) {
         await issuesSvc.addComment(
           issue.id,
           buildOperationsAssignmentComment({
-            assigneeAgentId: candidate.id,
+            assigneeAgentId: action.agentId,
             assigneeName: candidate.name,
-            reason: targetReasonByIssueId.get(issue.id) ?? "ready unassigned work requires ownership",
+            reason: action.reason,
             wakeDeferred,
           }),
           { agentId: input.agent.id, runId: input.run.id },
@@ -6138,14 +7593,14 @@ export function heartbeatService(db: Db) {
         assignmentCommentCount += 1;
       } catch (err) {
         logger.warn(
-          { err, issueId: issue.id, assigneeAgentId: candidate.id },
+          { err, issueId: issue.id, assigneeAgentId: action.agentId },
           "operations heartbeat failed to post assignment comment",
         );
       }
 
       if (!wakeDeferred) {
         try {
-          await enqueueWakeup(candidate.id, {
+          await enqueueWakeup(action.agentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "operations_assignment",
@@ -6163,18 +7618,360 @@ export function heartbeatService(db: Db) {
               wakeReason: "operations_assignment",
             },
           });
-          consumeFreeSlot(candidate.id);
+          consumeFreeSlot(action.agentId);
           assignmentWakeupCount += 1;
         } catch (err) {
           logger.warn(
-            { err, issueId: issue.id, assigneeAgentId: candidate.id },
+            { err, issueId: issue.id, assigneeAgentId: action.agentId },
             "operations heartbeat failed to enqueue assignment wakeup",
           );
         }
       }
     }
 
+    const sweepIssueIds = Array.from(new Set([
+      ...openAssignedIssues.map((issue) => issue.id),
+      ...openUnassignedIssues.map((issue) => issue.id),
+      ...humanOwnedOpenIssues.map((issue) => issue.id),
+    ]));
+    // Recompute from the post-stabilization queue so residual-blocked reporting reflects current state.
+    const [sweepBlockerRows, computedBoardStateMap] = await Promise.all([
+      sweepIssueIds.length > 0
+        ? db
+            .select({ issueId: issueRelations.relatedIssueId })
+            .from(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, companyId),
+                eq(issueRelations.type, "blocks"),
+                inArray(issueRelations.relatedIssueId, sweepIssueIds),
+              ),
+            )
+        : Promise.resolve([] as Array<{ issueId: string }>),
+      sweepIssueIds.length > 0
+        ? computeIssueBoardStateMap(db, companyId, sweepIssueIds, { includePaths: false })
+        : Promise.resolve(new Map()),
+    ]);
+    const issuesWithBlockers = new Set(sweepBlockerRows.map((row) => row.issueId));
+
+    const classifySweepBlockedReason = (issue:
+      | (typeof openAssignedIssues)[number]
+      | (typeof openUnassignedIssues)[number],
+    ) => {
+      if (assignedIssueIds.has(issue.id)) {
+        return "assigned_this_sweep";
+      }
+      if (idleHandledIssueIds.has(issue.id)) {
+        return "wake_requested_this_sweep";
+      }
+      if (ownershipCorrectedIssueIds.has(issue.id)) {
+        return "corrected_this_sweep";
+      }
+      const computedBoardState = computedBoardStateMap.get(issue.id)?.boardState ?? null;
+      const hasActiveDependencyBlock =
+        issuesWithBlockers.has(issue.id)
+        || (computedBoardState?.kind === "blocked" && computedBoardState.reasonCode !== "capability_blocked");
+      const specialistCapabilityBlock = resolveOutstandingSpecialistCapabilityBlock({
+        workflowLaneRole: issue.workflowLaneRole,
+        qaLikeIssue: isSpecialistQaLikeIssue(issue),
+        hasActiveBlockers: hasActiveDependencyBlock,
+        eligibleSpecialistRoleIds: buildEligibleSpecialistRoleIds(),
+      });
+
+      if ("assigneeUserId" in issue && issue.assigneeUserId) {
+        return "human_owned";
+      }
+
+      if ("assigneeAgentId" in issue && issue.assigneeAgentId) {
+        const executionRun = issue.executionRunId ? issueExecutionRunById.get(issue.executionRunId) ?? null : null;
+        if (executionRun && (executionRun.status === "queued" || executionRun.status === "running")) {
+          return "active_execution";
+        }
+
+        const latestStructuredTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
+        const latestStructuredTruthType = classifyIssueTruthFromCommentBody(latestStructuredTruthComment?.body);
+        const hasFreshWaitOrBlockerTruth = Boolean(
+          latestStructuredTruthComment
+          && nowMs - latestStructuredTruthComment.createdAt.getTime() < OPERATIONS_STRUCTURED_TRUTH_FRESHNESS_WINDOW_MS
+          && (
+            latestStructuredTruthType === "blocker"
+            || latestStructuredTruthType === "handoff"
+            || hasWaitStateTruthFromCommentBody(latestStructuredTruthComment.body)
+          ),
+        );
+        if (hasFreshWaitOrBlockerTruth) {
+          return "waiting_external";
+        }
+        if (qaCommentHasMergeBlockedMarker(nonOperationsCommentsByIssueId.get(issue.id)?.[0]?.body)) {
+          return "merge_blocked";
+        }
+
+        if (hasActiveDependencyBlock) {
+          return "blocked_dependency";
+        }
+
+        if (specialistCapabilityBlock) {
+          return "capability_blocked_specialist";
+        }
+
+        const latestIssueWakeup = latestIssueWakeupByIssueId.get(issue.id);
+        const latestOpsComment = latestOpsCommentByIssueId.get(issue.id);
+        const latestAssigneeRun = latestRunByAssigneeId.get(issue.assigneeAgentId);
+        const ownedWakeActionability = classifyOwnedIssueWakeActionability({
+          nowMs,
+          hasFreeSlot: hasFreeSlot(issue.assigneeAgentId),
+          status: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeRole: issue.assigneeRole,
+          assigneeStatus: issue.assigneeStatus,
+          title: issue.title,
+          description: issue.description,
+          identifier: issue.identifier,
+          projectName: issue.projectName,
+          workIntent: issue.workIntent ?? null,
+          executionRunId: issue.executionRunId,
+          executionRunStatus: issue.executionRunId
+            ? (issueExecutionRunById.get(issue.executionRunId)?.status ?? null)
+            : undefined,
+          executionState: issue.executionState,
+          latestStructuredTruthType,
+          hasLatestStructuredTruthComment: Boolean(latestStructuredTruthComment),
+          latestStructuredTruthCreatedAtMs: latestStructuredTruthComment?.createdAt.getTime() ?? null,
+          latestWakeAgentId: latestIssueWakeup?.agentId ?? null,
+          latestWakeStatus: latestIssueWakeup?.status ?? null,
+          latestWakeReason: latestIssueWakeup?.reason ?? null,
+          latestOpsCommentHasIdleWakeMarker: Boolean(latestOpsComment?.body?.includes(OPERATIONS_IDLE_WAKE_MARKER)),
+          latestOpsCommentCreatedAtMs: latestOpsComment?.createdAt.getTime() ?? null,
+          latestAssigneeRunStatus: latestAssigneeRun?.status ?? null,
+          latestAssigneeRunCreatedAtMs: latestAssigneeRun?.createdAt.getTime() ?? null,
+          latestAssigneeRunFinishedAtMs: latestAssigneeRun?.finishedAt?.getTime() ?? null,
+          idleWakeCooldownMs: OPERATIONS_IDLE_WAKE_COOLDOWN_MS,
+          recoveryRewakeCooldownMs: OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS,
+          structuredTruthFreshnessWindowMs: OPERATIONS_STRUCTURED_TRUTH_FRESHNESS_WINDOW_MS,
+        });
+        if (ownedWakeActionability.kind === "ready") {
+          return "actionable_owned";
+        }
+        switch (ownedWakeActionability.reason) {
+          case "assignee unavailable":
+            return "assignee_unavailable";
+          case "no free slot":
+            return "no_free_slot";
+          case "pending wakeup already exists":
+            return "pending_wakeup";
+          case "idle wake cooldown active":
+            return "cooldown";
+          case "structured truth is still suppressing idle refill":
+            return "waiting_external";
+          case "missing assignee":
+            return "unknown";
+        }
+      }
+
+      if (hasActiveDependencyBlock) {
+        return "blocked_dependency";
+      }
+
+      if (specialistCapabilityBlock) {
+        return "capability_blocked_specialist";
+      }
+
+      const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
+      if (eligibleCandidatePool.length === 0) {
+        return "no_assignable_agent";
+      }
+      const freeSlotCandidate = pickAssignmentCandidate(issue, {
+        candidatePool: eligibleCandidatePool.filter((candidate) => hasFreeSlot(candidate.id)),
+      });
+      if (!freeSlotCandidate) {
+        return "no_free_slot";
+      }
+      return "actionable_unassigned";
+    };
+    const classifiedSweepIssues = [
+      ...openAssignedIssues.map((issue) => ({ issue, reason: classifySweepBlockedReason(issue) })),
+      ...openUnassignedIssues.map((issue) => ({ issue, reason: classifySweepBlockedReason(issue) })),
+      ...humanOwnedOpenIssues.map((issue) => ({ issue, reason: classifySweepBlockedReason(issue) })),
+    ];
+    const blockedReasonCounts = (() => {
+      const counts: Record<string, number> = {};
+      const add = (reason: string) => {
+        counts[reason] = (counts[reason] ?? 0) + 1;
+      };
+      for (const entry of classifiedSweepIssues) {
+        add(entry.reason);
+      }
+      return counts;
+    })();
+    const buildCooIssueActionability = (
+      entry: (typeof classifiedSweepIssues)[number],
+    ): CooIssueActionability => {
+      const { issue, reason } = entry;
+      if ("assigneeUserId" in issue && issue.assigneeUserId) {
+        return {
+          kind: "blocked",
+          issueId: issue.id,
+          reason: "human_owned",
+        };
+      }
+
+      if (
+        reason === "active_execution" ||
+        reason === "assigned_this_sweep" ||
+        reason === "wake_requested_this_sweep" ||
+        reason === "corrected_this_sweep"
+      ) {
+        return {
+          kind: "active",
+          issueId: issue.id,
+        };
+      }
+
+      const assigneeAgentId =
+        "assigneeAgentId" in issue && typeof issue.assigneeAgentId === "string"
+          ? issue.assigneeAgentId
+          : null;
+      if (assigneeAgentId) {
+        const reassignableIssue = buildOwnedReassignmentActionability(issue as (typeof openAssignedIssues)[number]);
+        if (reassignableIssue) {
+          return reassignableIssue;
+        }
+        if (reason === "actionable_owned" || reason === "no_free_slot") {
+          return {
+            kind: "ready_owned",
+            issueId: issue.id,
+            assigneeAgentId,
+            priority: issue.priority,
+            updatedAt: issue.updatedAt,
+            reason: reason === "no_free_slot"
+              ? "owned issue is idle but assignee has no free slot"
+              : "owned issue is idle and has available capacity",
+          };
+        }
+      }
+
+      if (reason === "actionable_unassigned" || reason === "no_free_slot" || reason === "no_assignable_agent") {
+        const eligibleCandidateIds = resolveEligibleCandidatePool(issue).map((candidate) => candidate.id);
+        return {
+          kind: "ready_unassigned",
+          issueId: issue.id,
+          eligibleAgentIds: eligibleCandidateIds,
+          priority: issue.priority,
+          updatedAt: issue.updatedAt,
+          reason: reason === "no_free_slot"
+            ? "ready unassigned work is waiting for eligible capacity"
+            : "ready unassigned work requires ownership",
+        };
+      }
+
+      if (reason === "capability_blocked_specialist") {
+        const capabilityBlock = resolveOutstandingSpecialistCapabilityBlock({
+          workflowLaneRole: issue.workflowLaneRole,
+          qaLikeIssue: isSpecialistQaLikeIssue(issue),
+          hasActiveBlockers: false,
+          eligibleSpecialistRoleIds: buildEligibleSpecialistRoleIds(),
+        });
+        return {
+          kind: "ready_unassigned",
+          issueId: issue.id,
+          eligibleAgentIds: [],
+          requiredRole: capabilityBlock?.blockingRole ?? null,
+          priority: issue.priority,
+          updatedAt: issue.updatedAt,
+          reason: capabilityBlock?.detail ?? "specialist capability is missing",
+        };
+      }
+
+      const blockedReason = (
+        reason === "blocked_dependency" ||
+        reason === "waiting_external" ||
+        reason === "merge_blocked" ||
+        reason === "assignee_unavailable" ||
+        reason === "pending_wakeup" ||
+        reason === "cooldown"
+      )
+        ? reason
+        : "unknown";
+      return {
+        kind: "blocked",
+        issueId: issue.id,
+        reason: blockedReason as CooBlockedReason,
+      };
+    };
+    const operationsFlowPlanned = planCooFlowAllocation({
+      issues: classifiedSweepIssues.map(buildCooIssueActionability),
+      capacity: buildCooCapacityLedger(),
+    });
+    const unexecutedActionCount = operationsFlowPlanned.actions.filter((action) => action.kind !== "record_block").length;
+    const operationsFlowInvariantBreaches = [
+      ...operationsFlowPlanned.invariantBreaches,
+      ...(unexecutedActionCount > 0
+        ? [`${unexecutedActionCount} ready COO flow action(s) remain executable after the sweep`]
+        : []),
+    ];
+    const operationsFlow = {
+      ...operationsFlowPlanned,
+      executedActionCounts: {
+        assign_issue: assignedIssueCount,
+        record_block: Math.max(
+          0,
+          (blockedReasonCounts.blocked_dependency ?? 0)
+          + (blockedReasonCounts.capability_blocked_specialist ?? 0)
+          + (blockedReasonCounts.human_owned ?? 0)
+          + (blockedReasonCounts.waiting_external ?? 0)
+          + (blockedReasonCounts.merge_blocked ?? 0),
+        ),
+        repair_issue: stabilizationActionCount + finalizedIssueCount + finalizedParentWakeupCount,
+        reassign_issue: reassignedIssueCount,
+        wake_owner:
+          wakeupCount
+          + assignmentWakeupCount
+          + recoveryWakeupCount
+          + recoveryReissueWakeupCount
+          + ownershipCorrectionWakeupCount,
+      },
+      invariantBreaches: operationsFlowInvariantBreaches,
+    };
     const primaryTarget = targets.find((target) => !ownershipCorrectedIssueIds.has(target.issueId)) ?? null;
+    const actionableResidualCount =
+      (blockedReasonCounts.actionable_owned ?? 0)
+      + (blockedReasonCounts.actionable_unassigned ?? 0)
+      + (blockedReasonCounts.unknown ?? 0);
+    const openIssueCount = openAssignedIssues.length + openUnassignedIssues.length + humanOwnedOpenIssues.length;
+    const allOpenIssuesBlocked =
+      openIssueCount > 0
+      && actionableResidualCount === 0
+      && Object.values(blockedReasonCounts).reduce((sum, count) => sum + count, 0) === openIssueCount;
+    const hadAnySweepMutation =
+      stabilizationActionCount > 0
+      || finalizedIssueCount > 0
+      || finalizedParentWakeupCount > 0
+      || wakeupCount > 0
+      || recoveryWakeupCount > 0
+      || recoveryReissueWakeupCount > 0
+      || assignedIssueCount > 0
+      || assignmentWakeupCount > 0
+      || ownershipCorrectionWakeupCount > 0
+      || requeuedOperationsIssueCount > 0;
+    const allocationInvariantBroken = actionableResidualCount > 0 || operationsFlowInvariantBreaches.length > 0;
+    if (allocationInvariantBroken) {
+      logOpsWarn("heartbeat.operations.allocation_invariant_broken", {
+        companyId,
+        agentId: input.agent.id,
+        runId: input.run.id,
+        actionableResidualCount,
+        blockedReasonCounts,
+      });
+    }
+    if (openIssueCount > 0 && !primaryTarget && !hadAnySweepMutation && !allOpenIssuesBlocked) {
+      logOpsWarn("heartbeat.operations.invariant_broken", {
+        companyId,
+        agentId: input.agent.id,
+        runId: input.run.id,
+        openIssueCount,
+        blockedReasonCounts,
+      });
+    }
 
     return {
       target: primaryTarget,
@@ -6182,6 +7979,7 @@ export function heartbeatService(db: Db) {
         boardCount: boardRows.length,
         assignedOpenCount: openAssignedIssues.length,
         unassignedOpenCount: openUnassignedIssues.length,
+        humanOwnedOpenCount: humanOwnedOpenIssues.length,
         idleOwnedAssignedCount: idleOwnedIssues.length,
         wakeCommentCount,
         wakeupCount,
@@ -6201,6 +7999,16 @@ export function heartbeatService(db: Db) {
         qaReleaseGateReassignCount,
         qaReleaseGateDemotionCount,
         ownershipCorrectedWakeDeferredCount,
+        finalizedIssueCount,
+        finalizedParentWakeupCount,
+        provisionedSecuritySpecialistCount,
+        stabilizationPassCount,
+        stabilizationActionCount,
+        allocationInvariantBroken,
+        actionableResidualCount,
+        allOpenIssuesBlocked,
+        blockedReasonCounts,
+        operationsFlow,
       },
     };
   }
@@ -6212,17 +8020,22 @@ export function heartbeatService(db: Db) {
     issueId: string | null;
   }) {
     const operationsHeartbeatSweep = parseObject(input.context.operationsHeartbeatSweep);
+    const blockedReasonCounts = parseObject(operationsHeartbeatSweep.blockedReasonCounts);
+    const specialistExecutionBlocked =
+      Number(blockedReasonCounts.capability_blocked_specialist ?? 0) > 0;
     const blockedTargetIssueId =
       Number(operationsHeartbeatSweep.recoveryCommentCount ?? 0) > 0
       || Number(operationsHeartbeatSweep.recoveryWakeupCount ?? 0) > 0
       || Number(operationsHeartbeatSweep.recoveryReissueCount ?? 0) > 0
       || Number(operationsHeartbeatSweep.recoveryReissueWakeupCount ?? 0) > 0
       || Number(operationsHeartbeatSweep.requeuedOperationsIssueCount ?? 0) > 0
+      || Number(operationsHeartbeatSweep.finalizedIssueCount ?? 0) > 0
+      || Number(operationsHeartbeatSweep.finalizedParentWakeupCount ?? 0) > 0
         ? null
         : (readNonEmptyString(operationsHeartbeatSweep.targetIssueId) ?? input.issueId);
     const resultJson = sanitizePostgresTextValue({
       mode: "orchestrator_only",
-      specialistExecutionBlocked: true,
+      specialistExecutionBlocked,
       blockedIssueId: blockedTargetIssueId,
       operationsHeartbeatSweep,
     });
@@ -7171,31 +8984,36 @@ export function heartbeatService(db: Db) {
             ? "cancelled"
             : classifyAdapterResultHeartbeatErrorCode(adapterResult);
 
-      await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
-              ),
-        errorCode: failureErrorCode,
-        exitCode: adapterResult.exitCode,
-        signal: adapterResult.signal,
-        usageJson,
-        resultJson: adapterResult.resultJson ?? null,
-        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
-        logBytes: logSummary?.bytes,
-        logSha256: logSummary?.sha256,
-        logCompressed: logSummary?.compressed ?? false,
-      });
+      const finishedAt = new Date();
+      await db.transaction(async (tx) => {
+        await setRunStatus(run.id, status, {
+          finishedAt,
+          error:
+            outcome === "succeeded"
+              ? null
+              : redactCurrentUserText(
+                  adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                  currentUserRedactionOptions,
+                ),
+          errorCode: failureErrorCode,
+          exitCode: adapterResult.exitCode,
+          signal: adapterResult.signal,
+          usageJson,
+          resultJson: adapterResult.resultJson ?? null,
+          sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+        }, tx);
 
-      await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
-        finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
+          finishedAt,
+          error: adapterResult.errorMessage ?? null,
+        }, tx);
+
+        await finalizeAgentStatus(agent.id, outcome, tx);
       });
 
       let finalizedRun = await getRun(run.id);
@@ -7223,7 +9041,7 @@ export function heartbeatService(db: Db) {
               });
               const currentIssue = await issuesSvc.getById(issueId);
               if (currentIssue) {
-                await finalizeQaValidatedIssueFromComment({
+                const finalization = await finalizeQaValidatedIssueFromComment({
                   db,
                   issue: currentIssue,
                   comment: persistedComment,
@@ -7234,7 +9052,6 @@ export function heartbeatService(db: Db) {
                     runId: finalizedRun.id,
                   },
                   logActivity,
-                  resolveReleaseGateQaAgent: async (companyId) => await resolveCompanyReleaseGateQaAgent(db, companyId),
                   issues: {
                     update: async (commentIssueId, patch) => await issuesSvc.update(commentIssueId, patch),
                     addComment: async (commentIssueId, body, actor) =>
@@ -7257,7 +9074,34 @@ export function heartbeatService(db: Db) {
                     getById: async (workspaceId) => await executionWorkspacesSvc.getById(workspaceId),
                   },
                   persistExecutionWorkspaceMergeStatus,
+                  workflow: {
+                    evaluateLaneCompletion: async (issue) => await issueWorkflowsSvc.evaluateLaneCompletion(issue),
+                    getWakeableParentAfterChildCompletion: async (parentIssueId) =>
+                      await issuesSvc.getWakeableParentAfterChildCompletion(parentIssueId),
+                  },
                 });
+                if (finalization.parentWakeup) {
+                  await enqueueWakeup(finalization.parentWakeup.assigneeAgentId, {
+                    source: "automation",
+                    triggerDetail: "system",
+                    reason: "issue_children_completed",
+                    payload: {
+                      issueId: finalization.parentWakeup.id,
+                      completedChildIssueId: currentIssue.id,
+                      childIssueIds: finalization.parentWakeup.childIssueIds,
+                    },
+                    requestedByActorType: "system",
+                    requestedByActorId: null,
+                    contextSnapshot: {
+                      issueId: finalization.parentWakeup.id,
+                      taskId: finalization.parentWakeup.id,
+                      wakeReason: "issue_children_completed",
+                      source: "issue.children_completed",
+                      completedChildIssueId: currentIssue.id,
+                      childIssueIds: finalization.parentWakeup.childIssueIds,
+                    },
+                  });
+                }
               }
             }
           } catch (err) {
@@ -7323,7 +9167,6 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -7341,19 +9184,24 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
-        errorCode,
-        finishedAt: new Date(),
-        stdoutExcerpt,
-        stderrExcerpt,
-        logBytes: logSummary?.bytes,
-        logSha256: logSummary?.sha256,
-        logCompressed: logSummary?.compressed ?? false,
-      });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date(),
-        error: message,
+      const finishedAt = new Date();
+      const failedRun = await db.transaction(async (tx) => {
+        const updatedRun = await setRunStatus(run.id, "failed", {
+          error: message,
+          errorCode,
+          finishedAt,
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+        }, tx);
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt,
+          error: message,
+        }, tx);
+        await finalizeAgentStatus(agent.id, "failed", tx);
+        return updatedRun;
       });
 
       if (failedRun) {
@@ -7392,7 +9240,6 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).

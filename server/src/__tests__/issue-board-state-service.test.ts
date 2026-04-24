@@ -409,7 +409,7 @@ describeEmbeddedPostgres("issue board state service", () => {
     ]);
   });
 
-  it("returns Waiting on QA when review context exists without dependency blockers", async () => {
+  it("returns the QA-specific CTA for delivery review without dependency blockers", async () => {
     const companyId = randomUUID();
     const qaAgentId = randomUUID();
     const issueId = randomUUID();
@@ -439,6 +439,7 @@ describeEmbeddedPostgres("issue board state service", () => {
       title: "Needs QA signoff",
       status: "in_review",
       priority: "high",
+      workIntent: "delivery",
       assigneeAgentId: qaAgentId,
     });
 
@@ -450,6 +451,50 @@ describeEmbeddedPostgres("issue board state service", () => {
     expect(computed?.boardState.reasonCode).toBe("review");
     expect(computed?.boardState.primaryAction?.type).toBe("open_issue");
     expect(computed?.boardState.primaryAction?.label).toBe("Review QA state");
+  });
+
+  it("returns the generic review CTA for QA-owned non-delivery review", async () => {
+    const companyId = randomUUID();
+    const qaAgentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Iris",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1301,
+      identifier: "COMA-1301",
+      title: "Trust audit review",
+      status: "in_review",
+      priority: "high",
+      workIntent: "audit",
+      assigneeAgentId: qaAgentId,
+    });
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId]);
+    const computed = result.get(issueId);
+
+    expect(computed?.boardState.kind).toBe("waiting");
+    expect(computed?.boardState.headline).toBe("Waiting on QA");
+    expect(computed?.boardState.reasonCode).toBe("review");
+    expect(computed?.boardState.primaryAction?.type).toBe("open_issue");
+    expect(computed?.boardState.primaryAction?.label).toBe("Open review");
   });
 
   it("returns system_error for blocked issues with no blockers", async () => {
@@ -478,6 +523,171 @@ describeEmbeddedPostgres("issue board state service", () => {
     expect(computed?.boardState.kind).toBe("system_error");
     expect(computed?.boardState.reasonCode).toBe("invalid_state");
     expect(computed?.boardState.headline).toBe("System error in issue state");
+  });
+
+  it("returns capability-blocked for an unassigned security lane with no eligible specialist", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1401,
+      identifier: "COMA-1401",
+      title: "Security lane without a specialist",
+      status: "todo",
+      priority: "high",
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "security",
+      assigneeAgentId: null,
+    });
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId]);
+    const computed = result.get(issueId);
+
+    expect(computed?.boardState).toEqual({
+      kind: "blocked",
+      headline: "No security specialist available",
+      reasonCode: "capability_blocked",
+      actorType: "system",
+      actorId: issueId,
+      primaryAction: {
+        type: "open_issue",
+        label: "Open issue",
+        targetEntity: "issue",
+        targetId: issueId,
+      },
+    });
+  });
+
+  it("returns capability-blocked for an unassigned QA lane with no healthy QA reviewer", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1404,
+      identifier: "COMA-1404",
+      title: "QA lane without a reviewer",
+      status: "todo",
+      priority: "high",
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "qa",
+      assigneeAgentId: null,
+    });
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId]);
+    const computed = result.get(issueId);
+
+    expect(computed?.boardState).toMatchObject({
+      kind: "blocked",
+      headline: "No healthy QA reviewer available",
+      reasonCode: "capability_blocked",
+    });
+  });
+
+  it("returns capability-blocked for unassigned QA-like work with no healthy QA reviewer", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 2005,
+      identifier: "COMA-2005",
+      title: "QA: Validate checkout release",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: null,
+    });
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId]);
+    const computed = result.get(issueId);
+
+    expect(computed?.boardState).toMatchObject({
+      kind: "blocked",
+      headline: "No healthy QA reviewer available",
+      reasonCode: "capability_blocked",
+    });
+  });
+
+  it("keeps the real blocker as board-state truth before specialist availability", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const blockerIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        issueNumber: 1402,
+        identifier: "COMA-1402",
+        title: "Security lane waiting on engineering",
+        status: "blocked",
+        priority: "high",
+        workflowTemplateKey: "engineering_delivery_v1",
+        workflowLaneRole: "security",
+        assigneeAgentId: null,
+      },
+      {
+        id: blockerIssueId,
+        companyId,
+        issueNumber: 1403,
+        identifier: "COMA-1403",
+        title: "Implementation still in progress",
+        status: "in_progress",
+        priority: "high",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+      createdByUserId: "user-1",
+    });
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId]);
+    const computed = result.get(issueId);
+
+    expect(computed?.boardState).toEqual({
+      kind: "blocked",
+      headline: "Blocked by COMA-1403",
+      reasonCode: null,
+      actorType: "issue",
+      actorId: blockerIssueId,
+      primaryAction: {
+        type: "open_blocker",
+        label: "Go to blocker",
+        targetEntity: "issue",
+        targetId: blockerIssueId,
+      },
+    });
   });
 
   it("collapses recovery chains into a redirect to the terminal successor", async () => {

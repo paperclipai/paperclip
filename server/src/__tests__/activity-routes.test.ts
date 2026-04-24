@@ -43,12 +43,12 @@ function createApp() {
   return app;
 }
 
-describe("activity routes", () => {
+describe.sequential("activity routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("resolves issue identifiers before loading runs", async () => {
+  it.sequential("resolves issue identifiers before loading runs", async () => {
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-uuid-1",
       companyId: "company-1",

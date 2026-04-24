@@ -175,6 +175,16 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+export const ISSUE_ACTION_TYPES = [
+  "enter_review",
+  "submit_qa_verdict",
+  "complete_issue",
+  "reopen_issue",
+  "handoff_issue",
+  "append_note",
+] as const;
+export type IssueActionType = (typeof ISSUE_ACTION_TYPES)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -194,6 +204,9 @@ export type IssueListSort = (typeof ISSUE_LIST_SORTS)[number];
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
+export const ISSUE_WORK_INTENTS = ["delivery", "ticket_authoring", "audit", "general"] as const;
+export type IssueWorkIntent = (typeof ISSUE_WORK_INTENTS)[number];
+
 export const ISSUE_BOARD_STATE_KINDS = ["blocked", "redirected", "waiting", "ready", "done", "system_error"] as const;
 export type IssueBoardStateKind = (typeof ISSUE_BOARD_STATE_KINDS)[number];
 
@@ -203,6 +216,7 @@ export const ISSUE_STALL_REASON_CODES = [
   "assignee_followup",
   "recovery",
   "invalid_state",
+  "capability_blocked",
 ] as const;
 export type IssueStallReasonCode = (typeof ISSUE_STALL_REASON_CODES)[number];
 
@@ -236,10 +250,10 @@ export type RootIssueDeliveryMode = (typeof ROOT_ISSUE_DELIVERY_MODES)[number];
 export const PROJECT_ROOT_ISSUE_DELIVERY_MODES = ["inherit", ...ROOT_ISSUE_DELIVERY_MODES] as const;
 export type ProjectRootIssueDeliveryMode = (typeof PROJECT_ROOT_ISSUE_DELIVERY_MODES)[number];
 
-export const ISSUE_WORKFLOW_TEMPLATE_KEYS = ["engineering_delivery_v1"] as const;
+export const ISSUE_WORKFLOW_TEMPLATE_KEYS = ["engineering_delivery_v1", "engineering_delivery_v2"] as const;
 export type IssueWorkflowTemplateKey = (typeof ISSUE_WORKFLOW_TEMPLATE_KEYS)[number];
 
-export const ISSUE_WORKFLOW_LANE_ROLES = ["pm", "designer", "engineer", "security", "qa"] as const;
+export const ISSUE_WORKFLOW_LANE_ROLES = ["pm", "designer", "cto", "engineer", "security", "qa"] as const;
 export type IssueWorkflowLaneRole = (typeof ISSUE_WORKFLOW_LANE_ROLES)[number];
 
 export const ISSUE_WORKFLOW_LANE_PHASES = ["missing", "waiting", "ready", "active", "done"] as const;

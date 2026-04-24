@@ -9,13 +9,21 @@ import type {
   IssueStatus,
 } from "@paperclipai/shared";
 import { issuePriorityWeight } from "@paperclipai/shared";
+import { isAgentAssignableStatus } from "./agent-assignment-status.js";
+import { classifyCapabilityBlockedIssue } from "./issue-capability-blocks.js";
+import { buildIssueRoutingText } from "./issue-routing-heuristics.js";
+import { isDeliveryScopedIssue } from "./qa-gate.js";
 
 type IssueBoardStateRow = {
   id: string;
   identifier: string | null;
   title: string;
+  description: string | null;
   status: string;
   priority: string;
+  workIntent: string | null;
+  workflowTemplateKey: string | null;
+  workflowLaneRole: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   executionState: Record<string, unknown> | null;
@@ -212,8 +220,19 @@ function createBlockedBoardState(primaryBlocker: IssuePrimaryBlocker): IssueBoar
   };
 }
 
+function createCapabilityBlockedBoardState(issueId: string, headline: string): IssueBoardState {
+  return {
+    kind: "blocked",
+    headline,
+    reasonCode: "capability_blocked",
+    actorType: "system",
+    actorId: issueId,
+    primaryAction: makeIssueAction(issueId, "Open issue"),
+  };
+}
+
 function createWaitingReviewBoardState(
-  issueId: string,
+  issue: IssueBoardStateRow,
   assignee: AgentSummary | null,
   currentParticipantType: "agent" | "user" | null,
   currentParticipantId: string | null,
@@ -225,16 +244,31 @@ function createWaitingReviewBoardState(
       reasonCode: "board_decision",
       actorType: "board",
       actorId: currentParticipantId,
-      primaryAction: makeIssueAction(issueId, "Review decision"),
+      primaryAction: makeIssueAction(issue.id, "Review decision"),
     };
   }
+  const reviewActionLabel =
+    assignee?.role === "qa"
+    && isDeliveryScopedIssue({
+      workIntent: issue.workIntent,
+      assigneeRole: assignee.role,
+      issueText: buildIssueRoutingText({
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description,
+      }),
+      workflowTemplateKey: issue.workflowTemplateKey,
+      workflowLaneRole: issue.workflowLaneRole,
+    })
+      ? "Review QA state"
+      : "Open review";
   return {
     kind: "waiting",
     headline: qaHeadline(assignee),
     reasonCode: "review",
     actorType: "agent",
     actorId: assignee?.id ?? currentParticipantId,
-    primaryAction: makeIssueAction(issueId, assignee?.role === "qa" ? "Review QA state" : "Open review"),
+    primaryAction: makeIssueAction(issue.id, reviewActionLabel),
   };
 }
 
@@ -523,8 +557,12 @@ export async function computeIssueBoardStateMap(
       id: issues.id,
       identifier: issues.identifier,
       title: issues.title,
+      description: issues.description,
       status: issues.status,
       priority: issues.priority,
+      workIntent: issues.workIntent,
+      workflowTemplateKey: issues.workflowTemplateKey,
+      workflowLaneRole: issues.workflowLaneRole,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeUserId: issues.assigneeUserId,
       executionState: issues.executionState,
@@ -535,6 +573,50 @@ export async function computeIssueBoardStateMap(
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, allRelevantIds)));
 
   const issueById = new Map(issueRows.map((row) => [row.id, row]));
+  const requiredSpecialistRoles = Array.from(new Set(
+    issueRows
+      .map((row) => row.workflowLaneRole)
+      .filter((role): role is "security" | "qa" | "cto" => (
+        role === "security" || role === "qa" || role === "cto"
+      )),
+  ));
+  if (!requiredSpecialistRoles.includes("qa") && issueRows.some((row) => (
+    classifyCapabilityBlockedIssue({
+      issue: {
+        status: row.status,
+        identifier: row.identifier,
+        title: row.title,
+        description: row.description,
+        workflowLaneRole: row.workflowLaneRole,
+        assigneeAgentId: row.assigneeAgentId,
+        assigneeUserId: row.assigneeUserId,
+      },
+      eligibleSpecialistRoleIds: { security: [], qa: [] },
+    })?.blockingRole === "qa"
+  ))) {
+    requiredSpecialistRoles.push("qa");
+  }
+  const eligibleSpecialistRows = requiredSpecialistRoles.length > 0
+    ? await db
+        .select({
+          id: agents.id,
+          role: agents.role,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), inArray(agents.role, requiredSpecialistRoles)))
+    : [];
+  const eligibleSpecialistRoleIds = {
+    security: eligibleSpecialistRows
+      .filter((agent) => agent.role === "security" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+    qa: eligibleSpecialistRows
+      .filter((agent) => agent.role === "qa" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+    cto: eligibleSpecialistRows
+      .filter((agent) => agent.role === "cto" && isAgentAssignableStatus(agent.status))
+      .map((agent) => agent.id),
+  };
   const activeBlockersByIssueId = new Map<string, string[]>();
   for (const row of blockRows) {
     const blocker = issueById.get(row.blockerIssueId);
@@ -650,6 +732,18 @@ export async function computeIssueBoardStateMap(
     const recoveryRedirectTarget = recoveryState.hasRecoverySuccessor
       ? resolveTerminalRecoveryTarget(issueId, recoverySuccessorsByIssueId, issueById)
       : null;
+    const capabilityBlock = classifyCapabilityBlockedIssue({
+      issue: {
+        status: issue.status,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description,
+        workflowLaneRole: issue.workflowLaneRole,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+      },
+      eligibleSpecialistRoleIds,
+    });
 
     let boardState: IssueBoardState;
     if (recoveryRedirectTarget) {
@@ -658,12 +752,14 @@ export async function computeIssueBoardStateMap(
       boardState = createDoneBoardState(issue);
     } else if (hasBlockers && primaryBlocker) {
       boardState = createBlockedBoardState(primaryBlocker);
+    } else if (capabilityBlock) {
+      boardState = createCapabilityBlockedBoardState(issue.id, capabilityBlock.headline);
     } else if (recoveryState.hasRecoverySuccessor) {
       boardState = createWaitingRecoveryBoardState(issue.id);
     } else if (issue.status === "blocked") {
       boardState = createSystemErrorBoardState(issue.id);
     } else if (issue.status === "in_review") {
-      boardState = createWaitingReviewBoardState(issue.id, assignee, currentParticipantType, currentParticipantId);
+      boardState = createWaitingReviewBoardState(issue, assignee, currentParticipantType, currentParticipantId);
     } else {
       boardState = createWaitingAssigneeBoardState(issue, assignee);
     }

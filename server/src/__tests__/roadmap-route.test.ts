@@ -1,5 +1,6 @@
 import express from "express";
 import fs from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
@@ -38,7 +39,34 @@ function createApp(
   return app;
 }
 
-describe("roadmap route", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+describe.sequential("roadmap route", () => {
   let repoRoot = "";
 
   beforeEach(async () => {
@@ -85,13 +113,13 @@ describe("roadmap route", () => {
     }
   });
 
-  it("returns parsed roadmap data for board users", async () => {
+  it.sequential("returns parsed roadmap data for board users", async () => {
     const app = createApp(
       { type: "board", source: "local_implicit", userId: "board-user-1" },
       repoRoot,
     );
 
-    const response = await request(app).get("/api/roadmap");
+    const response = await requestWithApp(app, (agent) => agent.get("/api/roadmap"));
     expect(response.status).toBe(200);
     expect(response.body.roadmap.title).toBe("2026 Q2 CEO Roadmap");
     expect(response.body.roadmap.owner).toBe("CEO");
@@ -110,7 +138,7 @@ describe("roadmap route", () => {
     );
   });
 
-  it("allows company-scoped roadmap reads for agent keys with matching company access", async () => {
+  it.sequential("allows company-scoped roadmap reads for agent keys with matching company access", async () => {
     const app = createApp(
       {
         type: "agent",
@@ -121,20 +149,24 @@ describe("roadmap route", () => {
       repoRoot,
     );
 
-    const response = await request(app).get("/api/roadmap").query({ companyId: "company-1" });
+    const response = await requestWithApp(app, (agent) =>
+      agent.get("/api/roadmap").query({ companyId: "company-1" }),
+    );
     expect(response.status).toBe(200);
     expect(response.body.roadmap.title).toBe("2026 Q2 CEO Roadmap");
   });
 
-  it("renames a roadmap item title in the canonical markdown source", async () => {
+  it.sequential("renames a roadmap item title in the canonical markdown source", async () => {
     const app = createApp(
       { type: "board", source: "local_implicit", userId: "board-user-1" },
       repoRoot,
     );
 
-    const response = await request(app)
-      .patch("/api/roadmap/items/RM-2026-Q2-01")
-      .send({ title: "Faster first success" });
+    const response = await requestWithApp(app, (agent) =>
+      agent
+        .patch("/api/roadmap/items/RM-2026-Q2-01")
+        .send({ title: "Faster first success" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.item).toEqual(
@@ -149,7 +181,7 @@ describe("roadmap route", () => {
     expect(updated).not.toContain("### RM-2026-Q2-01 First success");
   });
 
-  it("rejects company-scoped roadmap reads for agent keys on other companies", async () => {
+  it.sequential("rejects company-scoped roadmap reads for agent keys on other companies", async () => {
     const app = createApp(
       {
         type: "agent",
@@ -160,11 +192,13 @@ describe("roadmap route", () => {
       repoRoot,
     );
 
-    const response = await request(app).get("/api/roadmap").query({ companyId: "company-2" });
+    const response = await requestWithApp(app, (agent) =>
+      agent.get("/api/roadmap").query({ companyId: "company-2" }),
+    );
     expect(response.status).toBe(403);
   });
 
-  it("uses a company-specific roadmap file when the company has a roadmapPath override", async () => {
+  it.sequential("uses a company-specific roadmap file when the company has a roadmapPath override", async () => {
     await fs.mkdir(path.join(repoRoot, "doc", "company-roadmaps"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "doc", "company-roadmaps", "comandero-roadmap.md"),
@@ -191,7 +225,9 @@ describe("roadmap route", () => {
       },
     );
 
-    const response = await request(app).get("/api/roadmap").query({ companyId: "company-1" });
+    const response = await requestWithApp(app, (agent) =>
+      agent.get("/api/roadmap").query({ companyId: "company-1" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.roadmap.title).toBe("Comandero Roadmap");
@@ -204,7 +240,7 @@ describe("roadmap route", () => {
     );
   });
 
-  it("renames a roadmap item in the company-specific roadmap file when a company override exists", async () => {
+  it.sequential("renames a roadmap item in the company-specific roadmap file when a company override exists", async () => {
     await fs.mkdir(path.join(repoRoot, "doc", "company-roadmaps"), { recursive: true });
     const roadmapPath = path.join(repoRoot, "doc", "company-roadmaps", "comandero-roadmap.md");
     await fs.writeFile(
@@ -232,10 +268,12 @@ describe("roadmap route", () => {
       },
     );
 
-    const response = await request(app)
-      .patch("/api/roadmap/items/RM-2026-Q2-01")
-      .query({ companyId: "company-1" })
-      .send({ title: "Checkout trust and proof" });
+    const response = await requestWithApp(app, (agent) =>
+      agent
+        .patch("/api/roadmap/items/RM-2026-Q2-01")
+        .query({ companyId: "company-1" })
+        .send({ title: "Checkout trust and proof" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.item).toEqual(
@@ -250,7 +288,7 @@ describe("roadmap route", () => {
     expect(updated).not.toContain("### RM-2026-Q2-01 Checkout trust and explainability");
   });
 
-  it("auto-detects a company roadmap by slugged company name when no explicit path is set", async () => {
+  it.sequential("auto-detects a company roadmap by slugged company name when no explicit path is set", async () => {
     await fs.mkdir(path.join(repoRoot, "doc", "company-roadmaps"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "doc", "company-roadmaps", "comandero-labs-roadmap.md"),
@@ -279,14 +317,16 @@ describe("roadmap route", () => {
       },
     );
 
-    const response = await request(app).get("/api/roadmap").query({ companyId: "company-1" });
+    const response = await requestWithApp(app, (agent) =>
+      agent.get("/api/roadmap").query({ companyId: "company-1" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.roadmap.title).toBe("Comandero Labs Roadmap");
     expect(response.body.roadmap.path).toBe("doc/company-roadmaps/comandero-labs-roadmap.md");
   });
 
-  it("renames items in the auto-detected company roadmap file", async () => {
+  it.sequential("renames items in the auto-detected company roadmap file", async () => {
     await fs.mkdir(path.join(repoRoot, "doc", "company-roadmaps"), { recursive: true });
     const roadmapPath = path.join(repoRoot, "doc", "company-roadmaps", "comandero-labs-roadmap.md");
     await fs.writeFile(
@@ -316,10 +356,12 @@ describe("roadmap route", () => {
       },
     );
 
-    const response = await request(app)
-      .patch("/api/roadmap/items/RM-2026-Q2-03")
-      .query({ companyId: "company-1" })
-      .send({ title: "Sales-safe website and conversion flow" });
+    const response = await requestWithApp(app, (agent) =>
+      agent
+        .patch("/api/roadmap/items/RM-2026-Q2-03")
+        .query({ companyId: "company-1" })
+        .send({ title: "Sales-safe website and conversion flow" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.roadmap.path).toBe("doc/company-roadmaps/comandero-labs-roadmap.md");
@@ -329,7 +371,7 @@ describe("roadmap route", () => {
     expect(updated).not.toContain("### RM-2026-Q2-03 Sales-safe website and funnel");
   });
 
-  it("falls back to issue-prefix roadmap autodetect when slug candidate is missing", async () => {
+  it.sequential("falls back to issue-prefix roadmap autodetect when slug candidate is missing", async () => {
     await fs.mkdir(path.join(repoRoot, "doc", "company-roadmaps"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "doc", "company-roadmaps", "coma-roadmap.md"),
@@ -358,14 +400,16 @@ describe("roadmap route", () => {
       },
     );
 
-    const response = await request(app).get("/api/roadmap").query({ companyId: "company-1" });
+    const response = await requestWithApp(app, (agent) =>
+      agent.get("/api/roadmap").query({ companyId: "company-1" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.roadmap.title).toBe("COMA Roadmap");
     expect(response.body.roadmap.path).toBe("doc/company-roadmaps/coma-roadmap.md");
   });
 
-  it("falls back to canonical roadmap when no company roadmap override or autodetect files exist", async () => {
+  it.sequential("falls back to canonical roadmap when no company roadmap override or autodetect files exist", async () => {
     const app = createApp(
       { type: "board", source: "local_implicit", userId: "board-user-1" },
       repoRoot,
@@ -377,7 +421,9 @@ describe("roadmap route", () => {
       },
     );
 
-    const response = await request(app).get("/api/roadmap").query({ companyId: "company-1" });
+    const response = await requestWithApp(app, (agent) =>
+      agent.get("/api/roadmap").query({ companyId: "company-1" }),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.roadmap.title).toBe("2026 Q2 CEO Roadmap");

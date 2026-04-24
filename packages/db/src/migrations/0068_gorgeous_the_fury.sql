@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "work_intent" text;

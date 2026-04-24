@@ -109,7 +109,7 @@ function createApp() {
 
 let issueRoutesFactory: typeof import("../routes/issues.js").issueRoutes;
 
-describe("issue dependency wakeups in issue routes", () => {
+describe.sequential("issue dependency wakeups in issue routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
@@ -165,7 +165,7 @@ describe("issue dependency wakeups in issue routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   }, 60_000);
 
-  it("wakes dependents when the final blocker transitions to done", async () => {
+  it.sequential("wakes dependents when the final blocker transitions to done", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -224,7 +224,7 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
-  it("wakes dependents when the final blocker transitions to cancelled", async () => {
+  it.sequential("wakes dependents when the final blocker transitions to cancelled", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -283,7 +283,7 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
-  it("wakes the parent when all direct children become terminal", async () => {
+  it.sequential("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",
       companyId: "company-1",
@@ -340,7 +340,7 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
-  it("promotes workflow dependents before waking them when a workflow lane becomes terminal", async () => {
+  it.sequential("promotes workflow dependents before waking them when a workflow lane becomes terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -446,7 +446,7 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
-  it("wakes only ready workflow children when applying a workflow template", async () => {
+  it.sequential("wakes only ready workflow children when applying a workflow template", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "root-1",
       companyId: "company-1",
@@ -543,7 +543,7 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
-  it("returns 422 and skips side effects when workflow application is missing a security specialist", async () => {
+  it.sequential("returns 422 and skips side effects when workflow application is missing a security specialist", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "root-1",
       companyId: "company-1",

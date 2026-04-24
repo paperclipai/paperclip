@@ -95,7 +95,7 @@ function createApp() {
   return app;
 }
 
-describe("issue file preview route", () => {
+describe.sequential("issue file preview route", () => {
   let tempRoot: string;
 
   beforeEach(async () => {
@@ -132,7 +132,7 @@ describe("issue file preview route", () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
-  it("returns bounded text previews for files inside the project root", async () => {
+  it.sequential("returns bounded text previews for files inside the project root", async () => {
     const res = await request(createApp())
       .get("/api/issues/issue-1/file-preview")
       .query({ path: "docs/listing.md" });
@@ -148,7 +148,7 @@ describe("issue file preview route", () => {
     );
   });
 
-  it("returns image metadata plus a content path for safe image previews", async () => {
+  it.sequential("returns image metadata plus a content path for safe image previews", async () => {
     const res = await request(createApp())
       .get("/api/issues/issue-1/file-preview")
       .query({ path: "docs/photo.png" });
@@ -164,7 +164,7 @@ describe("issue file preview route", () => {
     );
   });
 
-  it("rejects traversal outside the project root", async () => {
+  it.sequential("rejects traversal outside the project root", async () => {
     const res = await request(createApp())
       .get("/api/issues/issue-1/file-preview")
       .query({ path: "../secrets.txt" });
@@ -173,7 +173,7 @@ describe("issue file preview route", () => {
     expect(res.body.error).toMatch(/path/i);
   });
 
-  it("returns a missing preview state when the file does not exist", async () => {
+  it.sequential("returns a missing preview state when the file does not exist", async () => {
     const res = await request(createApp())
       .get("/api/issues/issue-1/file-preview")
       .query({ path: "docs/missing.md" });

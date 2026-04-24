@@ -1,5 +1,6 @@
 import express from "express";
-import request from "supertest";
+import { createServer, type Server } from "node:http";
+import supertest from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockProjectService = vi.hoisted(() => ({
@@ -74,6 +75,73 @@ async function createApp() {
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function createRequestChain(
+  app: express.Express,
+  method: "patch" | "post",
+  path: string,
+) {
+  let bodySet = false;
+  let body: unknown;
+  let promise: Promise<supertest.Response> | null = null;
+  const run = async () => {
+    const server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const test = supertest(server)[method](path);
+      if (bodySet) test.send(body);
+      return await test;
+    } finally {
+      await closeServer(server);
+    }
+  };
+  const chain = {
+    send(nextBody: unknown) {
+      bodySet = true;
+      body = nextBody;
+      return chain;
+    },
+    then<TResult1 = supertest.Response, TResult2 = never>(
+      onFulfilled?: ((value: supertest.Response) => TResult1 | PromiseLike<TResult1>) | null,
+      onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ) {
+      promise ??= run();
+      return promise.then(onFulfilled, onRejected);
+    },
+    catch<TResult = never>(
+      onRejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+    ) {
+      promise ??= run();
+      return promise.catch(onRejected);
+    },
+    finally(onFinally?: (() => void) | null) {
+      promise ??= run();
+      return promise.finally(onFinally ?? undefined);
+    },
+  };
+  return chain;
+}
+
+function request(app: express.Express) {
+  return {
+    patch: (path: string) => createRequestChain(app, "patch", path),
+    post: (path: string) => createRequestChain(app, "post", path),
+  };
+}
+
 function buildProject(overrides: Record<string, unknown> = {}) {
   return {
     id: "project-1",
@@ -112,7 +180,7 @@ function buildProject(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("project env routes", () => {
+describe.sequential("project env routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -122,7 +190,7 @@ describe("project env routes", () => {
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
   });
 
-  it("normalizes env bindings on create and logs only env keys", async () => {
+  it.sequential("normalizes env bindings on create and logs only env keys", async () => {
     const normalizedEnv = {
       API_KEY: {
         type: "secret_ref",
@@ -161,7 +229,7 @@ describe("project env routes", () => {
     );
   });
 
-  it("normalizes env bindings on update and avoids logging raw values", async () => {
+  it.sequential("normalizes env bindings on update and avoids logging raw values", async () => {
     const normalizedEnv = {
       PLAIN_KEY: { type: "plain", value: "top-secret" },
     };
@@ -194,7 +262,7 @@ describe("project env routes", () => {
     );
   });
 
-  it("pauses a project and cancels only project-scoped execution work", async () => {
+  it.sequential("pauses a project and cancels only project-scoped execution work", async () => {
     const pausedProject = buildProject({
       pauseReason: "manual",
       pausedAt: new Date("2026-04-13T12:00:00.000Z"),
@@ -228,7 +296,7 @@ describe("project env routes", () => {
     );
   });
 
-  it("resumes a manually paused project", async () => {
+  it.sequential("resumes a manually paused project", async () => {
     const activeProject = buildProject();
     mockProjectService.resume.mockResolvedValue(activeProject);
 

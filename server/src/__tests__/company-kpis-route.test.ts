@@ -93,7 +93,7 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-describe("company KPI routes", () => {
+describe.sequential("company KPI routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
@@ -188,7 +188,7 @@ describe("company KPI routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   }, 30_000);
 
-  it("allows board users to list and replace KPIs", async () => {
+  it.sequential("allows board users to list and replace KPIs", async () => {
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -219,7 +219,7 @@ describe("company KPI routes", () => {
     );
   });
 
-  it("allows board users to fetch executive summary payload", async () => {
+  it.sequential("allows board users to fetch executive summary payload", async () => {
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -231,7 +231,7 @@ describe("company KPI routes", () => {
     expect(mockExecutiveSummaryService.buildExecutiveSummary).toHaveBeenCalledWith("company-1");
   });
 
-  it("allows CEO agents to manage KPIs for their own company", async () => {
+  it.sequential("allows CEO agents to manage KPIs for their own company", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -253,7 +253,7 @@ describe("company KPI routes", () => {
       .expect(200);
   });
 
-  it("rejects non-CEO agents from managing KPIs", async () => {
+  it.sequential("rejects non-CEO agents from managing KPIs", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -278,7 +278,7 @@ describe("company KPI routes", () => {
     expect(mockExecutiveSummaryService.replaceKpis).not.toHaveBeenCalled();
   });
 
-  it("rejects non-CEO agents from reading executive summary payloads", async () => {
+  it.sequential("rejects non-CEO agents from reading executive summary payloads", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -297,7 +297,7 @@ describe("company KPI routes", () => {
     expect(mockExecutiveSummaryService.buildExecutiveSummary).not.toHaveBeenCalled();
   });
 
-  it("rejects cross-company agent access for KPI endpoints", async () => {
+  it.sequential("rejects cross-company agent access for KPI endpoints", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-2",
@@ -317,7 +317,7 @@ describe("company KPI routes", () => {
     expect(mockExecutiveSummaryService.listKpis).not.toHaveBeenCalled();
   });
 
-  it("allows board users to patch daily executive summary toggle", async () => {
+  it.sequential("allows board users to patch daily executive summary toggle", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       feedbackDataSharingEnabled: false,
@@ -343,7 +343,7 @@ describe("company KPI routes", () => {
     );
   });
 
-  it("does not allow CEO agents to patch daily executive summary toggle", async () => {
+  it.sequential("does not allow CEO agents to patch daily executive summary toggle", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       feedbackDataSharingEnabled: false,

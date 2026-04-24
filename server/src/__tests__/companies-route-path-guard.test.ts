@@ -59,8 +59,8 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn(),
 }));
 
-describe("company routes malformed issue path guard", () => {
-  it("returns a clear error when companyId is missing for issues list path", async () => {
+describe.sequential("company routes malformed issue path guard", () => {
+  it.sequential("returns a clear error when companyId is missing for issues list path", async () => {
     const app = express();
     app.use((req, _res, next) => {
       (req as any).actor = {

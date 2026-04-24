@@ -14,6 +14,7 @@ import type {
   IssueOriginKind,
   IssueRoutineExecutionRole,
   IssuePriority,
+  IssueWorkIntent,
   IssueStallReasonCode,
   IssueStatus,
   IssueRelationType,
@@ -347,6 +348,8 @@ export interface Issue {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  workIntent?: IssueWorkIntent | null;
+  qaReviewerAgentId?: string | null;
   checkoutRunId: string | null;
   executionRunId: string | null;
   executionAgentNameKey: string | null;

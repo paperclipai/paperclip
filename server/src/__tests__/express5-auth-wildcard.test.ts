@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
@@ -14,43 +15,71 @@ import { describe, expect, it, vi } from "vitest";
  * These tests verify that the better-auth handler is invoked for both
  * shallow and deep auth sub-paths.
  */
-describe("Express 5 /api/auth wildcard route", () => {
-  function buildApp() {
+describe.sequential("Express 5 /api/auth wildcard route", () => {
+  async function buildFixture() {
     const app = express();
     const handler = vi.fn((_req: express.Request, res: express.Response) => {
       res.status(200).json({ ok: true });
     });
     app.all("/api/auth/{*authPath}", handler);
-    return { app, handler };
+    const server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    return { agent: request(server), close: () => closeServer(server), handler };
   }
 
-  it("matches a shallow auth sub-path (sign-in/email)", async () => {
-    const { app } = buildApp();
-    const res = await request(app).post("/api/auth/sign-in/email");
+  async function closeServer(server: Server) {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
+  async function withFixture<T>(
+    run: (fixture: Awaited<ReturnType<typeof buildFixture>>) => Promise<T>,
+  ) {
+    const fixture = await buildFixture();
+    try {
+      return await run(fixture);
+    } finally {
+      await fixture.close();
+    }
+  }
+
+  it.sequential("matches a shallow auth sub-path (sign-in/email)", async () => {
+    const res = await withFixture(({ agent }) => agent.post("/api/auth/sign-in/email"));
     expect(res.status).toBe(200);
   });
 
-  it("matches a deep auth sub-path (callback/credentials/sign-in)", async () => {
-    const { app } = buildApp();
-    const res = await request(app).get(
+  it.sequential("matches a deep auth sub-path (callback/credentials/sign-in)", async () => {
+    const res = await withFixture(({ agent }) => agent.get(
       "/api/auth/callback/credentials/sign-in"
-    );
+    ));
     expect(res.status).toBe(200);
   });
 
-  it("does not match unrelated paths outside /api/auth", async () => {
+  it.sequential("does not match unrelated paths outside /api/auth", async () => {
     // Confirm the route is not over-broad — requests to other API paths
     // must fall through to 404 and not reach the better-auth handler.
-    const { app, handler } = buildApp();
-    const res = await request(app).get("/api/other/endpoint");
+    const { res, handler } = await withFixture(async ({ agent, handler }) => ({
+      res: await agent.get("/api/other/endpoint"),
+      handler,
+    }));
     expect(res.status).toBe(404);
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it("invokes the handler for every matched sub-path", async () => {
-    const { app, handler } = buildApp();
-    await request(app).post("/api/auth/sign-out");
-    await request(app).get("/api/auth/session");
-    expect(handler).toHaveBeenCalledTimes(2);
+  it.sequential("invokes the handler for every matched sub-path", async () => {
+    await withFixture(async ({ agent, handler }) => {
+      await agent.post("/api/auth/sign-out");
+      await agent.get("/api/auth/session");
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
   });
 });

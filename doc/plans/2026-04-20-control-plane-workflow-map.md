@@ -29,7 +29,7 @@ The delivery workflow is not one state machine. It is six stacked layers:
 
 1. Base issue lifecycle
 2. Specialist workflow lane DAG
-3. Release-gate QA owner resolution
+3. QA owner and reviewer selection
 4. Same-issue QA and workflow-lane QA gates
 5. Wakeup request lifecycle
 6. Heartbeat run lifecycle
@@ -38,7 +38,8 @@ The important distinction is:
 
 - standalone delivery issues use same-issue QA on the root issue
 - workflow delivery uses specialist child lanes, including a QA lane with its own gate
-- both paths now use the same release-gate QA owner resolver
+- standalone delivery uses the release-gate QA owner resolver
+- workflow delivery uses specialist child lanes; the QA lane is assigned from the eligible QA pool and the current lane owner is the workflow QA authority
 
 ## High-level flow
 
@@ -176,7 +177,7 @@ Lane set:
 | `designer` | `pm` | `blocked` | inherited | `design` document or design work product | generic role routing |
 | `engineer` | `designer` | `blocked` | isolated | `implementation-summary` document or implementation work product | generic role routing |
 | `security` | `engineer` | `blocked` | isolated | `threat-review` document | generic role routing |
-| `qa` | `engineer` | `blocked` | isolated | non-stale `qa-verdict` document plus latest authorized QA verdict comment | shared release-gate QA resolver |
+| `qa` | `engineer` | `blocked` | isolated | non-stale `qa-verdict` document plus latest authorized QA verdict comment | pooled QA lane owner |
 
 Current behavior:
 
@@ -184,19 +185,18 @@ Current behavior:
 2. Only dependency-free lanes start in `todo`.
 3. Dependency lanes start in `blocked`.
 4. When the last active upstream blocker becomes terminal, `advanceWorkflowDependents()` promotes the dependent lane to `todo`.
-5. On promotion, the QA lane re-resolves the authorized release-gate QA owner and auto-assigns it when one resolves.
+5. On promotion, the QA lane keeps the current assigned QA reviewer when still eligible; otherwise it auto-assigns the least-loaded eligible QA reviewer, using the configured or canonical release-gate QA owner only as a load-tie preference.
 6. If legacy workflow roots are missing blocker edges or have drifted waiting-lane status, the workflow service reconstructs the canonical blocker graph from template metadata before summary/promotion/handback logic runs.
 7. Operators can also run the same sweep manually with `pnpm workflow-integrity:reconcile` and `pnpm workflow-integrity:reconcile -- --apply`.
 
-## 3. Release-Gate QA Owner Resolution
+## 3. QA Owner And Reviewer Selection
 
-This resolver is shared by:
+Standalone delivery uses the release-gate QA owner resolver for:
 
 - standalone delivery route-to-QA behavior
 - standalone close-to-done QA gating
-- workflow QA lane assignment
-- workflow QA lane completion
-- operations heartbeat QA ownership corrections
+
+Workflow delivery does not use `qaReviewerAgentId` as workflow authority. Workflow QA lane assignment uses the eligible QA reviewer pool, keeps the current lane owner when still valid, and treats `qaReviewerAgentId` as routing and repair memory only. Workflow QA lane completion is authorized by the current active lane assignee.
 
 Resolution order:
 
@@ -283,18 +283,18 @@ Route-to-QA behavior:
 Close-to-done requirements:
 
 - issue is `in_review`
-- issue is assigned to the resolved release-gate QA owner
+- issue is assigned to the active workflow QA lane owner
 - latest authorized QA comment includes full Smart Review summary:
   - `[CQ]`
   - `[EH]`
   - `[TC]`
   - `[CM]`
   - `[DOC]`
-- latest authorized QA comment includes passing verification evidence:
-  - `[TYPECHECK: pass]`
-  - `[TESTS: pass]`
-  - `[BUILD: pass]`
-  - `[SMOKE: pass]` or `[SMOKE: na]`
+- latest authorized QA comment includes canonical passing verification evidence:
+  - `[TYPECHECK:pass]`
+  - `[TESTS:pass]`
+  - `[BUILD:pass]`
+  - `[SMOKE:pass]` or `[SMOKE:na]`
 - latest authorized QA comment includes:
   - `[QA PASS]`
   - `[RELEASE CONFIRMED]`
@@ -311,22 +311,23 @@ Used only for `workflowLaneRole = qa`.
 
 Authoritative verdict source:
 
-- latest comment from the authorized release-gate QA owner only
+- latest comment from the assigned workflow QA lane owner only
+- `qaReviewerAgentId` is sticky reviewer memory for routing/repair, not fallback authority when the workflow lane is unassigned
 - no cross-comment accumulation
 
 Required evidence:
 
-- lane assigned to the authorized release-gate QA owner
+- lane assigned to an active QA reviewer
 - non-stale `qa-verdict` document
 - latest authorized QA comment contains full Smart Review summary
-- latest authorized QA comment contains passing verification evidence
+- latest authorized QA comment contains canonical passing verification evidence
 - latest authorized QA comment contains `[QA PASS]`
 - latest authorized QA comment contains `[RELEASE CONFIRMED]`
 
 ```mermaid
 flowchart TD
-    Start["Workflow QA lane completion check"] --> Owner["Resolve authorized release-gate QA owner"]
-    Owner --> HasOwner{"Authorized owner resolved?"}
+    Start["Workflow QA lane completion check"] --> Owner["Read assigned QA lane owner"]
+    Owner --> HasOwner{"Assigned owner is active QA?"}
     HasOwner -- "no" --> BlockOwner["Block lane on ownership reason"]
     HasOwner -- "yes" --> Assigned{"Lane assigned to that owner?"}
     Assigned -- "no" --> BlockOwner

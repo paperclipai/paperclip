@@ -6,6 +6,9 @@ import type {
   FeedbackVote,
   IssueListSort,
   Issue,
+  IssueStatus,
+  IssueActionRequest,
+  IssueActionResult,
   IssueAttachment,
   IssueComment,
   IssueDocument,
@@ -27,6 +30,84 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
   warnings?: IssueWakeupWarning[];
 };
+
+export type WorkflowAwareIssueUpdateResponse = IssueUpdateResponse | IssueActionResult;
+
+const WORKFLOW_AWARE_UPDATE_KEYS = new Set(["status", "comment"]);
+const OPEN_ISSUE_STATUSES = new Set<IssueStatus>(["backlog", "todo", "in_progress", "in_review", "blocked"]);
+const CLOSED_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+
+function toTrimmedOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isOpenIssueStatus(status: IssueStatus | null | undefined): status is IssueStatus {
+  return Boolean(status && OPEN_ISSUE_STATUSES.has(status));
+}
+
+function isClosedIssueStatus(status: IssueStatus | null | undefined): status is IssueStatus {
+  return Boolean(status && CLOSED_ISSUE_STATUSES.has(status));
+}
+
+function toIssueUpdateResponseFromAction(result: IssueActionResult): IssueUpdateResponse {
+  return {
+    ...result.issue,
+    comment: result.comment,
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+  };
+}
+
+export function resolveIssueActionForWorkflowAwareUpdate(
+  currentStatus: IssueStatus | null | undefined,
+  data: Record<string, unknown>,
+): IssueActionRequest | null {
+  const keys = Object.keys(data);
+  if (keys.length === 0 || keys.some((key) => !WORKFLOW_AWARE_UPDATE_KEYS.has(key))) {
+    return null;
+  }
+
+  const nextStatus = typeof data.status === "string" ? data.status : null;
+  if (!nextStatus) {
+    return null;
+  }
+
+  const commentBody = toTrimmedOptionalString(data.comment);
+
+  // Only emit typed actions when the current state is known enough to map the
+  // transition unambiguously. Otherwise fall back to PATCH so the server can
+  // enforce the full status transition matrix.
+  if (OPEN_ISSUE_STATUSES.has(nextStatus as IssueStatus) && isClosedIssueStatus(currentStatus)) {
+    return {
+      type: "reopen_issue",
+      payload: {
+        status: nextStatus as Extract<IssueStatus, "backlog" | "todo" | "in_progress" | "in_review" | "blocked">,
+        ...(commentBody ? { body: commentBody } : {}),
+      },
+    };
+  }
+
+  if (nextStatus === "done" && isOpenIssueStatus(currentStatus)) {
+    return {
+      type: "complete_issue",
+      payload: {
+        ...(commentBody ? { body: commentBody } : {}),
+      },
+    };
+  }
+
+  if (nextStatus === "in_review" && isOpenIssueStatus(currentStatus) && currentStatus !== "in_review") {
+    return {
+      type: "enter_review",
+      payload: {
+        ...(commentBody ? { body: commentBody } : {}),
+      },
+    };
+  }
+
+  return null;
+}
 
 export const issuesApi = {
   list: (
@@ -107,6 +188,19 @@ export const issuesApi = {
     }>(`/companies/${companyId}/issues/archive-closed`, input ?? {}),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  act: (id: string, data: IssueActionRequest) =>
+    api.post<IssueActionResult>(`/issues/${id}/actions`, data),
+  updateWorkflowAware: (
+    id: string,
+    currentStatus: IssueStatus | null | undefined,
+    data: Record<string, unknown>,
+  ) => {
+    const action = resolveIssueActionForWorkflowAwareUpdate(currentStatus, data);
+    if (action) {
+      return issuesApi.act(id, action);
+    }
+    return issuesApi.update(id, data);
+  },
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
@@ -160,6 +254,63 @@ export const issuesApi = {
         ...(interrupt === undefined ? {} : { interrupt }),
       },
     ),
+  addCommentWorkflowAware: async (
+    id: string,
+    currentStatus: IssueStatus | null | undefined,
+    body: string,
+    reopen?: boolean,
+    interrupt?: boolean,
+  ) => {
+    const shouldReopenClosedIssue = reopen === true && isClosedIssueStatus(currentStatus);
+    if (shouldReopenClosedIssue) {
+      if (interrupt) {
+        throw new Error("Interrupt cannot be combined with typed reopen comments.");
+      }
+      const result = await issuesApi.act(id, {
+        type: "reopen_issue",
+        payload: { body },
+      });
+      if (!result.comment) {
+        throw new Error("Typed reopen_issue did not create an issue comment.");
+      }
+      return result.comment;
+    }
+    return issuesApi.addComment(id, body, undefined, interrupt);
+  },
+  addCommentAndReassignWorkflowAware: async (
+    id: string,
+    currentStatus: IssueStatus | null | undefined,
+    input: {
+      body: string;
+      reopen?: boolean;
+      interrupt?: boolean;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+    },
+  ) => {
+    const shouldReopenClosedIssue = input.reopen === true && isClosedIssueStatus(currentStatus);
+    if (shouldReopenClosedIssue) {
+      if (input.interrupt) {
+        throw new Error("Interrupt cannot be combined with typed handoff comments.");
+      }
+      const result = await issuesApi.act(id, {
+        type: "handoff_issue",
+        payload: {
+          body: input.body,
+          reopen: true,
+          ...(input.assigneeAgentId === undefined ? {} : { assigneeAgentId: input.assigneeAgentId }),
+          ...(input.assigneeUserId === undefined ? {} : { assigneeUserId: input.assigneeUserId }),
+        },
+      });
+      return toIssueUpdateResponseFromAction(result);
+    }
+    return issuesApi.update(id, {
+      comment: input.body,
+      ...(input.assigneeAgentId === undefined ? {} : { assigneeAgentId: input.assigneeAgentId }),
+      ...(input.assigneeUserId === undefined ? {} : { assigneeUserId: input.assigneeUserId }),
+      ...(input.interrupt ? { interrupt: input.interrupt } : {}),
+    });
+  },
   listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>

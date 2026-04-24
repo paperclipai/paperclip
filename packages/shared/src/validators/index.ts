@@ -31,6 +31,7 @@ export {
   boardBriefActionItemSchema,
   boardBriefIncidentSchema,
   boardBriefOutputSchema,
+  boardBriefOperationsFlowSchema,
   boardBriefSchema,
   boardBriefSnapshotSchema,
   boardBriefAlertEventSchema,
@@ -144,6 +145,13 @@ export {
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
+
+export {
+  issueActionSchema,
+  issueActionQaSummarySchema,
+  issueActionQaVerificationSchema,
+  type IssueActionRequest,
+} from "./issue-action.js";
 
 export {
   createIssueSchema,

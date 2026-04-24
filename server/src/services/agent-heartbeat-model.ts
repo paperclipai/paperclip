@@ -6,6 +6,7 @@ import {
   QA_RELEASE_DEFAULT_TITLE,
   canonicalizeAgentRole,
 } from "@paperclipai/shared";
+import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { deduplicateAgentName, agentService } from "./agents.js";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
@@ -13,6 +14,8 @@ import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions
 export const COO_COORDINATOR_DEFAULT_INTERVAL_SEC = 3600;
 export const COO_COORDINATOR_DEFAULT_NAME = "COO";
 export const COO_COORDINATOR_DEFAULT_TITLE = "COO";
+export const SECURITY_DEFAULT_NAME = "Security Engineer";
+export const SECURITY_DEFAULT_TITLE = "Security Engineer";
 export { QA_RELEASE_DEFAULT_NAME, QA_RELEASE_DEFAULT_TITLE };
 
 const TECH_ROLES_REQUIRING_QA = new Set(["cto", "engineer", "devops"]);
@@ -82,6 +85,21 @@ type CompanyQaCoverageResult = {
   companyName: string | null;
   created: boolean;
   reason: QaCoverageReason;
+  createdAgentId: string | null;
+};
+
+type SecurityCoverageReason =
+  | "already_has_security"
+  | "security_created"
+  | "no_tech_team"
+  | "company_not_found";
+
+type CompanySecurityCoverageResult = {
+  apply: boolean;
+  companyId: string;
+  companyName: string | null;
+  created: boolean;
+  reason: SecurityCoverageReason;
   createdAgentId: string | null;
 };
 
@@ -384,14 +402,18 @@ export function agentHeartbeatModelService(db: Db) {
   }
 
   function pickQaSeedAgent(rows: ActiveAgentRow[]): ActiveAgentRow | null {
-    const byRole = (role: string) => rows.find((row) => normalizeRole(row.role) === role) ?? null;
-    return byRole("cto")
-      ?? byRole("engineer")
-      ?? byRole("devops")
-      ?? byRole("ceo")
-      ?? byRole("coo")
-      ?? rows[0]
-      ?? null;
+    const pickFrom = (pool: ActiveAgentRow[]) => {
+      const byRole = (role: string) => pool.find((row) => normalizeRole(row.role) === role) ?? null;
+      return byRole("cto")
+        ?? byRole("engineer")
+        ?? byRole("devops")
+        ?? byRole("ceo")
+        ?? byRole("coo")
+        ?? pool[0]
+        ?? null;
+    };
+
+    return pickFrom(rows.filter((row) => isAgentAssignableStatus(row.status))) ?? pickFrom(rows);
   }
 
   function pickQaManagerId(rows: ActiveAgentRow[], seedAgent: ActiveAgentRow): string | null {
@@ -488,7 +510,7 @@ export function agentHeartbeatModelService(db: Db) {
       };
     }
 
-    const seedStatus = seedAgent.status === "paused" ? "paused" : "idle";
+    const seedStatus = isAgentAssignableStatus(seedAgent.status) ? "idle" : "paused";
     const created = await agentsSvc.create(companyId, {
       name: qaName,
       role: "qa",
@@ -523,6 +545,127 @@ export function agentHeartbeatModelService(db: Db) {
       companyName: company.name,
       created: true,
       reason: "qa_created",
+      createdAgentId: created.id,
+    };
+  }
+
+  async function ensureCompanyHasSecurityEngineer(
+    companyId: string,
+    apply: boolean,
+  ): Promise<CompanySecurityCoverageResult> {
+    const company = await db
+      .select({
+        id: companies.id,
+        name: companies.name,
+      })
+      .from(companies)
+      .where(and(eq(companies.id, companyId), ne(companies.status, "archived")))
+      .then((rows) => rows[0] ?? null);
+
+    if (!company) {
+      return {
+        apply,
+        companyId,
+        companyName: null,
+        created: false,
+        reason: "company_not_found",
+        createdAgentId: null,
+      };
+    }
+
+    const rows = await listActiveCompanyAgents(companyId);
+    const hasTechTeam = rows.some((row) => roleRequiresQaCoverage(row.role));
+    if (!hasTechTeam) {
+      return {
+        apply,
+        companyId,
+        companyName: company.name,
+        created: false,
+        reason: "no_tech_team",
+        createdAgentId: null,
+      };
+    }
+
+    const hasSecurity = rows.some((row) => normalizeRole(row.role) === "security");
+    if (hasSecurity) {
+      return {
+        apply,
+        companyId,
+        companyName: company.name,
+        created: false,
+        reason: "already_has_security",
+        createdAgentId: null,
+      };
+    }
+
+    const seedAgent = pickQaSeedAgent(rows);
+    if (!seedAgent) {
+      return {
+        apply,
+        companyId,
+        companyName: company.name,
+        created: false,
+        reason: "no_tech_team",
+        createdAgentId: null,
+      };
+    }
+
+    const securityName = deduplicateAgentName(
+      SECURITY_DEFAULT_NAME,
+      rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        status: row.status,
+      })),
+    );
+    const reportsTo = pickQaManagerId(rows, seedAgent);
+
+    if (!apply) {
+      return {
+        apply,
+        companyId,
+        companyName: company.name,
+        created: true,
+        reason: "security_created",
+        createdAgentId: null,
+      };
+    }
+
+    const seedStatus = isAgentAssignableStatus(seedAgent.status) ? "idle" : "paused";
+    const created = await agentsSvc.create(companyId, {
+      name: securityName,
+      role: "security",
+      title: SECURITY_DEFAULT_TITLE,
+      reportsTo,
+      icon: null,
+      capabilities: null,
+      adapterType: seedAgent.adapterType,
+      adapterConfig: stripSeedAdapterConfig(seedAgent.adapterConfig),
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      status: seedStatus,
+      pauseReason: seedStatus === "paused" ? (seedAgent.pauseReason ?? "manual") : null,
+      pausedAt: seedStatus === "paused" ? (seedAgent.pausedAt ?? new Date()) : null,
+      permissions: undefined,
+      lastHeartbeatAt: null,
+      metadata: null,
+    });
+
+    const securityBundle = await loadDefaultAgentInstructionsBundle("security");
+    const materialized = await instructions.materializeManagedBundle(created, securityBundle, {
+      entryFile: "AGENTS.md",
+      replaceExisting: false,
+      clearLegacyPromptTemplate: true,
+    });
+    await agentsSvc.update(created.id, { adapterConfig: materialized.adapterConfig });
+
+    return {
+      apply,
+      companyId,
+      companyName: company.name,
+      created: true,
+      reason: "security_created",
       createdAgentId: created.id,
     };
   }
@@ -642,6 +785,11 @@ export function agentHeartbeatModelService(db: Db) {
     async ensureCompanyHasQaReleaseEngineer(companyId: string, options?: { apply?: boolean }) {
       const apply = options?.apply === true;
       return ensureCompanyHasQaReleaseEngineer(companyId, apply);
+    },
+
+    async ensureCompanyHasSecurityEngineer(companyId: string, options?: { apply?: boolean }) {
+      const apply = options?.apply === true;
+      return ensureCompanyHasSecurityEngineer(companyId, apply);
     },
 
     async backfillMissingQaReleaseEngineers(options?: { apply?: boolean }): Promise<QaReleaseCoverageReport> {

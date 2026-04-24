@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useCallback, useRef } from "react";
 import { Navigate, useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { issuesApi } from "../api/issues";
+import type { IssueStatus } from "@paperclipai/shared";
+import { issuesApi, type WorkflowAwareIssueUpdateResponse } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -102,9 +103,17 @@ export function Issues() {
     enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
   });
 
-  const updateIssue = useMutation({
+  const issueStatusById = useMemo(() => {
+    const next = new Map<string, IssueStatus>();
+    for (const issue of issues ?? []) {
+      next.set(issue.id, issue.status);
+    }
+    return next;
+  }, [issues]);
+
+  const updateIssue = useMutation<WorkflowAwareIssueUpdateResponse, Error, { id: string; data: Record<string, unknown> }>({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
+      issuesApi.updateWorkflowAware(id, issueStatusById.get(id), data),
     onSuccess: (updatedIssue) => {
       for (const warning of updatedIssue.warnings ?? []) {
         pushToast({

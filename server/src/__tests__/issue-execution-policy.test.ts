@@ -171,6 +171,33 @@ describe("issue execution policy transitions", () => {
       expect(result.decision).toBeUndefined();
     });
 
+    it("enters review when the caller explicitly requests in_review", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "in_review",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: null,
+      });
+
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+      });
+      expect(result.decision).toBeUndefined();
+    });
+
     it("reviewer approves → advances to approval stage", () => {
       const reviewStageId = policy.stages[0].id;
       const result = applyIssueExecutionPolicyTransition({

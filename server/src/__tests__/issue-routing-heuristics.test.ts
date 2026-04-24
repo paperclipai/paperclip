@@ -199,6 +199,76 @@ describe("issue routing heuristics", () => {
     expect(candidate).toBeNull();
   });
 
+  it("returns no candidate for workflow QA lanes when no QA reviewer exists", () => {
+    const candidate = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-qa-lane",
+        title: "QA: Validate release",
+        preferredRole: "qa",
+        workflowLaneRole: "qa",
+        projectId: "project-app",
+      },
+      openAssignedIssues: [],
+      availableCandidates: baseCandidates.filter((candidate) => candidate.role !== "qa"),
+      pausedFallbackCandidates: baseCandidates.filter((candidate) => candidate.role !== "qa"),
+    });
+
+    expect(candidate).toBeNull();
+  });
+
+  it("returns no candidate for QA-like engineering work when no QA reviewer exists", () => {
+    const candidate = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-qa-like",
+        identifier: "COMA-2004",
+        title: "Fix cart checkout bug",
+        description: "QA verification required before release",
+        projectId: "project-app",
+        projectName: "App",
+      },
+      openAssignedIssues: [],
+      availableCandidates: baseCandidates.filter((candidate) => candidate.role !== "qa"),
+      pausedFallbackCandidates: baseCandidates.filter((candidate) => candidate.role !== "qa"),
+    });
+
+    expect(candidate).toBeNull();
+  });
+
+  it("returns no eligible candidates for QA-like work when no QA reviewer exists", () => {
+    const candidates = baseCandidates.filter((candidate) => candidate.role !== "qa");
+    const eligible = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-qa-like-standalone",
+        identifier: "COMA-2005",
+        title: "QA: Validate checkout release",
+        projectId: "project-app",
+        projectName: "App",
+      },
+      openAssignedIssues: [],
+      availableCandidates: candidates,
+      pausedFallbackCandidates: candidates,
+    });
+
+    expect(eligible).toBeNull();
+  });
+
+  it("returns no candidate for workflow CTO lanes when no CTO exists", () => {
+    const candidate = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-cto-lane",
+        title: "CTO: Review technical plan",
+        preferredRole: "cto",
+        workflowLaneRole: "cto",
+        projectId: "project-app",
+      },
+      openAssignedIssues: [],
+      availableCandidates: [...baseCandidates],
+      pausedFallbackCandidates: [...baseCandidates],
+    });
+
+    expect(candidate).toBeNull();
+  });
+
   it("prefers matching desired skills and lighter load among similarly qualified candidates", () => {
     const candidate = pickOperationsAssignmentCandidate({
       issue: {

@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -124,7 +125,45 @@ function createApp(
   return app;
 }
 
-describe("issue create project inheritance routes", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+async function postCompanyIssue(
+  body: Record<string, unknown>,
+  actor?: Record<string, unknown>,
+) {
+  return requestWithApp(createApp(actor), (agent) =>
+    agent
+      .post("/api/companies/company-1/issues")
+      .send(body)
+  );
+}
+
+describe.sequential("issue create project inheritance routes", () => {
   beforeAll(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
@@ -196,12 +235,10 @@ describe("issue create project inheritance routes", () => {
     }));
   });
 
-  it("inherits project from the source issue when an agent run creates a follow-up issue without projectId", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Follow-up audit ticket",
-      });
+  it.sequential("inherits project from the source issue when an agent run creates a follow-up issue without projectId", async () => {
+    const res = await postCompanyIssue({
+      title: "Follow-up audit ticket",
+    });
 
     expect(res.status).toBe(201);
     expect(mockExecutionGateService.getExecutionBlock).toHaveBeenCalledWith(
@@ -227,13 +264,11 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("prefers an explicit projectId over inherited run context", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Follow-up audit ticket",
-        projectId: explicitProjectId,
-      });
+  it.sequential("prefers an explicit projectId over inherited run context", async () => {
+    const res = await postCompanyIssue({
+      title: "Follow-up audit ticket",
+      projectId: explicitProjectId,
+    });
 
     expect(res.status).toBe(201);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
@@ -254,18 +289,16 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("falls back to the run snapshot project when the source issue has no project", async () => {
+  it.sequential("falls back to the run snapshot project when the source issue has no project", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "source-issue-1",
       companyId: "company-1",
       projectId: null,
     });
 
-    const res = await request(createApp())
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Snapshot fallback ticket",
-      });
+    const res = await postCompanyIssue({
+      title: "Snapshot fallback ticket",
+    });
 
     expect(res.status).toBe(201);
     expect(mockExecutionGateService.getExecutionBlock).toHaveBeenCalledWith(
@@ -289,7 +322,7 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("does not inherit a project when the run context does not belong to the current agent or company", async () => {
+  it.sequential("does not inherit a project when the run context does not belong to the current agent or company", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
       companyId: "company-2",
@@ -300,11 +333,9 @@ describe("issue create project inheritance routes", () => {
       },
     });
 
-    const res = await request(createApp())
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Invalid run context ticket",
-      });
+    const res = await postCompanyIssue({
+      title: "Invalid run context ticket",
+    });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.getById).not.toHaveBeenCalled();
@@ -324,18 +355,17 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("does not inherit a project for board-created issues", async () => {
-    const res = await request(
-      createApp({
+  it.sequential("does not inherit a project for board-created issues", async () => {
+    const res = await postCompanyIssue(
+      {
+        title: "Board-created ticket",
+      },
+      {
         type: "board",
         source: "local_implicit",
         userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Board-created ticket",
-      });
+      },
+    );
 
     expect(res.status).toBe(201);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
@@ -356,42 +386,40 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("does not auto-apply the engineering workflow when company delivery settings cannot be resolved", async () => {
+  it.sequential("does not auto-apply the engineering workflow when company delivery settings cannot be resolved", async () => {
     mockCompanyService.getById.mockResolvedValue(null);
 
-    const res = await request(
-      createApp({
+    const res = await postCompanyIssue(
+      {
+        title: "Legacy root issue",
+      },
+      {
         type: "board",
         source: "local_implicit",
         userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Legacy root issue",
-      });
+      },
+    );
 
     expect(res.status).toBe(201);
     expect(mockIssueWorkflowService.applyTemplate).not.toHaveBeenCalled();
   });
 
-  it("automatically applies the engineering workflow for root issues when the company default delivery mode is engineering", async () => {
+  it.sequential("automatically applies the engineering workflow for root issues when the company default delivery mode is engineering", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       defaultRootIssueDeliveryMode: "engineering",
     });
 
-    const res = await request(
-      createApp({
+    const res = await postCompanyIssue(
+      {
+        title: "Automatic workflow root",
+      },
+      {
         type: "board",
         source: "local_implicit",
         userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Automatic workflow root",
-      });
+      },
+    );
 
     expect(res.status).toBe(201);
     expect(mockIssueWorkflowService.applyTemplate).toHaveBeenCalledWith(
@@ -406,30 +434,29 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("does not auto-apply the engineering workflow for sub-issues", async () => {
+  it.sequential("does not auto-apply the engineering workflow for sub-issues", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       defaultRootIssueDeliveryMode: "engineering",
     });
 
-    const res = await request(
-      createApp({
-        type: "board",
-        source: "local_implicit",
-        userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
+    const res = await postCompanyIssue(
+      {
         title: "Child issue",
         parentId: "44444444-4444-4444-8444-444444444444",
-      });
+      },
+      {
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      },
+    );
 
     expect(res.status).toBe(201);
     expect(mockIssueWorkflowService.applyTemplate).not.toHaveBeenCalled();
   });
 
-  it("lets a project simple delivery override suppress the company engineering default", async () => {
+  it.sequential("lets a project simple delivery override suppress the company engineering default", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       defaultRootIssueDeliveryMode: "engineering",
@@ -440,24 +467,23 @@ describe("issue create project inheritance routes", () => {
       defaultRootIssueDeliveryMode: "simple",
     });
 
-    const res = await request(
-      createApp({
-        type: "board",
-        source: "local_implicit",
-        userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
+    const res = await postCompanyIssue(
+      {
         title: "Simple project root",
         projectId: explicitProjectId,
-      });
+      },
+      {
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      },
+    );
 
     expect(res.status).toBe(201);
     expect(mockIssueWorkflowService.applyTemplate).not.toHaveBeenCalled();
   });
 
-  it("lets a project engineering delivery override enable the workflow when the company default is simple", async () => {
+  it.sequential("lets a project engineering delivery override enable the workflow when the company default is simple", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       defaultRootIssueDeliveryMode: "simple",
@@ -468,18 +494,17 @@ describe("issue create project inheritance routes", () => {
       defaultRootIssueDeliveryMode: "engineering",
     });
 
-    const res = await request(
-      createApp({
+    const res = await postCompanyIssue(
+      {
+        title: "Engineering project root",
+        projectId: explicitProjectId,
+      },
+      {
         type: "board",
         source: "local_implicit",
         userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Engineering project root",
-        projectId: explicitProjectId,
-      });
+      },
+    );
 
     expect(res.status).toBe(201);
     expect(mockIssueWorkflowService.applyTemplate).toHaveBeenCalledWith(
@@ -489,7 +514,7 @@ describe("issue create project inheritance routes", () => {
     );
   });
 
-  it("returns 422 and skips issue activity logging when automatic engineering workflow apply has no security specialist", async () => {
+  it.sequential("returns 422 and skips issue activity logging when automatic engineering workflow apply has no security specialist", async () => {
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
       defaultRootIssueDeliveryMode: "engineering",
@@ -498,17 +523,16 @@ describe("issue create project inheritance routes", () => {
       unprocessableError("Engineering delivery requires an available security specialist before it can be applied"),
     );
 
-    const res = await request(
-      createApp({
+    const res = await postCompanyIssue(
+      {
+        title: "Automatic workflow root",
+      },
+      {
         type: "board",
         source: "local_implicit",
         userId: "board-user-1",
-      }),
-    )
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Automatic workflow root",
-      });
+      },
+    );
 
     expect(res.status).toBe(422);
     expect(res.body).toEqual({

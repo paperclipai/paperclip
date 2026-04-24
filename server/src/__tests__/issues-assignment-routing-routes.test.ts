@@ -92,7 +92,7 @@ function createApp(actorOverride?: Record<string, unknown>) {
   return app;
 }
 
-describe("issue discovery routing guard for assignment runs", () => {
+describe.sequential("issue discovery routing guard for assignment runs", () => {
   beforeAll(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
@@ -110,7 +110,7 @@ describe("issue discovery routing guard for assignment runs", () => {
     });
   });
 
-  it("blocks list/discovery endpoint for issue_assigned runs", async () => {
+  it.sequential("blocks list/discovery endpoint for issue_assigned runs", async () => {
     const app = createApp();
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
@@ -130,7 +130,7 @@ describe("issue discovery routing guard for assignment runs", () => {
     expect(mockIssueService.list).not.toHaveBeenCalled();
   });
 
-  it("allows project-scoped issue queries for issue_assigned runs", async () => {
+  it.sequential("allows project-scoped issue queries for issue_assigned runs", async () => {
     const app = createApp();
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
@@ -155,7 +155,7 @@ describe("issue discovery routing guard for assignment runs", () => {
     );
   });
 
-  it("allows list endpoint for non-assignment runs", async () => {
+  it.sequential("allows list endpoint for non-assignment runs", async () => {
     const app = createApp();
 
     const res = await request(app).get("/api/companies/company-1/issues?assigneeAgentId=agent-1");

@@ -64,6 +64,9 @@ export function describeIssueBoardState(issue: Issue): string | null {
 
   switch (boardState.kind) {
     case "blocked":
+      if (boardState.reasonCode === "capability_blocked") {
+        return "This issue needs a specialist role that is currently unavailable. Staff the role or change the workflow before expecting routing to resume.";
+      }
       return "This issue is waiting on the root blocker below. Open it directly to resolve the real dependency.";
     case "redirected":
       return "This issue was superseded by a newer issue. Open the latest successor instead of continuing work here.";
@@ -82,6 +85,8 @@ export function describeIssueBoardState(issue: Issue): string | null {
           return "The current assignee owns the next move on this issue.";
         case "recovery":
           return "Recovery is in progress for this issue. Inspect the recovery context before changing status.";
+        case "capability_blocked":
+          return "This issue needs a specialist role that is currently unavailable. Staff the role or change the workflow before expecting routing to resume.";
         default:
           return "This issue is waiting on a concrete next action.";
       }

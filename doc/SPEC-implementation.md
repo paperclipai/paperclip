@@ -204,6 +204,8 @@ Invariant:
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
 - `assignee_agent_id` uuid fk `agents.id` null
+- `work_intent` enum-ish text: `delivery | ticket_authoring | audit | general` null
+- `qa_reviewer_agent_id` uuid fk `agents.id` null
 - `created_by_agent_id` uuid fk `agents.id` null
 - `created_by_user_id` uuid fk `users.id` null
 - `request_depth` int not null default 0
@@ -215,6 +217,15 @@ Invariant:
 Invariants:
 
 - single assignee only
+- issue intent is explicit: `work_intent` is persisted routing truth for delivery-vs-non-delivery handling, while heuristics are only bootstrap/reconciliation fallback
+- delivery-scoped `in_review` must use canonical execution-policy review state with an explicit current reviewer and return assignee; `qa_reviewer_agent_id` is sticky reviewer memory for routing, UI, and reconciliation rather than a second source of truth
+- non-delivery issues must not remain in `in_review`; reconciliation normalizes drifted rows back to ordinary queued work before COO routing
+- COO stabilization is fixed-point and same-issue by default: before routing, the control loop must repeatedly apply safe finalization and repair actions until no more open issues can converge in that sweep
+- if a COO sweep sees open issues but starts no new work, every remaining open issue must resolve to an explicit blocked reason; silent `targetIssueId=null` with unexplained open work is invalid
+- if a COO sweep leaves actionable ready work with eligible free capacity after assignment/refill, it must emit an allocation invariant breach with residual counts; ready tickets should not sit idle without a dependency, capacity, capability, human-ownership, cooldown, or board-decision reason
+- each COO sweep must produce an operations flow report in heartbeat context that accounts for ready work, blocked reasons, free and unavailable slots by role, planned actions, executed actions, unused-capacity reasons, and allocation invariant breaches
+- COO allocation prioritizes critical/urgent work first, then older actionable work, then stable issue identity; pending wakeups and live runs reserve capacity so the sweep does not create false flow by double-booking an agent
+- COO assignment and reassignment execution must follow planner output and persist through compare-and-set issue service methods; overlapping sweeps must not be able to assign the same issue to different agents or enqueue duplicate starts from stale ownership reads
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
 - `blocked` requires at least one explicit blocker relation; it is reserved for real dependency-blocked work
@@ -401,6 +412,16 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+
+Workflow control surface:
+
+- server-owned typed issue actions are the canonical workflow mutation path for high-risk review and QA transitions
+- first-party callers such as the UI and MCP tool surface should use typed issue actions directly for workflow control, including typed handoff/reopen flows for reassignment with comments
+- `submit_qa_verdict` must persist the canonical `qa-verdict` issue document as well as the canonical QA verdict comment so workflow QA lanes satisfy the same artifact contract they are evaluated against
+- workflow QA lanes authorize `submit_qa_verdict` by the active assigned QA lane owner; standalone delivery issues authorize typed QA verdicts by the configured release-gate QA owner
+- free-form comments remain auditable communication, but they should not be the long-term source of workflow intent
+- legacy `PATCH /issues/:id` workflow transitions and QA/reopen comment writes must be rejected once first-party callers are migrated; comments are note-only and patches are metadata-only
+- typed workflow actions must preserve the same control-plane follow-ups as legacy mutations, including QA wakeups, workflow dependent advancement, workflow invalidation on reopen, and detached-run activity bookkeeping
 
 ## 8.3 Approval Status
 
@@ -888,7 +909,7 @@ Export/import behavior in V1:
 
 ## Specialist workflow templates
 
-V1 now supports one built-in workflow template on root issues: `engineering_delivery_v1`.
+V1 now supports the default built-in workflow template on root issues, `engineering_delivery_v1`, plus the forward-compatible CTO handoff variant `engineering_delivery_v2`.
 
 Root issue creation now resolves delivery mode from configuration instead of a per-issue composer toggle:
 - company setting: `defaultRootIssueDeliveryMode = simple | engineering`
@@ -896,11 +917,13 @@ Root issue creation now resolves delivery mode from configuration instead of a p
 - effective mode for a new root issue: project override when present, otherwise company default
 - effective `engineering` mode auto-applies `engineering_delivery_v1` on create
 - effective `simple` mode leaves the issue as a plain root issue unless a board actor later applies the workflow manually
+- operators and API callers can explicitly apply `engineering_delivery_v2` when CTO review is required before implementation
 
 Contract:
 - template application creates deterministic child issues, not hidden internal stages
 - child issues are labeled with lane role metadata and required artifact contracts
 - workflow templates also create persistent blocker relations for the lane dependency graph
+- workflow runtime persists dedicated instance/lane/artifact rows in `issue_workflow_instances`, `issue_workflow_lanes`, and `issue_workflow_lane_artifacts`; the legacy workflow columns on `issues` remain a compatibility surface while the new tables become the canonical lane metadata store
 - the workflow template DAG is canonical; if legacy roots lose blocker relations or drift lane `blocked`/`todo` state, the workflow service reconciles the graph from template metadata before deriving summaries or advancing dependents
 - root issues store the applied template key and synthesize a workflow summary from child issue state
 - workflow templates can only be applied to root issues
@@ -913,37 +936,62 @@ Lane set for `engineering_delivery_v1`:
 - `security`
 - `qa`
 
+Lane set for `engineering_delivery_v2`:
+- `pm`
+- `designer`
+- `cto`
+- `engineer`
+- `security`
+- `qa`
+
 Dependency graph for `engineering_delivery_v1`:
 - `pm -> designer -> engineer`
 - `engineer -> security`
 - `engineer -> qa`
 
+Dependency graph for `engineering_delivery_v2`:
+- `pm -> designer -> cto -> engineer`
+- `engineer -> security`
+- `engineer -> qa`
+
 Execution rules:
-- template application requires at least one eligible security specialist; otherwise the request is rejected and no parent or child workflow rows are persisted
-- if legacy or drifted workflow state leaves a security lane unassigned while no eligible security specialist exists, COO must leave it unassigned and surface board-visible operator attention instead of silently skipping it or routing it to a non-security owner
+- template application first tries to auto-provision a managed `security` agent from the existing tech-team seed pattern only when no non-terminated security specialist exists; if a security specialist exists but is paused, errored, pending approval, or otherwise unavailable, the request must surface unavailable capacity instead of creating duplicate specialists
+- if legacy or drifted workflow state leaves a security lane unassigned while no eligible security specialist exists, COO should first determine whether the specialist role is truly missing; existing unavailable specialists are blockers, not seed material for another specialist row
+- when a missing-specialist auto-provision step cannot yield an assignable specialist, or an existing specialist is unavailable, the lane must surface explicit capability-blocked/operator-attention state rather than silently skipping it, routing it to the wrong role, or multiplying agents
 - long-quiet `running` heartbeat rows must stop counting as live occupancy for queue resume, timer-heartbeat suppression, and runtime-integrity issue rebinds once they pass the owned-run quiet threshold
 - new root issue creation in effective `engineering` mode is atomic with workflow application; if the workflow apply fails, the root issue creation rolls back too
 - template application creates all child lanes eagerly after validation succeeds
 - only dependency-free lanes start in `todo` and receive an assignment wake
 - dependency lanes start in `blocked`
-- workflow QA lane assignment uses the shared release-gate QA resolver in this order: configured company owner, then exactly one canonical `QA and Release Engineer`, then exactly one other eligible QA agent, otherwise explicit owner-blocked state
-- when the final active blocker for a workflow lane becomes terminal, that lane is promoted from `blocked` to `todo`; workflow QA lanes re-resolve and auto-assign the current authorized release-gate QA owner at that point when one exists
+- workflow QA lane assignment uses pooled QA routing: sticky reuse of the current eligible QA reviewer, otherwise least-loaded eligible QA reviewer, with the configured or canonical release-gate reviewer used only as a load-tie preference
+- workflow QA lanes are strict-role work: if no eligible QA reviewer exists, the lane is capability-blocked and remains unassigned rather than falling back to a generic non-QA agent; typed workflow QA verdicts, workflow QA ship-marker comments, read-time QA lane gates, and reconciliation all authorize against the current assigned lane owner only, never stale `qa_reviewer_agent_id` memory
+- explicit QA-like non-workflow allocation is also strict: if preferred role, title, or description signals QA work and no eligible QA reviewer exists, COO must leave the issue unassigned/blocked by capability instead of assigning a generic engineer, PM, or other non-QA agent
+- CTO workflow lanes are strict-role work: if no eligible CTO exists, the lane is capability-blocked and remains unassigned rather than falling back to a generic non-CTO agent
+- when the final active blocker for a workflow lane becomes terminal, that lane is promoted from `blocked` to `todo`; workflow QA lanes keep the current eligible reviewer when possible and otherwise re-select from the pooled QA roster
 - ordinary non-workflow blocked issues keep their existing wake-only behavior
+- standalone delivery issues also use the same execution-policy review engine: when they enter `in_review`, Paperclip persists a canonical review execution state plus `qaReviewerAgentId` as reviewer-routing memory
+- non-`qa` workflow lanes never use standalone delivery review ownership. If legacy drift leaves a workflow lane in `in_review` or carrying standalone QA review metadata, COO must clear that review state and return the lane to ordinary lane execution before specialist reassignment runs
+- canonical standalone or QA-owned delivery review is only considered healthy while that review row still has a linked execution run; if the run link disappears, COO must treat the issue as actionable and wake or recover it rather than suppressing it as healthy review state
+- delivery scoping is issue-level, not role-only: ticket-authoring, audit-only, or other explicitly non-implementation issues that say not to change code do not enter standalone delivery QA review just because an engineer or QA agent touched them
+- if legacy or drifted standalone delivery review rows lose canonical execution state, COO repairs them in place by reconstructing reviewer ownership and the return assignee before routing more work
 
 Artifact contracts:
 - `pm`: `plan` document
 - `designer`: `design` document or design work product
+- `cto`: `technical-plan` document
 - `engineer`: `implementation-summary` document or implementation work product
 - `security`: `threat-review` document
-- `qa`: a non-stale `qa-verdict` document plus the latest valid authorized release-gate QA verdict comment. Write-time QA ship comments still require canonical markers, but workflow/read-time reconciliation may also accept structured Smart Review prose or `DONE:`-style verdicts when they clearly carry QA pass/release intent plus explicit verification evidence, including bold Markdown `**Smart Review Summary**` headings and equality-style verification lines such as `TYPECHECK=pass` and `SMOKE/NA=pass`.
+- `qa`: a non-stale `qa-verdict` document plus the latest valid verdict comment from the active QA reviewer. Both pieces of evidence must be refreshed after `workflow_invalidated_at`; stale pre-handback comments cannot satisfy current QA markers. Workflow QA lane completion requires canonical Smart Review and verification tokens, including `[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass|na]`; equality-style verification lines are tolerated only by legacy standalone delivery read-time reconciliation and cannot close a workflow QA lane.
   For canonical Smart Review tokens, `TC` must be an explicit ship verdict (`pass`, `warn`, or `fail`) and `DOC:na` means docs were reviewed with no docs change required.
 
 Completion rules:
 - a root workflow issue cannot transition to `done` while any specialist lane remains non-`done`; board actors must use `forceDone` to override that state deliberately
 - a workflow child issue cannot transition to `done` while required artifacts are missing unless a board actor explicitly force-completes it
+- generic issue-service updates must reject guarded delivery/workflow transitions to `done` unless the caller is a domain completion path that already evaluated workflow artifacts, QA evidence, or a deliberate board override; on every `done` transition the issue service recomputes delivery intent from persisted title, description, assignee role, and workflow metadata so legacy rows with `work_intent` null still fail closed
 - security fail-level findings marked with `[SECURITY FAIL]` or `[SECURITY BLOCKED]` keep the security lane blocked
 - engineer, security, and QA lanes request isolated execution by default when isolated workspace support is enabled
-- same-issue QA auto-routing (`[READY FOR QA]`, `DONE:`), QA auto-fix loops, and QA ship-marker auto-merge only apply to non-workflow delivery issues; workflow roots and workflow lanes advance through dependency unblocking instead
+- same-issue QA auto-routing (`[READY FOR QA]`, `DONE:`) and QA ship-marker auto-merge only apply to non-workflow delivery issues; workflow roots and workflow lanes advance through dependency unblocking instead
+- failing standalone QA review or verification comments hand work back to the implementation owner on the same issue; QA never self-assigns the follow-up fix loop
 - workflow lane-local execution-policy review remains same-lane; generic `changes_requested` does not trigger cross-lane routing
 
 Workflow remediation rules:

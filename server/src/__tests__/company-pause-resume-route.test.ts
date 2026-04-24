@@ -1,5 +1,6 @@
 import express from "express";
-import request from "supertest";
+import { createServer, type Server } from "node:http";
+import request, { type Response } from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function createMockCompanyService() {
@@ -86,33 +87,17 @@ function createMockRoadmapEpicService() {
   };
 }
 
-let mockCompanyService = vi.hoisted(() => createMockCompanyService());
-let mockAgentService = vi.hoisted(() => createMockAgentService());
-let mockAccessService = vi.hoisted(() => createMockAccessService());
-let mockBudgetService = vi.hoisted(() => createMockBudgetService());
-let mockHeartbeatService = vi.hoisted(() => createMockHeartbeatService());
-let mockAgentHeartbeatModelService = vi.hoisted(() => createMockAgentHeartbeatModelService());
-let mockCompanyPortabilityService = vi.hoisted(() => createMockCompanyPortabilityService());
-let mockFeedbackService = vi.hoisted(() => createMockFeedbackService());
-let mockExecutiveSummaryService = vi.hoisted(() => createMockExecutiveSummaryService());
-let mockRoadmapEpicService = vi.hoisted(() => createMockRoadmapEpicService());
-
-const mockLogActivity = vi.hoisted(() => vi.fn());
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  agentHeartbeatModelService: () => mockAgentHeartbeatModelService,
-  heartbeatService: () => mockHeartbeatService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  executiveSummaryService: () => mockExecutiveSummaryService,
-  roadmapEpicService: () => mockRoadmapEpicService,
-  normalizeRoadmapEpicId: (roadmapId: string) => roadmapId.trim().toUpperCase(),
-  feedbackService: () => mockFeedbackService,
-  logActivity: mockLogActivity,
-}));
+let mockCompanyService = createMockCompanyService();
+let mockAgentService = createMockAgentService();
+let mockAccessService = createMockAccessService();
+let mockBudgetService = createMockBudgetService();
+let mockHeartbeatService = createMockHeartbeatService();
+let mockAgentHeartbeatModelService = createMockAgentHeartbeatModelService();
+let mockCompanyPortabilityService = createMockCompanyPortabilityService();
+let mockFeedbackService = createMockFeedbackService();
+let mockExecutiveSummaryService = createMockExecutiveSummaryService();
+let mockRoadmapEpicService = createMockRoadmapEpicService();
+let mockLogActivity = vi.fn();
 
 function createCompany(status: "active" | "paused") {
   const now = new Date("2026-04-11T12:00:00.000Z");
@@ -156,16 +141,40 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function sendCompanyRouteRequest(
+  app: express.Express,
+  action: (agent: request.SuperTest<request.Test>) => Promise<Response>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await action(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
 let companyRoutesFactory!: typeof import("../routes/companies.js").companyRoutes;
 let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 let conflictFactory!: typeof import("../errors.js").conflict;
 
-describe("company pause/resume routes", () => {
+describe.sequential("company pause/resume routes", () => {
   beforeEach(async () => {
     vi.resetModules();
-    ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
-    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-    ({ conflict: conflictFactory } = await import("../errors.js"));
     mockCompanyService = createMockCompanyService();
     mockAgentService = createMockAgentService();
     mockAccessService = createMockAccessService();
@@ -176,7 +185,7 @@ describe("company pause/resume routes", () => {
     mockFeedbackService = createMockFeedbackService();
     mockExecutiveSummaryService = createMockExecutiveSummaryService();
     mockRoadmapEpicService = createMockRoadmapEpicService();
-    mockLogActivity.mockReset();
+    mockLogActivity = vi.fn();
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
     mockHeartbeatService.cancelActiveForCompany.mockResolvedValue(undefined);
@@ -212,9 +221,27 @@ describe("company pause/resume routes", () => {
       reason: "already_has_coo",
       createdAgentId: null,
     });
+
+    vi.doMock("../services/index.js", () => ({
+      accessService: () => mockAccessService,
+      agentService: () => mockAgentService,
+      budgetService: () => mockBudgetService,
+      agentHeartbeatModelService: () => mockAgentHeartbeatModelService,
+      heartbeatService: () => mockHeartbeatService,
+      companyPortabilityService: () => mockCompanyPortabilityService,
+      companyService: () => mockCompanyService,
+      executiveSummaryService: () => mockExecutiveSummaryService,
+      roadmapEpicService: () => mockRoadmapEpicService,
+      normalizeRoadmapEpicId: (roadmapId: string) => roadmapId.trim().toUpperCase(),
+      feedbackService: () => mockFeedbackService,
+      logActivity: mockLogActivity,
+    }));
+    ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ conflict: conflictFactory } = await import("../errors.js"));
   });
 
-  it("pauses a company and cancels queued, running, and deferred company work", async () => {
+  it.sequential("pauses a company and cancels queued, running, and deferred company work", async () => {
     const paused = createCompany("paused");
     mockCompanyService.pause.mockResolvedValue(paused);
     mockHeartbeatService.cancelExecutionScopeWork.mockResolvedValue({
@@ -228,7 +255,9 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app).post("/api/companies/company-1/pause").send({});
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.post("/api/companies/company-1/pause").send({}),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("paused");
@@ -253,7 +282,7 @@ describe("company pause/resume routes", () => {
     );
   });
 
-  it("resumes a company and triggers a COO kickoff for future work", async () => {
+  it.sequential("resumes a company and triggers a COO kickoff for future work", async () => {
     const active = createCompany("active");
     mockCompanyService.resume.mockResolvedValue(active);
     mockAgentService.list.mockResolvedValue([
@@ -267,7 +296,9 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app).post("/api/companies/company-1/resume").send({});
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.post("/api/companies/company-1/resume").send({}),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("active");
@@ -301,7 +332,7 @@ describe("company pause/resume routes", () => {
     );
   });
 
-  it("returns 409 when attempting to manually resume a budget-paused company", async () => {
+  it.sequential("returns 409 when attempting to manually resume a budget-paused company", async () => {
     mockCompanyService.resume.mockRejectedValue(
       conflictFactory("Company is paused because its budget hard-stop was reached."),
     );
@@ -312,14 +343,16 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app).post("/api/companies/company-1/resume").send({});
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.post("/api/companies/company-1/resume").send({}),
+    );
 
     expect(response.status).toBe(409);
     expect(response.body.error).toContain("budget hard-stop");
     expect(mockHeartbeatService.resumeQueuedRuns).not.toHaveBeenCalled();
   });
 
-  it("lists paused roadmap epics for a company", async () => {
+  it.sequential("lists paused roadmap epics for a company", async () => {
     mockRoadmapEpicService.listPausedEpicIds.mockResolvedValue([
       "RM-2026-Q2-01",
       "RM-2026-Q2-03",
@@ -331,7 +364,9 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app).get("/api/companies/company-1/roadmap-epics");
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.get("/api/companies/company-1/roadmap-epics"),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
@@ -340,7 +375,7 @@ describe("company pause/resume routes", () => {
     expect(mockRoadmapEpicService.listPausedEpicIds).toHaveBeenCalledWith("company-1");
   });
 
-  it("pauses a roadmap epic for a company", async () => {
+  it.sequential("pauses a roadmap epic for a company", async () => {
     mockCompanyService.getById.mockResolvedValue(createCompany("active"));
 
     const app = createApp({
@@ -349,9 +384,9 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app)
-      .post("/api/companies/company-1/roadmap-epics/rm-2026-q2-01/pause")
-      .send({});
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.post("/api/companies/company-1/roadmap-epics/rm-2026-q2-01/pause").send({}),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ roadmapId: "RM-2026-Q2-01", paused: true });
@@ -368,7 +403,7 @@ describe("company pause/resume routes", () => {
     );
   });
 
-  it("resumes a roadmap epic for a company and resumes queued runs", async () => {
+  it.sequential("resumes a roadmap epic for a company and resumes queued runs", async () => {
     mockCompanyService.getById.mockResolvedValue(createCompany("active"));
 
     const app = createApp({
@@ -377,9 +412,9 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app)
-      .post("/api/companies/company-1/roadmap-epics/rm-2026-q2-01/resume")
-      .send({});
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.post("/api/companies/company-1/roadmap-epics/rm-2026-q2-01/resume").send({}),
+    );
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ roadmapId: "RM-2026-Q2-01", paused: false });
@@ -397,7 +432,7 @@ describe("company pause/resume routes", () => {
     );
   });
 
-  it("returns 404 when the company does not exist", async () => {
+  it.sequential("returns 404 when the company does not exist", async () => {
     mockCompanyService.pause.mockResolvedValue(null);
 
     const app = createApp({
@@ -406,7 +441,9 @@ describe("company pause/resume routes", () => {
       source: "local_implicit",
     });
 
-    const response = await request(app).post("/api/companies/company-missing/pause").send({});
+    const response = await sendCompanyRouteRequest(app, (agent) =>
+      agent.post("/api/companies/company-missing/pause").send({}),
+    );
 
     expect(response.status).toBe(404);
     expect(response.body.error).toBe("Company not found");

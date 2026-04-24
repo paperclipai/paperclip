@@ -46,6 +46,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { normalizeRunLinkedIssueCommentBody } from "./heartbeat-run-summary.js";
+import { resolveIssueWorkIntent } from "./delivery-integrity.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
@@ -1296,6 +1297,27 @@ export function issueService(db: Db) {
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
     }
+  }
+
+  async function getAgentRole(
+    companyId: string,
+    agentId: string | null | undefined,
+    dbOrTx: any = db,
+  ) {
+    if (!agentId) return null;
+    const assignee = await dbOrTx
+      .select({
+        role: agents.role,
+      })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.id, agentId),
+          eq(agents.companyId, companyId),
+        ),
+      )
+      .then((rows: Array<{ role: string | null }>) => rows[0] ?? null);
+    return assignee?.role ?? null;
   }
 
   async function assertAssignableUser(companyId: string, userId: string) {
@@ -2665,9 +2687,20 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const assigneeRole = await getAgentRole(companyId, issueData.assigneeAgentId ?? null, tx);
+        const workIntent = resolveIssueWorkIntent({
+          workIntent: issueData.workIntent ?? null,
+          assigneeRole,
+          title: issueData.title,
+          description: issueData.description ?? null,
+          identifier,
+          workflowTemplateKey: issueData.workflowTemplateKey ?? null,
+          workflowLaneRole: issueData.workflowLaneRole ?? null,
+        });
 
         const values = {
           ...issueData,
+          workIntent,
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
@@ -2726,6 +2759,173 @@ export function issueService(db: Db) {
       return dbOrTx ? runCreate(dbOrTx) : db.transaction(runCreate);
     },
 
+    claimForOperationsAllocation: async (
+      input: {
+        issueId: string;
+        companyId: string;
+        assigneeAgentId: string;
+        status: string;
+        actorAgentId?: string | null;
+      },
+      dbOrTx: any = db,
+    ) => {
+      if (!OPEN_ISSUE_STATUSES.includes(input.status as typeof OPEN_ISSUE_STATUSES[number])) {
+        throw unprocessable("Operations allocation can only claim open issues");
+      }
+      if (input.status === "in_progress") {
+        throw unprocessable("Operations allocation cannot directly start issue execution");
+      }
+      await assertAssignableAgent(input.companyId, input.assigneeAgentId);
+
+      const runClaim = async (tx: any) => {
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!existing) return null;
+
+        assertTransition(existing.status, input.status);
+
+        const assigneeRole = await getAgentRole(input.companyId, input.assigneeAgentId, tx);
+        const resolvedWorkIntent = resolveIssueWorkIntent({
+          workIntent: existing.workIntent ?? null,
+          assigneeRole,
+          title: existing.title,
+          description: existing.description,
+          identifier: existing.identifier,
+          workflowTemplateKey: existing.workflowTemplateKey,
+          workflowLaneRole: existing.workflowLaneRole,
+        });
+        const patchForTx: Partial<typeof issues.$inferInsert> = {
+          assigneeAgentId: input.assigneeAgentId,
+          assigneeUserId: null,
+          status: input.status,
+          workIntent: resolvedWorkIntent,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        };
+        if (input.status !== existing.status) {
+          applyStatusSideEffects(input.status, patchForTx);
+          if (input.status !== "done") {
+            patchForTx.completedAt = null;
+          }
+          if (input.status !== "cancelled") {
+            patchForTx.cancelledAt = null;
+          }
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set(patchForTx)
+          .where(
+            and(
+              eq(issues.id, input.issueId),
+              eq(issues.companyId, input.companyId),
+              eq(issues.status, existing.status),
+              isNull(issues.assigneeAgentId),
+              isNull(issues.assigneeUserId),
+              isNull(issues.hiddenAt),
+              inArray(issues.status, [...OPEN_ISSUE_STATUSES]),
+            ),
+          )
+          .returning()
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      };
+
+      return dbOrTx === db ? db.transaction(runClaim) : runClaim(dbOrTx);
+    },
+
+    reassignForOperationsAllocation: async (
+      input: {
+        issueId: string;
+        companyId: string;
+        currentAssigneeAgentId: string;
+        assigneeAgentId: string;
+        status: string;
+        actorAgentId?: string | null;
+      },
+      dbOrTx: any = db,
+    ) => {
+      if (!OPEN_ISSUE_STATUSES.includes(input.status as typeof OPEN_ISSUE_STATUSES[number])) {
+        throw unprocessable("Operations allocation can only reassign open issues");
+      }
+      if (input.status === "in_progress") {
+        throw unprocessable("Operations allocation cannot directly start issue execution");
+      }
+      await assertAssignableAgent(input.companyId, input.assigneeAgentId);
+
+      const runReassign = async (tx: any) => {
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!existing) return null;
+
+        assertTransition(existing.status, input.status);
+
+        const assigneeRole = await getAgentRole(input.companyId, input.assigneeAgentId, tx);
+        const resolvedWorkIntent = resolveIssueWorkIntent({
+          workIntent: existing.workIntent ?? null,
+          assigneeRole,
+          title: existing.title,
+          description: existing.description,
+          identifier: existing.identifier,
+          workflowTemplateKey: existing.workflowTemplateKey,
+          workflowLaneRole: existing.workflowLaneRole,
+        });
+        const patchForTx: Partial<typeof issues.$inferInsert> = {
+          assigneeAgentId: input.assigneeAgentId,
+          assigneeUserId: null,
+          status: input.status,
+          workIntent: resolvedWorkIntent,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        };
+        if (input.status !== existing.status) {
+          applyStatusSideEffects(input.status, patchForTx);
+          if (input.status !== "done") {
+            patchForTx.completedAt = null;
+          }
+          if (input.status !== "cancelled") {
+            patchForTx.cancelledAt = null;
+          }
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set(patchForTx)
+          .where(
+            and(
+              eq(issues.id, input.issueId),
+              eq(issues.companyId, input.companyId),
+              eq(issues.status, existing.status),
+              eq(issues.assigneeAgentId, input.currentAssigneeAgentId),
+              isNull(issues.assigneeUserId),
+              isNull(issues.hiddenAt),
+              inArray(issues.status, [...OPEN_ISSUE_STATUSES]),
+            ),
+          )
+          .returning()
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      };
+
+      return dbOrTx === db ? db.transaction(runReassign) : runReassign(dbOrTx);
+    },
+
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & {
@@ -2733,6 +2933,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        completionGuardrailsSatisfied?: boolean;
         recovery?: {
           successorIssueId?: string;
           disposition: IssueRecoveryDisposition;
@@ -2752,6 +2953,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        completionGuardrailsSatisfied,
         recovery,
         ...issueData
       } = data;
@@ -2862,10 +3064,54 @@ export function issueService(db: Db) {
         if (issueData.status === undefined && resolvedStatus !== existing.status) {
           assertTransition(existing.status, resolvedStatus);
         }
+        const nextAssigneeRole = await getAgentRole(existing.companyId, nextAssigneeAgentId, tx);
+        const shouldPersistResolvedWorkIntent =
+          issueData.workIntent !== undefined
+          || issueData.assigneeAgentId !== undefined
+          || issueData.title !== undefined
+          || issueData.description !== undefined
+          || issueData.workflowTemplateKey !== undefined
+          || issueData.workflowLaneRole !== undefined;
+        const isDoneTransition = existing.status !== "done" && resolvedStatus === "done";
+        const shouldResolveWorkIntent = shouldPersistResolvedWorkIntent || isDoneTransition;
+        const resolvedWorkIntent = shouldResolveWorkIntent
+          ? resolveIssueWorkIntent({
+            workIntent: issueData.workIntent ?? existing.workIntent ?? null,
+            assigneeRole: nextAssigneeRole,
+            title: issueData.title ?? existing.title,
+            description: issueData.description ?? existing.description,
+            identifier: existing.identifier,
+            workflowTemplateKey: issueData.workflowTemplateKey ?? existing.workflowTemplateKey,
+            workflowLaneRole: issueData.workflowLaneRole ?? existing.workflowLaneRole,
+          })
+          : existing.workIntent;
+        const guardedDoneTransition =
+          isDoneTransition
+          && !recovery
+          && !completionGuardrailsSatisfied
+          && (
+            Boolean(issueData.workflowTemplateKey ?? existing.workflowTemplateKey)
+            || Boolean(issueData.workflowLaneRole ?? existing.workflowLaneRole)
+            || resolvedWorkIntent === "delivery"
+          );
+        if (guardedDoneTransition) {
+          throw unprocessable(
+            "Guarded issue completion must go through the domain completion path.",
+            {
+              reasonCode: "guarded_completion_required",
+              workflowTemplateKey: issueData.workflowTemplateKey ?? existing.workflowTemplateKey ?? null,
+              workflowLaneRole: issueData.workflowLaneRole ?? existing.workflowLaneRole ?? null,
+              workIntent: resolvedWorkIntent,
+            },
+          );
+        }
 
         const patchForTx: Partial<typeof issues.$inferInsert> = {
           ...patch,
         };
+        if (shouldPersistResolvedWorkIntent) {
+          patchForTx.workIntent = resolvedWorkIntent;
+        }
         if (resolvedStatus !== existing.status || issueData.status !== undefined) {
           patchForTx.status = resolvedStatus;
         }

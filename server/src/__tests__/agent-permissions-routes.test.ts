@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
@@ -146,12 +147,57 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-describe("agent permission routes", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+function resetMockObject(mockObject: Record<string, { mockReset: () => unknown }>) {
+  for (const value of Object.values(mockObject)) {
+    value.mockReset();
+  }
+}
+
+describe.sequential("agent permission routes", () => {
   beforeEach(async () => {
     vi.resetModules();
-    ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
-    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-    vi.resetAllMocks();
+    resetMockObject(mockAgentService);
+    resetMockObject(mockAccessService);
+    resetMockObject(mockApprovalService);
+    resetMockObject(mockBudgetService);
+    resetMockObject(mockHeartbeatService);
+    resetMockObject(mockIssueApprovalService);
+    resetMockObject(mockIssueService);
+    resetMockObject(mockAgentHeartbeatModel);
+    mockRoleRequiresQaCoverage.mockReset();
+    resetMockObject(mockSecretService);
+    resetMockObject(mockAgentInstructionsService);
+    resetMockObject(mockCompanySkillService);
+    mockLogActivity.mockReset();
+    mockNormalizeRuntimeConfigForCooHeartbeatModel.mockReset();
+    mockResolveRoleForCooCoordinatorModel.mockReset();
     mockRoleRequiresQaCoverage.mockReturnValue(false);
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
@@ -194,9 +240,11 @@ describe("agent permission routes", () => {
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
     mockLogActivity.mockResolvedValue(undefined);
+    ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
   });
 
-  it("grants tasks:assign by default when board creates a new agent", async () => {
+  it.sequential("grants tasks:assign by default when board creates a new agent", async () => {
     const app = createApp({
       type: "board",
       userId: "board-user",
@@ -205,14 +253,14 @@ describe("agent permission routes", () => {
       companyIds: [companyId],
     });
 
-    const res = await request(app)
-      .post(`/api/companies/${companyId}/agents`)
-      .send({
+    const res = await requestWithApp(app, (agent) =>
+      agent.post(`/api/companies/${companyId}/agents`).send({
         name: "Builder",
         role: "engineer",
         adapterType: "process",
         adapterConfig: {},
-      });
+      }),
+    );
 
     expect(res.status).toBe(201);
     expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
@@ -232,7 +280,7 @@ describe("agent permission routes", () => {
     );
   });
 
-  it("exposes explicit task assignment access on agent detail", async () => {
+  it.sequential("exposes explicit task assignment access on agent detail", async () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([
       {
         id: "grant-1",
@@ -255,14 +303,14 @@ describe("agent permission routes", () => {
       companyIds: [companyId],
     });
 
-    const res = await request(app).get(`/api/agents/${agentId}`);
+    const res = await requestWithApp(app, (agent) => agent.get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
   });
 
-  it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
+  it.sequential("keeps task assignment enabled when agent creation privilege is enabled", async () => {
     mockAgentService.updatePermissions.mockResolvedValue({
       ...baseAgent,
       permissions: { canCreateAgents: true },
@@ -276,9 +324,9 @@ describe("agent permission routes", () => {
       companyIds: [companyId],
     });
 
-    const res = await request(app)
-      .patch(`/api/agents/${agentId}/permissions`)
-      .send({ canCreateAgents: true, canAssignTasks: false });
+    const res = await requestWithApp(app, (agent) =>
+      agent.patch(`/api/agents/${agentId}/permissions`).send({ canCreateAgents: true, canAssignTasks: false }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
@@ -293,7 +341,7 @@ describe("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
 
-  it("exposes a dedicated agent route for the inbox mine view", async () => {
+  it.sequential("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
         id: "issue-1",
@@ -311,9 +359,9 @@ describe("agent permission routes", () => {
       source: "agent_key",
     });
 
-    const res = await request(app)
-      .get("/api/agents/me/inbox/mine")
-      .query({ userId: "board-user" });
+    const res = await requestWithApp(app, (agent) =>
+      agent.get("/api/agents/me/inbox/mine").query({ userId: "board-user" }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {

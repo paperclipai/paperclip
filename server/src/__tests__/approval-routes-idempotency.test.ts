@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalRoutes } from "../routes/approvals.js";
@@ -75,7 +76,34 @@ function createAgentApp() {
   return app;
 }
 
-describe("approval routes idempotent retries", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+describe.sequential("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
@@ -83,7 +111,7 @@ describe("approval routes idempotent retries", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("does not emit duplicate approval side effects when approve is already resolved", async () => {
+  it.sequential("does not emit duplicate approval side effects when approve is already resolved", async () => {
     mockApprovalService.approve.mockResolvedValue({
       approval: {
         id: "approval-1",
@@ -96,9 +124,9 @@ describe("approval routes idempotent retries", () => {
       applied: false,
     });
 
-    const res = await request(createApp())
-      .post("/api/approvals/approval-1/approve")
-      .send({});
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/approvals/approval-1/approve").send({}),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
@@ -106,7 +134,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
-  it("does not emit duplicate rejection logs when reject is already resolved", async () => {
+  it.sequential("does not emit duplicate rejection logs when reject is already resolved", async () => {
     mockApprovalService.reject.mockResolvedValue({
       approval: {
         id: "approval-1",
@@ -118,15 +146,15 @@ describe("approval routes idempotent retries", () => {
       applied: false,
     });
 
-    const res = await request(createApp())
-      .post("/api/approvals/approval-1/reject")
-      .send({});
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.post("/api/approvals/approval-1/reject").send({}),
+    );
 
     expect(res.status).toBe(200);
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
-  it("lets agents create generic issue-linked board approval requests", async () => {
+  it.sequential("lets agents create generic issue-linked board approval requests", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-1",
       companyId: "company-1",
@@ -142,13 +170,13 @@ describe("approval routes idempotent retries", () => {
       updatedAt: new Date("2026-04-06T00:00:00.000Z"),
     });
 
-    const res = await request(createAgentApp())
-      .post("/api/companies/company-1/approvals")
-      .send({
+    const res = await requestWithApp(createAgentApp(), (agent) =>
+      agent.post("/api/companies/company-1/approvals").send({
         type: "request_board_approval",
         issueIds: ["00000000-0000-0000-0000-000000000001"],
         payload: { title: "Approve hosting spend" },
-      });
+      }),
+    );
 
     expect(res.status).toBe(201);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
@@ -178,7 +206,7 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
-  it("normalizes strategist decision cards before persisting CEO strategy approvals", async () => {
+  it.sequential("normalizes strategist decision cards before persisting CEO strategy approvals", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-2",
       companyId: "company-1",
@@ -202,9 +230,8 @@ describe("approval routes idempotent retries", () => {
       updatedAt: new Date("2026-04-17T00:00:00.000Z"),
     });
 
-    const res = await request(createAgentApp())
-      .post("/api/companies/company-1/approvals")
-      .send({
+    const res = await requestWithApp(createAgentApp(), (agent) =>
+      agent.post("/api/companies/company-1/approvals").send({
         type: "approve_ceo_strategy",
         payload: {
           recommendation: "Run a limited pricing probe before a full launch.",
@@ -215,7 +242,8 @@ describe("approval routes idempotent retries", () => {
           nextStep: "Run a two-week pricing test on a limited cohort.",
           changeMyMind: "If paid conversion does not improve, keep the current pricing.",
         },
-      });
+      }),
+    );
 
     expect(res.status).toBe(201);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
@@ -230,10 +258,9 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
-  it("rejects malformed CEO strategy approvals before they reach the service", async () => {
-    const res = await request(createAgentApp())
-      .post("/api/companies/company-1/approvals")
-      .send({
+  it.sequential("rejects malformed CEO strategy approvals before they reach the service", async () => {
+    const res = await requestWithApp(createAgentApp(), (agent) =>
+      agent.post("/api/companies/company-1/approvals").send({
         type: "approve_ceo_strategy",
         payload: {
           recommendation: "Ship the strategy.",
@@ -243,7 +270,8 @@ describe("approval routes idempotent retries", () => {
           nextStepMode: "execute",
           nextStep: "Start immediately.",
         },
-      });
+      }),
+    );
 
     expect(res.status).toBe(400);
     expect(mockApprovalService.create).not.toHaveBeenCalled();

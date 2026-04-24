@@ -314,7 +314,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
     return { patch };
   }
 
-  if (requestedStatus !== "done") {
+  if (requestedStatus !== "done" && requestedStatus !== "in_review") {
     return { patch };
   }
 

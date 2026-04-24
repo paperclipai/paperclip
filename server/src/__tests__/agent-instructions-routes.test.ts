@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
@@ -61,6 +62,33 @@ vi.mock("../adapters/index.js", () => ({
 
 let agentRoutesFactory: typeof import("../routes/agents.js").agentRoutes;
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -97,7 +125,7 @@ function makeAgent() {
   };
 }
 
-describe("agent instructions bundle routes", () => {
+describe.sequential("agent instructions bundle routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
@@ -164,9 +192,10 @@ describe("agent instructions bundle routes", () => {
     });
   }, 30_000);
 
-  it("returns bundle metadata", async () => {
-    const res = await request(createApp())
-      .get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1");
+  it.sequential("returns bundle metadata", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent.get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1")
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
@@ -178,14 +207,16 @@ describe("agent instructions bundle routes", () => {
     expect(mockAgentInstructionsService.getBundle).toHaveBeenCalled();
   });
 
-  it("writes a bundle file and persists compatibility config", async () => {
-    const res = await request(createApp())
-      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
-      .send({
-        path: "AGENTS.md",
-        content: "# Updated Agent\n",
-        clearLegacyPromptTemplate: true,
-      });
+  it.sequential("writes a bundle file and persists compatibility config", async () => {
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+        .send({
+          path: "AGENTS.md",
+          content: "# Updated Agent\n",
+          clearLegacyPromptTemplate: true,
+        })
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledWith(
@@ -208,7 +239,7 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
-  it("preserves managed instructions config when switching adapters", async () => {
+  it.sequential("preserves managed instructions config when switching adapters", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
       adapterType: "codex_local",
@@ -221,14 +252,16 @@ describe("agent instructions bundle routes", () => {
       },
     });
 
-    const res = await request(createApp())
-      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
-      .send({
-        adapterType: "claude_local",
-        adapterConfig: {
-          model: "claude-sonnet-4",
-        },
-      });
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+        .send({
+          adapterType: "claude_local",
+          adapterConfig: {
+            model: "claude-sonnet-4",
+          },
+        })
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -247,7 +280,7 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
-  it("merges same-adapter config patches so instructions metadata is not dropped", async () => {
+  it.sequential("merges same-adapter config patches so instructions metadata is not dropped", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
       adapterType: "codex_local",
@@ -260,13 +293,15 @@ describe("agent instructions bundle routes", () => {
       },
     });
 
-    const res = await request(createApp())
-      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
-      .send({
-        adapterConfig: {
-          command: "codex --profile engineer",
-        },
-      });
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+        .send({
+          adapterConfig: {
+            command: "codex --profile engineer",
+          },
+        })
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -285,7 +320,7 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
-  it("replaces adapter config when replaceAdapterConfig is true", async () => {
+  it.sequential("replaces adapter config when replaceAdapterConfig is true", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
       adapterType: "codex_local",
@@ -298,14 +333,16 @@ describe("agent instructions bundle routes", () => {
       },
     });
 
-    const res = await request(createApp())
-      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
-      .send({
-        replaceAdapterConfig: true,
-        adapterConfig: {
-          command: "codex --profile engineer",
-        },
-      });
+    const res = await requestWithApp(createApp(), (agent) =>
+      agent
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+        .send({
+          replaceAdapterConfig: true,
+          adapterConfig: {
+            command: "codex --profile engineer",
+          },
+        })
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(

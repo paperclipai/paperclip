@@ -412,4 +412,47 @@ describe("buildIssueReviewPackSurface", () => {
       }),
     ]);
   });
+
+  it("explains capability-blocked review packs with a specialist-availability summary", () => {
+    const items = buildIssueReviewItems({
+      issueId: "issue-1",
+      issueDescription: "Threat review needs staffing before it can proceed.",
+      hasProjectCodebase: true,
+      comments: [],
+      attachments: [],
+      documents: [],
+      workProducts: [makeWorkProduct()],
+    });
+
+    const boardState: IssueBoardState = {
+      kind: "blocked",
+      headline: "No security specialist available",
+      reasonCode: "capability_blocked",
+      actorType: "system",
+      actorId: "issue-1",
+      primaryAction: {
+        type: "open_issue",
+        label: "Open issue",
+        targetEntity: "issue",
+        targetId: "issue-1",
+      },
+    };
+
+    const surface = buildIssueReviewPackSurface({
+      issueId: "issue-1",
+      issueTitle: "Threat review",
+      issueDescription: null,
+      reviewItems: items,
+      boardState,
+    });
+
+    expect(surface?.blockers).toEqual([
+      expect.objectContaining({
+        title: "No security specialist available",
+        summary: "This review pack cannot advance because the required specialist role is unavailable.",
+        actionLabel: "Open issue",
+        severity: "warning",
+      }),
+    ]);
+  });
 });

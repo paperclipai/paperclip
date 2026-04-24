@@ -803,7 +803,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
     expect(queued?.status).toBe("queued");
 
-    await waitFor(() => execute.mock.calls.length === 1, 2_000);
+    await waitFor(async () => {
+      const storedRun = queued ? await heartbeat.getRun(queued.id) : null;
+      return execute.mock.calls.length === 1 && storedRun?.status === "succeeded";
+    }, 2_000);
 
     const storedQueuedRun = queued ? await heartbeat.getRun(queued.id) : null;
     expect(storedQueuedRun?.status).toBe("succeeded");

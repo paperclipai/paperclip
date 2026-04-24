@@ -9,6 +9,7 @@ import {
   createDb,
   instanceSettings,
   issueRelations,
+  issueWorkflowInstances,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("workflow integrity service", () => {
 
   afterEach(async () => {
     await db.delete(issueRelations);
+    await db.delete(issueWorkflowInstances);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);

@@ -45,7 +45,7 @@ describe("loadDefaultAgentInstructionsBundle", () => {
     expect(engineerBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(pmBundle["AGENTS.md"]).toContain("You are the Product Manager.");
     expect(pmBundle["AGENTS.md"]).toContain("`plan` issue document");
-    expect(qaBundle["AGENTS.md"]).toContain("Only QA and Release Engineer moves a delivery issue from `In Review` to `Done`.");
+    expect(qaBundle["AGENTS.md"]).toContain("Only the current workflow QA lane owner may close a workflow QA lane.");
     expect(qaBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(researcherBundle["AGENTS.md"]).toContain("You are the Researcher.");
     expect(securityBundle["AGENTS.md"]).toContain("You are the Security Engineer.");

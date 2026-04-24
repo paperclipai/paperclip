@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type WorkflowAwareIssueUpdateResponse } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -742,8 +742,9 @@ export function IssueDetail() {
     },
   });
 
-  const updateIssue = useMutation({
-    mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
+  const updateIssue = useMutation<WorkflowAwareIssueUpdateResponse, Error, Record<string, unknown>>({
+    mutationFn: (data: Record<string, unknown>) =>
+      issuesApi.updateWorkflowAware(issueId!, issue?.status, data),
     onSuccess: (updatedIssue) => {
       for (const warning of updatedIssue.warnings ?? []) {
         pushToast({
@@ -821,7 +822,7 @@ export function IssueDetail() {
 
   const addComment = useMutation({
     mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen, interrupt),
+      issuesApi.addCommentWorkflowAware(issueId!, issue?.status, body, reopen, interrupt),
     onMutate: async ({ body, reopen, interrupt }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
@@ -898,12 +899,12 @@ export function IssueDetail() {
       interrupt?: boolean;
       reassignment: CommentReassignment;
     }) =>
-      issuesApi.update(issueId!, {
-        comment: body,
+      issuesApi.addCommentAndReassignWorkflowAware(issueId!, issue?.status, {
+        body,
+        reopen,
+        interrupt,
         assigneeAgentId: reassignment.assigneeAgentId,
         assigneeUserId: reassignment.assigneeUserId,
-        ...(reopen ? { status: "todo" } : {}),
-        ...(interrupt ? { interrupt } : {}),
       }),
     onMutate: async ({ body, reopen, reassignment, interrupt }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });

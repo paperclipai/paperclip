@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace, type IssueStatus } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type WorkflowAwareIssueUpdateResponse } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
@@ -195,9 +195,17 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const updateIssue = useMutation({
+  const issueStatusById = useMemo(() => {
+    const next = new Map<string, IssueStatus>();
+    for (const issue of issues ?? []) {
+      next.set(issue.id, issue.status);
+    }
+    return next;
+  }, [issues]);
+
+  const updateIssue = useMutation<WorkflowAwareIssueUpdateResponse, Error, { id: string; data: Record<string, unknown> }>({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
+      issuesApi.updateWorkflowAware(id, issueStatusById.get(id), data),
     onSuccess: (updatedIssue) => {
       for (const warning of updatedIssue.warnings ?? []) {
         pushToast({

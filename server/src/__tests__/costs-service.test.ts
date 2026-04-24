@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -113,6 +114,33 @@ function createAppWithActor(actor: any) {
   return app;
 }
 
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function sendCostRouteRequest(
+  app: express.Express,
+  action: (agent: request.SuperTest<request.Test>) => Promise<request.Response>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await action(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
 beforeEach(async () => {
   vi.resetModules();
   ({ costRoutes: costRoutesFactory } = await import("../routes/costs.js"));
@@ -183,62 +211,76 @@ beforeEach(async () => {
 describe("cost routes", () => {
   it("accepts valid ISO date strings and passes them to cost summary routes", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/summary")
-      .query({ from: "2026-01-01T00:00:00.000Z", to: "2026-01-31T23:59:59.999Z" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/summary")
+        .query({ from: "2026-01-01T00:00:00.000Z", to: "2026-01-31T23:59:59.999Z" }),
+    );
     expect(res.status).toBe(200);
   });
 
   it("returns 400 for an invalid 'from' date string", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/summary")
-      .query({ from: "not-a-date" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/summary")
+        .query({ from: "not-a-date" }),
+    );
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/invalid 'from' date/i);
   });
 
   it("returns 400 for an invalid 'to' date string", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/summary")
-      .query({ to: "banana" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/summary")
+        .query({ to: "banana" }),
+    );
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/invalid 'to' date/i);
   });
 
   it("returns finance summary rows for valid requests", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/finance-summary")
-      .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/finance-summary")
+        .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" }),
+    );
     expect(res.status).toBe(200);
     expect(mockFinanceService.summary).toHaveBeenCalled();
   });
 
   it("returns 400 for invalid finance event list limits", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/finance-events")
-      .query({ limit: "0" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/finance-events")
+        .query({ limit: "0" }),
+    );
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/invalid 'limit'/i);
   });
 
   it("accepts valid finance event list limits", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/finance-events")
-      .query({ limit: "25" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/finance-events")
+        .query({ limit: "25" }),
+    );
     expect(res.status).toBe(200);
     expect(mockFinanceService.list).toHaveBeenCalledWith("company-1", undefined, 25);
   });
 
   it("returns invocation-source cost breakdown rows for valid requests", async () => {
     const app = createApp();
-    const res = await request(app)
-      .get("/api/companies/company-1/costs/by-invocation-source")
-      .query({ from: "2026-03-01T00:00:00.000Z", to: "2026-03-31T23:59:59.999Z" });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .get("/api/companies/company-1/costs/by-invocation-source")
+        .query({ from: "2026-03-01T00:00:00.000Z", to: "2026-03-31T23:59:59.999Z" }),
+    );
     expect(res.status).toBe(200);
     expect(mockCostService.byInvocationSource).toHaveBeenCalledWith("company-1", {
       from: new Date("2026-03-01T00:00:00.000Z"),
@@ -255,9 +297,11 @@ describe("cost routes", () => {
       companyIds: ["company-2"],
     });
 
-    const res = await request(app)
-      .patch("/api/companies/company-1/budgets")
-      .send({ budgetMonthlyCents: 2500 });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .patch("/api/companies/company-1/budgets")
+        .send({ budgetMonthlyCents: 2500 }),
+    );
 
     expect(res.status).toBe(403);
     expect(mockCompanyService.update).not.toHaveBeenCalled();
@@ -279,9 +323,11 @@ describe("cost routes", () => {
       companyIds: ["company-2"],
     });
 
-    const res = await request(app)
-      .patch("/api/agents/agent-1/budgets")
-      .send({ budgetMonthlyCents: 2500 });
+    const res = await sendCostRouteRequest(app, (agent) =>
+      agent
+        .patch("/api/agents/agent-1/budgets")
+        .send({ budgetMonthlyCents: 2500 }),
+    );
 
     expect(res.status).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();

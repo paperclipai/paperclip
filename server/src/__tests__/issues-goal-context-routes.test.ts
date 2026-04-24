@@ -149,7 +149,7 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
-describe("issue goal context routes", () => {
+describe.sequential("issue goal context routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
@@ -245,7 +245,7 @@ describe("issue goal context routes", () => {
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
   }, 20_000);
 
-  it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
+  it.sequential("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
     expect(res.status).toBe(200);
@@ -259,7 +259,7 @@ describe("issue goal context routes", () => {
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
 
-  it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
+  it.sequential("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
@@ -276,7 +276,7 @@ describe("issue goal context routes", () => {
     expect(res.body.attachments).toEqual([]);
   });
 
-  it("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {
+  it.sequential("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({
       blockedBy: [
         {

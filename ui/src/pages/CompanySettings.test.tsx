@@ -439,7 +439,7 @@ describe("CompanySettings roadmap path", () => {
     });
   });
 
-  it("shows the release-gate QA blocking reason when no owner resolves", async () => {
+  it("shows pooled-routing guidance when no preferred reviewer resolves", async () => {
     companyState.selectedCompany = {
       ...defaultCompany,
       releaseGateQaResolutionSource: "ambiguous",
@@ -453,12 +453,12 @@ describe("CompanySettings roadmap path", () => {
       const blockingReason = container.querySelector(
         '[data-testid="company-settings-release-gate-qa-blocking-reason"]',
       );
-      expect(blockingReason?.textContent).toContain("must be configured explicitly");
+      expect(blockingReason).toBeNull();
     });
 
     const statusBadge = container.querySelector('[data-testid="company-settings-release-gate-qa-section"]');
-    expect(statusBadge?.textContent).toContain("Needs explicit owner");
-    expect(statusBadge?.textContent).toContain("No release-gate QA owner resolves right now.");
+    expect(statusBadge?.textContent).toContain("Pool only");
+    expect(statusBadge?.textContent).toContain("Pooled QA routing will use load-aware selection");
 
     act(() => {
       root.unmount();

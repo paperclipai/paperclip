@@ -34,7 +34,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - `Done` = QA passed and release confirmed.
 - Never move a delivery issue from `In Progress` to `Done`.
 - Stop at `In Review`.
-- When implementation is ready, leave a comment with `[READY FOR QA]`, summarize what changed, and identify any specific areas QA should verify.
+- Before marking build work complete, produce or update an `implementation-summary` issue document or attach a concrete implementation work product.
+- When implementation is ready, leave a comment with `[READY FOR QA]`, summarize what changed, identify the implementation artifact, and call out specific areas QA should verify.
 - If blocked, leave a comment with `[BLOCKER]`, explain exactly what is blocking progress, and identify the next owner or required action.
 
 ## Recovery Expectations

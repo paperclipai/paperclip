@@ -2607,6 +2607,68 @@ describeEmbeddedPostgres("issueService.update idempotency", () => {
     expect(persisted?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
   });
 
+  it("rejects guarded completions unless the domain path has checked guardrails", async () => {
+    const companyId = randomUUID();
+    const workflowIssueId = randomUUID();
+    const deliveryIssueId = randomUUID();
+    const legacyDeliveryIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Guardrail Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: workflowIssueId,
+        companyId,
+        title: "Engineer workflow lane",
+        status: "in_progress",
+        priority: "medium",
+        workflowTemplateKey: "engineering_delivery_v2",
+        workflowLaneRole: "engineer",
+        workIntent: "delivery",
+      },
+      {
+        id: deliveryIssueId,
+        companyId,
+        title: "Ship the product change",
+        status: "in_review",
+        priority: "medium",
+        workIntent: "delivery",
+      },
+      {
+        id: legacyDeliveryIssueId,
+        companyId,
+        title: "Fix checkout release bug",
+        status: "in_review",
+        priority: "medium",
+        workIntent: null,
+      },
+    ]);
+
+    await expect(svc.update(workflowIssueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ reasonCode: "guarded_completion_required" }),
+    });
+    await expect(svc.update(deliveryIssueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ reasonCode: "guarded_completion_required" }),
+    });
+    await expect(svc.update(legacyDeliveryIssueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ reasonCode: "guarded_completion_required" }),
+    });
+
+    const updated = await svc.update(workflowIssueId, {
+      status: "done",
+      completionGuardrailsSatisfied: true,
+    });
+    expect(updated?.status).toBe("done");
+  });
+
   it("keeps updatedAt unchanged for identical label set updates", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -2645,6 +2707,240 @@ describeEmbeddedPostgres("issueService.update idempotency", () => {
     expect(updated?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
     expect(persisted?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
     expect(updated?.labelIds).toEqual([labelId]);
+  });
+
+  it("claims an operations assignment only while the issue is still unowned", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    const actorAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Allocation Claim Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: actorAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Only one allocator may claim this issue",
+      status: "backlog",
+      priority: "high",
+    });
+
+    const firstClaim = await svc.claimForOperationsAllocation({
+      issueId,
+      companyId,
+      assigneeAgentId: firstAgentId,
+      status: "todo",
+      actorAgentId,
+    });
+    const secondClaim = await svc.claimForOperationsAllocation({
+      issueId,
+      companyId,
+      assigneeAgentId: secondAgentId,
+      status: "todo",
+      actorAgentId,
+    });
+
+    const persisted = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(firstClaim?.assigneeAgentId).toBe(firstAgentId);
+    expect(firstClaim?.status).toBe("todo");
+    expect(secondClaim).toBeNull();
+    expect(persisted).toMatchObject({
+      assigneeAgentId: firstAgentId,
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("reassigns an operations allocation only from the observed current owner", async () => {
+    const companyId = randomUUID();
+    const actorAgentId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    const thirdAgentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const executionRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Atomic Reassignment Co",
+      issuePrefix: "ARC",
+    });
+
+    await db.insert(agents).values([
+      {
+        id: actorAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: thirdAgentId,
+        companyId,
+        name: "Third Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId: firstAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+      },
+      {
+        id: executionRunId,
+        companyId,
+        agentId: firstAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Only the latest observed owner may be rebalanced",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: firstAgentId,
+      checkoutRunId,
+      executionRunId,
+      executionAgentNameKey: "stale-runner",
+      executionLockedAt: new Date(),
+    });
+
+    const firstReassign = await svc.reassignForOperationsAllocation({
+      issueId,
+      companyId,
+      currentAssigneeAgentId: firstAgentId,
+      assigneeAgentId: secondAgentId,
+      status: "todo",
+      actorAgentId,
+    });
+    const staleReassign = await svc.reassignForOperationsAllocation({
+      issueId,
+      companyId,
+      currentAssigneeAgentId: firstAgentId,
+      assigneeAgentId: thirdAgentId,
+      status: "todo",
+      actorAgentId,
+    });
+
+    const persisted = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(firstReassign?.assigneeAgentId).toBe(secondAgentId);
+    expect(staleReassign).toBeNull();
+    expect(persisted).toMatchObject({
+      assigneeAgentId: secondAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
   });
 });
 

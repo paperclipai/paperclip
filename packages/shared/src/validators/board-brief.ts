@@ -102,6 +102,23 @@ export const boardBriefOutputSchema = z.object({
   updatedAt: dateSchema,
 });
 
+export const boardBriefOperationsFlowSchema = z.object({
+  generatedAt: dateSchema.nullable(),
+  readyIssueCount: z.number().int().nonnegative(),
+  residualReadyIssueCount: z.number().int().nonnegative(),
+  blockedReasonCounts: z.record(z.string(), z.number().int().nonnegative()),
+  freeSlotsByRole: z.record(z.string(), z.number().int().nonnegative()),
+  unavailableSlotsByRole: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  unavailableCapacityReasonsByRole: z.record(
+    z.string(),
+    z.record(z.string(), z.number().int().nonnegative()),
+  ).default({}),
+  plannedActionCounts: z.record(z.string(), z.number().int().nonnegative()),
+  executedActionCounts: z.record(z.string(), z.number().int().nonnegative()),
+  unusedCapacityReasons: z.record(z.string(), z.string()),
+  invariantBreaches: z.array(z.string()),
+});
+
 export const boardBriefSchema = z.object({
   meta: z.object({
     companyId: z.string().uuid(),
@@ -157,6 +174,7 @@ export const boardBriefSchema = z.object({
   incidents: z.array(boardBriefIncidentSchema),
   outputs: z.array(boardBriefOutputSchema),
   manualKpis: z.array(companyKpiSchema),
+  operationsFlow: boardBriefOperationsFlowSchema.nullable().default(null),
 });
 
 export const boardBriefSnapshotSchema = z.object({

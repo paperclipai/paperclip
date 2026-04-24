@@ -1,83 +1,100 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
-import { errorHandler } from "../middleware/index.js";
 
-const mockCompanyService = vi.hoisted(() => ({
-  list: vi.fn(),
-  stats: vi.fn(),
-  getById: vi.fn(),
-  create: vi.fn(),
-  update: vi.fn(),
-  archive: vi.fn(),
-  remove: vi.fn(),
-}));
+function createMockCompanyService() {
+  return {
+    list: vi.fn(),
+    stats: vi.fn(),
+    getById: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    archive: vi.fn(),
+    remove: vi.fn(),
+  };
+}
 
-const mockAgentService = vi.hoisted(() => ({
-  getById: vi.fn(),
-}));
+function createMockAgentService() {
+  return {
+    getById: vi.fn(),
+  };
+}
 
-const mockAccessService = vi.hoisted(() => ({
-  ensureMembership: vi.fn(),
-}));
+function createMockAccessService() {
+  return {
+    ensureMembership: vi.fn(),
+  };
+}
 
-const mockBudgetService = vi.hoisted(() => ({
-  upsertPolicy: vi.fn(),
-}));
+function createMockBudgetService() {
+  return {
+    upsertPolicy: vi.fn(),
+  };
+}
 
-const mockHeartbeatService = vi.hoisted(() => ({
-  cancelActiveForCompany: vi.fn(),
-  stopRunningForCompany: vi.fn(),
-  invoke: vi.fn(),
-  resumeQueuedRuns: vi.fn(),
-}));
+function createMockHeartbeatService() {
+  return {
+    cancelActiveForCompany: vi.fn(),
+    stopRunningForCompany: vi.fn(),
+    invoke: vi.fn(),
+    resumeQueuedRuns: vi.fn(),
+  };
+}
 
-const mockAgentHeartbeatModelService = vi.hoisted(() => ({
-  ensureCompanyHasCooCoordinator: vi.fn(),
-}));
+function createMockAgentHeartbeatModelService() {
+  return {
+    ensureCompanyHasCooCoordinator: vi.fn(),
+  };
+}
 
-const mockCompanyPortabilityService = vi.hoisted(() => ({
-  exportBundle: vi.fn(),
-  previewExport: vi.fn(),
-  previewImport: vi.fn(),
-  importBundle: vi.fn(),
-}));
+function createMockCompanyPortabilityService() {
+  return {
+    exportBundle: vi.fn(),
+    previewExport: vi.fn(),
+    previewImport: vi.fn(),
+    importBundle: vi.fn(),
+  };
+}
 
-const mockLogActivity = vi.hoisted(() => vi.fn());
-const mockFeedbackService = vi.hoisted(() => ({
-  listIssueVotesForUser: vi.fn(),
-  listFeedbackTraces: vi.fn(),
-  getFeedbackTraceById: vi.fn(),
-  saveIssueVote: vi.fn(),
-}));
-const mockExecutiveSummaryService = vi.hoisted(() => ({
-  listKpis: vi.fn(),
-  replaceKpis: vi.fn(),
-  buildExecutiveSummary: vi.fn(),
-  tickDaily: vi.fn(),
-}));
+function createMockFeedbackService() {
+  return {
+    listIssueVotesForUser: vi.fn(),
+    listFeedbackTraces: vi.fn(),
+    getFeedbackTraceById: vi.fn(),
+    saveIssueVote: vi.fn(),
+  };
+}
 
-const mockRoadmapEpicService = vi.hoisted(() => ({
-  listPausedEpicIds: vi.fn(),
-  pauseEpic: vi.fn(),
-  resumeEpic: vi.fn(),
-}));
+function createMockExecutiveSummaryService() {
+  return {
+    listKpis: vi.fn(),
+    replaceKpis: vi.fn(),
+    buildExecutiveSummary: vi.fn(),
+    tickDaily: vi.fn(),
+  };
+}
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  agentHeartbeatModelService: () => mockAgentHeartbeatModelService,
-  budgetService: () => mockBudgetService,
-  heartbeatService: () => mockHeartbeatService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  executiveSummaryService: () => mockExecutiveSummaryService,
-  roadmapEpicService: () => mockRoadmapEpicService,
-  normalizeRoadmapEpicId: (roadmapId: string) => roadmapId.trim().toUpperCase(),
-  feedbackService: () => mockFeedbackService,
-  logActivity: mockLogActivity,
-}));
+function createMockRoadmapEpicService() {
+  return {
+    listPausedEpicIds: vi.fn(),
+    pauseEpic: vi.fn(),
+    resumeEpic: vi.fn(),
+  };
+}
+
+let mockCompanyService = createMockCompanyService();
+let mockAgentService = createMockAgentService();
+let mockAccessService = createMockAccessService();
+let mockBudgetService = createMockBudgetService();
+let mockHeartbeatService = createMockHeartbeatService();
+let mockAgentHeartbeatModelService = createMockAgentHeartbeatModelService();
+let mockCompanyPortabilityService = createMockCompanyPortabilityService();
+let mockFeedbackService = createMockFeedbackService();
+let mockExecutiveSummaryService = createMockExecutiveSummaryService();
+let mockRoadmapEpicService = createMockRoadmapEpicService();
+let mockLogActivity = vi.fn();
+let companyRoutesFactory!: typeof import("../routes/companies.js").companyRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
 function createCompany() {
   const now = new Date("2026-03-19T02:00:00.000Z");
@@ -110,17 +127,45 @@ function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api/companies", companyRoutes({} as any));
-  app.use(errorHandler);
+  app.use("/api/companies", companyRoutesFactory({} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
-describe("PATCH /api/companies/:companyId/branding", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+describe.sequential("PATCH /api/companies/:companyId/branding", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    mockCompanyService = createMockCompanyService();
+    mockAgentService = createMockAgentService();
+    mockAccessService = createMockAccessService();
+    mockBudgetService = createMockBudgetService();
+    mockHeartbeatService = createMockHeartbeatService();
+    mockAgentHeartbeatModelService = createMockAgentHeartbeatModelService();
+    mockCompanyPortabilityService = createMockCompanyPortabilityService();
+    mockFeedbackService = createMockFeedbackService();
+    mockExecutiveSummaryService = createMockExecutiveSummaryService();
+    mockRoadmapEpicService = createMockRoadmapEpicService();
+    mockLogActivity = vi.fn(async () => undefined);
+
+    vi.doMock("../services/index.js", () => ({
+      accessService: () => mockAccessService,
+      agentService: () => mockAgentService,
+      agentHeartbeatModelService: () => mockAgentHeartbeatModelService,
+      budgetService: () => mockBudgetService,
+      heartbeatService: () => mockHeartbeatService,
+      companyPortabilityService: () => mockCompanyPortabilityService,
+      companyService: () => mockCompanyService,
+      executiveSummaryService: () => mockExecutiveSummaryService,
+      roadmapEpicService: () => mockRoadmapEpicService,
+      normalizeRoadmapEpicId: (roadmapId: string) => roadmapId.trim().toUpperCase(),
+      feedbackService: () => mockFeedbackService,
+      logActivity: mockLogActivity,
+    }));
+    ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
   });
 
-  it("rejects non-CEO agent callers", async () => {
+  it.sequential("rejects non-CEO agent callers", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -143,7 +188,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 
-  it("allows CEO agent callers to update branding fields", async () => {
+  it.sequential("allows CEO agent callers to update branding fields", async () => {
     const company = createCompany();
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
@@ -189,7 +234,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     );
   });
 
-  it("allows board callers to update branding fields", async () => {
+  it.sequential("allows board callers to update branding fields", async () => {
     const company = createCompany();
     mockCompanyService.update.mockResolvedValue({
       ...company,
@@ -212,7 +257,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(res.body.logoAssetId).toBeNull();
   });
 
-  it("rejects non-branding fields in the request body", async () => {
+  it.sequential("rejects non-branding fields in the request body", async () => {
     const app = createApp({
       type: "board",
       userId: "user-1",

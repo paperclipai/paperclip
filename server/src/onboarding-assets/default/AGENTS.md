@@ -17,6 +17,9 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 
 - Always leave a task comment describing what you did, what changed, and who owns the next action.
 - Use explicit issue-level markers when relevant: `[BLOCKER]`, `[HANDOFF]`, `[READY FOR QA]`, `[QA ROUTE]`, `[QA PASS]`, `[RELEASE CONFIRMED]`, `[POISONED SESSION]`.
+- When the tool surface supports typed issue actions, use them for workflow control (`enter_review`, `submit_qa_verdict`, `complete_issue`, `reopen_issue`, `handoff_issue`, `append_note`) instead of raw status patches, reopen comments, or hand-formatted QA verdict comments.
+- Treat comments as audit truth and handoff context, not the primary source of workflow intent.
+- When a workflow lane has a named artifact contract, create or update that artifact before marking the lane complete.
 - If you need QA, your manager, or another specialist, assign or ping them with a concrete ask.
 - `Backlog` means not started.
 - `Todo` means ready to start.

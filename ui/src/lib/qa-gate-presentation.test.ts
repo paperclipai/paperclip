@@ -45,7 +45,7 @@ describe("getSmartReviewPresentation", () => {
       actionLabel: "QA Ship",
       actionStatus: "done",
       statusLabel: "No QA summary yet",
-      blockingMessage: "QA blocked: no healthy QA owner is available.",
+      blockingMessage: "QA blocked: no healthy QA reviewer is available.",
       blockingDetails: [
         "Also true once QA ownership is restored: the latest QA verdict is incomplete.",
         "Missing: [QA PASS], [RELEASE CONFIRMED], Smart Review summary, verification evidence.",
@@ -133,7 +133,7 @@ describe("getSmartReviewPresentation", () => {
     });
   });
 
-  it("blocks Start QA when the board must choose among multiple healthy QA agents", () => {
+  it("allows Start QA when multiple healthy QA agents are available for pooled routing", () => {
     expect(
       getSmartReviewPresentation({
         issueStatus: "todo",
@@ -147,14 +147,13 @@ describe("getSmartReviewPresentation", () => {
         ],
       } as any),
     ).toEqual({
-      actionLabel: "Pick QA First",
-      actionStatus: null,
-      statusLabel: "Board must pick QA",
-      blockingMessage: "Assign a single healthy QA owner before starting review.",
+      actionLabel: "Start QA",
+      actionStatus: "in_review",
+      statusLabel: "Not in QA yet",
     });
   });
 
-  it("still blocks Start QA when one ambiguous QA agent is already assigned", () => {
+  it("still allows Start QA when one pooled QA agent is already assigned", () => {
     expect(
       getSmartReviewPresentation({
         issueStatus: "todo",
@@ -168,10 +167,9 @@ describe("getSmartReviewPresentation", () => {
         ],
       } as any),
     ).toEqual({
-      actionLabel: "Pick QA First",
-      actionStatus: null,
-      statusLabel: "Board must pick QA",
-      blockingMessage: "Assign a single healthy QA owner before starting review.",
+      actionLabel: "Start QA",
+      actionStatus: "in_review",
+      statusLabel: "Not in QA yet",
     });
   });
 
@@ -211,7 +209,7 @@ describe("getSmartReviewPresentation", () => {
       actionLabel: "QA Blocked",
       actionStatus: null,
       statusLabel: "No healthy QA available",
-      blockingMessage: "No healthy QA agent is available to own this review right now.",
+      blockingMessage: "No healthy QA agent is available to review this issue right now.",
     });
   });
 

@@ -128,12 +128,12 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
-describe("issue attachment routes", () => {
+describe.sequential("issue attachment routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("accepts zip uploads for issue attachments", async () => {
+  it.sequential("accepts zip uploads for issue attachments", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
@@ -165,7 +165,7 @@ describe("issue attachment routes", () => {
     expect(res.body.contentType).toBe("application/zip");
   });
 
-  it("serves html attachments as downloads with nosniff", async () => {
+  it.sequential("serves html attachments as downloads with nosniff", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/html", "report.html"));
 
@@ -176,7 +176,7 @@ describe("issue attachment routes", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
-  it("keeps image attachments inline for previews", async () => {
+  it.sequential("keeps image attachments inline for previews", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));
 

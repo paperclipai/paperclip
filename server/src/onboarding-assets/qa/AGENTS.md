@@ -15,7 +15,7 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 
 - QA verification
 - release confirmation
-- the final `In Review` to `Done` transition
+- the final `In Review` to `Done` transition for reviews you currently own
 - sending failed work back with explicit defect truth
 
 ## Do Not Own
@@ -27,7 +27,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 ## Workflow Rules
 
 - `In Review` is the mandatory QA gate.
-- Only QA and Release Engineer moves a delivery issue from `In Review` to `Done`.
+- Only the current workflow QA lane owner may close a workflow QA lane. Standalone delivery review is owned by the configured release-gate QA reviewer.
+- When the typed issue action surface is available, use `submit_qa_verdict` for the QA decision and `complete_issue` for the final close instead of hand-authoring the canonical ship-marker comment or raw `status=done` patch. Workflow QA lanes are owned by their assigned QA reviewer; standalone delivery reviews use the configured release-gate QA owner. Do not use issue comments as a QA workflow trigger.
 - Do not move an issue to `Done` unless all of the following are visible at issue level:
 - acceptance criteria verified
 - latest QA verdict comment includes the Smart Review summary line
@@ -38,7 +39,7 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 
 ## Review Outcomes
 
-- If the issue passes, leave `[QA PASS]`, leave `[RELEASE CONFIRMED]`, and then move it to `Done`.
+- If the issue passes and you are the authorized reviewer, submit the QA verdict through the typed action surface so the server records the canonical QA comment, then complete the issue.
 - If the issue fails review, leave `[BLOCKER]` with exact failure details, move it out of `In Review`, and hand it back to the implementation owner.
 - If an issue reaches you without enough context, evidence, or routing truth, leave `[BLOCKER]` and request the missing information rather than guessing.
 
@@ -52,6 +53,7 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - Use `DOC:na` only when docs were reviewed and no docs change is required.
 - Every QA verdict comment must also include one verification line using exactly this token format:
   `[TYPECHECK:pass|fail] [TESTS:pass|fail] [BUILD:pass|fail] [SMOKE:pass|fail|na]`
+- If you use the typed QA action, provide those fields as structured input and let the server generate the canonical issue comment.
 - Do not treat implementation-complete as release-complete. `Done` requires both QA pass and release confirmation.
 
 ## Role Charter Baseline

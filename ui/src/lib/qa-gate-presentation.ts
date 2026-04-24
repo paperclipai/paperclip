@@ -1,29 +1,22 @@
-import { resolveReleaseGateQaAgent } from "@paperclipai/shared";
+import { selectPooledQaReviewer } from "@paperclipai/shared";
 import type { Agent, IssueQaGateReasonCode, IssueStatus } from "@paperclipai/shared";
 
 function resolvePreQaBlockedState(input: {
   agents?: Array<Pick<Agent, "id" | "name" | "role" | "status" | "title">> | null;
 }) {
   if (!input.agents) return null;
-  const qaResolution = resolveReleaseGateQaAgent(input.agents);
-  if (qaResolution.releaseGateQaAgent) {
+  const qaSelection = selectPooledQaReviewer({
+    reviewers: input.agents,
+  });
+  if (qaSelection.reviewerAgentId) {
     return null;
   }
 
-  if (qaResolution.resolution === "none") {
-    return {
-      actionLabel: "QA Blocked",
-      actionStatus: null,
-      statusLabel: "No healthy QA available",
-      blockingMessage: "No healthy QA agent is available to own this review right now.",
-    } as const;
-  }
-
   return {
-    actionLabel: "Pick QA First",
+    actionLabel: "QA Blocked",
     actionStatus: null,
-    statusLabel: "Board must pick QA",
-    blockingMessage: "Assign a single healthy QA owner before starting review.",
+    statusLabel: "No healthy QA available",
+    blockingMessage: "No healthy QA agent is available to review this issue right now.",
   } as const;
 }
 
@@ -61,8 +54,8 @@ const INCOMPLETE_VERDICT_LABELS: Array<[IssueQaGateReasonCode, string]> = [
 
 const FALLBACK_REASON_LABELS: Record<IssueQaGateReasonCode, string> = {
   invalid_status_transition: "Issue update rejected.",
-  qa_gate_requires_qa_assignee: "Assign the canonical QA owner before continuing review.",
-  qa_gate_no_eligible_qa_agent: "No healthy QA owner is available right now.",
+  qa_gate_requires_qa_assignee: "Restore the active QA reviewer assignment before continuing review.",
+  qa_gate_no_eligible_qa_agent: "No healthy QA reviewer is available right now.",
   qa_gate_requires_in_review: "Move the issue into QA before shipping.",
   qa_gate_missing_qa_comment: "Latest QA verdict is missing.",
   qa_gate_missing_qa_summary: "Latest QA verdict is missing the Smart Review summary.",
@@ -162,7 +155,7 @@ function resolveReviewBlockedState(input: {
 
   if (missingRequirementSet.has("qa_gate_no_eligible_qa_agent")) {
     return withBlockingDetails(
-      "QA blocked: no healthy QA owner is available.",
+      "QA blocked: no healthy QA reviewer is available.",
       reviewRequirement
         ? [deferredReviewRequirementMessage(reviewRequirement), ...(reviewRequirement.details ?? [])]
         : undefined,
@@ -171,7 +164,7 @@ function resolveReviewBlockedState(input: {
 
   if (missingRequirementSet.has("qa_gate_requires_qa_assignee")) {
     return withBlockingDetails(
-      "QA blocked: assign the canonical QA owner first.",
+      "QA blocked: restore the active QA reviewer assignment first.",
       reviewRequirement
         ? [deferredReviewRequirementMessage(reviewRequirement), ...(reviewRequirement.details ?? [])]
         : undefined,

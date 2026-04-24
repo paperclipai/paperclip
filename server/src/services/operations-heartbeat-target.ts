@@ -28,6 +28,6 @@ export function selectReadyUnassignedCandidate<T extends { priority: string | nu
   return [...rows].sort((a, b) => {
     const priorityDelta = normalizePriorityRank(b.priority) - normalizePriorityRank(a.priority);
     if (priorityDelta !== 0) return priorityDelta;
-    return b.updatedAt.getTime() - a.updatedAt.getTime();
+    return a.updatedAt.getTime() - b.updatedAt.getTime();
   })[0] ?? null;
 }

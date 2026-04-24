@@ -88,6 +88,19 @@ describe("heartbeat operations recovery logic", () => {
     })).toBe(true);
   });
 
+  it("does not suppress recovery for todo issues with fresh blocker truth", () => {
+    expect(shouldSuppressOperationsRecoveryTarget?.({
+      status: "todo",
+      latestCommentBody: [
+        "BLOCKED: tasks:assign DENIED — cannot route this issue to QA yet.",
+        "Workflow gate: requires QA assignee before entering in_review.",
+        "Board action required.",
+      ].join("\n"),
+      latestCommentAgeHours: 0,
+      hasBlockers: false,
+    })).toBe(false);
+  });
+
   it("does not suppress recovery for stale blocked issues without blocker truth or blockers", () => {
     expect(shouldSuppressOperationsRecoveryTarget?.({
       status: "blocked",
@@ -141,6 +154,19 @@ describe("heartbeat operations recovery logic", () => {
       hasBlockers: false,
       hasRecentValidQaVerdict: true,
     })).toBe("fresh valid QA verdict exists");
+  });
+
+  it("suppresses recovery when the latest review comment says QA auto-merge is blocked", () => {
+    expect(getOperationsRecoverySuppressionReason?.({
+      status: "in_review",
+      latestCommentBody: [
+        "[merge-blocked]",
+        "QA validation passed, but auto-merge is blocked.",
+        "Target branch is protected and requires a human merge.",
+      ].join("\n"),
+      latestCommentAgeHours: 0,
+      hasBlockers: false,
+    })).toBe("QA merge is blocked pending external resolution");
   });
 
   it("ignores transcript-only assignee activity comments", () => {

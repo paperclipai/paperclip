@@ -15,8 +15,13 @@ import {
 } from "./qa-gate.js";
 import type { LogActivityInput } from "./activity-log.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { authorizedStandaloneQaReviewerAgentId } from "./qa-reviewer-pool.js";
 
 const QA_MERGE_BLOCKED_MARKER = "[merge-blocked]";
+
+export function qaCommentHasMergeBlockedMarker(body: string | null | undefined) {
+  return typeof body === "string" && body.includes(QA_MERGE_BLOCKED_MARKER);
+}
 
 type CommentActor = {
   actorType: "agent" | "user";
@@ -32,6 +37,8 @@ type QaIssueLike = {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  workIntent?: string | null;
+  qaReviewerAgentId?: string | null;
   executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
   parentId?: string | null;
   identifier?: string | null;
@@ -44,16 +51,21 @@ type QaIssueLike = {
 
 type QaCommentLike = Pick<IssueComment, "id" | "body" | "authorAgentId" | "createdAt">;
 
-type ResolveReleaseGateQaAgent = (
-  companyId: string,
-) => Promise<{
-  releaseGateQaAgent: { id: string; name?: string | null } | null;
-}>;
-
 type PersistExecutionWorkspaceMergeStatus = (
   workspace: ExecutionWorkspace | null,
   mergeStatus: IssueMergeStatus | null,
 ) => Promise<unknown>;
+
+type WorkflowLaneCompletionResult = {
+  canComplete: boolean;
+  blockingReasons: string[];
+};
+
+export type IssueQaFinalizationParentWakeup = {
+  id: string;
+  assigneeAgentId: string;
+  childIssueIds: string[];
+};
 
 function ensureQaOwnershipRequirement(
   canShip: boolean,
@@ -84,6 +96,7 @@ function buildQaCommentHistoryGate(input: {
       : null;
   const qaGate = buildIssueQaGate({
     issue: { status: input.issue.status as IssueStatus },
+    workIntent: input.issue.workIntent,
     assigneeRole: "qa",
     qaComments: input.comments.map((comment) => ({
       id: comment.id,
@@ -105,13 +118,29 @@ function buildQaCommentHistoryGate(input: {
   };
 }
 
+function hasMergeBlockedCommentForSelectedVerdict(input: {
+  comments: QaCommentLike[];
+  selectedComment: QaCommentLike;
+}) {
+  const selectedCommentCreatedAt = new Date(input.selectedComment.createdAt ?? 0).getTime();
+  return input.comments.some((comment) => {
+    if (!qaCommentHasMergeBlockedMarker(comment.body)) {
+      return false;
+    }
+    const commentCreatedAt = new Date(comment.createdAt ?? 0).getTime();
+    if (!Number.isFinite(selectedCommentCreatedAt) || !Number.isFinite(commentCreatedAt)) {
+      return false;
+    }
+    return commentCreatedAt >= selectedCommentCreatedAt;
+  });
+}
+
 export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssueLike>(input: {
   db: Db;
   issue: TIssue;
   comment: QaCommentLike;
   actor: CommentActor;
   logActivity: (db: Db, input: LogActivityInput) => Promise<unknown>;
-  resolveReleaseGateQaAgent: ResolveReleaseGateQaAgent;
   issues: {
     update: (
       issueId: string,
@@ -119,6 +148,7 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
         status: "done";
         actorAgentId: string | null;
         actorUserId: string | null;
+        completionGuardrailsSatisfied?: boolean;
       },
     ) => Promise<QaIssueLike | null>;
     addComment: (
@@ -145,22 +175,59 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
     getById: (workspaceId: string) => Promise<ExecutionWorkspace | null>;
   };
   persistExecutionWorkspaceMergeStatus: PersistExecutionWorkspaceMergeStatus;
+  workflow?: {
+    evaluateLaneCompletion?: (issue: TIssue) => Promise<WorkflowLaneCompletionResult>;
+    getWakeableParentAfterChildCompletion?: (
+      parentIssueId: string,
+    ) => Promise<IssueQaFinalizationParentWakeup | null>;
+  };
 }) {
-  if (input.issue.workflowTemplateKey || input.issue.workflowLaneRole) {
-    return { issue: input.issue, mergeStatus: null as IssueMergeStatus | null };
+  const isWorkflowIssue = Boolean(input.issue.workflowTemplateKey || input.issue.workflowLaneRole);
+  const isWorkflowQaLane = input.issue.workflowLaneRole === "qa";
+  const workflowQaLaneFinalizableStatus =
+    isWorkflowQaLane && (input.issue.status === "in_review" || input.issue.status === "blocked");
+  if (isWorkflowIssue && !isWorkflowQaLane) {
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
-  if (input.issue.status !== "in_review") return { issue: input.issue, mergeStatus: null };
-  if (!input.comment.authorAgentId) return { issue: input.issue, mergeStatus: null };
+  if (!workflowQaLaneFinalizableStatus && input.issue.status !== "in_review") {
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
+  }
+  if (!input.comment.authorAgentId) {
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
+  }
 
-  const qaResolution = await input.resolveReleaseGateQaAgent(input.issue.companyId);
-  if (!qaResolution.releaseGateQaAgent || input.comment.authorAgentId !== qaResolution.releaseGateQaAgent.id) {
-    return { issue: input.issue, mergeStatus: null };
+  const authorizedQaReviewerAgentId =
+    isWorkflowQaLane
+      ? input.issue.assigneeAgentId ?? null
+      : authorizedStandaloneQaReviewerAgentId(input.issue);
+  if (!authorizedQaReviewerAgentId || input.comment.authorAgentId !== authorizedQaReviewerAgentId) {
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
   const currentCommentHasMarkers =
     qaCommentHasQaPassMarker(input.comment.body)
     && qaCommentHasReleaseConfirmedMarker(input.comment.body);
   if (!currentCommentHasMarkers && !input.actor.runId) {
-    return { issue: input.issue, mergeStatus: null };
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
 
   const historicalComments = input.issues.listComments
@@ -170,23 +237,90 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
     input.comment,
     ...historicalComments,
   ]
-    .filter((comment) => comment.authorAgentId === qaResolution.releaseGateQaAgent?.id)
+    .filter((comment) => comment.authorAgentId === authorizedQaReviewerAgentId)
     .filter((comment, index, comments) => comments.findIndex((candidate) => candidate.id === comment.id) === index);
   const selectedComment = selectLatestRelevantQaComment(qaComments);
   if (!selectedComment) {
-    return { issue: input.issue, mergeStatus: null };
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
   if (!qaCommentHasQaPassMarker(selectedComment.body) || !qaCommentHasReleaseConfirmedMarker(selectedComment.body)) {
-    return { issue: input.issue, mergeStatus: null };
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
+  }
+
+  if (isWorkflowQaLane) {
+    const laneCompletion = input.workflow?.evaluateLaneCompletion
+      ? await input.workflow.evaluateLaneCompletion(input.issue)
+      : null;
+    if (!laneCompletion?.canComplete) {
+      return {
+        issue: input.issue,
+        mergeStatus: null as IssueMergeStatus | null,
+        parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+      };
+    }
+
+    const closedIssue = await input.issues.update(input.issue.id, {
+      status: "done",
+      actorAgentId: input.actor.agentId ?? null,
+      actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      completionGuardrailsSatisfied: true,
+    });
+    if (!closedIssue) {
+      return {
+        issue: input.issue,
+        mergeStatus: null as IssueMergeStatus | null,
+        parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+      };
+    }
+
+    const parentWakeup =
+      closedIssue.parentId && input.workflow?.getWakeableParentAfterChildCompletion
+        ? await input.workflow.getWakeableParentAfterChildCompletion(closedIssue.parentId)
+        : null;
+
+    await input.logActivity(input.db, {
+      companyId: closedIssue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.qa_closed",
+      entityType: "issue",
+      entityId: closedIssue.id,
+      details: {
+        identifier: closedIssue.identifier,
+        commentId: selectedComment.id,
+        workflowLaneRole: closedIssue.workflowLaneRole ?? null,
+        parentId: closedIssue.parentId ?? null,
+      },
+    });
+
+    return {
+      issue: closedIssue as TIssue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup,
+    };
   }
 
   const qaGate = buildQaCommentHistoryGate({
     issue: input.issue,
     comments: qaComments,
-    qaAgentId: qaResolution.releaseGateQaAgent.id,
+    qaAgentId: authorizedQaReviewerAgentId,
   });
   if (!qaGate.canShip) {
-    return { issue: input.issue, mergeStatus: null };
+    return {
+      issue: input.issue,
+      mergeStatus: null as IssueMergeStatus | null,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
 
   const [project, executionWorkspace] = await Promise.all([
@@ -203,6 +337,16 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
   }
 
   if (mergeResult.outcome === "blocked") {
+    if (hasMergeBlockedCommentForSelectedVerdict({
+      comments: historicalComments,
+      selectedComment,
+    })) {
+      return {
+        issue: input.issue,
+        mergeStatus: mergeResult.status,
+        parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+      };
+    }
     await input.issues.addComment(
       input.issue.id,
       [
@@ -231,16 +375,25 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
         commentId: selectedComment.id,
       },
     });
-    return { issue: input.issue, mergeStatus: mergeResult.status };
+    return {
+      issue: input.issue,
+      mergeStatus: mergeResult.status,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
 
   const closedIssue = await input.issues.update(input.issue.id, {
     status: "done",
     actorAgentId: input.actor.agentId ?? null,
     actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    completionGuardrailsSatisfied: true,
   });
   if (!closedIssue) {
-    return { issue: input.issue, mergeStatus: mergeResult.status };
+    return {
+      issue: input.issue,
+      mergeStatus: mergeResult.status,
+      parentWakeup: null as IssueQaFinalizationParentWakeup | null,
+    };
   }
 
   await input.logActivity(input.db, {
@@ -264,5 +417,6 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
   return {
     issue: closedIssue as TIssue,
     mergeStatus: mergeResult.status,
+    parentWakeup: null as IssueQaFinalizationParentWakeup | null,
   };
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -10,6 +10,9 @@ import {
   issueComments,
   issueDocuments,
   issueRelations,
+  issueWorkflowInstances,
+  issueWorkflowLaneArtifacts,
+  issueWorkflowLanes,
   issueWorkProducts,
   issues,
   projects,
@@ -50,6 +53,9 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(issueWorkProducts);
+    await db.delete(issueWorkflowLaneArtifacts);
+    await db.delete(issueWorkflowLanes);
+    await db.delete(issueWorkflowInstances);
     await db.delete(documents);
     await db.delete(issues);
     await db.delete(projects);
@@ -88,14 +94,14 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     return projectId;
   }
 
-  async function seedAgent(companyId: string, role: string, name: string) {
+  async function seedAgent(companyId: string, role: string, name: string, status = "active") {
     const agentId = randomUUID();
     await db.insert(agents).values({
       id: agentId,
       companyId,
       name,
       role,
-      status: "active",
+      status,
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -137,7 +143,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
   }
 
   async function markLaneDoneAndPromote(issueId: string) {
-    await svc.update(issueId, { status: "done" });
+    await svc.update(issueId, { status: "done", completionGuardrailsSatisfied: true });
     return workflows.advanceWorkflowDependents(issueId);
   }
 
@@ -302,7 +308,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(refreshedStatuses).toEqual(["blocked", "blocked", "blocked", "blocked"]);
   });
 
-  it("rejects template application when no security specialist exists", async () => {
+  it("provisions and assigns a security specialist when template application needs one", async () => {
     const companyId = await seedCompany("NoSecCo");
     const projectId = await seedProject(companyId);
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
@@ -321,6 +327,82 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
       createdByUserId: "user-1",
     });
 
+    const applied = await workflows.applyTemplate({
+      companyId,
+      templateKey: "engineering_delivery_v1",
+      parentIssue: rootIssue,
+      actorUserId: "user-1",
+      createIssue: (data, dbOrTx) => svc.create(companyId, data, dbOrTx),
+      updateIssue: (id, data, dbOrTx) => svc.update(id, data, dbOrTx),
+    });
+
+    const reloadedParent = await svc.getById(rootIssue.id);
+    expect(reloadedParent?.workflowTemplateKey).toBe("engineering_delivery_v1");
+
+    const persistedChildren = await db
+      .select({
+        id: issues.id,
+        workflowLaneRole: issues.workflowLaneRole,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.parentId, rootIssue.id));
+    expect(applied.createdChildren).toHaveLength(5);
+    expect(persistedChildren).toHaveLength(5);
+
+    const securityAgent = await db
+      .select({
+        id: agents.id,
+        role: agents.role,
+        status: agents.status,
+        name: agents.name,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.find((row) => row.role === "security") ?? null);
+    expect(securityAgent).not.toBeNull();
+    expect(securityAgent?.status).toBe("idle");
+
+    const securityLane = persistedChildren.find((issue) => issue.workflowLaneRole === "security") ?? null;
+    expect(securityLane?.assigneeAgentId).toBe(securityAgent?.id ?? null);
+
+    const workflowInstances = await db.execute(sql`
+      select root_issue_id, template_key
+      from issue_workflow_instances
+      where root_issue_id = ${rootIssue.id}
+    `) as Array<{ root_issue_id: string; template_key: string }>;
+    expect(workflowInstances).toHaveLength(1);
+    expect(workflowInstances[0]?.root_issue_id).toBe(rootIssue.id);
+    expect(workflowInstances[0]?.template_key).toBe("engineering_delivery_v1");
+
+    const workflowLanes = await db.execute(sql`
+      select issue_id, lane_role, reviewer_agent_id
+      from issue_workflow_lanes
+      where root_issue_id = ${rootIssue.id}
+      order by lane_role asc
+    `) as Array<{ issue_id: string; lane_role: string; reviewer_agent_id: string | null }>;
+    expect(workflowLanes).toHaveLength(5);
+    expect(workflowLanes.find((lane) => lane.lane_role === "security")?.issue_id).toBe(securityLane?.id ?? null);
+    expect(workflowLanes.find((lane) => lane.lane_role === "security")?.reviewer_agent_id).toBeNull();
+  });
+
+  it("blocks workflow application instead of duplicating an unavailable security specialist", async () => {
+    const companyId = await seedCompany("PausedSecCo");
+    const projectId = await seedProject(companyId);
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    await seedAgent(companyId, "ceo", "CEO Agent");
+    await seedAgent(companyId, "engineer", "Engineer Agent");
+    await seedAgent(companyId, "security", "Paused Security Agent", "paused");
+    await seedAgent(companyId, "qa", "QA Agent");
+
+    const rootIssue = await svc.create(companyId, {
+      title: "Provision replacement security coverage",
+      projectId,
+      priority: "medium",
+      status: "todo",
+      createdByUserId: "user-1",
+    });
+
     await expect(workflows.applyTemplate({
       companyId,
       templateKey: "engineering_delivery_v1",
@@ -330,14 +412,24 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
       updateIssue: (id, data, dbOrTx) => svc.update(id, data, dbOrTx),
     })).rejects.toThrow("requires an available security specialist");
 
-    const reloadedParent = await svc.getById(rootIssue.id);
-    expect(reloadedParent?.workflowTemplateKey ?? null).toBeNull();
+    const securityAgents = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.filter((row) => row.role === "security"));
+    expect(securityAgents).toHaveLength(1);
+    expect(securityAgents[0]?.status).toBe("paused");
 
-    const persistedChildren = await db
+    const childLanes = await db
       .select({ id: issues.id })
       .from(issues)
       .where(eq(issues.parentId, rootIssue.id));
-    expect(persistedChildren).toHaveLength(0);
+    expect(childLanes).toHaveLength(0);
   });
 
   it("rolls back root issue creation when a workflow template cannot be applied inside the same transaction", async () => {
@@ -346,7 +438,6 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
     await seedAgent(companyId, "pm", "PM Agent");
     await seedAgent(companyId, "designer", "Designer Agent");
-    await seedAgent(companyId, "engineer", "Engineer Agent");
     await seedAgent(companyId, "qa", "QA Agent");
 
     await expect(db.transaction(async (tx) => {
@@ -376,7 +467,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(persistedIssues).toHaveLength(0);
   });
 
-  it("assigns the canonical release-gate QA owner to workflow QA lanes instead of generic operations routing", async () => {
+  it("assigns the least-loaded pooled QA reviewer to workflow QA lanes even when a canonical reviewer exists", async () => {
     const companyId = await seedCompany("CanonicalQaWorkflowCo");
     const projectId = await seedProject(companyId);
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
@@ -397,7 +488,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     });
 
     const rootIssue = await svc.create(companyId, {
-      title: "Route workflow QA to the release gate owner",
+      title: "Route workflow QA to the pooled reviewer",
       projectId,
       priority: "high",
       status: "todo",
@@ -414,8 +505,8 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     });
 
     const qaLane = applied.createdChildren.find((issue) => issue.workflowLaneRole === "qa");
-    expect(qaLane?.assigneeAgentId).toBe(canonicalQaAgentId);
-    expect(qaLane?.assigneeAgentId).not.toBe(qaRunnerAgentId);
+    expect(qaLane?.assigneeAgentId).toBe(qaRunnerAgentId);
+    expect(qaLane?.assigneeAgentId).not.toBe(canonicalQaAgentId);
   });
 
   it("falls back to a single eligible non-canonical QA agent for workflow QA ownership", async () => {
@@ -498,7 +589,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(qaLane?.assigneeAgentId).toBe(configuredQaAgentId);
   });
 
-  it("keeps workflow QA lanes unassigned when release-gate QA ownership is ambiguous and marks them as needs-owner once actionable", async () => {
+  it("assigns workflow QA lanes from the pooled reviewer roster when multiple QA agents are eligible", async () => {
     const companyId = await seedCompany("AmbiguousQaWorkflowCo");
     const projectId = await seedProject(companyId);
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
@@ -506,11 +597,11 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     await seedAgent(companyId, "designer", "Designer Agent");
     await seedAgent(companyId, "engineer", "Engineer Agent");
     await seedAgent(companyId, "security", "Security Agent");
-    await seedAgent(companyId, "qa", "QA One");
-    await seedAgent(companyId, "qa", "QA Two");
+    const qaOwnerOneId = await seedAgent(companyId, "qa", "QA One");
+    const qaOwnerTwoId = await seedAgent(companyId, "qa", "QA Two");
 
     const rootIssue = await svc.create(companyId, {
-      title: "Hold workflow QA until ownership is explicit",
+      title: "Route workflow QA from the reviewer pool",
       projectId,
       priority: "high",
       status: "todo",
@@ -529,20 +620,25 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
       applied.createdChildren.map((issue) => [issue.workflowLaneRole, issue]),
     );
     const qaLane = laneByRole.get("qa");
-    expect(qaLane?.assigneeAgentId ?? null).toBeNull();
+    const expectedQaAssigneeId = [qaOwnerOneId, qaOwnerTwoId].sort()[0];
+    expect(qaLane?.assigneeAgentId ?? null).toBe(expectedQaAssigneeId);
 
     await markLaneDoneAndPromote(laneByRole.get("pm")!.id);
     await markLaneDoneAndPromote(laneByRole.get("designer")!.id);
     await markLaneDoneAndPromote(laneByRole.get("engineer")!.id);
 
+    const refreshedQaLane = await svc.getById(qaLane!.id);
+    expect(refreshedQaLane?.status).toBe("todo");
+    expect(refreshedQaLane?.assigneeAgentId ?? null).toBe(expectedQaAssigneeId);
+
     const decoratedParent = await workflows.decorateIssue(applied.parentIssue);
     const qaSummary = decoratedParent.workflowSummary?.lanes.find((lane) => lane.role === "qa");
     expect(qaSummary?.phase).toBe("ready");
-    expect(qaSummary?.unresolvedOwnership).toBe(true);
-    expect(decoratedParent.workflowSummary?.ownerNeededRoles).toContain("qa");
+    expect(qaSummary?.unresolvedOwnership).toBe(false);
+    expect(decoratedParent.workflowSummary?.ownerNeededRoles).not.toContain("qa");
   });
 
-  it("assigns the canonical release-gate QA owner when a blocked workflow QA lane becomes unblocked", async () => {
+  it("assigns a pooled QA reviewer when a blocked workflow QA lane becomes unblocked", async () => {
     const companyId = await seedCompany("UnblockQaWorkflowCo");
     const projectId = await seedProject(companyId);
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
@@ -583,6 +679,77 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     const refreshedQaLane = await svc.getById(qaLane!.id);
     expect(refreshedQaLane?.status).toBe("todo");
     expect(refreshedQaLane?.assigneeAgentId).toBe(canonicalQaAgentId);
+  });
+
+  it("does not let stale QA reviewer memory override pooled lane assignment on unblock", async () => {
+    const companyId = await seedCompany("StaleQaMemoryWorkflowCo");
+    const projectId = await seedProject(companyId);
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    await seedAgent(companyId, "pm", "PM Agent");
+    await seedAgent(companyId, "designer", "Designer Agent");
+    await seedAgent(companyId, "engineer", "Engineer Agent");
+    await seedAgent(companyId, "security", "Security Agent");
+    const loadedQaAgentId = await seedAgent(companyId, "qa", "Loaded QA");
+    const freshQaAgentId = await seedAgent(companyId, "qa", "Fresh QA");
+
+    await svc.create(companyId, {
+      title: "Existing QA load",
+      projectId,
+      priority: "medium",
+      status: "todo",
+      assigneeAgentId: loadedQaAgentId,
+      createdByUserId: "user-1",
+    });
+
+    const rootIssue = await svc.create(companyId, {
+      title: "Ignore stale QA memory on unblock",
+      projectId,
+      priority: "high",
+      status: "todo",
+      createdByUserId: "user-1",
+    });
+
+    const applied = await workflows.applyTemplate({
+      companyId,
+      templateKey: "engineering_delivery_v1",
+      parentIssue: rootIssue,
+      actorUserId: "user-1",
+      createIssue: (data, dbOrTx) => svc.create(companyId, data, dbOrTx),
+      updateIssue: (id, data, dbOrTx) => svc.update(id, data, dbOrTx),
+    });
+    const laneByRole = new Map(
+      applied.createdChildren.map((issue) => [issue.workflowLaneRole, issue]),
+    );
+    const qaLane = laneByRole.get("qa");
+    expect(qaLane?.status).toBe("blocked");
+
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: null,
+        qaReviewerAgentId: loadedQaAgentId,
+      })
+      .where(eq(issues.id, qaLane!.id));
+    await db
+      .update(issueWorkflowLanes)
+      .set({ reviewerAgentId: loadedQaAgentId })
+      .where(eq(issueWorkflowLanes.issueId, qaLane!.id));
+
+    await markLaneDoneAndPromote(laneByRole.get("pm")!.id);
+    await markLaneDoneAndPromote(laneByRole.get("designer")!.id);
+    await markLaneDoneAndPromote(laneByRole.get("engineer")!.id);
+
+    const refreshedQaLane = await svc.getById(qaLane!.id);
+    expect(refreshedQaLane?.status).toBe("todo");
+    expect(refreshedQaLane?.assigneeAgentId).toBe(freshQaAgentId);
+    expect(refreshedQaLane?.qaReviewerAgentId).toBe(freshQaAgentId);
+
+    const refreshedWorkflowLane = await db
+      .select({ reviewerAgentId: issueWorkflowLanes.reviewerAgentId })
+      .from(issueWorkflowLanes)
+      .where(eq(issueWorkflowLanes.issueId, qaLane!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(refreshedWorkflowLane?.reviewerAgentId).toBe(freshQaAgentId);
   });
 
   it("blocks lane completion when required artifacts are missing or security fail markers are present", async () => {
@@ -648,7 +815,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(blockedBySecurityComment.blockingReasons).toContain("Fail-level security findings are unresolved.");
   });
 
-  it("requires the latest authorized QA verdict comment to be complete and passing for workflow QA lanes", async () => {
+  it("requires the latest assigned QA verdict comment to be complete and passing for workflow QA lanes", async () => {
     const companyId = await seedCompany("WorkflowQaGateCo");
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
     const canonicalQaAgentId = await seedAgent(companyId, "qa", "QA and Release Engineer");
@@ -731,7 +898,32 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
 
     const blocked = await workflows.evaluateLaneCompletion(qaLane);
     expect(blocked.canComplete).toBe(false);
-    expect(blocked.blockingReasons).toContain("Latest authorized QA verdict must include passing verification evidence.");
+    expect(blocked.blockingReasons).toContain("Latest assigned QA verdict must include passing verification evidence.");
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId: qaLane.id,
+      authorAgentId: canonicalQaAgentId,
+      authorUserId: null,
+      body: [
+        "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+        "TYPECHECK=pass",
+        "TESTS=pass",
+        "BUILD=pass",
+        "SMOKE=pass",
+        "[QA PASS]",
+        "[RELEASE CONFIRMED]",
+      ].join("\n"),
+      createdAt: new Date("2026-04-10T12:30:00Z"),
+      updatedAt: new Date("2026-04-10T12:30:00Z"),
+    });
+
+    const blockedByNonCanonicalVerification = await workflows.evaluateLaneCompletion(qaLane);
+    expect(blockedByNonCanonicalVerification.canComplete).toBe(false);
+    expect(blockedByNonCanonicalVerification.blockingReasons).toContain(
+      "Latest assigned QA verdict must include passing verification evidence.",
+    );
 
     await db.insert(issueComments).values({
       id: randomUUID(),
@@ -753,17 +945,77 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(satisfied.canComplete).toBe(true);
   });
 
-  it("blocks workflow QA lane completion when the lane owner is not the authorized release-gate QA agent", async () => {
+  it("requires workflow QA comment evidence to be refreshed after upstream invalidation", async () => {
+    const companyId = await seedCompany("WorkflowQaFreshnessCo");
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    const qaAgentId = await seedAgent(companyId, "qa", "QA and Release Engineer");
+
+    const qaLane = await svc.create(companyId, {
+      title: "QA: Validate refreshed release",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      qaReviewerAgentId: qaAgentId,
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "qa",
+      workflowRequiredArtifacts: [
+        {
+          key: "qa-verdict",
+          label: "QA verdict document",
+          kind: "document",
+          blocking: true,
+          documentKey: "qa-verdict",
+        },
+      ],
+      createdByUserId: "user-1",
+    });
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId: qaLane.id,
+      authorAgentId: qaAgentId,
+      authorUserId: null,
+      body: [
+        "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+        "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+        "[QA PASS]",
+        "[RELEASE CONFIRMED]",
+      ].join("\n"),
+      createdAt: new Date("2026-04-10T10:00:00Z"),
+      updatedAt: new Date("2026-04-10T10:00:00Z"),
+    });
+    await db
+      .update(issues)
+      .set({ workflowInvalidatedAt: new Date("2026-04-10T11:00:00Z") })
+      .where(eq(issues.id, qaLane.id));
+    await attachIssueDocument({
+      companyId,
+      issueId: qaLane.id,
+      key: "qa-verdict",
+      title: "QA verdict",
+      authorAgentId: qaAgentId,
+      updatedAt: new Date("2026-04-10T12:00:00Z"),
+    });
+
+    const refreshedQaLane = await svc.getById(qaLane.id);
+    const blocked = await workflows.evaluateLaneCompletion(refreshedQaLane!);
+
+    expect(blocked.canComplete).toBe(false);
+    expect(blocked.blockingReasons).toContain("Latest assigned QA verdict comment is stale and must be refreshed after upstream changes.");
+  });
+
+  it("blocks workflow QA lane completion when the lane owner is not an active QA reviewer", async () => {
     const companyId = await seedCompany("WorkflowQaOwnershipCo");
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
     const canonicalQaAgentId = await seedAgent(companyId, "qa", "QA and Release Engineer");
-    const qaRunnerAgentId = await seedAgent(companyId, "qa", "QA Runner");
+    const engineerAgentId = await seedAgent(companyId, "engineer", "Engineer Agent");
 
     const qaLane = await svc.create(companyId, {
       title: "QA: Validate release ownership",
       status: "in_review",
       priority: "high",
-      assigneeAgentId: qaRunnerAgentId,
+      assigneeAgentId: engineerAgentId,
       workflowTemplateKey: "engineering_delivery_v1",
       workflowLaneRole: "qa",
       workflowRequiredArtifacts: [
@@ -789,7 +1041,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
       id: randomUUID(),
       companyId,
       issueId: qaLane.id,
-      authorAgentId: qaRunnerAgentId,
+      authorAgentId: canonicalQaAgentId,
       authorUserId: null,
       body: [
         "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
@@ -803,7 +1055,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
 
     const blocked = await workflows.evaluateLaneCompletion(qaLane);
     expect(blocked.canComplete).toBe(false);
-    expect(blocked.blockingReasons[0]).toContain("authorized release-gate QA owner");
+    expect(blocked.blockingReasons[0]).toContain("active QA reviewer");
   });
 
   it("derives waiting versus actionable workflow summary buckets without treating downstream waiting lanes as current blockers", async () => {
@@ -910,7 +1162,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(pmLane).toBeTruthy();
     expect(designerLane).toBeTruthy();
 
-    await svc.update(pmLane!.id, { status: "done" });
+    await svc.update(pmLane!.id, { status: "done", completionGuardrailsSatisfied: true });
     const promoted = await workflows.advanceWorkflowDependents(pmLane!.id);
 
     expect(promoted.map((issue) => issue.id)).toEqual([designerLane!.id]);
@@ -961,7 +1213,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
         ),
       );
 
-    await svc.update(pmLane!.id, { status: "done" });
+    await svc.update(pmLane!.id, { status: "done", completionGuardrailsSatisfied: true });
     const promoted = await workflows.advanceWorkflowDependents(pmLane!.id);
 
     expect(promoted.map((issue) => issue.id)).toEqual([designerLane!.id]);
@@ -1022,7 +1274,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     await markLaneDoneAndPromote(pmLane!.id);
     await markLaneDoneAndPromote(designerLane!.id);
     await markLaneDoneAndPromote(engineerLane!.id);
-    await svc.update(securityLane!.id, { status: "done" });
+    await svc.update(securityLane!.id, { status: "done", completionGuardrailsSatisfied: true });
 
     const handback = await workflows.handbackWorkflowLane(qaLane!.id);
     expect(handback?.targetIssue?.id).toBe(engineerLane!.id);

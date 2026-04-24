@@ -132,7 +132,7 @@ function makeIssue() {
   };
 }
 
-describe("issue pause guards", () => {
+describe.sequential("issue pause guards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
@@ -161,7 +161,7 @@ describe("issue pause guards", () => {
     });
   });
 
-  it("blocks agent comments when execution is paused for the issue project", async () => {
+  it.sequential("blocks agent comments when execution is paused for the issue project", async () => {
     mockExecutionGateService.getExecutionBlock.mockResolvedValue({
       code: "project_paused_manual",
       scopeType: "project",
@@ -180,7 +180,7 @@ describe("issue pause guards", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("still allows board comments during a paused project", async () => {
+  it.sequential("still allows board comments during a paused project", async () => {
     mockExecutionGateService.getExecutionBlock.mockResolvedValue({
       code: "project_paused_manual",
       scopeType: "project",

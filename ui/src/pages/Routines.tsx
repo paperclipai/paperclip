@@ -6,7 +6,7 @@ import { routinesApi } from "../api/routines";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type WorkflowAwareIssueUpdateResponse } from "../api/issues";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -388,9 +388,13 @@ export function Routines() {
       navigate(`/routines/${routine.id}?tab=triggers`);
     },
   });
-  const updateIssue = useMutation({
+  const updateIssue = useMutation<WorkflowAwareIssueUpdateResponse, Error, { id: string; data: Record<string, unknown> }>({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
+      issuesApi.updateWorkflowAware(
+        id,
+        routineExecutionIssues?.find((issue) => issue.id === id)?.status,
+        data,
+      ),
     onSuccess: async (updatedIssue) => {
       for (const warning of updatedIssue.warnings ?? []) {
         pushToast({

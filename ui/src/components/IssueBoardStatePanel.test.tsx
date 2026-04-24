@@ -180,6 +180,40 @@ describe("IssueBoardStatePanel", () => {
     });
   });
 
+  it("renders capability-blocked copy for unstaffable specialist lanes", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueBoardStatePanel
+          issue={createIssue({
+            status: "todo",
+            boardState: {
+              kind: "blocked",
+              headline: "No security specialist available",
+              reasonCode: "capability_blocked",
+              actorType: "system",
+              actorId: "issue-1",
+              primaryAction: {
+                type: "open_issue",
+                label: "Open issue",
+                targetEntity: "issue",
+                targetId: "issue-1",
+              },
+            },
+          })}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("No security specialist available");
+    expect(container.textContent).toContain("Open issue");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders redirect copy and opens the successor issue when recovery has moved work elsewhere", () => {
     const root = createRoot(container);
 

@@ -382,6 +382,7 @@ Clicking an issue opens the detail view. The main content area splits into two z
 
 **Delivery / QA issues:**
 - Delivery-scoped issues show a Smart Review card summarizing QA state.
+- The `Review QA state` CTA is only valid for delivery-scoped review that has a Smart Review target; non-delivery review should keep the generic `Open review` CTA.
 - When the board-state panel says `Review QA state`, that CTA should jump to the Smart Review card instead of self-linking back to the issue header.
 - Before an issue enters `in_review`, the primary CTA is `Start QA`.
 - Once an issue is in `in_review`, the primary CTA becomes `QA Ship`.

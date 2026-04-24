@@ -11,9 +11,9 @@ import {
 } from "../services/qa-gate.js";
 
 describe("qa gate helpers", () => {
-  it("treats missing assignee role as delivery-scoped", () => {
-    expect(isDeliveryScopedAssigneeRole(null)).toBe(true);
-    expect(isDeliveryScopedAssigneeRole(undefined)).toBe(true);
+  it("does not treat missing assignee role as delivery-scoped by itself", () => {
+    expect(isDeliveryScopedAssigneeRole(null)).toBe(false);
+    expect(isDeliveryScopedAssigneeRole(undefined)).toBe(false);
   });
 
   it("treats delivery roles as delivery-scoped and non-delivery roles as exempt", () => {
@@ -117,6 +117,52 @@ describe("qa gate helpers", () => {
     expect(gate.missingRequirements).toEqual(["qa_gate_missing_qa_comment"]);
   });
 
+  it("requires the latest QA verdict to include an explicit [QA PASS] marker before shipping", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [
+        {
+          id: "comment-1",
+          body: [
+            "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+            "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+            "[RELEASE CONFIRMED]",
+          ].join("\n"),
+          createdAt: new Date("2026-04-11T11:00:00Z"),
+        },
+      ],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toContain("qa_gate_missing_qa_pass");
+  });
+
+  it("requires the latest QA verdict to include an explicit [RELEASE CONFIRMED] marker before shipping", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [
+        {
+          id: "comment-1",
+          body: [
+            "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+            "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+            "[QA PASS]",
+          ].join("\n"),
+          createdAt: new Date("2026-04-11T11:00:00Z"),
+        },
+      ],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toContain("qa_gate_missing_release_confirmation");
+  });
+
   it("treats technical branch work as delivery-scoped even when a non-engineering role is assigned", () => {
     const gate = buildIssueQaGate({
       issue: { status: "in_review" },
@@ -130,6 +176,46 @@ describe("qa gate helpers", () => {
     expect(gate.isDeliveryScoped).toBe(true);
     expect(gate.canShip).toBe(false);
     expect(gate.missingRequirements).toEqual(["qa_gate_missing_qa_comment"]);
+  });
+
+  it("does not treat ticket-authoring audit work as delivery-scoped just because an engineer owns it", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      issueText: [
+        "UI Audit - Review and incrementally improve the cart UI in this workspace using Hermes.",
+        "This is a ticket-authoring task, not an implementation task.",
+        "Do not change code. Write implementation tickets only.",
+      ].join("\n"),
+      qaComments: [],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.isDeliveryScoped).toBe(false);
+    expect(gate.canShip).toBe(true);
+    expect(gate.missingRequirements).toEqual([]);
+  });
+
+  it("does not treat trust audits that require creating follow-up issues as delivery-scoped", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "qa",
+      issueText: [
+        "Cart trust audit — eliminate any source of doubt.",
+        "This is a trust validation and failure detection exercise.",
+        "The audit is not complete until concrete issues are created.",
+        "For every P0 and P1 issue: create a NEW issue.",
+        "If a problem is found but no ticket is created, the review is incomplete.",
+      ].join("\n"),
+      qaComments: [],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.isDeliveryScoped).toBe(false);
+    expect(gate.canShip).toBe(true);
+    expect(gate.missingRequirements).toEqual([]);
   });
 
   it("flags stale review when no recent summary exists", () => {

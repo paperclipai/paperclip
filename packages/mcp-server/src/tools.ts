@@ -1,9 +1,11 @@
 import { z } from "zod";
 import {
+  ISSUE_ACTION_TYPES,
   addIssueCommentSchema,
   checkoutIssueSchema,
   createApprovalSchema,
   createIssueSchema,
+  issueActionSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
@@ -108,6 +110,11 @@ const checkoutIssueToolSchema = z.object({
 const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
 }).merge(addIssueCommentSchema);
+const actOnIssueToolSchema = z.object({
+  issueId: issueIdSchema,
+  type: z.enum(ISSUE_ACTION_TYPES),
+  payload: z.record(z.string(), z.unknown()),
+});
 
 const approvalDecisionSchema = z.object({
   approvalId: approvalIdSchema,
@@ -310,6 +317,15 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       updateIssueToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),
+    ),
+    makeTool(
+      "paperclipActOnIssue",
+      "Apply a typed workflow action to an issue",
+      actOnIssueToolSchema,
+      async ({ issueId, type, payload }) => {
+        const action = issueActionSchema.parse({ type, payload });
+        return client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/actions`, { body: action });
+      },
     ),
     makeTool(
       "paperclipCheckoutIssue",

@@ -80,7 +80,7 @@ function createApp(route: ReturnType<typeof projectRoutes> | ReturnType<typeof g
   return app;
 }
 
-describe("project and goal telemetry routes", () => {
+describe.sequential("project and goal telemetry routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -104,7 +104,7 @@ describe("project and goal telemetry routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("emits telemetry when a project is created", async () => {
+  it.sequential("emits telemetry when a project is created", async () => {
     const res = await request(createApp(projectRoutes({} as any)))
       .post("/api/companies/company-1/projects")
       .send({ name: "Telemetry project" });
@@ -113,7 +113,7 @@ describe("project and goal telemetry routes", () => {
     expect(mockTrackProjectCreated).toHaveBeenCalledWith(expect.anything());
   });
 
-  it("emits telemetry when a goal is created", async () => {
+  it.sequential("emits telemetry when a goal is created", async () => {
     const res = await request(createApp(goalRoutes({} as any)))
       .post("/api/companies/company-1/goals")
       .send({ title: "Telemetry goal", level: "team" });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import express from "express";
+import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
@@ -25,10 +26,37 @@ function createApp(
   return app;
 }
 
-describe("boardMutationGuard", () => {
+async function closeServer(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function requestWithApp<T>(
+  app: express.Express,
+  run: (agent: request.SuperTest<request.Test>) => Promise<T>,
+) {
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await run(request(server));
+  } finally {
+    await closeServer(server);
+  }
+}
+
+describe.sequential("boardMutationGuard", () => {
   it("allows safe methods for board actor", async () => {
     const app = createApp("board");
-    const res = await request(app).get("/read");
+    const res = await requestWithApp(app, (agent) => agent.get("/read"));
     expect(res.status).toBe(204);
   });
 
@@ -56,53 +84,65 @@ describe("boardMutationGuard", () => {
 
   it("allows local implicit board mutations without origin", async () => {
     const app = createApp("board", "local_implicit");
-    const res = await request(app).post("/mutate").send({ ok: true });
+    const res = await requestWithApp(app, (agent) =>
+      agent.post("/mutate").send({ ok: true }),
+    );
     expect(res.status).toBe(204);
   });
 
   it("allows board bearer-key mutations without origin", async () => {
     const app = createApp("board", "board_key");
-    const res = await request(app).post("/mutate").send({ ok: true });
+    const res = await requestWithApp(app, (agent) =>
+      agent.post("/mutate").send({ ok: true }),
+    );
     expect(res.status).toBe(204);
   });
 
   it("allows board mutations from trusted origin", async () => {
     const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Origin", "http://localhost:3100")
-      .send({ ok: true });
+    const res = await requestWithApp(app, (agent) =>
+      agent
+        .post("/mutate")
+        .set("Origin", "http://localhost:3100")
+        .send({ ok: true }),
+    );
     expect(res.status).toBe(204);
   });
 
   it("allows board mutations from trusted referer origin", async () => {
     const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Referer", "http://localhost:3100/issues/abc")
-      .send({ ok: true });
+    const res = await requestWithApp(app, (agent) =>
+      agent
+        .post("/mutate")
+        .set("Referer", "http://localhost:3100/issues/abc")
+        .send({ ok: true }),
+    );
     expect(res.status).toBe(204);
   });
 
   it("allows board mutations when x-forwarded-host matches origin", async () => {
     const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Host", "127.0.0.1")
-      .set("X-Forwarded-Host", "10.90.10.20:3443")
-      .set("Origin", "https://10.90.10.20:3443")
-      .send({ ok: true });
+    const res = await requestWithApp(app, (agent) =>
+      agent
+        .post("/mutate")
+        .set("Host", "127.0.0.1")
+        .set("X-Forwarded-Host", "10.90.10.20:3443")
+        .set("Origin", "https://10.90.10.20:3443")
+        .send({ ok: true }),
+    );
     expect(res.status).toBe(204);
   });
 
   it("blocks board mutations when x-forwarded-host does not match origin", async () => {
     const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Host", "127.0.0.1")
-      .set("X-Forwarded-Host", "10.90.10.20:3443")
-      .set("Origin", "https://evil.example.com")
-      .send({ ok: true });
+    const res = await requestWithApp(app, (agent) =>
+      agent
+        .post("/mutate")
+        .set("Host", "127.0.0.1")
+        .set("X-Forwarded-Host", "10.90.10.20:3443")
+        .set("Origin", "https://evil.example.com")
+        .send({ ok: true }),
+    );
     expect(res.status).toBe(403);
   });
 

@@ -1,74 +1,30 @@
 import express from "express";
-import request from "supertest";
+import request, { type Response } from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { issueRoutes } from "../routes/issues.js";
 
-const mockIssueService = vi.hoisted(() => ({
-  list: vi.fn(async () => []),
-  archiveClosed: vi.fn(async () => ({
-    archivedCount: 0,
-    issueIds: [],
-    olderThanDays: 14,
-    archivedAt: new Date("2026-04-12T00:00:00.000Z"),
-    cutoff: new Date("2026-03-29T00:00:00.000Z"),
-  })),
-}));
-
-const mockExecutionGateService = vi.hoisted(() => ({
-  getExecutionBlock: vi.fn(),
-}));
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  documentService: () => ({}),
-  executionGateService: () => mockExecutionGateService,
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({}),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-    getRun: vi.fn(async () => null),
-    getActiveRunForAgent: vi.fn(async () => null),
-    cancelRun: vi.fn(async () => null),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
+function createMockIssueService() {
+  return {
+    list: vi.fn(async () => []),
+    archiveClosed: vi.fn(async () => ({
+      archivedCount: 0,
+      issueIds: [],
+      olderThanDays: 14,
+      archivedAt: new Date("2026-04-12T00:00:00.000Z"),
+      cutoff: new Date("2026-03-29T00:00:00.000Z"),
     })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  issueWorkflowService: () => ({
-    decorateIssue: vi.fn(async (issue: unknown) => issue),
-    evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
-    applyTemplate: vi.fn(),
-    advanceWorkflowDependents: vi.fn(async () => []),
-    invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
-    handbackWorkflowLane: vi.fn(async () => null),
-  }),
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
+  };
+}
+
+function createMockExecutionGateService() {
+  return {
+    getExecutionBlock: vi.fn(),
+  };
+}
+
+let mockIssueService = createMockIssueService();
+let mockExecutionGateService = createMockExecutionGateService();
+let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
 function createApp() {
   const app = express();
@@ -83,21 +39,81 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
-  app.use(errorHandler);
+  app.use("/api", issueRoutesFactory({} as any, {} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
-describe("issue list query normalization", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+async function sendIssueRouteRequest(action: () => Promise<Response>) {
+  return action();
+}
+
+describe.sequential("issue list query normalization", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    mockIssueService = createMockIssueService();
+    mockExecutionGateService = createMockExecutionGateService();
+    vi.doMock("../services/index.js", () => ({
+      accessService: () => ({
+        canUser: vi.fn(),
+        hasPermission: vi.fn(),
+      }),
+      agentService: () => ({
+        getById: vi.fn(),
+      }),
+      documentService: () => ({}),
+      executionGateService: () => mockExecutionGateService,
+      executionWorkspaceService: () => ({}),
+      feedbackService: () => ({
+        listIssueVotesForUser: vi.fn(async () => []),
+        saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+      }),
+      goalService: () => ({}),
+      heartbeatService: () => ({
+        wakeup: vi.fn(async () => undefined),
+        reportRunActivity: vi.fn(async () => undefined),
+        getRun: vi.fn(async () => null),
+        getActiveRunForAgent: vi.fn(async () => null),
+        cancelRun: vi.fn(async () => null),
+      }),
+      instanceSettingsService: () => ({
+        get: vi.fn(async () => ({
+          id: "instance-settings-1",
+          general: {
+            censorUsernameInLogs: false,
+            feedbackDataSharingPreference: "prompt",
+          },
+        })),
+        listCompanyIds: vi.fn(async () => ["company-1"]),
+      }),
+      issueApprovalService: () => ({}),
+      issueService: () => mockIssueService,
+      issueWorkflowService: () => ({
+        decorateIssue: vi.fn(async (issue: unknown) => issue),
+        evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+        applyTemplate: vi.fn(),
+        advanceWorkflowDependents: vi.fn(async () => []),
+        invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
+        handbackWorkflowLane: vi.fn(async () => null),
+      }),
+      logActivity: vi.fn(async () => undefined),
+      projectService: () => ({}),
+      routineService: () => ({
+        syncRunStatusForIssue: vi.fn(async () => undefined),
+      }),
+      workProductService: () => ({}),
+    }));
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
   });
 
-  it("treats literal null query values as omitted filters", async () => {
+  it.sequential("treats literal null query values as omitted filters", async () => {
     const assigneeAgentId = "8cb74f2d-9f0d-45f3-b820-e594f66a6133";
 
-    const res = await request(createApp()).get(
-      `/api/companies/company-1/issues?projectId=null&parentId=null&assigneeAgentId=${assigneeAgentId}`,
+    const res = await sendIssueRouteRequest(() =>
+      request(createApp()).get(
+        `/api/companies/company-1/issues?projectId=null&parentId=null&assigneeAgentId=${assigneeAgentId}`,
+      ),
     );
 
     expect(res.status).toBe(200);
@@ -111,8 +127,10 @@ describe("issue list query normalization", () => {
     );
   });
 
-  it("passes includeClosed query flag to the issue service list filter", async () => {
-    const res = await request(createApp()).get("/api/companies/company-1/issues?includeClosed=true");
+  it.sequential("passes includeClosed query flag to the issue service list filter", async () => {
+    const res = await sendIssueRouteRequest(() =>
+      request(createApp()).get("/api/companies/company-1/issues?includeClosed=true"),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith(
@@ -123,8 +141,10 @@ describe("issue list query normalization", () => {
     );
   });
 
-  it("passes includeRelations query flag to the issue service list filter", async () => {
-    const res = await request(createApp()).get("/api/companies/company-1/issues?includeRelations=true");
+  it.sequential("passes includeRelations query flag to the issue service list filter", async () => {
+    const res = await sendIssueRouteRequest(() =>
+      request(createApp()).get("/api/companies/company-1/issues?includeRelations=true"),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith(
@@ -135,9 +155,9 @@ describe("issue list query normalization", () => {
     );
   });
 
-  it("passes recovery-source exclusion query flag to the issue service list filter", async () => {
-    const res = await request(createApp()).get(
-      "/api/companies/company-1/issues?excludeRecoverySourcesWithOpenSuccessors=true",
+  it.sequential("passes recovery-source exclusion query flag to the issue service list filter", async () => {
+    const res = await sendIssueRouteRequest(() =>
+      request(createApp()).get("/api/companies/company-1/issues?excludeRecoverySourcesWithOpenSuccessors=true"),
     );
 
     expect(res.status).toBe(200);
@@ -149,9 +169,9 @@ describe("issue list query normalization", () => {
     );
   });
 
-  it("passes ids, sort, and limit through to the issue service list filter", async () => {
-    const res = await request(createApp()).get(
-      "/api/companies/company-1/issues?ids=issue-1,issue-2&sort=last_activity_desc&limit=25",
+  it.sequential("passes ids, sort, and limit through to the issue service list filter", async () => {
+    const res = await sendIssueRouteRequest(() =>
+      request(createApp()).get("/api/companies/company-1/issues?ids=issue-1,issue-2&sort=last_activity_desc&limit=25"),
     );
 
     expect(res.status).toBe(200);
@@ -165,7 +185,7 @@ describe("issue list query normalization", () => {
     );
   });
 
-  it("skips review-signal synthesis on issue list responses unless explicitly requested", async () => {
+  it.sequential("skips review-signal synthesis on issue list responses unless explicitly requested", async () => {
     mockIssueService.list.mockResolvedValueOnce([
       {
         id: "issue-1",
@@ -177,17 +197,17 @@ describe("issue list query normalization", () => {
       },
     ]);
 
-    const res = await request(createApp()).get("/api/companies/company-1/issues");
+    const res = await sendIssueRouteRequest(() => request(createApp()).get("/api/companies/company-1/issues"));
 
     expect(res.status).toBe(200);
     expect(res.body[0]).not.toHaveProperty("qaGate");
     expect(res.body[0]).not.toHaveProperty("mergeStatus");
   });
 
-  it("supports bulk archive of closed issues", async () => {
-    const res = await request(createApp())
-      .post("/api/companies/company-1/issues/archive-closed")
-      .send({ olderThanDays: 21 });
+  it.sequential("supports bulk archive of closed issues", async () => {
+    const res = await sendIssueRouteRequest(() =>
+      request(createApp()).post("/api/companies/company-1/issues/archive-closed").send({ olderThanDays: 21 }),
+    );
 
     expect(res.status).toBe(200);
     expect(mockIssueService.archiveClosed).toHaveBeenCalledWith(

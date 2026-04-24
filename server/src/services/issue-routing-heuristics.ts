@@ -1,8 +1,35 @@
+import type { IssueWorkIntent } from "@paperclipai/shared";
 import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 
 const QA_LIKE_ISSUE_PATTERN = /\bqa|release|audit|verify|test\b/;
 const LEAD_LIKE_ISSUE_PATTERN = /\blead|restaurant|prospect|sheet\b/;
 const ONBOARDING_LIKE_ISSUE_PATTERN = /\bonboard|onboarding|go[- ]?live|activation|rollout|intake|implementation\b/;
+const TICKET_AUTHORING_STRONG_PATTERNS = [
+  /\bticket-authoring task\b/,
+  /\bnot an implementation task\b/,
+  /\bdo not change code\b/,
+  /\bwrite implementation tickets only\b/,
+  /\bthis is a ticket-authoring task\b/,
+] as const;
+const TICKET_AUTHORING_WEAK_PATTERNS = [
+  /\bactionable tickets?\b/,
+  /\bcreate a concrete ticket\b/,
+  /\bcreate a new issue\b/,
+  /\bimplementation tickets?\b/,
+  /\btranslated into actionable tickets\b/,
+  /\bthis is a ticket authoring task\b/,
+] as const;
+const AUDIT_TICKET_CREATION_PATTERNS = [
+  /\bconcrete issues are created\b/,
+  /\bfor every p0 and p1 issue\b/,
+  /\bno ticket is created\b/,
+  /\bthe review is incomplete\b/,
+  /\bdo not stop at analysis\b/,
+  /\btrust validation\b/,
+  /\bfailure detection exercise\b/,
+] as const;
+const DELIVERY_SCOPED_ASSIGNEE_ROLES = new Set(["engineer", "qa", "devops", "cto"]);
+const ISSUE_WORK_INTENT_SET = new Set<IssueWorkIntent>(["delivery", "ticket_authoring", "audit", "general"]);
 
 export const ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN =
   /\bcart|checkout|frontend|backend|api|component|typescript|react|db|database|migration|refactor|bug|fix|code|branch(?:es)?|merge|git|rebase|cherry[- ]?pick|conflict|pull\s*request|\bpr\b/i;
@@ -29,6 +56,7 @@ export type IssueRoutingIssue = {
   projectName?: string | null;
   preferredRole?: string | null;
   desiredSkills?: string[] | null;
+  workflowLaneRole?: string | null;
 };
 
 export type OperationsAssignmentCandidate = {
@@ -118,6 +146,59 @@ export function isLikelyTechnicalIssueText(issueText: string | null | undefined)
   return ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN.test(issueText ?? "");
 }
 
+export function isQaLikeIssueText(issueText: string | null | undefined): boolean {
+  return QA_LIKE_ISSUE_PATTERN.test(issueText ?? "");
+}
+
+export function isLikelyTicketAuthoringOnlyIssueText(issueText: string | null | undefined): boolean {
+  const text = issueText ?? "";
+  if (text.trim().length === 0) return false;
+  if (TICKET_AUTHORING_STRONG_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  const weakSignalCount = TICKET_AUTHORING_WEAK_PATTERNS.reduce(
+    (count, pattern) => count + (pattern.test(text) ? 1 : 0),
+    0,
+  );
+  return weakSignalCount >= 2;
+}
+
+export function isLikelyAuditTicketCreationIssueText(issueText: string | null | undefined): boolean {
+  const text = issueText ?? "";
+  if (text.trim().length === 0) return false;
+  const signalCount = AUDIT_TICKET_CREATION_PATTERNS.reduce(
+    (count, pattern) => count + (pattern.test(text) ? 1 : 0),
+    0,
+  );
+  return signalCount >= 3;
+}
+
+export function resolveIssueWorkIntent(input: {
+  workIntent?: string | null | undefined;
+  assigneeRole?: string | null | undefined;
+  issueText?: string | null | undefined;
+  workflowTemplateKey?: string | null | undefined;
+  workflowLaneRole?: string | null | undefined;
+}): IssueWorkIntent {
+  if (input.workIntent && ISSUE_WORK_INTENT_SET.has(input.workIntent as IssueWorkIntent)) {
+    return input.workIntent as IssueWorkIntent;
+  }
+  if (input.workflowTemplateKey || input.workflowLaneRole) return "delivery";
+  if (isLikelyTicketAuthoringOnlyIssueText(input.issueText)) return "ticket_authoring";
+  if (isLikelyAuditTicketCreationIssueText(input.issueText)) return "audit";
+  if (
+    DELIVERY_SCOPED_ASSIGNEE_ROLES.has(input.assigneeRole ?? "")
+    || isLikelyTechnicalIssueText(input.issueText)
+  ) {
+    return "delivery";
+  }
+  return "general";
+}
+
+export function isDeliveryWorkIntent(intent: string | null | undefined) {
+  return intent === "delivery";
+}
+
 function classifyIssueSignals(issueText: string) {
   return {
     isQaLikeIssue: QA_LIKE_ISSUE_PATTERN.test(issueText),
@@ -159,10 +240,24 @@ function resolvePreferredRoleCandidates(
   return candidates.filter((candidate) => normalizeText(candidate.role) === preferredRole);
 }
 
+function resolveStrictWorkflowLaneCandidates(
+  issue: IssueRoutingIssue,
+  candidates: OperationsAssignmentCandidate[],
+) {
+  const workflowLaneRole = normalizeText(issue.workflowLaneRole);
+  if (workflowLaneRole === "qa" || workflowLaneRole === "security" || workflowLaneRole === "cto") {
+    return candidates.filter((candidate) => normalizeText(candidate.role) === workflowLaneRole);
+  }
+  return null;
+}
+
 export function resolveEligibleOperationsAssignmentCandidates(
   issue: IssueRoutingIssue,
   candidates: OperationsAssignmentCandidate[],
 ) {
+  const strictWorkflowLaneCandidates = resolveStrictWorkflowLaneCandidates(issue, candidates);
+  if (strictWorkflowLaneCandidates) return strictWorkflowLaneCandidates;
+
   const preferredRole = normalizeText(issue.preferredRole);
   const preferredRoleCandidates = resolvePreferredRoleCandidates(issue, candidates);
   if (preferredRoleCandidates.length > 0) {
@@ -189,17 +284,18 @@ export function resolveEligibleOperationsAssignmentCandidates(
   const webEngineerCandidates = engineerCandidates.filter(isWebEngineerCandidate);
   const platformEngineerCandidates = engineerCandidates.filter(isPlatformEngineerCandidate);
 
-  if (preferredRole === "qa" && qaCandidates.length > 0) return qaCandidates;
+  if (preferredRole === "qa") return qaCandidates;
   if (preferredRole === "pm" && onboardingCandidates.length > 0) return onboardingCandidates;
   if (preferredRole === "designer") return candidates.filter((candidate) => normalizeText(candidate.role) === "designer");
   if (preferredRole === "researcher" && leadCandidates.length > 0) return leadCandidates;
   if (preferredRole === "engineer" && engineerCandidates.length > 0) return engineerCandidates;
   if (preferredRole === "security" && securityCandidates.length > 0) return securityCandidates;
 
+  if (signals.isQaLikeIssue || descriptionSignals.isQaLikeIssue) {
+    return qaCandidates;
+  }
+
   if (signals.isEngineeringIssue) {
-    if (descriptionSignals.isQaLikeIssue) {
-      return qaCandidates.length > 0 ? qaCandidates : engineerCandidates;
-    }
     if (descriptionSignals.isWebLikeEngineeringIssue) {
       return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
     }
@@ -218,9 +314,6 @@ export function resolveEligibleOperationsAssignmentCandidates(
     return engineerCandidates;
   }
 
-  if (signals.isQaLikeIssue) {
-    return qaCandidates.length > 0 ? qaCandidates : candidates;
-  }
   if (signals.isLeadLikeIssue) {
     return leadCandidates.length > 0 ? leadCandidates : candidates;
   }
@@ -268,23 +361,37 @@ export function pickOperationsAssignmentCandidate(input: {
   const specializationSourcePool = input.allowPausedFallback
     ? input.pausedFallbackCandidates
     : input.availableCandidates;
+  const strictWorkflowLaneCandidates = resolveStrictWorkflowLaneCandidates(input.issue, specializationSourcePool);
+  if (strictWorkflowLaneCandidates) {
+    baseCandidatePool = pickReadySpecialists(strictWorkflowLaneCandidates, isReadyCandidate);
+    if (baseCandidatePool.length === 0) return null;
+  }
 
   const preferredRole = normalizeText(input.issue.preferredRole);
   const preferredRoleCandidates = resolvePreferredRoleCandidates(input.issue, specializationSourcePool);
   const desiredSkillCandidates = resolveDesiredSkillCandidates(input.issue, specializationSourcePool);
+  const qaCandidates = specializationSourcePool.filter((candidate) => (
+    candidate.role === "qa" || QA_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
+  ));
 
-  if (preferredRole === "security" && preferredRoleCandidates.length === 0 && desiredSkillCandidates.length === 0) {
+  if (!strictWorkflowLaneCandidates && preferredRole === "security" && preferredRoleCandidates.length === 0 && desiredSkillCandidates.length === 0) {
     return null;
   }
-  if (preferredRoleCandidates.length > 0) {
+  if (strictWorkflowLaneCandidates) {
+    // Governed workflow lanes must stay on the exact role selected above.
+  } else if (preferredRole === "qa") {
+    baseCandidatePool = pickReadySpecialists(qaCandidates, isReadyCandidate);
+    if (baseCandidatePool.length === 0) return null;
+  } else if (preferredRoleCandidates.length > 0) {
     baseCandidatePool = pickReadySpecialists(preferredRoleCandidates, isReadyCandidate);
   } else if (desiredSkillCandidates.length > 0) {
     baseCandidatePool = pickReadySpecialists(desiredSkillCandidates, isReadyCandidate);
+  } else if (signals.isQaLikeIssue || descriptionSignals.isQaLikeIssue) {
+    const qaPool = pickReadySpecialists(qaCandidates, isReadyCandidate);
+    if (qaPool.length === 0) return null;
+    baseCandidatePool = qaPool;
   } else if (signals.isEngineeringIssue) {
     const engineerCandidates = specializationSourcePool.filter((candidate) => candidate.role === "engineer");
-    const qaCandidates = specializationSourcePool.filter((candidate) => (
-      candidate.role === "qa" || QA_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
-    ));
 
     const appEngineerCandidates = engineerCandidates.filter((candidate) => (
       APP_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
@@ -295,18 +402,14 @@ export function pickOperationsAssignmentCandidate(input: {
     const platformEngineerCandidates = engineerCandidates.filter((candidate) => (
       PLATFORM_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
     ));
-    const hasExplicitQaIntent = descriptionSignals.isQaLikeIssue;
     const hasExplicitWebIntent = descriptionSignals.isWebLikeEngineeringIssue;
     const hasExplicitPlatformIntent = descriptionSignals.isPlatformLikeEngineeringIssue;
 
     const readyEngineers = engineerCandidates.filter(isReadyCandidate);
-    if (engineerCandidates.length === 0 && !hasExplicitQaIntent) return null;
-    if (readyEngineers.length === 0 && !hasExplicitQaIntent) return null;
+    if (engineerCandidates.length === 0) return null;
+    if (readyEngineers.length === 0) return null;
 
-    if (hasExplicitQaIntent) {
-      const qaPool = pickReadySpecialists(qaCandidates, isReadyCandidate);
-      baseCandidatePool = qaPool.length > 0 ? qaPool : (readyEngineers.length > 0 ? readyEngineers : qaCandidates);
-    } else if (hasExplicitWebIntent) {
+    if (hasExplicitWebIntent) {
       baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
     } else if (hasExplicitPlatformIntent) {
       baseCandidatePool = pickReadySpecialists(platformEngineerCandidates, isReadyCandidate);
@@ -372,7 +475,8 @@ export function pickOperationsAssignmentCandidate(input: {
       (a, b) =>
         b.score - a.score
         || a.openAssignedIssueCount - b.openAssignedIssueCount
-        || a.candidate.name.localeCompare(b.candidate.name),
+        || a.candidate.name.localeCompare(b.candidate.name)
+        || a.candidate.id.localeCompare(b.candidate.id),
     );
 
   return ranked[0]?.candidate ?? null;

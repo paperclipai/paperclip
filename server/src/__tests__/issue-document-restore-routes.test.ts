@@ -83,7 +83,7 @@ function createApp() {
   return app;
 }
 
-describe("issue document revision routes", () => {
+describe.sequential("issue document revision routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue({
@@ -133,7 +133,7 @@ describe("issue document revision routes", () => {
     });
   });
 
-  it("returns revision snapshots including title and format", async () => {
+  it.sequential("returns revision snapshots including title and format", async () => {
     const res = await request(createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
 
     expect(res.status).toBe(200);
@@ -148,7 +148,7 @@ describe("issue document revision routes", () => {
     ]);
   });
 
-  it("restores a revision through the append-only route and logs the action", async () => {
+  it.sequential("restores a revision through the append-only route and logs the action", async () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/documents/plan/revisions/revision-1/restore`)
       .send({});
@@ -180,7 +180,7 @@ describe("issue document revision routes", () => {
     }));
   });
 
-  it("rejects invalid document keys before attempting restore", async () => {
+  it.sequential("rejects invalid document keys before attempting restore", async () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/documents/INVALID KEY/revisions/revision-1/restore`)
       .send({});

@@ -148,7 +148,7 @@ function makeIssue(overrides?: Record<string, unknown>) {
   };
 }
 
-describe("issue recovery route guards", () => {
+describe.sequential("issue recovery route guards", () => {
   beforeAll(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
@@ -188,7 +188,7 @@ describe("issue recovery route guards", () => {
     mockComputeIssueBoardStateMap.mockResolvedValue(new Map());
   });
 
-  it("rejects non-board recovery issue creation", async () => {
+  it.sequential("rejects non-board recovery issue creation", async () => {
     const res = await request(createApp({
       type: "agent",
       agentId: "agent-1",
@@ -206,7 +206,7 @@ describe("issue recovery route guards", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
-  it("allows board recovery issue creation", async () => {
+  it.sequential("allows board recovery issue creation", async () => {
     mockIssueService.create.mockResolvedValue(makeIssue({
       recoverySource: {
         id: "22222222-2222-4222-8222-222222222222",
@@ -239,7 +239,7 @@ describe("issue recovery route guards", () => {
     );
   });
 
-  it("rejects non-board recovery transitions on patch", async () => {
+  it.sequential("rejects non-board recovery transitions on patch", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue());
 
     const res = await request(createApp({
@@ -260,7 +260,7 @@ describe("issue recovery route guards", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("allows board recovery transitions on patch", async () => {
+  it.sequential("allows board recovery transitions on patch", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       status: "blocked",
     }));

@@ -89,7 +89,7 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-describe("issue telemetry routes", () => {
+describe.sequential("issue telemetry routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -113,7 +113,7 @@ describe("issue telemetry routes", () => {
     }));
   });
 
-  it("emits task-completed telemetry with the agent role", async () => {
+  it.sequential("emits task-completed telemetry with the agent role", async () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === "ops-1") {
         return {
@@ -149,7 +149,7 @@ describe("issue telemetry routes", () => {
     });
   });
 
-  it("does not emit agent task-completed telemetry for board-driven completions", async () => {
+  it.sequential("does not emit agent task-completed telemetry for board-driven completions", async () => {
     const res = await request(createApp({
       type: "board",
       userId: "local-board",

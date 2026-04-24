@@ -15,6 +15,8 @@ import {
 import {
   QA_RELEASE_DEFAULT_NAME,
   QA_RELEASE_DEFAULT_TITLE,
+  SECURITY_DEFAULT_NAME,
+  SECURITY_DEFAULT_TITLE,
   agentHeartbeatModelService,
 } from "../services/agent-heartbeat-model.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
@@ -263,5 +265,190 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
       .where(eq(agents.companyId, companyId))
       .then((rows) => rows.filter((row) => row.role === "qa"));
     expect(qaAgents).toHaveLength(0);
+  });
+
+  it("provisions a Security Engineer for tech-team companies missing security coverage", async () => {
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-heartbeat-model-security-home-"));
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "agent-heartbeat-model-security-test";
+
+    const companyId = "88888888-8888-4888-8888-888888888888";
+    const ctoId = "99999999-9999-4999-8999-999999999999";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Security Coverage Co",
+      issuePrefix: "SEC",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: ctoId,
+      companyId,
+      name: "CTO",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-5.4",
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/legacy-security",
+        promptTemplate: "legacy prompt",
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const svc = agentHeartbeatModelService(db);
+    const result = await svc.ensureCompanyHasSecurityEngineer(companyId, { apply: true });
+
+    expect(result).toMatchObject({
+      apply: true,
+      companyId,
+      created: true,
+      reason: "security_created",
+    });
+
+    const securityAgent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.find((row) => row.role === "security") ?? null);
+
+    expect(securityAgent).not.toBeNull();
+    expect(securityAgent?.name).toBe(SECURITY_DEFAULT_NAME);
+    expect(securityAgent?.title).toBe(SECURITY_DEFAULT_TITLE);
+    expect(securityAgent?.reportsTo).toBe(ctoId);
+    expect(securityAgent?.adapterType).toBe("codex_local");
+    expect((securityAgent?.adapterConfig as Record<string, unknown>).model).toBe("gpt-5.4");
+    expect((securityAgent?.adapterConfig as Record<string, unknown>).promptTemplate).toBeUndefined();
+    expect((securityAgent?.adapterConfig as Record<string, unknown>).instructionsBundleMode).toBe("managed");
+
+    const instructions = agentInstructionsService();
+    const files = await instructions.exportFiles(securityAgent!);
+    const expectedSecurityBundle = await loadDefaultAgentInstructionsBundle("security");
+    const { ["AGENTS.md"]: expectedAgentsMd = "", ...expectedOtherFiles } = expectedSecurityBundle;
+    const { ["AGENTS.md"]: actualAgentsMd = "", ...actualOtherFiles } = files.files;
+    expect(actualOtherFiles).toEqual(expectedOtherFiles);
+    expect(actualAgentsMd).toContain(expectedAgentsMd.trim());
+    expect(actualAgentsMd).toContain("Security Engineer");
+    expect(actualAgentsMd).toContain("threat-review");
+    expect(actualAgentsMd).toContain("[SECURITY FAIL]");
+  });
+
+  it("does not provision duplicate Security Engineers when existing security coverage is unavailable", async () => {
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-heartbeat-model-security-paused-home-"));
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "agent-heartbeat-model-security-paused-test";
+
+    const companyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paused Security Coverage Co",
+      issuePrefix: "PSC",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        companyId,
+        name: "Paused Security Engineer",
+        role: "security",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const svc = agentHeartbeatModelService(db);
+    const result = await svc.ensureCompanyHasSecurityEngineer(companyId, { apply: true });
+
+    expect(result).toMatchObject({
+      apply: true,
+      companyId,
+      created: false,
+      reason: "already_has_security",
+      createdAgentId: null,
+    });
+
+    const securityAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.filter((row) => row.role === "security"));
+    expect(securityAgents).toHaveLength(1);
+    expect(securityAgents[0]?.status).toBe("paused");
+  });
+
+  it("does not provision duplicate QA reviewers when existing QA coverage is unavailable", async () => {
+    const companyId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Errored QA Coverage Co",
+      issuePrefix: "EQC",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        companyId,
+        name: "Errored QA and Release Engineer",
+        role: "qa",
+        status: "error",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const svc = agentHeartbeatModelService(db);
+    const result = await svc.ensureCompanyHasQaReleaseEngineer(companyId, { apply: true });
+
+    expect(result).toMatchObject({
+      apply: true,
+      companyId,
+      created: false,
+      reason: "already_has_qa",
+      createdAgentId: null,
+    });
+
+    const qaAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.filter((row) => row.role === "qa"));
+    expect(qaAgents).toHaveLength(1);
+    expect(qaAgents[0]?.status).toBe("error");
   });
 });

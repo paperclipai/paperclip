@@ -88,12 +88,12 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-describe("issue feedback trace routes", () => {
+describe.sequential("issue feedback trace routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("flushes a newly shared feedback trace immediately after saving the vote", async () => {
+  it.sequential("flushes a newly shared feedback trace immediately after saving the vote", async () => {
     const targetId = "11111111-1111-4111-8111-111111111111";
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
@@ -137,7 +137,7 @@ describe("issue feedback trace routes", () => {
     });
   });
 
-  it("rejects non-board callers before fetching a feedback trace", async () => {
+  it.sequential("rejects non-board callers before fetching a feedback trace", async () => {
     const app = createApp({
       type: "agent",
       agentId: "agent-1",
@@ -152,7 +152,7 @@ describe("issue feedback trace routes", () => {
     expect(mockFeedbackService.getFeedbackTraceById).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when a board user lacks access to the trace company", async () => {
+  it.sequential("returns 404 when a board user lacks access to the trace company", async () => {
     mockFeedbackService.getFeedbackTraceById.mockResolvedValue({
       id: "trace-1",
       companyId: "company-2",
@@ -170,7 +170,7 @@ describe("issue feedback trace routes", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 404 for bundle fetches when a board user lacks access to the trace company", async () => {
+  it.sequential("returns 404 for bundle fetches when a board user lacks access to the trace company", async () => {
     mockFeedbackService.getFeedbackTraceBundle.mockResolvedValue({
       id: "trace-1",
       companyId: "company-2",

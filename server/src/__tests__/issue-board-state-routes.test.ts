@@ -175,7 +175,7 @@ function makeIssue(overrides?: Record<string, unknown>) {
   };
 }
 
-describe("issue board state routes", () => {
+describe.sequential("issue board state routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
@@ -255,7 +255,7 @@ describe("issue board state routes", () => {
     mockWorkProductService.listForIssue.mockResolvedValue([]);
   }, 30_000);
 
-  it("includes boardState and primaryBlocker on GET /issues/:id", async () => {
+  it.sequential("includes boardState and primaryBlocker on GET /issues/:id", async () => {
     const issue = makeIssue();
     mockIssueService.getById.mockResolvedValue(issue);
     mockComputeIssueBoardStateMap.mockResolvedValue(new Map([
@@ -308,7 +308,7 @@ describe("issue board state routes", () => {
     expect(res.body.blockerPath).toHaveLength(1);
   });
 
-  it("includes boardState headlines in company issue lists", async () => {
+  it.sequential("includes boardState headlines in company issue lists", async () => {
     const issue = makeIssue({ status: "in_review" });
     mockIssueService.list.mockResolvedValue([issue]);
     mockComputeIssueBoardStateMap.mockResolvedValue(new Map([
@@ -337,7 +337,7 @@ describe("issue board state routes", () => {
     expect(res.body[0].primaryBlocker).toBeNull();
   });
 
-  it("returns 422 when a mutation tries to persist blocked without blockers", async () => {
+  it.sequential("returns 422 when a mutation tries to persist blocked without blockers", async () => {
     const issue = makeIssue({ status: "todo" });
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockRejectedValue(

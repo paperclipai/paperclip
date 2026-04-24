@@ -92,9 +92,8 @@ function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
-describe("company portability routes", () => {
+describe.sequential("company portability routes", () => {
   beforeEach(async () => {
-    vi.resetAllMocks();
     vi.resetModules();
     ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
@@ -106,7 +105,7 @@ describe("company portability routes", () => {
     mockLogActivity.mockReset();
   });
 
-  it("rejects non-CEO agents from CEO-safe export preview routes", async () => {
+  it.sequential("rejects non-CEO agents from CEO-safe export preview routes", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",
@@ -129,7 +128,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
   });
 
-  it("allows CEO agents to use company-scoped export preview routes", async () => {
+  it.sequential("allows CEO agents to use company-scoped export preview routes", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",
@@ -162,7 +161,7 @@ describe("company portability routes", () => {
     });
   });
 
-  it("rejects replace collision strategy on CEO-safe import routes", async () => {
+  it.sequential("rejects replace collision strategy on CEO-safe import routes", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",
@@ -190,7 +189,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
-  it("keeps global import preview routes board-only", async () => {
+  it.sequential("keeps global import preview routes board-only", async () => {
     const app = createApp({
       type: "agent",
       agentId: "agent-1",
