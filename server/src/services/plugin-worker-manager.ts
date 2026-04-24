@@ -47,6 +47,8 @@ import type {
   WorkerToHostMethodName,
   WorkerToHostMethods,
   InitializeParams,
+  BeforeAdapterExecuteParams,
+  BeforeAdapterExecuteResult,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
 
@@ -345,6 +347,27 @@ export interface PluginWorkerManager {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
   ): Promise<HostToWorkerMethods[M][1]>;
+
+  /**
+   * Broadcast the `beforeAdapterExecute` RPC to every running plugin that
+   * reported support for it. Plugins are invoked in insertion order. Results
+   * are merged shallow:
+   *   - `env` entries: later plugins override earlier ones per key
+   *   - `runtimeConfig` entries: later plugins override earlier ones per key
+   *   - first plugin returning `block` wins — remaining plugins are skipped
+   *
+   * A single plugin throwing or timing out does NOT abort the broadcast:
+   * its result is discarded and the next plugin runs. The error is logged at
+   * warn level for operator visibility.
+   *
+   * Returns a merged result for the caller (typically the heartbeat service)
+   * to apply to the adapter runtime config. If no plugin implements the hook,
+   * an empty object is returned.
+   */
+  broadcastBeforeAdapterExecute(
+    params: BeforeAdapterExecuteParams,
+    opts?: { timeoutMs?: number },
+  ): Promise<BeforeAdapterExecuteResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,6 +1371,64 @@ export function createPluginWorkerManager(
         );
       }
       return handle.call(method, params, timeoutMs);
+    },
+
+    async broadcastBeforeAdapterExecute(
+      params: BeforeAdapterExecuteParams,
+      opts?: { timeoutMs?: number },
+    ): Promise<BeforeAdapterExecuteResult> {
+      const merged: BeforeAdapterExecuteResult = {};
+      const mergedEnv: Record<string, string> = {};
+      const mergedRuntimeConfig: Record<string, unknown> = {};
+      let anyEnv = false;
+      let anyRuntimeConfig = false;
+
+      for (const handle of workers.values()) {
+        if (handle.status !== "running") continue;
+        if (!handle.supportedMethods.includes("beforeAdapterExecute")) continue;
+
+        let result: BeforeAdapterExecuteResult;
+        try {
+          result = await handle.call("beforeAdapterExecute", params, opts?.timeoutMs);
+        } catch (err) {
+          log.warn(
+            {
+              pluginId: handle.pluginId,
+              runId: params.runId,
+              agentId: params.agentId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "beforeAdapterExecute failed — discarding result, continuing with next plugin",
+          );
+          continue;
+        }
+
+        if (result?.block) {
+          // First block wins — stop here.
+          merged.block = result.block;
+          break;
+        }
+
+        if (result?.env) {
+          for (const [key, value] of Object.entries(result.env)) {
+            if (typeof value === "string") {
+              mergedEnv[key] = value;
+              anyEnv = true;
+            }
+          }
+        }
+
+        if (result?.runtimeConfig) {
+          for (const [key, value] of Object.entries(result.runtimeConfig)) {
+            mergedRuntimeConfig[key] = value;
+            anyRuntimeConfig = true;
+          }
+        }
+      }
+
+      if (anyEnv) merged.env = mergedEnv;
+      if (anyRuntimeConfig) merged.runtimeConfig = mergedRuntimeConfig;
+      return merged;
     },
   };
 }
