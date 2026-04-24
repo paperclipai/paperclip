@@ -3083,6 +3083,11 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      if (latestRun?.status === "succeeded") {
+        result.skipped += 1;
+        continue;
+      }
+
       if (latestRetryReason === "issue_continuation_needed") {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
