@@ -9,6 +9,9 @@ import {
   createEmbeddedPostgresLogBuffer,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
+  readPidFilePort,
+  readRunningPostmasterPid,
+  reapStoppingPostmaster,
   routines,
 } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
@@ -82,28 +85,6 @@ async function findAvailablePort(preferredPort: number): Promise<number> {
   return port;
 }
 
-function readPidFilePort(postmasterPidFile: string): number | null {
-  if (!fs.existsSync(postmasterPidFile)) return null;
-  try {
-    const lines = fs.readFileSync(postmasterPidFile, "utf8").split("\n");
-    const port = Number(lines[3]?.trim());
-    return Number.isInteger(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-function readRunningPostmasterPid(postmasterPidFile: string): number | null {
-  if (!fs.existsSync(postmasterPidFile)) return null;
-  try {
-    const pid = Number(fs.readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
 
 async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): Promise<EmbeddedPostgresHandle> {
   const moduleName = "embedded-postgres";
@@ -118,6 +99,7 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   }
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
+  await reapStoppingPostmaster(postmasterPidFile);
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
   if (runningPid) {
     return {

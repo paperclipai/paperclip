@@ -30,6 +30,15 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
+export {
+  isPidAlive,
+  parsePostmasterPidText,
+  readPidFilePort,
+  readPostmasterPidInfo,
+  readRunningPostmasterPid,
+  reapStoppingPostmaster,
+  type PostmasterPidInfo,
+} from "./postmaster-pid.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
