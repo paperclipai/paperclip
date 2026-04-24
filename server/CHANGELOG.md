@@ -1,5 +1,24 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Minor Changes
+
+- feat(plugin-hook): new `beforeAdapterExecute` plugin hook, invoked by the
+  heartbeat scheduler immediately before `adapter.execute` for every agent
+  run. Plugins can observe the pending run and optionally inject env vars,
+  override runtime config, or block the run entirely (fail-closed egress
+  gates). First plugin returning `block` wins; env/runtimeConfig entries from
+  multiple plugins are merged shallow with later plugins overriding. Backward
+  compatible — existing plugins without the hook see no behaviour change.
+- `createApp` return value: attaches `workerManager` to the returned app
+  handle (additive; the handle still behaves as the Express app for all
+  existing callers).
+- `HeartbeatServiceOptions.broadcastBeforeAdapterExecute` — optional broadcast
+  function. Omit for no-hook behaviour (unchanged from 0.3.1).
+- New error class: `AdapterPreExecuteBlockedError` thrown when any plugin
+  returns `block`.
+
 ## 0.3.1
 
 ### Patch Changes
