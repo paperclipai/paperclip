@@ -52,12 +52,12 @@ type DocumentConflictState = {
 
 const DOCUMENT_AUTOSAVE_DEBOUNCE_MS = 900;
 const DOCUMENT_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
-const getFoldedDocumentsStorageKey = (issueId: string) => `paperclip:issue-document-folds:${issueId}`;
+const getExpandedDocumentsStorageKey = (issueId: string) => `paperclip:issue-document-expanded:${issueId}`;
 
-function loadFoldedDocumentKeys(issueId: string) {
+function loadExpandedDocumentKeys(issueId: string) {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(getFoldedDocumentsStorageKey(issueId));
+    const raw = window.localStorage.getItem(getExpandedDocumentsStorageKey(issueId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
@@ -66,9 +66,9 @@ function loadFoldedDocumentKeys(issueId: string) {
   }
 }
 
-function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
+function saveExpandedDocumentKeys(issueId: string, keys: string[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(getFoldedDocumentsStorageKey(issueId), JSON.stringify(keys));
+  window.localStorage.setItem(getExpandedDocumentsStorageKey(issueId), JSON.stringify(keys));
 }
 
 function renderFoldableBody(body: string, className?: string) {
@@ -164,7 +164,7 @@ export function IssueDocumentsSection({
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [documentConflict, setDocumentConflict] = useState<DocumentConflictState | null>(null);
-  const [foldedDocumentKeys, setFoldedDocumentKeys] = useState<string[]>(() => loadFoldedDocumentKeys(issue.id));
+  const [expandedDocumentKeys, setExpandedDocumentKeys] = useState<string[]>(() => loadExpandedDocumentKeys(issue.id));
   const [autosaveDocumentKey, setAutosaveDocumentKey] = useState<string | null>(null);
   const [copiedDocumentKey, setCopiedDocumentKey] = useState<string | null>(null);
   const [highlightDocumentKey, setHighlightDocumentKey] = useState<string | null>(null);
@@ -330,7 +330,7 @@ export function IssueDocumentsSection({
     const doc = sortedDocuments.find((entry) => entry.key === key);
     if (!doc) return;
     const conflictedDraft = documentConflict?.key === key ? documentConflict.localDraft : null;
-    setFoldedDocumentKeys((current) => current.filter((entry) => entry !== key));
+    setExpandedDocumentKeys((current) => current.includes(key) ? current : [...current, key]);
     resetAutosaveState();
     setDocumentConflict((current) => current?.key === key ? current : null);
     setDraft({
@@ -406,6 +406,7 @@ export function IssueDocumentsSection({
       return true;
     }
 
+    const wasNew = currentDraft.isNew;
     const save = async () => {
       const saved = await upsertDocument.mutateAsync({
         ...currentDraft,
@@ -429,6 +430,11 @@ export function IssueDocumentsSection({
           isNew: false,
         };
       });
+      if (wasNew) {
+        setExpandedDocumentKeys((current) =>
+          current.includes(saved.key) ? current : [...current, saved.key],
+        );
+      }
       syncDocumentCaches(saved);
       invalidateIssueDocuments();
     };
@@ -457,7 +463,7 @@ export function IssueDocumentsSection({
             },
             showRemote: true,
           });
-          setFoldedDocumentKeys((current) => current.filter((key) => key !== normalizedKey));
+          setExpandedDocumentKeys((current) => current.includes(normalizedKey) ? current : [...current, normalizedKey]);
           setError(null);
           resetAutosaveState();
           return false;
@@ -558,7 +564,7 @@ export function IssueDocumentsSection({
     resetAutosaveState();
     setDraft((current) => current?.key === doc.key ? null : current);
     setDocumentConflict((current) => current?.key === doc.key ? null : current);
-    setFoldedDocumentKeys((current) => current.filter((entry) => entry !== doc.key));
+    setExpandedDocumentKeys((current) => current.includes(doc.key) ? current : [...current, doc.key]);
     setSelectedRevisionIds((current) => ({ ...current, [doc.key]: selectedRevision.id }));
     setError(null);
   }, [documentConflict, draft, getDocumentRevisions, resetAutosaveState, returnToLatestRevision]);
@@ -587,7 +593,7 @@ export function IssueDocumentsSection({
   };
 
   useEffect(() => {
-    setFoldedDocumentKeys(loadFoldedDocumentKeys(issue.id));
+    setExpandedDocumentKeys(loadExpandedDocumentKeys(issue.id));
   }, [issue.id]);
 
   useEffect(() => {
@@ -595,19 +601,20 @@ export function IssueDocumentsSection({
   }, [issue.id, location.hash]);
 
   useEffect(() => {
+    if (documents === undefined) return;
     const validKeys = new Set(sortedDocuments.map((doc) => doc.key));
-    setFoldedDocumentKeys((current) => {
+    setExpandedDocumentKeys((current) => {
       const next = current.filter((key) => validKeys.has(key));
       if (next.length !== current.length) {
-        saveFoldedDocumentKeys(issue.id, next);
+        saveExpandedDocumentKeys(issue.id, next);
       }
       return next;
     });
-  }, [issue.id, sortedDocuments]);
+  }, [documents, issue.id, sortedDocuments]);
 
   useEffect(() => {
-    saveFoldedDocumentKeys(issue.id, foldedDocumentKeys);
-  }, [foldedDocumentKeys, issue.id]);
+    saveExpandedDocumentKeys(issue.id, expandedDocumentKeys);
+  }, [expandedDocumentKeys, issue.id]);
 
   useEffect(() => {
     if (!documentConflict) return;
@@ -627,7 +634,7 @@ export function IssueDocumentsSection({
     const targetExists = sortedDocuments.some((doc) => doc.key === documentKey)
       || (documentKey === "plan" && Boolean(issue.legacyPlanDocument));
     if (!targetExists || hasScrolledToHashRef.current) return;
-    setFoldedDocumentKeys((current) => current.filter((key) => key !== documentKey));
+    setExpandedDocumentKeys((current) => current.includes(documentKey) ? current : [...current, documentKey]);
     const element = document.getElementById(`document-${documentKey}`);
     if (!element) return;
     hasScrolledToHashRef.current = true;
@@ -680,7 +687,7 @@ export function IssueDocumentsSection({
   const documentBodyShellClassName = "mt-3";
   const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7";
   const toggleFoldedDocument = (key: string) => {
-    setFoldedDocumentKeys((current) =>
+    setExpandedDocumentKeys((current) =>
       current.includes(key)
         ? current.filter((entry) => entry !== key)
         : [...current, key],
@@ -791,7 +798,7 @@ export function IssueDocumentsSection({
         {sortedDocuments.map((doc) => {
           const activeDraft = draft?.key === doc.key && !draft.isNew ? draft : null;
           const activeConflict = documentConflict?.key === doc.key ? documentConflict : null;
-          const isFolded = foldedDocumentKeys.includes(doc.key);
+          const isFolded = !expandedDocumentKeys.includes(doc.key);
           const rawRevisionHistory = getDocumentRevisions(doc.key);
           const revisionState = deriveDocumentRevisionState(doc, rawRevisionHistory);
           const revisionHistory = revisionState.revisions;

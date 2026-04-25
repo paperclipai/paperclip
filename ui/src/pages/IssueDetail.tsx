@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -102,13 +102,14 @@ import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues"
 import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import {
-  Activity as ActivityIcon,
   Archive,
   ArrowLeft,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   EyeOff,
+  GripVertical,
   Hexagon,
   ListTree,
   MessageSquare,
@@ -119,6 +120,7 @@ import {
   PlayCircle,
   Plus,
   Repeat,
+  Settings2,
   SlidersHorizontal,
   Trash2,
   XCircle,
@@ -595,6 +597,7 @@ type IssueDetailChatTabProps = {
     interaction: IssueThreadInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void>;
+  layout?: "stacked" | "filled";
 };
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
@@ -638,6 +641,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  layout = "stacked",
 }: IssueDetailChatTabProps) {
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
@@ -772,70 +776,86 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [resolvedActivity],
   );
 
+  const loadEarlierStrip = hasOlderComments ? (
+    <div className={cn("flex justify-center", layout === "filled" ? "shrink-0 border-b border-border/40 px-3 py-1.5" : "")}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={commentsLoadingOlder}
+        onClick={onLoadOlderComments}
+      >
+        {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+      </Button>
+    </div>
+  ) : null;
+
+  const thread = (
+    <IssueChatThread
+      layout={layout}
+      composerRef={composerRef}
+      comments={commentsWithRunMeta}
+      interactions={interactions}
+      feedbackVotes={feedbackVotes}
+      feedbackDataSharingPreference={feedbackDataSharingPreference}
+      feedbackTermsUrl={feedbackTermsUrl}
+      linkedRuns={timelineRuns}
+      timelineEvents={timelineEvents}
+      liveRuns={resolvedLiveRuns}
+      activeRun={resolvedActiveRun}
+      blockedBy={blockedBy ?? []}
+      blockerAttention={blockerAttention}
+      companyId={companyId}
+      projectId={projectId}
+      issueStatus={issueStatus}
+      agentMap={agentMap}
+      currentUserId={currentUserId}
+      userLabelMap={userLabelMap}
+      userProfileMap={userProfileMap}
+      draftKey={draftKey}
+      enableReassign
+      reassignOptions={reassignOptions}
+      currentAssigneeValue={currentAssigneeValue}
+      suggestedAssigneeValue={suggestedAssigneeValue}
+      mentions={mentions}
+      composerDisabledReason={composerDisabledReason}
+      composerHint={composerHint}
+      onVote={onVote}
+      onAdd={onAdd}
+      imageUploadHandler={onImageUpload}
+      onAttachImage={onAttachImage}
+      onInterruptQueued={onInterruptQueued}
+      onCancelQueued={onCancelQueued}
+      interruptingQueuedRunId={interruptingQueuedRunId}
+      stoppingRunId={interruptingQueuedRunId}
+      onStopRun={onInterruptQueued}
+      onAcceptInteraction={onAcceptInteraction}
+      onRejectInteraction={onRejectInteraction}
+      onSubmitInteractionAnswers={(interaction, answers) =>
+        onSubmitInteractionAnswers(interaction, answers)
+      }
+      onCancelRun={runningIssueRun
+        ? async () => {
+            await onInterruptQueued(runningIssueRun.id);
+          }
+        : undefined}
+      onImageClick={onImageClick}
+    />
+  );
+
+  if (layout === "filled") {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {loadEarlierStrip}
+        <div className="flex min-h-0 flex-1 flex-col">{thread}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
-      {hasOlderComments ? (
-        <div className="flex justify-center">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={commentsLoadingOlder}
-            onClick={onLoadOlderComments}
-          >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
-          </Button>
-        </div>
-      ) : null}
-      <IssueChatThread
-        composerRef={composerRef}
-        comments={commentsWithRunMeta}
-        interactions={interactions}
-        feedbackVotes={feedbackVotes}
-        feedbackDataSharingPreference={feedbackDataSharingPreference}
-        feedbackTermsUrl={feedbackTermsUrl}
-        linkedRuns={timelineRuns}
-        timelineEvents={timelineEvents}
-        liveRuns={resolvedLiveRuns}
-        activeRun={resolvedActiveRun}
-        blockedBy={blockedBy ?? []}
-        blockerAttention={blockerAttention}
-        companyId={companyId}
-        projectId={projectId}
-        issueStatus={issueStatus}
-        agentMap={agentMap}
-        currentUserId={currentUserId}
-        userLabelMap={userLabelMap}
-        userProfileMap={userProfileMap}
-        draftKey={draftKey}
-        enableReassign
-        reassignOptions={reassignOptions}
-        currentAssigneeValue={currentAssigneeValue}
-        suggestedAssigneeValue={suggestedAssigneeValue}
-        mentions={mentions}
-        composerDisabledReason={composerDisabledReason}
-        composerHint={composerHint}
-        onVote={onVote}
-        onAdd={onAdd}
-        imageUploadHandler={onImageUpload}
-        onAttachImage={onAttachImage}
-        onInterruptQueued={onInterruptQueued}
-        onCancelQueued={onCancelQueued}
-        interruptingQueuedRunId={interruptingQueuedRunId}
-        stoppingRunId={interruptingQueuedRunId}
-        onStopRun={onInterruptQueued}
-        onAcceptInteraction={onAcceptInteraction}
-        onRejectInteraction={onRejectInteraction}
-        onSubmitInteractionAnswers={(interaction, answers) =>
-          onSubmitInteractionAnswers(interaction, answers)
-        }
-        onCancelRun={runningIssueRun
-          ? async () => {
-              await onInterruptQueued(runningIssueRun.id);
-            }
-          : undefined}
-        onImageClick={onImageClick}
-      />
+      {loadEarlierStrip}
+      {thread}
     </div>
   );
 });
@@ -1020,11 +1040,177 @@ function IssueDetailActivityTab({
   );
 }
 
+const ISSUE_DETAIL_SPLIT_STORAGE_KEY = "paperclip:issue-detail.split-pct";
+const ISSUE_DETAIL_SPLIT_MIN = 28;
+const ISSUE_DETAIL_SPLIT_MAX = 60;
+const ISSUE_DETAIL_RAIL_MIN_PX = 420;
+const ISSUE_DETAIL_CHAT_MIN_PX = 640;
+const ISSUE_DETAIL_STACK_THRESHOLD_PX = ISSUE_DETAIL_RAIL_MIN_PX + ISSUE_DETAIL_CHAT_MIN_PX + 24;
+
+function useMeasuredWidth(externalRef?: React.MutableRefObject<HTMLDivElement | null>) {
+  const [width, setWidth] = useState(0);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const setRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (externalRef) externalRef.current = node;
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      if (!node) return;
+      setWidth(node.getBoundingClientRect().width);
+      if (typeof ResizeObserver === "undefined") return;
+      const obs = new ResizeObserver((entries) => {
+        const e = entries[0];
+        if (e) setWidth(e.contentRect.width);
+      });
+      obs.observe(node);
+      observerRef.current = obs;
+    },
+    [externalRef],
+  );
+  return [setRef, width] as const;
+}
+
+function useStickyBoolean(key: string, defaultValue: boolean) {
+  const [value, setValue] = useState<boolean>(() => {
+    if (typeof window === "undefined") return defaultValue;
+    const raw = window.localStorage.getItem(key);
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    return defaultValue;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(key, String(value));
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
+function TruncatedDescription({
+  signal,
+  children,
+}: {
+  signal: string;
+  children: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!el) return;
+    setOverflowing(el.scrollHeight > el.clientHeight + 2);
+  }, [signal, expanded]);
+
+  return (
+    <div className="space-y-1.5">
+      <div
+        ref={measureRef}
+        className={cn(
+          "focus-within:line-clamp-none focus-within:overflow-visible",
+          !expanded && "line-clamp-6",
+        )}
+      >
+        {children}
+      </div>
+      {(overflowing || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function useStickyIssueDetailSplitPct(defaultPct: number) {
+  const [pct, setPct] = useState<number>(() => {
+    if (typeof window === "undefined") return defaultPct;
+    const raw = window.localStorage.getItem(ISSUE_DETAIL_SPLIT_STORAGE_KEY);
+    const parsed = raw ? Number(raw) : NaN;
+    if (Number.isFinite(parsed) && parsed >= ISSUE_DETAIL_SPLIT_MIN && parsed <= ISSUE_DETAIL_SPLIT_MAX) {
+      return parsed;
+    }
+    return defaultPct;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ISSUE_DETAIL_SPLIT_STORAGE_KEY, String(Math.round(pct)));
+  }, [pct]);
+  return [pct, setPct] as const;
+}
+
+function IssueDetailSplitHandle({
+  containerRef,
+  rightPct,
+  setRightPct,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  rightPct: number;
+  setRightPct: (n: number) => void;
+}) {
+  const draggingRef = useRef(false);
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    draggingRef.current = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!draggingRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const xFromRight = rect.right - e.clientX;
+      const pct = (xFromRight / rect.width) * 100;
+      const minPctFromRailPx = (ISSUE_DETAIL_RAIL_MIN_PX / rect.width) * 100;
+      const maxPctFromChatPx = 100 - (ISSUE_DETAIL_CHAT_MIN_PX / rect.width) * 100;
+      const lowerBound = Math.max(ISSUE_DETAIL_SPLIT_MIN, minPctFromRailPx);
+      const upperBound = Math.min(ISSUE_DETAIL_SPLIT_MAX, maxPctFromChatPx);
+      const clamped = Math.max(lowerBound, Math.min(upperBound, pct));
+      setRightPct(clamped);
+    },
+    [containerRef, setRightPct],
+  );
+
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    draggingRef.current = false;
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuenow={Math.round(100 - rightPct)}
+      aria-valuemin={100 - ISSUE_DETAIL_SPLIT_MAX}
+      aria-valuemax={100 - ISSUE_DETAIL_SPLIT_MIN}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onDoubleClick={() => setRightPct(40)}
+      className="group relative hidden w-1.5 cursor-col-resize items-center justify-center bg-border/30 transition-colors hover:bg-border md:flex"
+      title="Drag to resize · double-click to reset"
+    >
+      <div className="absolute inset-y-0 -inset-x-2" />
+      <GripVertical className="relative z-10 h-4 w-4 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100" />
+    </div>
+  );
+}
+
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
-  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
+  const { closePanel } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1036,6 +1222,7 @@ export function IssueDetail() {
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
+  const [chatView, setChatView] = useState<"chat" | "activity">("chat");
   const [handoffFocusSignal, setHandoffFocusSignal] = useState(0);
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
@@ -1058,6 +1245,10 @@ export function IssueDetail() {
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
   const cancelledQueuedOptimisticCommentIdsRef = useRef(new Set<string>());
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
+  const [splitContainerCallbackRef, measuredContainerWidth] = useMeasuredWidth(splitContainerRef);
+  const [rightPct, setRightPct] = useStickyIssueDetailSplitPct(40);
+  const [detailsOpen, setDetailsOpen] = useStickyBoolean("paperclip:issue-detail.details-open", false);
   const resolvedIssueDetailState = useMemo(
     () => readIssueDetailLocationState(issueId, location.state, location.search),
     [issueId, location.state, location.search],
@@ -2291,28 +2482,9 @@ export function IssueDetail() {
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!panelIssue) {
-      closePanel();
-      return;
-    }
-    openPanel(
-      <IssueProperties
-        issue={panelIssue}
-        childIssues={panelChildIssues}
-        onAddSubIssue={openNewSubIssue}
-        onUpdate={handleIssuePropertiesUpdate}
-      />
-    );
+    closePanel();
     return () => closePanel();
-  }, [
-    closePanel,
-    handleIssuePropertiesUpdate,
-    issuePanelKey,
-    openNewSubIssue,
-    openPanel,
-    panelChildIssues,
-    panelIssue,
-  ]);
+  }, [closePanel]);
 
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
@@ -2417,7 +2589,7 @@ export function IssueDetail() {
       if (action === "focus_comment") {
         event.preventDefault();
         event.stopPropagation();
-        setDetailTab("chat");
+        setChatView("chat");
         setPendingCommentComposerFocusKey((current) => current + 1);
       }
     };
@@ -2438,15 +2610,15 @@ export function IssueDetail() {
     if (!hash.startsWith("#document-")) return;
     const documentKey = decodeURIComponent(hash.slice("#document-".length));
     if (documentKey !== ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY) return;
-    setDetailTab("activity");
+    setChatView("activity");
     setHandoffFocusSignal((current) => current + 1);
   }, [location.hash]);
 
   useEffect(() => {
     if (pendingCommentComposerFocusKey === 0) return;
-    if (detailTab !== "chat") return;
+    if (chatView !== "chat") return;
     commentComposerRef.current?.focus();
-  }, [detailTab, pendingCommentComposerFocusKey]);
+  }, [chatView, pendingCommentComposerFocusKey]);
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
@@ -2770,8 +2942,347 @@ export function IssueDetail() {
     </>
   );
 
+  const stackedLayout =
+    isMobile || (measuredContainerWidth > 0 && measuredContainerWidth < ISSUE_DETAIL_STACK_THRESHOLD_PX);
+
+  const renderChatTab = (chatLayout: "stacked" | "filled") => (
+    <IssueDetailChatTab
+      key={issue.id}
+      layout={chatLayout}
+      issueId={issue.id}
+      companyId={issue.companyId}
+      projectId={issue.projectId ?? null}
+      issueStatus={issue.status}
+      executionRunId={issue.executionRunId ?? null}
+      blockedBy={issue.blockedBy ?? []}
+      blockerAttention={issue.blockerAttention ?? null}
+      comments={threadComments}
+      locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
+      interactions={interactions}
+      hasOlderComments={hasOlderComments}
+      commentsLoadingOlder={commentsLoadingOlder}
+      onLoadOlderComments={loadOlderComments}
+      composerRef={commentComposerRef}
+      feedbackVotes={feedbackVotes}
+      feedbackDataSharingPreference={feedbackDataSharingPreference}
+      feedbackTermsUrl={FEEDBACK_TERMS_URL}
+      agentMap={agentMap}
+      currentUserId={currentUserId}
+      userLabelMap={userLabelMap}
+      userProfileMap={userProfileMap}
+      draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+      reassignOptions={commentReassignOptions}
+      currentAssigneeValue={actualAssigneeValue}
+      suggestedAssigneeValue={suggestedAssigneeValue}
+      mentions={mentionOptions}
+      composerDisabledReason={commentComposerDisabledReason}
+      composerHint={composerHint}
+      queuedCommentReason={queuedCommentReason}
+      onVote={handleCommentVote}
+      onAdd={handleChatAdd}
+      onImageUpload={handleCommentImageUpload}
+      onAttachImage={handleCommentAttachImage}
+      onInterruptQueued={handleInterruptQueuedRun}
+      onCancelQueued={handleCancelQueuedComment}
+      interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
+      onImageClick={handleChatImageClick}
+      onAcceptInteraction={handleAcceptInteraction}
+      onRejectInteraction={handleRejectInteraction}
+      onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
+    />
+  );
+
+  const activityElement = (
+    <IssueDetailActivityTab
+      key={issue.id}
+      issueId={issue.id}
+      companyId={issue.companyId}
+      issueStatus={issue.status}
+      childIssues={childIssues}
+      agentMap={agentMap}
+      hasLiveRuns={hasLiveRuns}
+      currentUserId={currentUserId}
+      userProfileMap={userProfileMap}
+      pendingApprovalAction={pendingApprovalAction}
+      handoffFocusSignal={handoffFocusSignal}
+      onApprovalAction={(approvalId, action) => {
+        approvalDecision.mutate({ approvalId, action });
+      }}
+    />
+  );
+
+  const renderChatColumn = (mode: "filled" | "stacked") => {
+    const toggle = (
+      <div
+        className={cn(
+          "flex items-center gap-1",
+          mode === "filled"
+            ? "border-b border-border/60 bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/85"
+            : "",
+        )}
+      >
+        <div className="inline-flex rounded-full border border-border/70 bg-background/80 p-0.5 text-[11px] font-medium">
+          {(["chat", "activity"] as const).map((view) => (
+            <button
+              key={view}
+              type="button"
+              onClick={() => setChatView(view)}
+              className={cn(
+                "rounded-full px-3 py-1 transition-colors capitalize",
+                chatView === view
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              aria-pressed={chatView === view}
+            >
+              {view}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+
+    if (mode === "filled") {
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {toggle}
+          {chatView === "chat" ? (
+            <div className="flex min-h-0 flex-1 flex-col">{renderChatTab("filled")}</div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4 sm:px-5">
+              {activityElement}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        {toggle}
+        {chatView === "chat" ? renderChatTab("stacked") : activityElement}
+      </div>
+    );
+  };
+
   return (
-    <div className="max-w-3xl space-y-6">
+    <>
+    <div
+      ref={splitContainerCallbackRef}
+      className={cn(stackedLayout ? "space-y-6" : "flex h-full min-h-0")}
+    >
+      {!stackedLayout && (
+        <div
+          className="flex min-h-0 min-w-0 flex-col"
+          style={{ flexBasis: `${100 - rightPct}%` }}
+        >
+          {renderChatColumn("filled")}
+        </div>
+      )}
+      {!stackedLayout && (
+        <IssueDetailSplitHandle
+          containerRef={splitContainerRef}
+          rightPct={rightPct}
+          setRightPct={setRightPct}
+        />
+      )}
+      <aside
+        className={cn(
+          stackedLayout
+            ? "space-y-6"
+            : "flex min-h-0 flex-col overflow-y-auto border-l border-border/70",
+        )}
+        style={!stackedLayout ? { flexBasis: `${rightPct}%` } : undefined}
+      >
+        <header
+          className={cn(
+            "border-b border-border/60 space-y-2",
+            stackedLayout
+              ? "pb-3"
+              : "sticky top-0 z-20 bg-background/95 px-5 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+          )}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <StatusIcon
+              status={issue.status}
+              blockerAttention={issue.blockerAttention}
+              onChange={(status) => updateIssue.mutate({ status })}
+            />
+            <span className="text-sm font-mono text-muted-foreground shrink-0">
+              {issue.identifier ?? issue.id.slice(0, 8)}
+            </span>
+            {hasLiveRuns && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
+                </span>
+                Live
+              </span>
+            )}
+            {issue.originKind === "routine_execution" && issue.originId && (
+              <Link
+                to={`/routines/${issue.originId}`}
+                className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
+              >
+                <Repeat className="h-3 w-3" />
+                Routine
+              </Link>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn("ml-auto shrink-0", detailsOpen && "bg-accent text-foreground")}
+              onClick={() => setDetailsOpen((v) => !v)}
+              title={detailsOpen ? "Hide issue settings" : "Show issue settings"}
+              aria-expanded={detailsOpen}
+              aria-label="Issue settings"
+            >
+              <Settings2 className="h-4 w-4" />
+            </Button>
+            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="shrink-0"
+                  aria-label="More issue actions"
+                  title="More issue actions"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setMoreOpen(true);
+                    }
+                  }}
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-52 p-1" align="end">
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                  onClick={() => {
+                    void copyIssueToClipboard();
+                    setMoreOpen(false);
+                  }}
+                >
+                  {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+                  Copy as markdown
+                </button>
+                {canArchiveFromInbox && (
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 disabled:opacity-50"
+                    disabled={archivePending}
+                    onClick={() => {
+                      if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <Archive className="h-3 w-3" />
+                    Archive from inbox
+                  </button>
+                )}
+                {canShowSubtreeControls ? (
+                  <>
+                    <div className="my-1 h-px bg-border" />
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      onClick={() => {
+                        setTreeControlMode("pause");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <PauseCircle className="h-3 w-3" />
+                      Pause subtree...
+                    </button>
+                    {canResumeSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("resume");
+                          setTreeControlWakeAgentsOnResume(true);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <PlayCircle className="h-3 w-3" />
+                        Resume subtree
+                      </button>
+                    ) : null}
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                      onClick={() => {
+                        setTreeControlMode("cancel");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <XCircle className="h-3 w-3" />
+                      Cancel subtree...
+                    </button>
+                    {canRestoreSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("restore");
+                          setTreeControlWakeAgentsOnResume(false);
+                          setTreeControlCancelConfirmed(false);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <Repeat className="h-3 w-3" />
+                        Restore subtree...
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                <div className="my-1 h-px bg-border" />
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") },
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this Issue
+                </button>
+              </PopoverContent>
+            </Popover>
+          </div>
+          <InlineEditor
+            value={issue.title}
+            onSave={(title) => updateIssue.mutateAsync({ title })}
+            as="h2"
+            className="text-xl font-bold"
+          />
+        </header>
+
+        {detailsOpen && (
+          <div
+            className={cn(
+              "border-b border-border/60 bg-accent/5",
+              stackedLayout ? "pb-3" : "px-5 py-3",
+            )}
+          >
+            <IssueProperties
+              issue={panelIssue ?? issue}
+              childIssues={panelChildIssues}
+              onAddSubIssue={openNewSubIssue}
+              onUpdate={handleIssuePropertiesUpdate}
+              inline={stackedLayout}
+            />
+          </div>
+        )}
+
+        <div className={cn("space-y-6", !stackedLayout && "p-5")}>
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
@@ -2873,233 +3384,7 @@ export function IssueDetail() {
         </div>
       )}
 
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <StatusIcon
-            status={issue.status}
-            blockerAttention={issue.blockerAttention}
-            onChange={(status) => updateIssue.mutate({ status })}
-          />
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => updateIssue.mutate({ priority })}
-          />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
-
-          {hasLiveRuns && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
-              </span>
-              Live
-            </span>
-          )}
-
-          {issue.originKind === "routine_execution" && issue.originId && (
-            <Link
-              to={`/routines/${issue.originId}`}
-              className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
-            >
-              <Repeat className="h-3 w-3" />
-              Routine
-            </Link>
-          )}
-
-          {issue.projectId ? (
-            <Link
-              to={`/projects/${issue.projectId}`}
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
-            >
-              <Hexagon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
-            </Link>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
-              <Hexagon className="h-3 w-3 shrink-0" />
-              No project
-            </span>
-          )}
-
-          {(issue.labels ?? []).length > 0 && (
-            <div className="hidden sm:flex items-center gap-1">
-              {(issue.labels ?? []).slice(0, 4).map((label) => (
-                <span
-                  key={label.id}
-                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium"
-                  style={{
-                    borderColor: label.color,
-                    color: pickTextColorForPillBg(label.color, 0.12),
-                    backgroundColor: `${label.color}1f`,
-                  }}
-                >
-                  {label.name}
-                </span>
-              ))}
-              {(issue.labels ?? []).length > 4 && (
-                <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>
-              )}
-            </div>
-          )}
-
-          {!(isMobile && isFromInbox) && (
-            <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={copyIssueToClipboard}
-                title="Copy issue as markdown"
-              >
-                {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => setMobilePropsOpen(true)}
-                title="Properties"
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-
-          <div className="hidden md:flex items-center md:ml-auto shrink-0">
-            {canArchiveFromInbox && (
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => {
-                  if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
-                }}
-                disabled={archivePending}
-                title="Archive from inbox"
-                aria-label="Archive from inbox"
-              >
-                <Archive className="h-4 w-4" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
-            >
-              {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className={cn(
-                "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
-              )}
-              onClick={() => setPanelVisible(true)}
-              title="Show properties"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-            </Button>
-
-            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="shrink-0"
-                  aria-label="More issue actions"
-                  title="More issue actions"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setMoreOpen(true);
-                    }
-                  }}
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </PopoverTrigger>
-            <PopoverContent className="w-52 p-1" align="end">
-              {canShowSubtreeControls ? (
-                <>
-                  <button
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                    onClick={() => {
-                      setTreeControlMode("pause");
-                      setTreeControlCancelConfirmed(false);
-                      setTreeControlOpen(true);
-                      setMoreOpen(false);
-                    }}
-                  >
-                    <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
-                  </button>
-                  {canResumeSubtree ? (
-                    <button
-                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => {
-                        setTreeControlMode("resume");
-                        setTreeControlWakeAgentsOnResume(true);
-                        setTreeControlOpen(true);
-                        setMoreOpen(false);
-                      }}
-                    >
-                      <PlayCircle className="h-3 w-3" />
-                      Resume subtree
-                    </button>
-                  ) : null}
-                  <button
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                    onClick={() => {
-                      setTreeControlMode("cancel");
-                      setTreeControlCancelConfirmed(false);
-                      setTreeControlOpen(true);
-                      setMoreOpen(false);
-                    }}
-                  >
-                    <XCircle className="h-3 w-3" />
-                    Cancel subtree...
-                  </button>
-                  {canRestoreSubtree ? (
-                    <button
-                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => {
-                        setTreeControlMode("restore");
-                        setTreeControlWakeAgentsOnResume(false);
-                        setTreeControlCancelConfirmed(false);
-                        setTreeControlOpen(true);
-                        setMoreOpen(false);
-                      }}
-                    >
-                      <Repeat className="h-3 w-3" />
-                      Restore subtree...
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
-              </button>
-            </PopoverContent>
-            </Popover>
-          </div>
-        </div>
-
-        <InlineEditor
-          value={issue.title}
-          onSave={(title) => updateIssue.mutateAsync({ title })}
-          as="h2"
-          className="text-xl font-bold"
-        />
-
+      <TruncatedDescription signal={issue.description ?? ""}>
         <InlineEditor
           value={issue.description ?? ""}
           onSave={(description) => updateIssue.mutateAsync({ description })}
@@ -3117,7 +3402,7 @@ export function IssueDetail() {
             await uploadAttachment.mutateAsync(file);
           }}
         />
-      </div>
+      </TruncatedDescription>
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
@@ -3363,115 +3648,35 @@ export function IssueDetail() {
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 
-      <Separator />
-
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="chat" className="gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Chat
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-          <TabsTrigger value="related-work" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Related work
-          </TabsTrigger>
+      {issuePluginTabItems.length > 0 && (
+        <Tabs
+          value={activePluginTab?.value ?? issuePluginTabItems[0]!.value}
+          onValueChange={setDetailTab}
+          className="space-y-3"
+        >
+          <TabsList variant="line" className="w-full justify-start gap-1">
+            {issuePluginTabItems.map((item) => (
+              <TabsTrigger key={item.value} value={item.value}>
+                {item.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
           {issuePluginTabItems.map((item) => (
-            <TabsTrigger key={item.value} value={item.value}>
-              {item.label}
-            </TabsTrigger>
+            <TabsContent key={item.value} value={item.value}>
+              <PluginSlotMount
+                slot={item.slot}
+                context={{
+                  companyId: issue.companyId,
+                  projectId: issue.projectId ?? null,
+                  entityId: issue.id,
+                  entityType: "issue",
+                }}
+                missingBehavior="placeholder"
+              />
+            </TabsContent>
           ))}
-        </TabsList>
-
-        <TabsContent value="chat">
-          {detailTab === "chat" ? (
-            <IssueDetailChatTab
-              issueId={issue.id}
-              companyId={issue.companyId}
-              projectId={issue.projectId ?? null}
-              issueStatus={issue.status}
-              executionRunId={issue.executionRunId ?? null}
-              blockedBy={issue.blockedBy ?? []}
-              blockerAttention={issue.blockerAttention ?? null}
-              comments={threadComments}
-              locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
-              interactions={interactions}
-              hasOlderComments={hasOlderComments}
-              commentsLoadingOlder={commentsLoadingOlder}
-              onLoadOlderComments={loadOlderComments}
-              composerRef={commentComposerRef}
-              feedbackVotes={feedbackVotes}
-              feedbackDataSharingPreference={feedbackDataSharingPreference}
-              feedbackTermsUrl={FEEDBACK_TERMS_URL}
-              agentMap={agentMap}
-              currentUserId={currentUserId}
-              userLabelMap={userLabelMap}
-              userProfileMap={userProfileMap}
-              draftKey={`paperclip:issue-comment-draft:${issue.id}`}
-              reassignOptions={commentReassignOptions}
-              currentAssigneeValue={actualAssigneeValue}
-              suggestedAssigneeValue={suggestedAssigneeValue}
-              mentions={mentionOptions}
-              composerDisabledReason={commentComposerDisabledReason}
-              composerHint={composerHint}
-              queuedCommentReason={queuedCommentReason}
-              onVote={handleCommentVote}
-              onAdd={handleChatAdd}
-              onImageUpload={handleCommentImageUpload}
-              onAttachImage={handleCommentAttachImage}
-              onInterruptQueued={handleInterruptQueuedRun}
-              onCancelQueued={handleCancelQueuedComment}
-              interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
-              onImageClick={handleChatImageClick}
-              onAcceptInteraction={handleAcceptInteraction}
-              onRejectInteraction={handleRejectInteraction}
-              onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
-            />
-          ) : null}
-        </TabsContent>
-
-        <TabsContent value="activity">
-          {detailTab === "activity" ? (
-            <IssueDetailActivityTab
-              issueId={issue.id}
-              companyId={issue.companyId}
-              issueStatus={issue.status}
-              childIssues={childIssues}
-              agentMap={agentMap}
-              hasLiveRuns={hasLiveRuns}
-              currentUserId={currentUserId}
-              userProfileMap={userProfileMap}
-              pendingApprovalAction={pendingApprovalAction}
-              handoffFocusSignal={handoffFocusSignal}
-              onApprovalAction={(approvalId, action) => {
-                approvalDecision.mutate({ approvalId, action });
-              }}
-            />
-          ) : null}
-        </TabsContent>
-
-        <TabsContent value="related-work">
-          <IssueRelatedWorkPanel relatedWork={issue.relatedWork} />
-        </TabsContent>
-
-        {activePluginTab && (
-          <TabsContent value={activePluginTab.value}>
-            <PluginSlotMount
-              slot={activePluginTab.slot}
-              context={{
-                companyId: issue.companyId,
-                projectId: issue.projectId ?? null,
-                entityId: issue.id,
-                entityType: "issue",
-              }}
-              missingBehavior="placeholder"
-            />
-          </TabsContent>
-        )}
-      </Tabs>
+        </Tabs>
+      )}
 
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
@@ -3624,26 +3829,35 @@ export function IssueDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* Mobile properties drawer */}
-      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
-          <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
-          </SheetHeader>
-          <ScrollArea className="flex-1 overflow-y-auto">
-            <div className="px-4 pb-4">
-              <IssueProperties
-                issue={issue}
-                childIssues={childIssues}
-                onAddSubIssue={openNewSubIssue}
-                onUpdate={(data) => updateIssue.mutate(data)}
-                inline
-              />
-            </div>
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
-      <ScrollToBottom />
+      {stackedLayout && (
+        <>
+          <Separator />
+          {renderChatColumn("stacked")}
+        </>
+      )}
+        </div>
+      </aside>
     </div>
+
+    <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
+      <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
+        <SheetHeader>
+          <SheetTitle className="text-sm">Properties</SheetTitle>
+        </SheetHeader>
+        <ScrollArea className="flex-1 overflow-y-auto">
+          <div className="px-4 pb-4">
+            <IssueProperties
+              issue={issue}
+              childIssues={childIssues}
+              onAddSubIssue={openNewSubIssue}
+              onUpdate={(data) => updateIssue.mutate(data)}
+              inline
+            />
+          </div>
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
+    <ScrollToBottom />
+    </>
   );
 }

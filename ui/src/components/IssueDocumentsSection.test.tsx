@@ -163,6 +163,13 @@ async function flush() {
   });
 }
 
+function seedExpandedDocs(issueId: string, ...docKeys: string[]) {
+  window.localStorage.setItem(
+    `paperclip:issue-document-expanded:${issueId}`,
+    JSON.stringify(docKeys),
+  );
+}
+
 function createIssueDocument(overrides: Partial<IssueDocument> = {}): IssueDocument {
   return {
     id: "document-1",
@@ -284,6 +291,7 @@ describe("IssueDocumentsSection", () => {
         body: "# Handoff",
       }),
     ]);
+    seedExpandedDocs(issue.id, "plan");
 
     await act(async () => {
       root.render(
@@ -418,6 +426,7 @@ describe("IssueDocumentsSection", () => {
         }),
       ],
     );
+    seedExpandedDocs(issue.id, "plan");
 
     await act(async () => {
       root.render(
@@ -497,6 +506,7 @@ describe("IssueDocumentsSection", () => {
         }),
       ],
     );
+    seedExpandedDocs(issue.id, "plan");
 
     await act(async () => {
       root.render(
@@ -558,6 +568,7 @@ describe("IssueDocumentsSection", () => {
     });
 
     mockIssuesApi.listDocuments.mockResolvedValue([document]);
+    seedExpandedDocs(issue.id, "plan");
 
     await act(async () => {
       root.render(

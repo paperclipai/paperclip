@@ -12,6 +12,7 @@ import {
   createContext,
   Component,
   forwardRef,
+  useCallback,
   useContext,
   useEffect,
   useImperativeHandle,
@@ -103,7 +104,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 
 interface IssueChatMessageContext {
@@ -275,6 +276,7 @@ interface IssueChatThreadProps {
   showJumpToLatest?: boolean;
   emptyMessage?: string;
   variant?: "full" | "embedded";
+  layout?: "stacked" | "filled";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
@@ -2073,17 +2075,26 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setBody(loadDraft(draftKey));
   }, [draftKey]);
 
+  const pendingDraftRef = useRef<{ key: string; body: string } | null>(null);
+
   useEffect(() => {
-    if (!draftKey) return;
+    if (!draftKey) {
+      pendingDraftRef.current = null;
+      return;
+    }
     if (draftTimer.current) clearTimeout(draftTimer.current);
+    pendingDraftRef.current = { key: draftKey, body };
     draftTimer.current = setTimeout(() => {
       saveDraft(draftKey, body);
+      pendingDraftRef.current = null;
     }, DRAFT_DEBOUNCE_MS);
   }, [body, draftKey]);
 
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      const pending = pendingDraftRef.current;
+      if (pending) saveDraft(pending.key, pending.body);
     };
   }, []);
 
@@ -2478,6 +2489,7 @@ export function IssueChatThread({
   showJumpToLatest,
   emptyMessage,
   variant = "full",
+  layout = "stacked",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
   hasOutputForRun: hasOutputForRunOverride,
@@ -2496,6 +2508,10 @@ export function IssueChatThread({
   const hasScrolledRef = useRef(false);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
+  const filledViewportRef = useRef<HTMLDivElement | null>(null);
+  const stuckToBottomRef = useRef(true);
+  const initialScrollDoneRef = useRef(false);
+  const [showFilledJumpPill, setShowFilledJumpPill] = useState(false);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
   const pendingSubmitScrollRef = useRef(false);
@@ -2701,8 +2717,51 @@ export function IssueChatThread({
   }, [location.hash, messages]);
 
   function handleJumpToLatest() {
+    if (layout === "filled") {
+      const el = filledViewportRef.current;
+      if (el) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        stuckToBottomRef.current = true;
+        setShowFilledJumpPill(false);
+        return;
+      }
+    }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
+
+  useLayoutEffect(() => {
+    if (layout !== "filled") return;
+    if (initialScrollDoneRef.current) return;
+    if (messages.length === 0) return;
+    const el = filledViewportRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stuckToBottomRef.current = true;
+    initialScrollDoneRef.current = true;
+  }, [layout, messages.length]);
+
+  useLayoutEffect(() => {
+    if (layout !== "filled") return;
+    if (!initialScrollDoneRef.current) return;
+    const el = filledViewportRef.current;
+    if (!el) return;
+    if (stuckToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom > 120) setShowFilledJumpPill(true);
+  }, [layout, messages]);
+
+  const handleFilledScroll = useCallback(() => {
+    if (layout !== "filled") return;
+    const el = filledViewportRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom <= 24;
+    stuckToBottomRef.current = atBottom;
+    setShowFilledJumpPill(distanceFromBottom > 120);
+  }, [layout]);
 
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
@@ -2747,7 +2806,7 @@ export function IssueChatThread({
     ],
   );
 
-  const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
+  const resolvedShowJumpToLatest = showJumpToLatest ?? (variant === "full" && layout !== "filled");
   const resolvedEmptyMessage = emptyMessage
     ?? (variant === "embedded"
       ? "No run output yet."
@@ -2756,6 +2815,114 @@ export function IssueChatThread({
     () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
     [messages],
   );
+
+  const messagesBlock = (
+    <IssueChatErrorBoundary
+      resetKey={errorBoundaryResetKey}
+      messages={messages}
+      emptyMessage={resolvedEmptyMessage}
+      variant={variant}
+    >
+      <div data-testid="thread-root">
+        <div
+          data-testid="thread-viewport"
+          className={variant === "embedded" ? "space-y-3" : "space-y-4"}
+        >
+          {messages.length === 0 ? (
+            <div className={cn(
+              "text-center text-sm text-muted-foreground",
+              variant === "embedded"
+                ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
+                : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+            )}>
+              {resolvedEmptyMessage}
+            </div>
+          ) : (
+            messages.map((message) => {
+              if (message.role === "user") {
+                return <IssueChatUserMessage key={message.id} message={message} />;
+              }
+              if (message.role === "assistant") {
+                return <IssueChatAssistantMessage key={message.id} message={message} />;
+              }
+              return <IssueChatSystemMessage key={message.id} message={message} />;
+            })
+          )}
+          {showComposer ? (
+            <div data-testid="issue-chat-thread-notices" className="space-y-2">
+              <IssueBlockedNotice
+                issueStatus={issueStatus}
+                blockers={unresolvedBlockers}
+                blockerAttention={blockerAttention}
+              />
+              <IssueAssigneePausedNotice agent={assignedAgent} />
+            </div>
+          ) : null}
+          <div ref={bottomAnchorRef} />
+          {showComposer ? (
+            <div
+              aria-hidden
+              data-testid="issue-chat-bottom-spacer"
+              style={{ height: bottomSpacerHeight }}
+            />
+          ) : null}
+        </div>
+      </div>
+    </IssueChatErrorBoundary>
+  );
+
+  const composerBlock = showComposer ? (
+    <div ref={composerViewportAnchorRef}>
+      <IssueChatComposer
+        ref={composerRef}
+        onImageUpload={imageUploadHandler}
+        onAttachImage={onAttachImage}
+        draftKey={draftKey}
+        enableReassign={enableReassign}
+        reassignOptions={reassignOptions}
+        currentAssigneeValue={currentAssigneeValue}
+        suggestedAssigneeValue={suggestedAssigneeValue}
+        mentions={mentions}
+        agentMap={agentMap}
+        composerDisabledReason={composerDisabledReason}
+        composerHint={composerHint}
+        issueStatus={issueStatus}
+      />
+    </div>
+  ) : null;
+
+  if (layout === "filled") {
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <IssueChatCtx.Provider value={chatCtx}>
+          <div className="relative flex h-full min-h-0 flex-col">
+            <div
+              ref={filledViewportRef}
+              onScroll={handleFilledScroll}
+              className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5"
+            >
+              {messagesBlock}
+            </div>
+            {showFilledJumpPill ? (
+              <button
+                type="button"
+                onClick={handleJumpToLatest}
+                className="pointer-events-auto absolute bottom-[88px] left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border/70 bg-background px-3 py-1.5 text-[12px] font-medium text-foreground shadow-md transition-all hover:bg-accent"
+              >
+                <ArrowDown className="h-3.5 w-3.5" />
+                Jump to latest
+              </button>
+            ) : null}
+            {composerBlock ? (
+              <div className="border-t border-border/70 bg-background/95 px-4 py-3 sm:px-5 backdrop-blur supports-[backdrop-filter]:bg-background/85">
+                {composerBlock}
+              </div>
+            ) : null}
+          </div>
+        </IssueChatCtx.Provider>
+      </AssistantRuntimeProvider>
+    );
+  }
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -2772,84 +2939,13 @@ export function IssueChatThread({
             </button>
           </div>
         ) : null}
-
-        <IssueChatErrorBoundary
-          resetKey={errorBoundaryResetKey}
-          messages={messages}
-          emptyMessage={resolvedEmptyMessage}
-          variant={variant}
-        >
-          <div data-testid="thread-root">
-            <div
-              data-testid="thread-viewport"
-              className={variant === "embedded" ? "space-y-3" : "space-y-4"}
-            >
-              {messages.length === 0 ? (
-                <div className={cn(
-                  "text-center text-sm text-muted-foreground",
-                  variant === "embedded"
-                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
-                )}>
-                  {resolvedEmptyMessage}
-                </div>
-              ) : (
-                // Keep transcript rendering independent from assistant-ui's
-                // index-scoped message providers; live transcripts can shrink
-                // or regroup while the runtime still holds stale indices.
-                messages.map((message) => {
-                  if (message.role === "user") {
-                    return <IssueChatUserMessage key={message.id} message={message} />;
-                  }
-                  if (message.role === "assistant") {
-                    return <IssueChatAssistantMessage key={message.id} message={message} />;
-                  }
-                  return <IssueChatSystemMessage key={message.id} message={message} />;
-                })
-              )}
-              {showComposer ? (
-                <div data-testid="issue-chat-thread-notices" className="space-y-2">
-                  <IssueBlockedNotice
-                    issueStatus={issueStatus}
-                    blockers={unresolvedBlockers}
-                    blockerAttention={blockerAttention}
-                  />
-                  <IssueAssigneePausedNotice agent={assignedAgent} />
-                </div>
-              ) : null}
-              <div ref={bottomAnchorRef} />
-              {showComposer ? (
-                <div
-                  aria-hidden
-                  data-testid="issue-chat-bottom-spacer"
-                  style={{ height: bottomSpacerHeight }}
-                />
-              ) : null}
-            </div>
-          </div>
-        </IssueChatErrorBoundary>
-
+        {messagesBlock}
         {showComposer ? (
           <div
-            ref={composerViewportAnchorRef}
             data-testid="issue-chat-composer-dock"
             className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
-            <IssueChatComposer
-              ref={composerRef}
-              onImageUpload={imageUploadHandler}
-              onAttachImage={onAttachImage}
-              draftKey={draftKey}
-              enableReassign={enableReassign}
-              reassignOptions={reassignOptions}
-              currentAssigneeValue={currentAssigneeValue}
-              suggestedAssigneeValue={suggestedAssigneeValue}
-              mentions={mentions}
-              agentMap={agentMap}
-              composerDisabledReason={composerDisabledReason}
-              composerHint={composerHint}
-              issueStatus={issueStatus}
-            />
+            {composerBlock}
           </div>
         ) : null}
       </div>
