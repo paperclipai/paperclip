@@ -185,3 +185,38 @@ def test_list_recent_fills_filters_by_timestamp(fresh_db):
     recent = list_recent_fills(conn, exchange="MEXC", since_ms=150)
     assert {f.order_id for f in recent} == {"o2", "o3"}
     conn.close()
+
+
+from state_store import write_audit, list_audit_for_position, list_audit_recent
+
+
+def test_write_audit_round_trips(fresh_db):
+    conn = open_db(fresh_db)
+    write_audit(conn, timestamp_ms=1, event_type="entry_attempt",
+                severity="info", message="hi")
+    rows = list_audit_recent(conn, since_ms=0, limit=10)
+    assert len(rows) == 1
+    assert rows[0].message == "hi"
+    conn.close()
+
+
+def test_audit_filters_by_position(fresh_db):
+    conn = open_db(fresh_db)
+    pid = insert_position(conn, **_sample_position(status="open"))
+    write_audit(conn, timestamp_ms=1, event_type="entry_attempt",
+                severity="info", message="for-pos", position_id=pid)
+    write_audit(conn, timestamp_ms=2, event_type="heartbeat",
+                severity="info", message="other")
+    rows = list_audit_for_position(conn, pid)
+    assert len(rows) == 1
+    assert rows[0].message == "for-pos"
+    conn.close()
+
+
+def test_audit_serializes_details_dict(fresh_db):
+    conn = open_db(fresh_db)
+    write_audit(conn, timestamp_ms=1, event_type="x",
+                severity="warn", message="m", details={"k": "v"})
+    rows = list_audit_recent(conn, since_ms=0, limit=10)
+    assert rows[0].details == {"k": "v"}
+    conn.close()

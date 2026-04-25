@@ -5,11 +5,12 @@ balances, exchange health, and reconciliation events.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from schemas import PositionRecord, FillRecord
+from schemas import PositionRecord, FillRecord, AuditEntry
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -242,4 +243,52 @@ def _row_to_fill(row: sqlite3.Row) -> FillRecord:
         order_id=row["order_id"], side=row["side"],
         size_usd=row["size_usd"], fill_price=row["fill_price"],
         fees_usd=row["fees_usd"], filled_at_ms=row["filled_at"],
+    )
+
+
+def write_audit(
+    conn: sqlite3.Connection, *,
+    timestamp_ms: int, event_type: str, severity: str, message: str,
+    position_id: Optional[int] = None,
+    exchange: Optional[str] = None,
+    symbol: Optional[str] = None,
+    details: Optional[dict] = None,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO audit_log
+           (timestamp, event_type, severity, position_id, exchange, symbol, message, details)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (timestamp_ms, event_type, severity, position_id, exchange, symbol,
+         message, json.dumps(details) if details is not None else None),
+    )
+    return cur.lastrowid
+
+
+def list_audit_for_position(
+    conn: sqlite3.Connection, position_id: int
+) -> list[AuditEntry]:
+    rows = conn.execute(
+        "SELECT * FROM audit_log WHERE position_id=? ORDER BY timestamp",
+        (position_id,),
+    ).fetchall()
+    return [_row_to_audit(r) for r in rows]
+
+
+def list_audit_recent(
+    conn: sqlite3.Connection, *, since_ms: int, limit: int = 100
+) -> list[AuditEntry]:
+    rows = conn.execute(
+        "SELECT * FROM audit_log WHERE timestamp>=? ORDER BY timestamp DESC LIMIT ?",
+        (since_ms, limit),
+    ).fetchall()
+    return [_row_to_audit(r) for r in rows]
+
+
+def _row_to_audit(row: sqlite3.Row) -> AuditEntry:
+    details = json.loads(row["details"]) if row["details"] else None
+    return AuditEntry(
+        timestamp_ms=row["timestamp"], event_type=row["event_type"],
+        severity=row["severity"], position_id=row["position_id"],
+        exchange=row["exchange"], symbol=row["symbol"],
+        message=row["message"], details=details,
     )
