@@ -38,6 +38,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "claude_local",
+  "claude_code_local",
   "codex_local",
   "cursor",
   "gemini_local",
@@ -48,6 +49,11 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
 
 export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement> = {
   claude_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "confirmed",
+    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
+  claude_code_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
@@ -84,7 +90,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   },
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is {[key: string]: unknown} {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -126,7 +132,7 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const compaction = isRecord(
     heartbeat.sessionCompaction ?? heartbeat.sessionRotation ?? runtime.sessionCompaction,
   )
-    ? (heartbeat.sessionCompaction ?? heartbeat.sessionRotation ?? runtime.sessionCompaction) as Record<string, unknown>
+    ? (heartbeat.sessionCompaction ?? heartbeat.sessionRotation ?? runtime.sessionCompaction) as {[key: string]: unknown}
     : {};
 
   const explicit: Partial<SessionCompactionPolicy> = {};
