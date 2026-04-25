@@ -296,6 +296,66 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     expect(persistedRun?.status).toBe("failed");
   });
 
+  it("does not disclose heartbeat runs outside the board actor companies", async () => {
+    const actorCompanyId = randomUUID();
+    const runCompanyId = randomUUID();
+    const userId = "board-user";
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: actorCompanyId,
+        name: "Actor Company",
+        issuePrefix: "ACT",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: runCompanyId,
+        name: "Run Company",
+        issuePrefix: "RUN",
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: runCompanyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: runCompanyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+
+    const app = createInboxDismissalApp({
+      type: "board",
+      source: "session",
+      userId,
+      companyIds: [actorCompanyId],
+      memberships: [{ companyId: actorCompanyId, status: "active", membershipRole: "member" }],
+    });
+
+    await request(app)
+      .post(`/api/heartbeat-runs/${runId}/resolve`)
+      .send({})
+      .expect(404);
+
+    await expect(dismissalsSvc.list(runCompanyId, userId)).resolves.toHaveLength(0);
+  });
+
   it("does not resolve successful heartbeat runs", async () => {
     const companyId = randomUUID();
     const userId = "board-user";
