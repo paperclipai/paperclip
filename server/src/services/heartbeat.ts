@@ -3888,8 +3888,21 @@ export function heartbeatService(db: Db) {
       delete context.paperclipPreviousSessionId;
     }
 
+    if (sessionCompaction.rotate) {
+      delete context.paperclipContextWarning;
+    } else if (sessionCompaction.contextWarning) {
+      context.paperclipContextWarning = sessionCompaction.contextWarning;
+    }
+
     if (sessionCompaction.abort) {
       const abortReason = sessionCompaction.reason ?? "context overflow";
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: context,
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id));
       await cancelRunInternal(run.id, `Context overflow: ${abortReason}`);
       const issuesSvc = issueService(db);
       await issuesSvc.create(agent.companyId, {
