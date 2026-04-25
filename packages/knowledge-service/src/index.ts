@@ -3,7 +3,20 @@ import { YamlRegistryReader } from "./yaml-registry.js";
 import { TextChunker } from "./chunker.js";
 import { LocalEmbedder } from "./embedder.js";
 import { KnowledgeDb } from "./db.js";
+import { extractUniqueTopicSlugs } from "./stale-detector.js";
 import type { KnowledgeTopic } from "@paperclipai/db/src/schema/knowledge.js";
+
+export interface StaleRefreshResult {
+  topicSlug: string;
+  success: boolean;
+  crawlRunId?: string;
+  error?: string;
+}
+
+export interface StaleRefreshResponse {
+  triggered: number;
+  results: StaleRefreshResult[];
+}
 
 export class KnowledgeService {
   private crawler: KnowledgeCrawler;
@@ -91,6 +104,84 @@ export class KnowledgeService {
     }
   }
 
+  async triggerStaleRefresh(heartbeatText: string): Promise<StaleRefreshResponse> {
+    const topicSlugs = extractUniqueTopicSlugs(heartbeatText);
+    const results: StaleRefreshResult[] = [];
+
+    for (const topicSlug of topicSlugs) {
+      try {
+        const sources = await this.registryReader.getSourcesForTopic(topicSlug);
+        
+        if (sources.length === 0) {
+          results.push({
+            topicSlug,
+            success: false,
+            error: "Topic not found in registry",
+          });
+          continue;
+        }
+
+        const source = sources[0];
+        const crawlRun = await this.db.createCrawlRun({
+          sourceId: source.id,
+          topicId: source.topicId,
+          status: "running",
+        });
+
+        const pages = await this.crawler.crawl(source);
+        
+        for (const page of pages) {
+          const chunks = this.chunker.chunk(page.content);
+          
+          for (let i = 0; i < chunks.length; i++) {
+            const embedding = await this.embedder.embed(chunks[i]);
+            const contentHash = await this.hashContent(chunks[i]);
+            
+            await this.db.createChunk({
+              sourceId: source.id,
+              topicId: source.topicId,
+              url: page.url,
+              urlPath: page.urlPath,
+              title: page.title,
+              content: chunks[i],
+              contentHash,
+              embedding: JSON.stringify(embedding),
+              bm25Score: null,
+              chunkIndex: i,
+              tokenEstimate: this.estimateTokens(chunks[i]),
+              heading: page.heading,
+              section: page.section,
+            });
+          }
+        }
+
+        await this.db.completeCrawlRun(crawlRun.id, {
+          pagesDiscovered: pages.length,
+          pagesCrawled: pages.length,
+          pagesIndexed: pages.length,
+          chunksCreated: pages.reduce((sum, p) => sum + this.chunker.chunk(p.content).length, 0),
+        });
+
+        results.push({
+          topicSlug,
+          success: true,
+          crawlRunId: crawlRun.id,
+        });
+      } catch (error) {
+        results.push({
+          topicSlug,
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    return {
+      triggered: results.filter(r => r.success).length,
+      results,
+    };
+  }
+
   private async hashContent(content: string): Promise<string> {
     const encoder = new TextEncoder();
     const data = encoder.encode(content);
@@ -109,3 +200,4 @@ export { YamlRegistryReader } from "./yaml-registry.js";
 export { TextChunker } from "./chunker.js";
 export { LocalEmbedder } from "./embedder.js";
 export { KnowledgeDb } from "./db.js";
+export { extractUniqueTopicSlugs, parseStaleTriggers, hasStaleTrigger } from "./stale-detector.js";
