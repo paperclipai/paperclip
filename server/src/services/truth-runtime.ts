@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   truthAtoms,
   truthBriefs,
   truthDocumentChunks,
@@ -198,6 +199,17 @@ async function assertDossierForCompany(db: Db, companyId: string, id: string) {
   if (!dossier) throw notFound("Truth dossier not found");
   if (dossier.companyId !== companyId) throw unprocessable("Truth dossier must belong to same company");
   return dossier;
+}
+
+async function assertAgentForCompany(db: Db, companyId: string, id: string) {
+  const agent = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, id))
+    .then((rows) => rows[0] ?? null);
+  if (!agent) throw notFound("Agent not found");
+  if (agent.companyId !== companyId) throw unprocessable("Agent must belong to same company");
+  return agent;
 }
 
 async function loadBoundEvidence(
@@ -433,6 +445,9 @@ export function truthRuntimeService(db: Db) {
           throw unprocessable("Accepted brief must have payloadHash");
         }
       }
+      if (data.createdByAgentId) {
+        await assertAgentForCompany(db, companyId, data.createdByAgentId);
+      }
 
       const [brief] = await db
         .insert(truthBriefs)
@@ -460,6 +475,9 @@ export function truthRuntimeService(db: Db) {
       const brief = await assertBriefForCompany(db, companyId, data.briefId);
       if (brief.truthRunId !== data.truthRunId) {
         throw unprocessable("Dossier truthRunId must match linked brief");
+      }
+      if (data.generatedByAgentId) {
+        await assertAgentForCompany(db, companyId, data.generatedByAgentId);
       }
       ensureBriefPromotable(brief);
       const [dossier] = await db

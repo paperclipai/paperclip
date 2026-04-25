@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   companies,
   createDb,
   truthAtoms,
@@ -102,6 +103,7 @@ describeEmbeddedPostgres("truth runtime service", () => {
     await db.delete(truthRuns);
     await db.delete(truthDocumentChunks);
     await db.delete(truthDocuments);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -118,6 +120,22 @@ describeEmbeddedPostgres("truth runtime service", () => {
       requireBoardApprovalForNewAgents: false,
     });
     return companyId;
+  }
+
+  async function seedAgent(companyId: string, name = "Truth Agent") {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name,
+      role: "analyst",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return agentId;
   }
 
   async function seedDocument(companyId: string, companySlug = `company-${companyId.slice(0, 8)}`) {
@@ -376,6 +394,32 @@ describeEmbeddedPostgres("truth runtime service", () => {
     );
   });
 
+  it("rejects creating a brief when createdByAgentId belongs to another company", async () => {
+    const companyId = await seedCompany("Primary");
+    const otherCompanyId = await seedCompany("Other");
+    const otherAgentId = await seedAgent(otherCompanyId, "Other Agent");
+    const { document, run } = await seedRun(companyId);
+    const atom = await seedAtom(companyId, run.id, document.id);
+    const audit = await seedAudit(companyId, run.id);
+    const input = canonicalInput([atom.id], [audit.id]);
+
+    await expectUnprocessable(
+      service.createBrief(companyId, {
+        truthRunId: run.id,
+        title: "Cross-company author",
+        status: "accepted",
+        briefKind: "board",
+        contentMarkdown: "Brief content",
+        canonicalInput: input,
+        promptVersion: "brief-prompt-v1",
+        templateVersion: "brief-template-v1",
+        inputHash: sha256Hex(canonicalJson(input)),
+        payloadHash: sha256Hex("brief payload"),
+        createdByAgentId: otherAgentId,
+      }),
+    );
+  });
+
   it("rejects creating a dossier without htmlContent or filePath", async () => {
     const companyId = await seedCompany();
     const brief = await seedBrief(companyId);
@@ -443,6 +487,25 @@ describeEmbeddedPostgres("truth runtime service", () => {
         promptVersion: "dossier-prompt-v1",
         templateVersion: "dossier-template-v1",
       } as any),
+    );
+  });
+
+  it("rejects creating a dossier when generatedByAgentId belongs to another company", async () => {
+    const companyId = await seedCompany("Primary");
+    const otherCompanyId = await seedCompany("Other");
+    const otherAgentId = await seedAgent(otherCompanyId, "Other Agent");
+    const brief = await seedBrief(companyId);
+
+    await expectUnprocessable(
+      service.createDossier(companyId, {
+        truthRunId: brief.truthRunId,
+        briefId: brief.id,
+        title: "Cross-company generator",
+        htmlContent: "<article>Dossier</article>",
+        promptVersion: "dossier-prompt-v1",
+        templateVersion: "dossier-template-v1",
+        generatedByAgentId: otherAgentId,
+      }),
     );
   });
 
