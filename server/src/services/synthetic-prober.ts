@@ -110,6 +110,12 @@ export class SyntheticProber {
       return { appName, success: true, consecutiveFailures: tracker.count };
     }
 
+    const appStatus = await this.checkDokployAppStatus(appName);
+    if (appStatus && getDokployClient().isAppInDeployState(appStatus)) {
+      logger.debug({ appName, status: appStatus }, "App is in deploy state, skipping probe");
+      return { appName, success: true, consecutiveFailures: tracker.count };
+    }
+
     let result: ProbeResult;
     try {
       const response = await fetch(probeUrl, {
@@ -176,6 +182,16 @@ export class SyntheticProber {
     await this.updateProbeResult(appName, result);
 
     return result;
+  }
+
+  private async checkDokployAppStatus(appName: string): Promise<"idle" | "deploying" | "rebuilding" | "starting" | "stopped" | "error" | null> {
+    try {
+      const client = getDokployClient();
+      return await client.getAppStatus(appName);
+    } catch (err) {
+      logger.debug({ err, appName }, "Failed to get Dokploy app status");
+      return null;
+    }
   }
 
   private async handleConsecutiveFailures(appName: string): Promise<void> {
