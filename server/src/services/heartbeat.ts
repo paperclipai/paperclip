@@ -72,6 +72,7 @@ import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
+  getContextUsagePercent,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
@@ -116,6 +117,120 @@ type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
+
+interface CachedContext {
+  payload: Record<string, unknown>;
+  compressed: string;
+  fetchOnDemand: boolean;
+  summary?: string;
+}
+
+async function getCachedAgentContext(
+  db: Db,
+  agentId: string,
+): Promise<{ payload: Record<string, unknown>; fetchOnDemand: boolean; summary?: string } | null> {
+  const cache = await db
+    .select({
+      lastContext: agentContextCache.lastContext,
+      cachedAtXactId: agentContextCache.cachedAtXactId,
+      expiresAt: agentContextCache.expiresAt,
+      fetchOnDemand: agentContextCache.fetchOnDemand,
+      summary: agentContextCache.summary,
+    })
+    .from(agentContextCache)
+    .where(eq(agentContextCache.agentId, agentId))
+    .then((rows) => rows[0] ?? null);
+
+  if (!cache) return null;
+
+  if (new Date(cache.expiresAt) <= new Date()) {
+    await db.delete(agentContextCache).where(eq(agentContextCache.agentId, agentId));
+    return null;
+  }
+
+  const currentXactId = await db.execute(sql`SELECT txid_current_snapshot()::text as xact_id`).then(
+    (rows) => (rows[0] as { xact_id: string } | undefined)?.xact_id ?? "",
+  );
+
+  if (cache.cachedAtXactId !== currentXactId) {
+    return null;
+  }
+
+  try {
+    const decompressed = JSON.parse(gunzipSync(Buffer.from(String(cache.lastContext), "base64")).toString("utf8")) as Record<string, unknown>;
+    return {
+      payload: decompressed,
+      fetchOnDemand: cache.fetchOnDemand,
+      summary: cache.summary ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedAgentContext(
+  db: Db,
+  agentId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const serialized = JSON.stringify(payload);
+  const compressed = gzipSync(Buffer.from(serialized, "utf8"));
+
+  if (compressed.length > CONTEXT_CACHE_MAX_COMPRESSED_BYTES) {
+    const summary = `Context exceeded ${CONTEXT_CACHE_MAX_COMPRESSED_BYTES} bytes (${compressed.length} compressed). Full context requires on-demand fetch.`;
+    await db
+      .insert(agentContextCache)
+      .values({
+        agentId,
+        lastContext: JSON.stringify({ _summary: summary }) as any,
+        lastLoadedAt: new Date(),
+        cachedAtXactId: sql`txid_current_snapshot()::text`,
+        expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
+        fetchOnDemand: true,
+        summary,
+      })
+      .onConflictDoUpdate({
+        target: agentContextCache.agentId,
+        set: {
+          lastContext: JSON.stringify({ _summary: summary }) as any,
+          lastLoadedAt: new Date(),
+          cachedAtXactId: sql`txid_current_snapshot()::text`,
+          expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
+          fetchOnDemand: true,
+          summary,
+          updatedAt: new Date(),
+        },
+      });
+    return;
+  }
+
+  await db
+    .insert(agentContextCache)
+    .values({
+      agentId,
+      lastContext: compressed.toString("base64") as any,
+      lastLoadedAt: new Date(),
+      cachedAtXactId: sql`txid_current_snapshot()::text`,
+      expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
+      fetchOnDemand: false,
+    })
+    .onConflictDoUpdate({
+      target: agentContextCache.agentId,
+      set: {
+        lastContext: compressed.toString("base64") as any,
+        lastLoadedAt: new Date(),
+        cachedAtXactId: sql`txid_current_snapshot()::text`,
+        expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
+        fetchOnDemand: false,
+        summary: null,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+async function invalidateCachedAgentContext(db: Db, agentId: string): Promise<void> {
+  await db.delete(agentContextCache).where(eq(agentContextCache.agentId, agentId));
+}
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
@@ -563,9 +678,11 @@ type UsageTotals = {
 
 type SessionCompactionDecision = {
   rotate: boolean;
+  abort: boolean;
   reason: string | null;
   handoffMarkdown: string | null;
   previousRunId: string | null;
+  contextWarning: string | null;
 };
 
 interface ParsedIssueAssigneeAdapterOverrides {
@@ -1655,9 +1772,11 @@ export function heartbeatService(db: Db) {
     if (!sessionId) {
       return {
         rotate: false,
+        abort: false,
         reason: null,
         handoffMarkdown: null,
         previousRunId: null,
+        contextWarning: null,
       };
     }
 
@@ -1665,9 +1784,11 @@ export function heartbeatService(db: Db) {
     if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
       return {
         rotate: false,
+        abort: false,
         reason: null,
         handoffMarkdown: null,
         previousRunId: null,
+        contextWarning: null,
       };
     }
 
@@ -1688,9 +1809,11 @@ export function heartbeatService(db: Db) {
     if (runs.length === 0) {
       return {
         rotate: false,
+        abort: false,
         reason: null,
         handoffMarkdown: null,
         previousRunId: null,
+        contextWarning: null,
       };
     }
 
@@ -1723,12 +1846,35 @@ export function heartbeatService(db: Db) {
       reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
     }
 
+    let contextWarning: string | null = null;
+    let abort = false;
+    if (latestRawUsage && (policy.maxContextTokens > 0 || policy.maxOutputTokens > 0)) {
+      const cachedInputTokens = 0;
+      const usage = getContextUsagePercent(
+        latestRawUsage.inputTokens,
+        cachedInputTokens,
+        latestRawUsage.outputTokens,
+        policy.maxContextTokens,
+        policy.maxOutputTokens,
+      );
+      if (usage.totalPercent >= 1.0 && policy.abortIfContextExceeds) {
+        reason = `context overflow: ${Math.round(usage.totalPercent * 100)}% of token budget (abort enabled)`;
+        abort = true;
+      } else if (usage.totalPercent >= 1.0) {
+        reason = `context overflow: ${Math.round(usage.totalPercent * 100)}% of token budget`;
+      } else if (usage.totalPercent >= 0.8) {
+        contextWarning = `context at ${Math.round(usage.totalPercent * 100)}% of token budget (warning threshold 80%)`;
+      }
+    }
+
     if (!reason || !latestRun) {
       return {
         rotate: false,
+        abort: false,
         reason: null,
         handoffMarkdown: null,
         previousRunId: latestRun?.id ?? null,
+        contextWarning: null,
       };
     }
 
@@ -1760,9 +1906,11 @@ export function heartbeatService(db: Db) {
 
     return {
       rotate: true,
+      abort,
       reason,
       handoffMarkdown,
       previousRunId: latestRun.id,
+      contextWarning,
     };
   }
 
@@ -3395,20 +3543,29 @@ export function heartbeatService(db: Db) {
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
       : null;
-    const paperclipWakePayload = await buildPaperclipWakePayload({
-      db,
-      companyId: agent.companyId,
-      contextSnapshot: context,
-      issueSummary: issueRef
-        ? {
-            id: issueRef.id,
-            identifier: issueRef.identifier,
-            title: issueRef.title,
-            status: issueRef.status,
-            priority: issueRef.priority,
-          }
-        : null,
-    });
+    const cachedContext = await getCachedAgentContext(db, agent.id);
+    let paperclipWakePayload: Awaited<ReturnType<typeof buildPaperclipWakePayload>> | null = null;
+    if (cachedContext && !cachedContext.fetchOnDemand) {
+      paperclipWakePayload = cachedContext.payload as Awaited<ReturnType<typeof buildPaperclipWakePayload>>;
+    } else {
+      paperclipWakePayload = await buildPaperclipWakePayload({
+        db,
+        companyId: agent.companyId,
+        contextSnapshot: context,
+        issueSummary: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+              title: issueRef.title,
+              status: issueRef.status,
+              priority: issueRef.priority,
+            }
+          : null,
+      });
+      if (paperclipWakePayload) {
+        await setCachedAgentContext(db, agent.id, paperclipWakePayload as Record<string, unknown>).catch(() => {});
+      }
+    }
     if (paperclipWakePayload) {
       context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
     } else {
@@ -3728,6 +3885,20 @@ export function heartbeatService(db: Db) {
       delete context.paperclipSessionHandoffMarkdown;
       delete context.paperclipSessionRotationReason;
       delete context.paperclipPreviousSessionId;
+    }
+
+    if (sessionCompaction.abort) {
+      const abortReason = sessionCompaction.reason ?? "context overflow";
+      await cancelRunInternal(run.id, `Context overflow: ${abortReason}`);
+      const issuesSvc = issueService(db);
+      await issuesSvc.create(agent.companyId, {
+        title: `[BOARD] CONTEXT-OVERFLOW: agent=${agent.name} issue=${issueId ?? "unknown"}`,
+        description: `Agent \`${agent.name}\` (id: ${agent.id}) hit context overflow.\n\nReason: ${abortReason}\n\nThis is an automated alert triggered by the token budget policy.`,
+        priority: "high",
+        status: "todo",
+        labelIds: [],
+      });
+      return;
     }
 
     const runtimeForAdapter = {
