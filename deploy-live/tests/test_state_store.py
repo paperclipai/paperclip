@@ -228,6 +228,7 @@ from state_store import (
 )
 
 
+
 def test_balance_snapshot_and_latest(fresh_db):
     conn = open_db(fresh_db)
     snapshot_balance(conn, exchange="MEXC", asset="USDT",
@@ -258,4 +259,52 @@ def test_exchange_health_upsert(fresh_db):
     h = get_exchange_health(conn, "MEXC")
     assert h.status == "degraded"
     assert h.consecutive_errors == 2
+    conn.close()
+
+
+from state_store import (
+    write_recon_event, list_unresolved_recon_events,
+    resolve_recon_event,
+)
+
+
+def test_write_recon_event_round_trips(fresh_db):
+    conn = open_db(fresh_db)
+    eid = write_recon_event(
+        conn, timestamp_ms=1, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+        expected={"size": 25}, actual={"size": 0},
+    )
+    assert eid > 0
+    events = list_unresolved_recon_events(conn)
+    assert len(events) == 1
+    e = events[0]
+    assert e.expected == {"size": 25}
+    assert e.actual == {"size": 0}
+    assert e.resolution == "unresolved"
+    conn.close()
+
+
+def test_resolve_recon_event(fresh_db):
+    conn = open_db(fresh_db)
+    eid = write_recon_event(
+        conn, timestamp_ms=1, source="invariants",
+        category="size_mismatch", severity="warn",
+    )
+    resolve_recon_event(conn, eid, resolution="manual", notes="closed by user")
+    events = list_unresolved_recon_events(conn)
+    assert len(events) == 0
+    conn.close()
+
+
+def test_list_unresolved_filters_by_severity(fresh_db):
+    conn = open_db(fresh_db)
+    write_recon_event(conn, timestamp_ms=1, source="reconciler",
+                      category="balance_drift", severity="info")
+    write_recon_event(conn, timestamp_ms=2, source="reconciler",
+                      category="orphan_leg", severity="error")
+    errs = list_unresolved_recon_events(conn, min_severity="error")
+    assert len(errs) == 1
+    assert errs[0].category == "orphan_leg"
     conn.close()

@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from schemas import PositionRecord, FillRecord, AuditEntry, BalanceSnapshot, ExchangeHealthRecord
+from schemas import PositionRecord, FillRecord, AuditEntry, BalanceSnapshot, ExchangeHealthRecord, ReconciliationEvent
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -361,4 +361,66 @@ def get_exchange_health(
         last_ok_at_ms=row["last_ok_at"], last_error_at_ms=row["last_error_at"],
         last_error_msg=row["last_error_msg"],
         consecutive_errors=row["consecutive_errors"],
+    )
+
+
+_SEVERITY_ORDER = {"info": 0, "warn": 1, "error": 2, "critical": 3}
+
+
+def write_recon_event(
+    conn: sqlite3.Connection, *,
+    timestamp_ms: int, source: str, category: str, severity: str,
+    exchange: Optional[str] = None,
+    symbol: Optional[str] = None,
+    position_id: Optional[int] = None,
+    expected: Optional[dict] = None,
+    actual: Optional[dict] = None,
+    notes: Optional[str] = None,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO reconciliation_events
+           (timestamp, source, category, severity, exchange, symbol, position_id,
+            expected, actual, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (timestamp_ms, source, category, severity, exchange, symbol, position_id,
+         json.dumps(expected) if expected is not None else None,
+         json.dumps(actual) if actual is not None else None,
+         notes),
+    )
+    return cur.lastrowid
+
+
+def list_unresolved_recon_events(
+    conn: sqlite3.Connection, *, min_severity: str = "info"
+) -> list[ReconciliationEvent]:
+    threshold = _SEVERITY_ORDER[min_severity]
+    rows = conn.execute(
+        "SELECT * FROM reconciliation_events WHERE resolution='unresolved' ORDER BY timestamp"
+    ).fetchall()
+    out = []
+    for r in rows:
+        if _SEVERITY_ORDER[r["severity"]] >= threshold:
+            out.append(_row_to_recon_event(r))
+    return out
+
+
+def resolve_recon_event(
+    conn: sqlite3.Connection, event_id: int, *,
+    resolution: str, notes: Optional[str] = None,
+) -> None:
+    conn.execute(
+        "UPDATE reconciliation_events SET resolution=?, notes=COALESCE(?, notes) WHERE id=?",
+        (resolution, notes, event_id),
+    )
+
+
+def _row_to_recon_event(row: sqlite3.Row) -> ReconciliationEvent:
+    return ReconciliationEvent(
+        timestamp_ms=row["timestamp"], source=row["source"],
+        category=row["category"], severity=row["severity"],
+        exchange=row["exchange"], symbol=row["symbol"],
+        position_id=row["position_id"],
+        expected=json.loads(row["expected"]) if row["expected"] else None,
+        actual=json.loads(row["actual"]) if row["actual"] else None,
+        notes=row["notes"], resolution=row["resolution"],
     )
