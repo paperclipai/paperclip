@@ -1,7 +1,10 @@
 import { z } from "zod";
 
 const requiredTextSchema = z.string().trim().min(1);
-const sha256HexSchema = z.string().regex(/^[a-fA-F0-9]{64}$/, "Must be a SHA-256 hex digest");
+const sha256HexSchema = z
+  .string()
+  .regex(/^[a-fA-F0-9]{64}$/, "Must be a SHA-256 hex digest")
+  .transform((value) => value.toLowerCase());
 const optionalDateTimeSchema = z.string().datetime().optional().nullable();
 const optionalGeneratedAtSchema = z.string().datetime().optional();
 const metadataSchema = z.record(z.unknown());
@@ -41,8 +44,8 @@ export const truthPromotionRequestStatusSchema = z.enum([
 
 export const truthBriefCanonicalInputSchema = z
   .object({
-    atomIds: z.array(z.string()),
-    auditIds: z.array(z.string()),
+    atomIds: z.array(z.string().uuid()),
+    auditIds: z.array(z.string().uuid()),
     promptInputs: metadataSchema,
     templateVariables: metadataSchema,
   })
