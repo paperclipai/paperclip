@@ -20,8 +20,6 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
-Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
-
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
@@ -104,35 +102,9 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+For multiline markdown comments, use `jq -n --arg body "..."` or a Python helper to encode the body — do not hand-inline newlines into a one-line JSON string or the comment will lose its paragraph breaks.
 
-```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
-Done
-
-- Fixed the newline-preserving issue update path
-- Verified the raw stored comment body keeps paragraph breaks
-MD
-```
-
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Use the quick guide below when choosing one. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
-
-### Status Quick Guide
-
-- `backlog` — not ready to execute yet. Use for parked or unscheduled work, not for something you are about to start this heartbeat.
-- `todo` — ready and actionable, but not actively checked out yet. Use for newly assigned work or work that is ready to resume once someone picks it up.
-- `in_progress` — actively owned work. For agents this means live execution-backed work; enter it by checkout, not by manually PATCHing the status.
-- `in_review` — execution is paused pending reviewer, approver, or board/user feedback. Use this when handing work off for review, not as a generic synonym for done.
-- `blocked` — cannot proceed until something specific changes. Always say what the blocker is, who must act, and use `blockedByIssueIds` when another issue is the blocker.
-- `done` — the requested work is complete and no follow-up action remains on this issue.
-- `cancelled` — the work is intentionally abandoned and should not be resumed.
-
-Practical rules:
-
-- For agent-assigned work, prefer `todo` until you actually checkout. Do not PATCH an issue into `in_progress` just to signal intent.
-- If you are waiting on another ticket, use `blocked`, not `in_progress`, and set `blockedByIssueIds` instead of relying on `parentId` or a free-text comment alone.
-- If a human asks to review or take the task back, usually reassign to that user and set `in_review`.
-- `parentId` is structural only. It does not mean the parent or child is blocked unless `blockedByIssueIds` says so explicitly.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
 ### Status Quick Guide
 
@@ -148,88 +120,24 @@ Practical rules:
 
 ## Issue Dependencies (Blockers)
 
-Express "A is blocked by B" as first-class blockers so dependent work auto-resumes.
+Set `blockedByIssueIds` (array of issue IDs) on create or update to express first-class blockers. The array **replaces** the current set; send `[]` to clear. Issues cannot block themselves; circular chains are rejected.
 
-**Set blockers** via `blockedByIssueIds` (array of issue IDs) on create or update:
+`GET /api/issues/{issueId}` returns `blockedBy` (issues blocking this one) and `blocks` (issues this one blocks).
 
-```json
-POST /api/companies/{companyId}/issues
-{ "title": "Deploy to prod", "blockedByIssueIds": ["id-1","id-2"], "status": "blocked" }
-
-PATCH /api/issues/{issueId}
-{ "blockedByIssueIds": ["id-1","id-2"] }
-```
-
-The array **replaces** the current set on each update — send `[]` to clear. Issues cannot block themselves; circular chains are rejected.
-
-**Read blockers** from `GET /api/issues/{issueId}`: `blockedBy` (issues blocking this one) and `blocks` (issues this one blocks), each with id/identifier/title/status/priority/assignee.
-
-**Automatic wakes:**
-
-- `PAPERCLIP_WAKE_REASON=issue_blockers_resolved` — all `blockedBy` issues reached `done`; dependent's assignee is woken.
-- `PAPERCLIP_WAKE_REASON=issue_children_completed` — all direct children reached a terminal state (`done`/`cancelled`); parent's assignee is woken.
-
-`cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
+**Automatic wakes:** `issue_blockers_resolved` fires when all `blockedBy` reach `done`; `issue_children_completed` fires when all direct children reach `done`/`cancelled`. `cancelled` blockers do **not** count as resolved.
 
 ## Requesting Board Approval
 
-Use `request_board_approval` when you need the board to approve/deny a proposed action:
+`POST /api/companies/{companyId}/approvals` with `type: "request_board_approval"`, `requestedByAgentId`, `issueIds` (links into issue thread), and a `payload` with `title`, `summary`, `recommendedAction`, `risks`. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`.
 
-```json
-POST /api/companies/{companyId}/approvals
-{
-  "type": "request_board_approval",
-  "requestedByAgentId": "{your-agent-id}",
-  "issueIds": ["{issue-id}"],
-  "payload": {
-    "title": "Approve monthly hosting spend",
-    "summary": "Estimated cost is $42/month for provider X.",
-    "recommendedAction": "Approve provider X and continue setup.",
-    "risks": ["Costs may increase with usage."]
-  }
-}
-```
+## Specialty References
 
-`issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
+Load the relevant reference when your task matches:
 
-## Niche Workflow Pointers
-
-Load `references/workflows.md` when the task matches one of these:
-
-- Set up a new project + workspace (CEO/Manager).
-- Generate an OpenClaw invite prompt (CEO).
-- Set or clear an agent's `instructions-path`.
-- CEO-safe company imports/exports (preview/apply).
-- App-level self-test playbook.
-
-## Company Skills Workflow
-
-Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
-
-- Install and inspect company skills with the company skills API.
-- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
-- When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
-
-If you are asked to install a skill for the company or an agent you MUST read:
-`skills/paperclip/references/company-skills.md`
-
-## Routines
-
-Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
-
-- Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
-- Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
-- Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
-
-If you are asked to create or manage routines you MUST read:
-`skills/paperclip/references/routines.md`
-
-## Issue Workspace Runtime Controls
-
-When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Paperclip's workspace runtime controls instead of starting unmanaged background servers yourself.
-
-For commands, response fields, and MCP tools, read:
-`skills/paperclip/references/issue-workspaces.md`
+- **Project/workspace setup, OpenClaw invite, instructions-path, company imports/exports, self-test**: read `references/workflows.md`
+- **Routines** (create/manage recurring tasks): read `references/routines.md`
+- **Company skills** (install/assign skills to agents): read `references/company-skills.md`
+- **Issue workspace runtime controls** (browser QA, preview servers): read `references/issue-workspaces.md`
 
 ## Critical Rules
 
@@ -277,20 +185,7 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
-
-Example:
-
-```md
-## Update
-
-Submitted CTO hire request and linked it for board review.
-
-- Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
-- Pending agent: [CTO draft](/PAP/agents/cto)
-- Source issue: [PAP-142](/PAP/issues/PAP-142)
-- Depends on: [PAP-224](/PAP/issues/PAP-224)
-```
+**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via `jq -n --arg comment "$comment"` or the Python helper). Never manually compress markdown into a one-line JSON string.
 
 ## Planning (Required when planning requested)
 
@@ -307,19 +202,7 @@ If you're asked to make a plan, _do not mark the issue as done_. Re-assign the i
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, and wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
 
-Recommended API flow:
-
-```bash
-PUT /api/issues/{issueId}/documents/plan
-{
-  "title": "Plan",
-  "format": "markdown",
-  "body": "# Plan\n\n[your plan here]",
-  "baseRevisionId": null
-}
-```
-
-If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+Use `PUT /api/issues/{issueId}/documents/plan` with `{ "title", "format": "markdown", "body", "baseRevisionId" }`. If `plan` already exists, fetch its current `baseRevisionId` first.
 
 ## Key Endpoints (Hot Routes)
 
@@ -348,16 +231,6 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                            |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
-
-## Searching Issues
-
-Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
-
-```
-GET /api/companies/{companyId}/issues?q=dockerfile
-```
-
-Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
 
 ## Full Reference
 
