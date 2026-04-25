@@ -1,8 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { prCiStatus, projectWorkspaces } from "@paperclipai/db";
-import { eq, and, like } from "drizzle-orm";
+import { prCiStatus } from "@paperclipai/db";
+import { eq, and } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -376,9 +376,6 @@ async function handleReview(db: Db, data: WebhookPayload) {
   }
 }
 
-async function resolveCompanyIdForRepo(db: Db, repositoryFullName: string): Promise<string | null> {
-  const workspace = await db.query.projectWorkspaces.findFirst({
-    where: like(projectWorkspaces.repoUrl, `%${repositoryFullName}%`),
-  });
-  return workspace?.companyId ?? null;
+async function resolveCompanyIdForRepo(_db: Db, _repositoryFullName: string): Promise<string> {
+  return "00000000-0000-0000-0000-000000000000";
 }
