@@ -40,6 +40,10 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+function expectedCompanySlug(companyId: string) {
+  return `t${companyId.replace(/-/g, "").slice(0, 6).toLowerCase()}`;
+}
+
 describeEmbeddedPostgres("truth runtime routes", () => {
   let db!: ReturnType<typeof createDb>;
   let service!: ReturnType<typeof truthRuntimeService>;
@@ -114,9 +118,8 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     return companyId;
   }
 
-  async function seedDocument(companyId: string, companySlug = `company-${companyId.slice(0, 8)}`) {
+  async function seedDocument(companyId: string) {
     return service.createDocument(companyId, {
-      companySlug,
       title: "Transcript",
       sourceType: "transcript",
       sourceUri: `file://${randomUUID()}.txt`,
@@ -127,7 +130,6 @@ describeEmbeddedPostgres("truth runtime routes", () => {
   async function seedRun(companyId: string) {
     const document = await seedDocument(companyId);
     const run = await service.createRun(companyId, {
-      companySlug: document.companySlug,
       truthDocumentId: document.id,
       status: "accepted",
       title: "Extraction",
@@ -246,6 +248,7 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
       companyId,
+      companySlug: expectedCompanySlug(companyId),
       ingestStatus: "pending",
       embeddingStatus: "not_required",
       exclusionStatus: "included",
@@ -270,6 +273,25 @@ describeEmbeddedPostgres("truth runtime routes", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${companyId}:${deterministicKey}`));
+  });
+
+  it("returns 409 for duplicate stable chunk keys", async () => {
+    allowLocalBoard();
+    const companyId = await seedCompany();
+    const document = await seedDocument(companyId);
+    const input = {
+      truthDocumentId: document.id,
+      sourceChunkKey: "chunk-duplicate",
+      deterministicKey: "truth-co:transcript:chunk-duplicate",
+      contentText: "Launch next week.",
+    };
+
+    const first = await request(createApp()).post(`/api/companies/${companyId}/truth/chunks`).send(input);
+    const second = await request(createApp()).post(`/api/companies/${companyId}/truth/chunks`).send(input);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.body.error).toContain("already exists");
   });
 
   it("rejects invalid brief inputHash values", async () => {

@@ -154,11 +154,13 @@ first and backfill them before changing new-write behavior:
 For new chunks going forward, use UUIDv5 for `id`:
 
 ```text
-id = uuidv5(TRUTH_CHUNK_NAMESPACE, deterministic_key)
+id = uuidv5(TRUTH_CHUNK_NAMESPACE, company_id + ":" + deterministic_key)
 ```
 
-The deterministic key should be a canonical string built from stable source
-inputs, for example:
+The UUIDv5 name includes `company_id` so two companies can ingest the same
+stable source key without primary-key collision. The deterministic key itself
+should still be a canonical string built from stable source inputs, for
+example:
 
 ```text
 company_slug/document_source_key/chunk_kind/source_utterance_id_or_span/content_sha256

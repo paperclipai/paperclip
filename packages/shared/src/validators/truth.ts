@@ -52,7 +52,6 @@ export const truthBriefCanonicalInputSchema = z
   .passthrough();
 
 export const createTruthDocumentSchema = z.object({
-  companySlug: requiredTextSchema,
   title: z.string().optional().nullable(),
   sourceType: requiredTextSchema,
   sourceUri: z.string().optional().nullable(),
@@ -82,7 +81,6 @@ export const createTruthDocumentChunkSchema = z.object({
 export type CreateTruthDocumentChunk = z.infer<typeof createTruthDocumentChunkSchema>;
 
 export const createTruthRunSchema = z.object({
-  companySlug: requiredTextSchema,
   truthDocumentId: z.string().uuid(),
   status: truthRunStatusSchema.optional().default("pending"),
   title: z.string().optional().nullable(),
@@ -195,7 +193,6 @@ export type CreateTruthDossier = z.infer<typeof createTruthDossierSchema>;
 
 export const createTruthPromotionRequestSchema = z
   .object({
-    companySlug: requiredTextSchema,
     truthRunId: z.string().uuid().optional().nullable(),
     briefId: z.string().uuid().optional().nullable(),
     dossierId: z.string().uuid().optional().nullable(),

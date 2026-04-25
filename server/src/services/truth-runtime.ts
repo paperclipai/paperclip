@@ -3,6 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   truthAtoms,
   truthBriefs,
   truthDocumentChunks,
@@ -24,6 +25,7 @@ import {
 } from "@paperclipai/shared";
 import type { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { normalizeV1CompanySlug } from "./board-auth.js";
 
 export const TRUTH_CHUNK_NAMESPACE = "6ce6ebaa-7154-5b5e-9c39-b96c25df04c3";
 
@@ -94,6 +96,21 @@ function parseInput<T>(schema: z.ZodType<T>, input: unknown): T {
   return parsed.data;
 }
 
+function isUniqueViolation(error: unknown, constraints: string[]): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; constraint?: unknown; constraint_name?: unknown; message?: unknown };
+  const constraint =
+    typeof candidate.constraint === "string"
+      ? candidate.constraint
+      : typeof candidate.constraint_name === "string"
+        ? candidate.constraint_name
+        : null;
+  if (candidate.code !== "23505") return false;
+  if (constraint && constraints.includes(constraint)) return true;
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  return constraints.some((item) => message.includes(item));
+}
+
 function toOptionalDate(value: string | Date | null | undefined): Date | null {
   if (value == null) return null;
   return value instanceof Date ? value : new Date(value);
@@ -139,6 +156,19 @@ async function getDocument(db: Db, id: string) {
     .from(truthDocuments)
     .where(eq(truthDocuments.id, id))
     .then((rows) => rows[0] ?? null);
+}
+
+async function getCompanySlug(db: Db, companyId: string) {
+  const company = await db
+    .select({
+      id: companies.id,
+      issuePrefix: companies.issuePrefix,
+    })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  if (!company) throw notFound("Company not found");
+  return normalizeV1CompanySlug(company.issuePrefix, company.id);
 }
 
 async function getRun(db: Db, id: string) {
@@ -333,9 +363,10 @@ export function truthRuntimeService(db: Db) {
   return {
     createDocument: async (companyId: string, input: unknown) => {
       const data = parseInput(createTruthDocumentSchema, input);
+      const companySlug = await getCompanySlug(db, companyId);
       const [document] = await db
         .insert(truthDocuments)
-        .values({ ...data, companyId })
+        .values({ ...data, companyId, companySlug })
         .returning();
       return document;
     },
@@ -352,26 +383,40 @@ export function truthRuntimeService(db: Db) {
       const data = parseInput(createTruthDocumentChunkSchema, input);
       const document = await assertDocumentForCompany(db, companyId, data.truthDocumentId);
       const id = uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${companyId}:${data.deterministicKey}`);
-      const [chunk] = await db
-        .insert(truthDocumentChunks)
-        .values({
-          ...data,
-          id,
-          companyId,
-          truthDocumentId: document.id,
-        })
-        .returning();
-      return chunk;
+      try {
+        const [chunk] = await db
+          .insert(truthDocumentChunks)
+          .values({
+            ...data,
+            id,
+            companyId,
+            truthDocumentId: document.id,
+          })
+          .returning();
+        return chunk;
+      } catch (error) {
+        if (
+          isUniqueViolation(error, [
+            "truth_document_chunks_pkey",
+            "truth_document_chunks_company_source_key_uq",
+            "truth_document_chunks_company_deterministic_key_uq",
+          ])
+        ) {
+          throw conflict("Truth document chunk already exists for this stable key");
+        }
+        throw error;
+      }
     },
 
     createRun: async (companyId: string, input: unknown) => {
       const data = parseInput(createTruthRunSchema, input);
-      await assertDocumentForCompany(db, companyId, data.truthDocumentId);
+      const document = await assertDocumentForCompany(db, companyId, data.truthDocumentId);
       const [run] = await db
         .insert(truthRuns)
         .values({
           ...data,
           companyId,
+          companySlug: document.companySlug,
           startedAt: toOptionalDate(data.startedAt),
           completedAt: toOptionalDate(data.completedAt),
           failedAt: toOptionalDate(data.failedAt),
@@ -497,6 +542,7 @@ export function truthRuntimeService(db: Db) {
 
     createPromotionRequest: async (companyId: string, input: unknown) => {
       const data = parseInput(createTruthPromotionRequestSchema, input);
+      const companySlug = await getCompanySlug(db, companyId);
       const target = await normalizePromotionTarget(db, companyId, data);
       const [request] = await db
         .insert(truthPromotionRequests)
@@ -504,6 +550,7 @@ export function truthRuntimeService(db: Db) {
           ...data,
           ...target,
           companyId,
+          companySlug,
           status: "pending",
           expiresAt: toOptionalDate(data.expiresAt),
         })

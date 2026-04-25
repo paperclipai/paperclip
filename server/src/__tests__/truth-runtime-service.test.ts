@@ -43,6 +43,10 @@ function expectConflict(action: Promise<unknown>) {
   return expect(action).rejects.toMatchObject({ status: 409 });
 }
 
+function expectedCompanySlug(companyId: string) {
+  return `t${companyId.replace(/-/g, "").slice(0, 6).toLowerCase()}`;
+}
+
 describe("truth runtime helpers", () => {
   it("matches the RFC 4122 UUIDv5 DNS known vector", () => {
     expect(uuidV5FromName("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "www.example.com")).toBe(
@@ -138,9 +142,8 @@ describeEmbeddedPostgres("truth runtime service", () => {
     return agentId;
   }
 
-  async function seedDocument(companyId: string, companySlug = `company-${companyId.slice(0, 8)}`) {
+  async function seedDocument(companyId: string) {
     return service.createDocument(companyId, {
-      companySlug,
       title: "Transcript",
       sourceType: "transcript",
       sourceUri: `file://${randomUUID()}.txt`,
@@ -151,7 +154,6 @@ describeEmbeddedPostgres("truth runtime service", () => {
   async function seedRun(companyId: string) {
     const document = await seedDocument(companyId);
     const run = await service.createRun(companyId, {
-      companySlug: document.companySlug,
       truthDocumentId: document.id,
       status: "accepted",
       title: "Extraction",
@@ -229,6 +231,32 @@ describeEmbeddedPostgres("truth runtime service", () => {
     });
     return { brief, dossier };
   }
+
+  it("derives company slugs from the company issue prefix instead of caller input", async () => {
+    const companyId = await seedCompany();
+    const expectedSlug = expectedCompanySlug(companyId);
+
+    const document = await service.createDocument(companyId, {
+      companySlug: "spoofed-company",
+      title: "Transcript",
+      sourceType: "transcript",
+      sourceSha256: sha256Hex("document-with-spoofed-slug"),
+    } as any);
+    const run = await service.createRun(companyId, {
+      companySlug: "spoofed-company",
+      truthDocumentId: document.id,
+      promptVersion: "prompt-v1",
+    } as any);
+    const request = await service.createPromotionRequest(companyId, {
+      companySlug: "spoofed-company",
+      truthRunId: run.id,
+      requestedBy: "operator",
+    } as any);
+
+    expect(document.companySlug).toBe(expectedSlug);
+    expect(run.companySlug).toBe(expectedSlug);
+    expect(request.companySlug).toBe(expectedSlug);
+  });
 
   it("rejects creating a brief when canonicalInput omits promptInputs", async () => {
     const companyId = await seedCompany();
@@ -851,6 +879,21 @@ describeEmbeddedPostgres("truth runtime service", () => {
     expect(firstChunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${firstCompanyId}:${deterministicKey}`));
     expect(secondChunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${secondCompanyId}:${deterministicKey}`));
     expect(firstChunk.id).not.toBe(secondChunk.id);
+  });
+
+  it("returns a conflict when stable document chunk keys already exist", async () => {
+    const companyId = await seedCompany();
+    const document = await seedDocument(companyId);
+    const input = {
+      truthDocumentId: document.id,
+      sourceChunkKey: "source#duplicate",
+      deterministicKey: "truth-co:transcript:source#duplicate",
+      contentText: "Launch next week.",
+    };
+
+    await service.createDocumentChunk(companyId, input);
+
+    await expectConflict(service.createDocumentChunk(companyId, { ...input, contentText: "Second pass." }));
   });
 
   it("lists only documents for the requested company", async () => {
