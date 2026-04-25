@@ -2,11 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { gzipSync, gunzipSync } from "node:zlib";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
   agents,
+  agentContextCache,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -106,6 +108,9 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+
+const CONTEXT_CACHE_TTL_HOURS = 1;
+const CONTEXT_CACHE_MAX_COMPRESSED_BYTES = 100 * 1024;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,

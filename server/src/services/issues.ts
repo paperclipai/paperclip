@@ -572,6 +572,11 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
+  proofCiUrl: issues.proofCiUrl,
+  proofLiveUrl: issues.proofLiveUrl,
+  proofStatus: issues.proofStatus,
+  proofVerifiedAt: issues.proofVerifiedAt,
+  proofDocId: issues.proofDocId,
 };
 
 function withActiveRuns(

@@ -74,3 +74,4 @@ export { agentIdleState } from "./agent_idle_state.js";
 export { agentRoleDefinitions, type AgentRoleDefinition, type NewAgentRoleDefinition } from "./agent_role_definitions.js";
 export { prReviewStates, type PrReviewState, type NewPrReviewState } from "./pr_review_states.js";
 export { reviewerFamilyLog, type ReviewerFamilyLog, type NewReviewerFamilyLog } from "./reviewer_family_log.js";
+export { agentContextCache, type AgentContextCache, type NewAgentContextCache } from "./agent_context_cache.js";
