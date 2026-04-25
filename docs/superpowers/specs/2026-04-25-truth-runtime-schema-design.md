@@ -96,6 +96,11 @@ All runtime tables must be company-scoped. Where both `company_id` and
 `company_slug` are present, `company_id` is the authoritative internal foreign
 key and `company_slug` is the stable operator-facing/runtime mapping key.
 
+Implementation note for Paperclip V1: the current company model does not have
+a dedicated slug column, so runtime code uses the normalized `companies.issue_prefix`
+as `company_slug`. If normalization produces an empty value, use the company
+UUID as the slug. Do not add a new `companies.slug` field in this phase.
+
 ### 5.1 `truth_documents`
 
 Do not overload Paperclip's existing editable `documents` table, which stores
@@ -329,6 +334,10 @@ At least one of `html_content` or `file_path` must be present. Store
 `brief_input_hash` and `brief_payload_hash` snapshot the exact accepted brief
 used at render time.
 
+Implementation note: dossier creation should derive `brief_input_hash` and
+`brief_payload_hash` from the linked accepted brief. API clients should provide
+the rendered artifact and lineage IDs, not caller-supplied brief hashes.
+
 Recommended statuses:
 
 - `draft | ready | published | superseded | failed`
@@ -384,6 +393,11 @@ Runtime rules:
 - A request cannot complete after `expires_at`.
 - Rejections must include `rejection_reason`.
 - Failures must include `failure_reason`.
+- Approval, rejection, completion, failure, and auto-expiry are governed
+  mutating actions and must write activity records.
+- Board/API approval routes must use the authenticated board actor as
+  `approved_by`; agents and caller-supplied approver identities cannot approve
+  promotion requests.
 
 ### 5.9 Auth Company Allowances
 
