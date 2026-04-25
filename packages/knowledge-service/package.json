@@ -1,0 +1,27 @@
+{
+  "name": "@paperclip-ui/knowledge-service",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "yaml": "^2.3.4",
+    "cheerio": "^1.0.0",
+    "playwright": "^1.59.1",
+    "@paperclip-ui/db": "workspace:*",
+    "drizzle-orm": "^0.29.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.10.0",
+    "typescript": "^5.3.0",
+    "tsx": "^4.7.0",
+    "vitest": "^1.0.0"
+  }
+}
