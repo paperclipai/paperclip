@@ -563,7 +563,8 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
                 'finance_events',
                 'feedback_votes',
                 'issue_comments',
-                'issue_read_states'
+                'issue_read_states',
+                'issue_thread_interactions'
               )
               AND c.conname LIKE '%_issue_id_issues_id_fk'
             ORDER BY cls.relname
@@ -577,6 +578,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         expect(byTable.get("feedback_votes")).toBe("c");
         expect(byTable.get("issue_comments")).toBe("c");
         expect(byTable.get("issue_read_states")).toBe("c");
+        expect(byTable.get("issue_thread_interactions")).toBe("c");
 
         // Behavioral test: insert rows into each child table referencing an issue,
         // then delete the issue and assert cascade vs. set-null actually fires.
@@ -644,6 +646,17 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             'cost', 'paperclip', 0, now()
           )
         `);
+        await sql.unsafe(`
+          INSERT INTO "issue_thread_interactions" (
+            "id", "company_id", "issue_id", "kind", "payload"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-00000000b001',
+            '00000000-0000-0000-0000-000000000aaa',
+            '00000000-0000-0000-0000-000000000bbb',
+            'clarification', '{}'::jsonb
+          )
+        `);
 
         // Delete the parent issue. Without the new FK rules this would raise.
         await sql.unsafe(`
@@ -674,6 +687,12 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
            WHERE "id" = '00000000-0000-0000-0000-00000000e001'`,
         );
         expect(votesCount[0].count).toBe("0");
+
+        const threadCount = await sql.unsafe<{ count: string }[]>(
+          `SELECT count(*) AS count FROM "issue_thread_interactions"
+           WHERE "id" = '00000000-0000-0000-0000-00000000b001'`,
+        );
+        expect(threadCount[0].count).toBe("0");
 
         // Set-null table: row survives with issue_id nulled.
         const financeRows = await sql.unsafe<{ id: string; issue_id: string | null }[]>(
