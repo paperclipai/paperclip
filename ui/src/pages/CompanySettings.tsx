@@ -227,7 +227,9 @@ export function CompanySettings() {
       companyName: string;
     }) => companiesApi.remove(companyId).then(() => ({ nextCompanyId, companyName })),
     onSuccess: async ({ nextCompanyId, companyName }) => {
-      setSelectedCompanyId(nextCompanyId);
+      if (nextCompanyId) {
+        setSelectedCompanyId(nextCompanyId);
+      }
       pushToast({
         title: "Company deleted",
         body: `${companyName} was permanently deleted.`,
