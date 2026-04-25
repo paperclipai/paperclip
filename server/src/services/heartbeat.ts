@@ -232,11 +232,37 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   30 * 60 * 1000,
   2 * 60 * 60 * 1000,
 ] as const;
+// PMSA-18 / PMSA-11 §3.3: quota / rate-limit failures get a tighter, shorter
+// backoff than the generic transient_upstream contract. Three attempts at
+// 60s / 240s / 900s, after which we stop retrying and move the executing
+// issue to `blocked` so the board sees the stall (Phase 3 watcher will turn
+// the same signal into a notification).
+export const BOUNDED_TRANSIENT_QUOTA_RETRY_DELAYS_MS = [
+  60 * 1000,
+  240 * 1000,
+  900 * 1000,
+] as const;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const QUOTA_BACKOFF_ERROR_CODES = new Set<string>([
+  "claude_quota_exhausted",
+  "claude_rate_limited",
+]);
+
+function isQuotaBackoffErrorCode(code: string | null | undefined): boolean {
+  return typeof code === "string" && QUOTA_BACKOFF_ERROR_CODES.has(code);
+}
+
+function resolveBoundedRetryDelaysForErrorCode(
+  errorCode: string | null | undefined,
+): readonly number[] {
+  return isQuotaBackoffErrorCode(errorCode)
+    ? BOUNDED_TRANSIENT_QUOTA_RETRY_DELAYS_MS
+    : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS;
+}
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -411,11 +437,12 @@ export function applyRunScopedMentionedSkillKeys(
 
 export function computeBoundedTransientHeartbeatRetrySchedule(
   attempt: number,
-  now = new Date(),
+  now: Date = new Date(),
   random: () => number = Math.random,
+  delays: readonly number[] = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
 ) {
   if (!Number.isInteger(attempt) || attempt <= 0) return null;
-  const baseDelayMs = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[attempt - 1];
+  const baseDelayMs = delays[attempt - 1];
   if (typeof baseDelayMs !== "number") return null;
   const sample = Math.min(1, Math.max(0, random()));
   const jitterMultiplier =
@@ -426,7 +453,7 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     baseDelayMs,
     delayMs,
     dueAt: new Date(now.getTime() + delayMs),
-    maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+    maxAttempts: delays.length,
   };
 }
 
@@ -3830,6 +3857,116 @@ export function heartbeatService(
     return queued;
   }
 
+  // PMSA-18 / PMSA-11 §3.3: after the bounded quota retry contract is
+  // exhausted, freeze the executing issue at `blocked` with a clear comment
+  // so the board can intervene (top up quota, escalate, or re-queue). The
+  // structured run event is the Phase 3 watcher's pickup signal.
+  async function markQuotaExhaustedIssueBlocked(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    opts: { errorCode: string; attempts: number; maxAttempts: number },
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) return null;
+
+    const issueRow = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        identifier: issues.identifier,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issueRow) return null;
+    if (issueRow.status === "blocked" || issueRow.status === "cancelled") {
+      // Don't overwrite a manual blocker or undo a cancellation.
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `quota_retry_exhausted (${opts.errorCode}); issue already in ${issueRow.status}, leaving status untouched`,
+        payload: {
+          quotaRetryExhausted: true,
+          errorCode: opts.errorCode,
+          attempts: opts.attempts,
+          maxAttempts: opts.maxAttempts,
+          issueId,
+          issueStatus: issueRow.status,
+        },
+      });
+      return issueRow;
+    }
+
+    const errorLabel =
+      opts.errorCode === "claude_rate_limited"
+        ? "Anthropic API rate limit"
+        : "Anthropic Opus quota exhaustion";
+    const commentBody = [
+      `## Blocked: ${errorLabel}`,
+      "",
+      `Hit \`${opts.errorCode}\` ${opts.attempts}/${opts.maxAttempts} times in a row; bounded retry budget exhausted.`,
+      "",
+      "**What this means**",
+      "",
+      `- Heartbeat will no longer auto-retry this run.`,
+      `- The issue is parked at \`blocked\` until quota recovers or the board takes manual action.`,
+      "",
+      "**Suggested actions**",
+      "",
+      "- Wait for the Anthropic quota window to roll over and clear the blocker manually.",
+      "- Or top up / switch the affected agent to a fallback provider (PMSA-11 §3.4 / §3.5).",
+      "",
+      `_Triggered by run \`${run.id}\` for agent ${agent.name ?? agent.id}._`,
+    ].join("\n");
+
+    let blockedIssue: Awaited<ReturnType<typeof issuesSvc.update>> = null;
+    try {
+      blockedIssue = await issuesSvc.update(issueId, {
+        status: "blocked",
+        actorAgentId: agent.id,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, issueId, runId: run.id },
+        "failed to mark issue blocked after quota retry exhaustion",
+      );
+    }
+
+    if (blockedIssue) {
+      try {
+        await issuesSvc.addComment(issueId, commentBody, {
+          agentId: agent.id,
+          runId: run.id,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId, runId: run.id },
+          "failed to post quota-exhaustion blocker comment",
+        );
+      }
+    }
+
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "error",
+      message: `quota_retry_exhausted (${opts.errorCode}); issue ${issueRow.identifier ?? issueId} marked blocked`,
+      payload: {
+        quotaRetryExhausted: true,
+        errorCode: opts.errorCode,
+        attempts: opts.attempts,
+        maxAttempts: opts.maxAttempts,
+        issueId,
+        issueStatus: blockedIssue ? "blocked" : issueRow.status,
+        agentId: agent.id,
+      },
+    });
+
+    return blockedIssue ?? issueRow;
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -3846,10 +3983,16 @@ export function heartbeatService(
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
+    // PMSA-18: claude_quota_exhausted / claude_rate_limited get the tighter
+    // 60s/240s/900s schedule with a hard cap of 3 attempts. Everything else
+    // keeps the legacy 2/10/30/120-min generic transient_upstream contract.
+    const retryDelays = resolveBoundedRetryDelaysForErrorCode(run.errorCode);
+    const isQuotaBackoff = isQuotaBackoffErrorCode(run.errorCode);
     const baseSchedule = computeBoundedTransientHeartbeatRetrySchedule(
       nextAttempt,
       now,
       opts?.random,
+      retryDelays,
     );
     const transientRecovery =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
@@ -3862,6 +4005,7 @@ export function heartbeatService(
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
 
     if (!baseSchedule) {
+      const exhaustedMaxAttempts = retryDelays.length;
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -3870,13 +4014,28 @@ export function heartbeatService(
         payload: {
           retryReason,
           scheduledRetryAttempt: run.scheduledRetryAttempt ?? 0,
-          maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+          maxAttempts: exhaustedMaxAttempts,
+          ...(isQuotaBackoff
+            ? { errorCode: run.errorCode, quotaRetryExhausted: true }
+            : {}),
         },
       });
+      // PMSA-18 / PMSA-11 §3.3: when quota retries run out, transition the
+      // executing issue to `blocked` and emit a Phase 3-consumable event so a
+      // future watcher service can notify the board. Generic transient_upstream
+      // exhaustion intentionally keeps the existing behavior (just stop
+      // retrying) — only quota/rate-limit errors freeze the issue.
+      if (isQuotaBackoff) {
+        await markQuotaExhaustedIssueBlocked(run, agent, {
+          errorCode: run.errorCode ?? "claude_quota_exhausted",
+          attempts: run.scheduledRetryAttempt ?? 0,
+          maxAttempts: exhaustedMaxAttempts,
+        });
+      }
       return {
         outcome: "retry_exhausted" as const,
         attempt: nextAttempt,
-        maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+        maxAttempts: exhaustedMaxAttempts,
       };
     }
     const schedule =
