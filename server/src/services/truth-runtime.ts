@@ -16,6 +16,7 @@ import {
   createTruthBriefSchema,
   createTruthDocumentChunkSchema,
   createTruthDocumentSchema,
+  createTruthDossierSchema,
   createTruthPromotionRequestSchema,
   createTruthRunAuditSchema,
   createTruthRunSchema,
@@ -27,26 +28,9 @@ export const TRUTH_CHUNK_NAMESPACE = "6ce6ebaa-7154-5b5e-9c39-b96c25df04c3";
 
 type TruthPromotionStatus = "pending" | "approved" | "rejected" | "completed" | "failed" | "expired";
 type TruthBriefRow = typeof truthBriefs.$inferSelect;
-type TruthDossierRow = typeof truthDossiers.$inferSelect;
 type TruthPromotionRequestRow = typeof truthPromotionRequests.$inferSelect;
 
-type CreateTruthDossierInput = {
-  truthRunId: string;
-  briefId: string;
-  title: string;
-  status?: "draft" | "ready" | "published" | "superseded" | "failed";
-  htmlContent?: string | null;
-  filePath?: string | null;
-  contentSha256?: string | null;
-  briefInputHash?: string;
-  briefPayloadHash?: string;
-  promptVersion: string;
-  templateVersion: string;
-  generatedAt?: string | Date | null;
-  generatedByAgentId?: string | null;
-  generatedByUserId?: string | null;
-  metadata?: Record<string, unknown>;
-};
+type PromotionPatch = Partial<typeof truthPromotionRequests.$inferInsert>;
 
 function parseUuid(value: string): Uint8Array {
   const hex = value.replaceAll("-", "");
@@ -180,11 +164,11 @@ async function getDossier(db: Db, id: string) {
     .then((rows) => rows[0] ?? null);
 }
 
-async function getPromotionRequestRow(db: Db, id: string) {
+async function getPromotionRequestRow(db: Db, companyId: string, id: string) {
   return db
     .select()
     .from(truthPromotionRequests)
-    .where(eq(truthPromotionRequests.id, id))
+    .where(and(eq(truthPromotionRequests.companyId, companyId), eq(truthPromotionRequests.id, id)))
     .then((rows) => rows[0] ?? null);
 }
 
@@ -291,19 +275,45 @@ async function normalizePromotionTarget(
 }
 
 export function truthRuntimeService(db: Db) {
-  async function markExpiredAndThrow(request: TruthPromotionRequestRow) {
+  async function updatePromotionRequestFromStatuses(
+    companyId: string,
+    id: string,
+    allowedStatuses: TruthPromotionStatus[],
+    patch: PromotionPatch,
+    message: string,
+  ) {
     const now = new Date();
-    const [expired] = await db
+    const [updated] = await db
       .update(truthPromotionRequests)
-      .set({ status: "expired", updatedAt: now })
-      .where(eq(truthPromotionRequests.id, request.id))
+      .set({ ...patch, updatedAt: now })
+      .where(
+        and(
+          eq(truthPromotionRequests.companyId, companyId),
+          eq(truthPromotionRequests.id, id),
+          inArray(truthPromotionRequests.status, allowedStatuses),
+        ),
+      )
       .returning();
-    throw unprocessable("Promotion request expired", { status: expired?.status ?? "expired" });
+    if (updated) return updated;
+    const existing = await getPromotionRequestRow(db, companyId, id);
+    if (!existing) throw notFound("Promotion request not found");
+    throw conflict(message);
   }
 
-  function assertNotExpired(request: TruthPromotionRequestRow) {
+  async function markExpiredAndThrow(companyId: string, request: TruthPromotionRequestRow) {
+    const expired = await updatePromotionRequestFromStatuses(
+      companyId,
+      request.id,
+      ["pending", "approved"],
+      { status: "expired" },
+      "Promotion request changed before it could expire",
+    );
+    throw unprocessable("Promotion request expired", { status: expired.status });
+  }
+
+  function assertNotExpired(companyId: string, request: TruthPromotionRequestRow) {
     if (request.expiresAt && request.expiresAt.getTime() <= Date.now()) {
-      return markExpiredAndThrow(request);
+      return markExpiredAndThrow(companyId, request);
     }
     return Promise.resolve();
   }
@@ -329,7 +339,7 @@ export function truthRuntimeService(db: Db) {
     createDocumentChunk: async (companyId: string, input: unknown) => {
       const data = parseInput(createTruthDocumentChunkSchema, input);
       const document = await assertDocumentForCompany(db, companyId, data.truthDocumentId);
-      const id = uuidV5FromName(TRUTH_CHUNK_NAMESPACE, data.deterministicKey);
+      const id = uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${companyId}:${data.deterministicKey}`);
       const [chunk] = await db
         .insert(truthDocumentChunks)
         .values({
@@ -435,16 +445,20 @@ export function truthRuntimeService(db: Db) {
       return brief;
     },
 
-    createDossier: async (companyId: string, input: CreateTruthDossierInput) => {
-      if (!hasText(input?.htmlContent) && !hasText(input?.filePath)) {
-        throw unprocessable("Either htmlContent or filePath is required");
-      }
-      if (!hasText(input.title)) throw unprocessable("Dossier title is required");
-      if (!hasText(input.promptVersion)) throw unprocessable("Dossier promptVersion is required");
-      if (!hasText(input.templateVersion)) throw unprocessable("Dossier templateVersion is required");
+    createDossier: async (companyId: string, input: unknown) => {
+      const rawInput = typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
+      const data = parseInput(createTruthDossierSchema, {
+        ...rawInput,
+        briefInputHash: Object.prototype.hasOwnProperty.call(rawInput, "briefInputHash")
+          ? rawInput.briefInputHash
+          : sha256Hex(""),
+        briefPayloadHash: Object.prototype.hasOwnProperty.call(rawInput, "briefPayloadHash")
+          ? rawInput.briefPayloadHash
+          : sha256Hex(""),
+      });
 
-      const brief = await assertBriefForCompany(db, companyId, input.briefId);
-      if (brief.truthRunId !== input.truthRunId) {
+      const brief = await assertBriefForCompany(db, companyId, data.briefId);
+      if (brief.truthRunId !== data.truthRunId) {
         throw unprocessable("Dossier truthRunId must match linked brief");
       }
       ensureBriefPromotable(brief);
@@ -454,19 +468,19 @@ export function truthRuntimeService(db: Db) {
           truthRunId: brief.truthRunId,
           briefId: brief.id,
           companyId,
-          title: input.title,
-          status: input.status ?? "draft",
-          htmlContent: input.htmlContent ?? null,
-          filePath: input.filePath ?? null,
-          contentSha256: input.contentSha256 ?? null,
+          title: data.title,
+          status: data.status,
+          htmlContent: data.htmlContent ?? null,
+          filePath: data.filePath ?? null,
+          contentSha256: data.contentSha256 ?? null,
           briefInputHash: brief.inputHash,
           briefPayloadHash: brief.payloadHash as string,
-          promptVersion: input.promptVersion,
-          templateVersion: input.templateVersion,
-          generatedAt: toOptionalDate(input.generatedAt) ?? new Date(),
-          generatedByAgentId: input.generatedByAgentId ?? null,
-          generatedByUserId: input.generatedByUserId ?? null,
-          metadata: input.metadata ?? {},
+          promptVersion: data.promptVersion,
+          templateVersion: data.templateVersion,
+          generatedAt: toOptionalDate(data.generatedAt) ?? new Date(),
+          generatedByAgentId: data.generatedByAgentId ?? null,
+          generatedByUserId: data.generatedByUserId ?? null,
+          metadata: data.metadata,
         })
         .returning();
       return dossier;
@@ -488,44 +502,46 @@ export function truthRuntimeService(db: Db) {
       return request;
     },
 
-    approvePromotionRequest: async (id: string, actorId: string) => {
+    approvePromotionRequest: async (companyId: string, id: string, actorId: string) => {
       if (!hasText(actorId)) throw unprocessable("Approval actor is required");
-      const request = await getPromotionRequestRow(db, id);
+      const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
-      await assertNotExpired(request);
+      await assertNotExpired(companyId, request);
       if (request.status !== "pending") {
         throw conflict("Only pending promotion requests can be approved");
       }
-      const [updated] = await db
-        .update(truthPromotionRequests)
-        .set({ status: "approved", approvedAt: new Date(), approvedBy: actorId, updatedAt: new Date() })
-        .where(eq(truthPromotionRequests.id, id))
-        .returning();
-      return updated;
+      return updatePromotionRequestFromStatuses(
+        companyId,
+        id,
+        ["pending"],
+        { status: "approved", approvedAt: new Date(), approvedBy: actorId },
+        "Only pending promotion requests can be approved",
+      );
     },
 
-    rejectPromotionRequest: async (id: string, reason: string) => {
+    rejectPromotionRequest: async (companyId: string, id: string, reason: string) => {
       if (!hasText(reason)) throw unprocessable("Rejection reason is required");
-      const request = await getPromotionRequestRow(db, id);
+      const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
       if (request.status !== "pending" && request.status !== "approved") {
         throw conflict("Only pending or approved promotion requests can be rejected");
       }
-      const [updated] = await db
-        .update(truthPromotionRequests)
-        .set({ status: "rejected", rejectedAt: new Date(), rejectionReason: reason, updatedAt: new Date() })
-        .where(eq(truthPromotionRequests.id, id))
-        .returning();
-      return updated;
+      return updatePromotionRequestFromStatuses(
+        companyId,
+        id,
+        ["pending", "approved"],
+        { status: "rejected", rejectedAt: new Date(), rejectionReason: reason },
+        "Only pending or approved promotion requests can be rejected",
+      );
     },
 
-    completePromotionRequest: async (id: string) => {
-      const request = await getPromotionRequestRow(db, id);
+    completePromotionRequest: async (companyId: string, id: string) => {
+      const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
-      await assertNotExpired(request);
+      await assertNotExpired(companyId, request);
       if (request.status !== "approved") {
         throw conflict("Only approved promotion requests can be completed");
       }
@@ -534,58 +550,61 @@ export function truthRuntimeService(db: Db) {
       }
 
       if (request.dossierId) {
-        const dossier = await assertDossierForCompany(db, request.companyId, request.dossierId);
+        const dossier = await assertDossierForCompany(db, companyId, request.dossierId);
         if (dossier.status !== "ready" && dossier.status !== "published") {
           throw unprocessable("Dossier must be ready or published before promotion");
         }
-        const brief = await assertBriefForCompany(db, request.companyId, dossier.briefId);
+        const brief = await assertBriefForCompany(db, companyId, dossier.briefId);
         ensureBriefPromotable(brief);
       } else if (request.briefId) {
-        const brief = await assertBriefForCompany(db, request.companyId, request.briefId);
+        const brief = await assertBriefForCompany(db, companyId, request.briefId);
         ensureBriefPromotable(brief);
       }
 
-      const [updated] = await db
-        .update(truthPromotionRequests)
-        .set({ status: "completed", completedAt: new Date(), updatedAt: new Date() })
-        .where(eq(truthPromotionRequests.id, id))
-        .returning();
-      return updated;
+      return updatePromotionRequestFromStatuses(
+        companyId,
+        id,
+        ["approved"],
+        { status: "completed", completedAt: new Date() },
+        "Only approved promotion requests can be completed",
+      );
     },
 
-    failPromotionRequest: async (id: string, reason: string) => {
+    failPromotionRequest: async (companyId: string, id: string, reason: string) => {
       if (!hasText(reason)) throw unprocessable("Failure reason is required");
-      const request = await getPromotionRequestRow(db, id);
+      const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
       if (request.status !== "pending" && request.status !== "approved") {
         throw conflict("Only pending or approved promotion requests can fail");
       }
-      const [updated] = await db
-        .update(truthPromotionRequests)
-        .set({ status: "failed", failedAt: new Date(), failureReason: reason, updatedAt: new Date() })
-        .where(eq(truthPromotionRequests.id, id))
-        .returning();
-      return updated;
+      return updatePromotionRequestFromStatuses(
+        companyId,
+        id,
+        ["pending", "approved"],
+        { status: "failed", failedAt: new Date(), failureReason: reason },
+        "Only pending or approved promotion requests can fail",
+      );
     },
 
-    expirePromotionRequest: async (id: string) => {
-      const request = await getPromotionRequestRow(db, id);
+    expirePromotionRequest: async (companyId: string, id: string) => {
+      const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
       if (request.status !== "pending" && request.status !== "approved") {
         throw conflict("Only pending or approved promotion requests can expire");
       }
-      const [updated] = await db
-        .update(truthPromotionRequests)
-        .set({ status: "expired", updatedAt: new Date() })
-        .where(eq(truthPromotionRequests.id, id))
-        .returning();
-      return updated;
+      return updatePromotionRequestFromStatuses(
+        companyId,
+        id,
+        ["pending", "approved"],
+        { status: "expired" },
+        "Only pending or approved promotion requests can expire",
+      );
     },
 
-    getPromotionRequest: async (id: string) => {
-      const request = await getPromotionRequestRow(db, id);
+    getPromotionRequest: async (companyId: string, id: string) => {
+      const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       return request;
     },

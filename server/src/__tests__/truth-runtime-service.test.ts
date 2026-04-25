@@ -43,6 +43,12 @@ function expectConflict(action: Promise<unknown>) {
 }
 
 describe("truth runtime helpers", () => {
+  it("matches the RFC 4122 UUIDv5 DNS known vector", () => {
+    expect(uuidV5FromName("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "www.example.com")).toBe(
+      "2ed6657d-e927-568b-95e1-2665a8aea6a2",
+    );
+  });
+
   it("computes deterministic UUIDv5 chunk IDs that are stable for the same deterministic key", () => {
     const first = uuidV5FromName(TRUTH_CHUNK_NAMESPACE, "paperclip:doc:chunk:1");
     const second = uuidV5FromName(TRUTH_CHUNK_NAMESPACE, "paperclip:doc:chunk:1");
@@ -421,6 +427,25 @@ describeEmbeddedPostgres("truth runtime service", () => {
     expect(dossier.briefPayloadHash).toBe(brief.payloadHash);
   });
 
+  it("rejects creating a dossier when shared schema fields are invalid", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+
+    await expectUnprocessable(
+      service.createDossier(companyId, {
+        truthRunId: brief.truthRunId,
+        briefId: brief.id,
+        title: "Invalid dossier",
+        status: "published_later",
+        htmlContent: "<article>Invalid status</article>",
+        briefInputHash: "not-a-sha",
+        generatedAt: "not-a-date",
+        promptVersion: "dossier-prompt-v1",
+        templateVersion: "dossier-template-v1",
+      } as any),
+    );
+  });
+
   it("rejects creating a promotion request without a target", async () => {
     const companyId = await seedCompany();
 
@@ -511,8 +536,8 @@ describeEmbeddedPostgres("truth runtime service", () => {
     } as any);
 
     expect(request.status).toBe("pending");
-    await service.approvePromotionRequest(request.id, "approver");
-    await expectUnprocessable(service.completePromotionRequest(request.id));
+    await service.approvePromotionRequest(companyId, request.id, "approver");
+    await expectUnprocessable(service.completePromotionRequest(companyId, request.id));
   });
 
   it("rejects completing a run-only promotion request", async () => {
@@ -523,9 +548,9 @@ describeEmbeddedPostgres("truth runtime service", () => {
       truthRunId: run.id,
       requestedBy: "operator",
     });
-    await service.approvePromotionRequest(request.id, "approver");
+    await service.approvePromotionRequest(companyId, request.id, "approver");
 
-    await expectUnprocessable(service.completePromotionRequest(request.id));
+    await expectUnprocessable(service.completePromotionRequest(companyId, request.id));
   });
 
   it("rejects completing a brief promotion unless the brief is accepted and has content plus hashes", async () => {
@@ -536,9 +561,9 @@ describeEmbeddedPostgres("truth runtime service", () => {
       briefId: brief.id,
       requestedBy: "operator",
     });
-    await service.approvePromotionRequest(request.id, "approver");
+    await service.approvePromotionRequest(companyId, request.id, "approver");
 
-    await expectUnprocessable(service.completePromotionRequest(request.id));
+    await expectUnprocessable(service.completePromotionRequest(companyId, request.id));
   });
 
   it("rejects completing a dossier promotion unless the dossier is ready or published and linked brief is promotable", async () => {
@@ -549,9 +574,9 @@ describeEmbeddedPostgres("truth runtime service", () => {
       dossierId: dossier.id,
       requestedBy: "operator",
     });
-    await service.approvePromotionRequest(request.id, "approver");
+    await service.approvePromotionRequest(companyId, request.id, "approver");
 
-    await expectUnprocessable(service.completePromotionRequest(request.id));
+    await expectUnprocessable(service.completePromotionRequest(companyId, request.id));
   });
 
   it("marks expired promotion requests expired when approval is attempted after expiresAt", async () => {
@@ -564,8 +589,8 @@ describeEmbeddedPostgres("truth runtime service", () => {
       expiresAt: new Date(Date.now() - 60_000).toISOString(),
     });
 
-    await expectUnprocessable(service.approvePromotionRequest(request.id, "approver"));
-    const expired = await service.getPromotionRequest(request.id);
+    await expectUnprocessable(service.approvePromotionRequest(companyId, request.id, "approver"));
+    const expired = await service.getPromotionRequest(companyId, request.id);
     expect(expired.status).toBe("expired");
   });
 
@@ -578,14 +603,14 @@ describeEmbeddedPostgres("truth runtime service", () => {
       requestedBy: "operator",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    await service.approvePromotionRequest(request.id, "approver");
+    await service.approvePromotionRequest(companyId, request.id, "approver");
     await db
       .update(truthPromotionRequests)
       .set({ expiresAt: new Date(Date.now() - 60_000) })
       .where(eq(truthPromotionRequests.id, request.id));
 
-    await expectUnprocessable(service.completePromotionRequest(request.id));
-    const expired = await service.getPromotionRequest(request.id);
+    await expectUnprocessable(service.completePromotionRequest(companyId, request.id));
+    const expired = await service.getPromotionRequest(companyId, request.id);
     expect(expired.status).toBe("expired");
     expect(expired.completedAt).toBeNull();
   });
@@ -598,14 +623,14 @@ describeEmbeddedPostgres("truth runtime service", () => {
       briefId: brief.id,
       requestedBy: "operator",
     });
-    await service.approvePromotionRequest(completed.id, "approver");
-    await service.completePromotionRequest(completed.id);
+    await service.approvePromotionRequest(companyId, completed.id, "approver");
+    await service.completePromotionRequest(companyId, completed.id);
 
-    await expectConflict(service.approvePromotionRequest(completed.id, "approver-2"));
-    await expectConflict(service.rejectPromotionRequest(completed.id, "late reject"));
-    await expectConflict(service.completePromotionRequest(completed.id));
-    await expectConflict(service.failPromotionRequest(completed.id, "late failure"));
-    await expectConflict(service.expirePromotionRequest(completed.id));
+    await expectConflict(service.approvePromotionRequest(companyId, completed.id, "approver-2"));
+    await expectConflict(service.rejectPromotionRequest(companyId, completed.id, "late reject"));
+    await expectConflict(service.completePromotionRequest(companyId, completed.id));
+    await expectConflict(service.failPromotionRequest(companyId, completed.id, "late failure"));
+    await expectConflict(service.expirePromotionRequest(companyId, completed.id));
   });
 
   it("does not allow rejected, failed, or expired promotion requests to transition again", async () => {
@@ -627,16 +652,52 @@ describeEmbeddedPostgres("truth runtime service", () => {
       requestedBy: "operator",
     });
 
-    await service.rejectPromotionRequest(rejected.id, "not ready");
-    await service.failPromotionRequest(failed.id, "generation failed");
-    await service.expirePromotionRequest(expired.id);
+    await service.rejectPromotionRequest(companyId, rejected.id, "not ready");
+    await service.failPromotionRequest(companyId, failed.id, "generation failed");
+    await service.expirePromotionRequest(companyId, expired.id);
 
     for (const request of [rejected, failed, expired]) {
-      await expectConflict(service.approvePromotionRequest(request.id, "approver"));
-      await expectConflict(service.rejectPromotionRequest(request.id, "late reject"));
-      await expectConflict(service.completePromotionRequest(request.id));
-      await expectConflict(service.failPromotionRequest(request.id, "late failure"));
+      await expectConflict(service.approvePromotionRequest(companyId, request.id, "approver"));
+      await expectConflict(service.rejectPromotionRequest(companyId, request.id, "late reject"));
+      await expectConflict(service.completePromotionRequest(companyId, request.id));
+      await expectConflict(service.failPromotionRequest(companyId, request.id, "late failure"));
     }
+  });
+
+  it("does not allow another company to read or transition a promotion request", async () => {
+    const companyId = await seedCompany("Primary");
+    const otherCompanyId = await seedCompany("Other");
+    const brief = await seedBrief(companyId);
+    const request = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+
+    await expect(service.getPromotionRequest(otherCompanyId, request.id)).rejects.toMatchObject({ status: 404 });
+    await expect(service.approvePromotionRequest(otherCompanyId, request.id, "other-approver")).rejects.toMatchObject({
+      status: 404,
+    });
+    const unchanged = await service.getPromotionRequest(companyId, request.id);
+    expect(unchanged.status).toBe("pending");
+    expect(unchanged.approvedAt).toBeNull();
+  });
+
+  it("does not mutate a promotion request that has already moved out of the allowed transition status", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const request = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+
+    await service.rejectPromotionRequest(companyId, request.id, "superseded");
+    await expectConflict(service.approvePromotionRequest(companyId, request.id, "late approver"));
+    const rejected = await service.getPromotionRequest(companyId, request.id);
+    expect(rejected.status).toBe("rejected");
+    expect(rejected.approvedAt).toBeNull();
+    expect(rejected.approvedBy).toBeNull();
   });
 
   it("stores deterministic document chunk IDs from deterministicKey", async () => {
@@ -650,7 +711,7 @@ describeEmbeddedPostgres("truth runtime service", () => {
       contentText: "Launch next week.",
     });
 
-    expect(chunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, "truth-co:transcript:source#1"));
+    expect(chunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${companyId}:truth-co:transcript:source#1`));
   });
 
   it("ignores caller-supplied document chunk IDs and persists UUIDv5 from deterministicKey", async () => {
@@ -669,7 +730,32 @@ describeEmbeddedPostgres("truth runtime service", () => {
     });
 
     expect(chunk.id).not.toBe(suppliedId);
-    expect(chunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, deterministicKey));
+    expect(chunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${companyId}:${deterministicKey}`));
+  });
+
+  it("uses company scope in document chunk UUIDv5 names", async () => {
+    const firstCompanyId = await seedCompany("First");
+    const secondCompanyId = await seedCompany("Second");
+    const firstDocument = await seedDocument(firstCompanyId);
+    const secondDocument = await seedDocument(secondCompanyId);
+    const deterministicKey = "shared-source#1";
+
+    const firstChunk = await service.createDocumentChunk(firstCompanyId, {
+      truthDocumentId: firstDocument.id,
+      sourceChunkKey: deterministicKey,
+      deterministicKey,
+      contentText: "First company.",
+    });
+    const secondChunk = await service.createDocumentChunk(secondCompanyId, {
+      truthDocumentId: secondDocument.id,
+      sourceChunkKey: deterministicKey,
+      deterministicKey,
+      contentText: "Second company.",
+    });
+
+    expect(firstChunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${firstCompanyId}:${deterministicKey}`));
+    expect(secondChunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, `${secondCompanyId}:${deterministicKey}`));
+    expect(firstChunk.id).not.toBe(secondChunk.id);
   });
 
   it("lists only documents for the requested company", async () => {
@@ -704,9 +790,9 @@ describeEmbeddedPostgres("truth runtime service", () => {
       briefId: brief.id,
       requestedBy: "operator",
     });
-    await service.approvePromotionRequest(request.id, "approver");
+    await service.approvePromotionRequest(companyId, request.id, "approver");
 
-    const completed = await service.completePromotionRequest(request.id);
+    const completed = await service.completePromotionRequest(companyId, request.id);
 
     expect(completed.status).toBe("completed");
     const [row] = await db.select().from(truthPromotionRequests).where(eq(truthPromotionRequests.id, request.id));
