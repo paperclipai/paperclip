@@ -36,6 +36,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { canaryRoutes } from "./routes/canary.js";
 import { internalRoutes } from "./routes/internal.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
+import { embedRoutes } from "./routes/embed.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -217,6 +218,7 @@ export async function createApp(
   api.use("/canary", canaryRoutes(db));
   api.use("/internal", internalRoutes(db));
   api.use("/knowledge", knowledgeRoutes(db));
+  api.use("/embed", embedRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
