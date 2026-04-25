@@ -11,18 +11,20 @@
 
 2026-04-25 v2.2 Phase 18 완료 시점 재평가: v2.1 완료 직후 약 **81%**였던 개발기획서 정합성은 Phase 14-18 이후 약 **94%**로 평가한다. 핵심 데이터 모델과 운영 loop는 높게 맞춰졌고, 일일업무일지 3칸 칸반은 drag/drop lane move와 즉시 저장을 지원한다. Phase 15에서는 shell/navigation/command palette/Jarvis/task dialog/운영 설정에서 Paperclip-shaped 제품명과 Agent/Issue 중심 노출을 RealTycoon2/Jarvis/작업 용어로 감쌌다. Phase 16에서는 `/issues` 메인 표면을 RealTycoon2 업무 보드 기본값으로 바꾸고 Task/To-Do 카드, lane, drag/drop, 빠른 편집, 산출물/가격/OKR badge를 제공했다. One-Liner inbound contract도 `slack`, `teams`, `webhook`, `mobile`, `native` source와 검수 가능한 route로 확장했다. Phase 17에서는 `Knowledge > Bridge`에서 projector 실행, Obsidian-compatible vault export, import preview, graph report confidence, evidence status를 하나의 운영자 검수 흐름으로 묶었다. Phase 18에서는 P&L settlement evidence, marketplace 가격/품질/기준가/gold/협업 보상 근거, enterprise rollout SSO/template/binding/policy 검수 상태와 실제 저장값 hydrate를 완료했다. 남은 gap은 실제 외부 연동과 고급 경제 governance다.
 
+2026-04-25 v2.3 Phase 19 검증 보강: Phase 14-18 각각의 `VALIDATION.md`가 추가되었고, embedded Postgres host init 제약으로 skipped 처리되던 Knowledge Bridge, economy/marketplace/collaboration, enterprise rollout route contract는 `server/src/__tests__/rt2-v23-route-fallback.test.ts`로 non-embedded fallback 검증 경로가 생겼다. 따라서 v2.2의 기능 완료 상태는 `validated`로 승격하고, 실제 SSO/SCIM, Obsidian bidirectional sync, settlement approval/anti-gaming, Trello advanced parity/mobile capture는 `deferred` 상태로 Phase 20-23에서 닫는다. 앱의 `PlanAlignmentPage`도 `validated`, `tech_debt`, `deferred` 상태를 함께 표시한다.
+
 사용자 피드백 반영: Paperclip과 Multica는 엔진이어야 하며 실제 제품 모습이 되어서는 안 된다. v2.2는 "본체 Paperclip + RealTycoon 장식"처럼 보이는 모든 product-facing 표면을 제거하고, Trello식 카드/보드 상호작용을 기반으로 한 완전한 RealTycoon2 프론트엔드로 전환하는 것을 핵심 목표에 포함한다.
 
 | 영역 | 현재 평가 | 근거 | 남은 gap |
 |------|-----------|------|----------|
-| RT2 identity / domain spine | 92% | RT2 shell, task/deliverable/event/wiki/graph/economy/governance route와 schema 존재. 브라우저 제목, 회사 rail, sidebar, command palette, Jarvis 관리, task dialog, 운영 설정 문구를 RealTycoon2/Jarvis/작업 용어로 교체 | legacy `/issues`/`/agents` route와 internal `@paperclipai/*` package naming은 compatibility layer로 잔존 |
-| Daily report cockpit | 84% | 3패널 daily cockpit, OKR/KPI trace, gap flag, Trello형 drag/drop lane move | 카드 체크리스트/정렬 등 Trello 세부 기능은 후속 보강 가능 |
-| Main work board / Trello workflow | 88% | `/issues` 메인 표면이 RealTycoon2 업무 보드 기본값이며 Task/To-Do 카드, lane, drag/drop, 빠른 편집, 산출물/가격/OKR badge 표시 | 내부 route/type/API는 compatibility layer로 `Issue` 명칭을 유지 |
-| One-Liner capture | 84% | floating widget, shortcut, voice draft, messenger-style route, mobile/native inbound contract와 route 검수 표면 | 실제 Slack/Teams 설치 흐름과 native app distribution |
-| Knowledge wiki/graph | 87% | cumulative wiki, graph projection, task mesh evidence, `Knowledge > Bridge`의 vault export/import preview와 graph report/evidence status | 실제 Obsidian local writer와 양방향 sync/conflict resolution |
+| RT2 identity / domain spine | 92% / validated | RT2 shell, task/deliverable/event/wiki/graph/economy/governance route와 schema 존재. 브라우저 제목, 회사 rail, sidebar, command palette, Jarvis 관리, task dialog, 운영 설정 문구를 RealTycoon2/Jarvis/작업 용어로 교체. Phase 15 `VALIDATION.md` 추가 | legacy `/issues`/`/agents` route와 internal `@paperclipai/*` package naming은 compatibility layer로 잔존 |
+| Daily report cockpit | 84% / validated | 3패널 daily cockpit, OKR/KPI trace, gap flag, Trello형 drag/drop lane move. Phase 14 `VALIDATION.md` 추가 | 카드 체크리스트/정렬 등 Trello 세부 기능은 Phase 23 |
+| Main work board / Trello workflow | 88% / validated | `/issues` 메인 표면이 RealTycoon2 업무 보드 기본값이며 Task/To-Do 카드, lane, drag/drop, 빠른 편집, 산출물/가격/OKR badge 표시. Phase 16 `VALIDATION.md` 추가 | 내부 route/type/API는 compatibility layer로 `Issue` 명칭을 유지 |
+| One-Liner capture | 84% / deferred | floating widget, shortcut, voice draft, messenger-style route, mobile/native inbound contract와 route 검수 표면 | mobile/native inbound queue promotion은 Phase 23, native app distribution은 future |
+| Knowledge wiki/graph | 87% / validated | cumulative wiki, graph projection, task mesh evidence, `Knowledge > Bridge`의 vault export/import preview와 graph report/evidence status. Phase 17 `VALIDATION.md`와 route fallback test 추가 | 실제 Obsidian local writer와 양방향 sync/conflict resolution은 Phase 21 |
 | Jarvis / quality change management | 80% | Shadow/Co-Pilot/Auto, approval-linked skill capability | process mining, reverse design 고도화, runtime 운영 UX |
-| Economy / marketplace / P&L | 84% | ledger-backed P&L, marketplace evidence, collaboration reward, settlement evidence, actor drilldown | 가격 협상, settlement approval, reputation/anti-gaming 깊이 |
-| Enterprise rollout | 80% | SSO/template/binding mode baseline, saved setting hydrate, ready/partial/missing evidence status | 실제 SSO handshake, SCIM sync, 권한별 onboarding |
+| Economy / marketplace / P&L | 84% / validated | ledger-backed P&L, marketplace evidence, collaboration reward, settlement evidence, actor drilldown. Phase 18 `VALIDATION.md`와 route fallback test 추가 | 가격 협상, settlement approval, reputation/anti-gaming 깊이는 Phase 22 |
+| Enterprise rollout | 80% / validated | SSO/template/binding mode baseline, saved setting hydrate, ready/partial/missing evidence status. Phase 18 `VALIDATION.md`와 route fallback test 추가 | 실제 SSO metadata validation과 SCIM sync preview는 Phase 20 |
 
 가장 큰 gap은 기본 domain entity가 아니라 adoption surface와 운영 깊이다.
 

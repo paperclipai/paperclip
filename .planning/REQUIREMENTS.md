@@ -10,9 +10,9 @@ v2.3은 v2.2에서 `tech_debt`로 인정한 검증 산출물과 개발기획서 
 
 ### 검증 및 안정화
 
-- [ ] **VALID-01**: 운영자는 Phase 14-18 각각의 `VALIDATION.md`에서 요구사항, 구현 증거, 검증 명령, 잔여 리스크를 확인할 수 있다.
-- [ ] **VALID-02**: 개발자는 embedded Postgres host init 제약으로 skip된 Phase 17-18 route suite를 실행 가능한 fixture 또는 fallback으로 검증할 수 있다.
-- [ ] **VALID-03**: 운영자는 v2.2 alignment scorecard에서 `tech_debt`, `validated`, `deferred` 상태가 실제 검증 산출물과 동기화된 것을 볼 수 있다.
+- [x] **VALID-01**: 운영자는 Phase 14-18 각각의 `VALIDATION.md`에서 요구사항, 구현 증거, 검증 명령, 잔여 리스크를 확인할 수 있다.
+- [x] **VALID-02**: 개발자는 embedded Postgres host init 제약으로 skip된 Phase 17-18 route suite를 실행 가능한 fixture 또는 fallback으로 검증할 수 있다.
+- [x] **VALID-03**: 운영자는 v2.2 alignment scorecard에서 `tech_debt`, `validated`, `deferred` 상태가 실제 검증 산출물과 동기화된 것을 볼 수 있다.
 
 ### Enterprise Rollout
 
@@ -61,9 +61,9 @@ v2.3은 v2.2에서 `tech_debt`로 인정한 검증 산출물과 개발기획서 
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| VALID-01 | Phase 19 | Pending |
-| VALID-02 | Phase 19 | Pending |
-| VALID-03 | Phase 19 | Pending |
+| VALID-01 | Phase 19 | Complete |
+| VALID-02 | Phase 19 | Complete |
+| VALID-03 | Phase 19 | Complete |
 | ENT-02 | Phase 20 | Pending |
 | ENT-03 | Phase 20 | Pending |
 | ENT-04 | Phase 20 | Pending |
