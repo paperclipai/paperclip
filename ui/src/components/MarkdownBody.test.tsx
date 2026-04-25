@@ -427,6 +427,16 @@ describe("MarkdownBody", () => {
     expect(html).toContain('title="Open in VS Code / Cursor"');
   });
 
+  it("strips non-file vscode:// schemes (extension/settings) from manual markdown links", () => {
+    const html = renderMarkdown(
+      "[ext](vscode://extension/some-ext/run-cmd) [settings](vscode://settings)",
+    );
+
+    expect(html).not.toContain("vscode://extension");
+    expect(html).not.toContain("vscode://settings");
+    expect(html).toContain('href=""');
+  });
+
   it("renders internal issue links and bare identifiers as inline issue refs", () => {
     const html = renderMarkdown(`See PAP-42 and [linked task](${buildIssueReferenceHref("PAP-77")}) for follow-up.`, [
       { identifier: "PAP-42", status: "done" },

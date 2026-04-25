@@ -109,7 +109,11 @@ function extractMermaidSource(children: ReactNode): string | null {
 }
 
 function isEditorProtocolUrl(url: string): boolean {
-  return /^vscode:/i.test(url);
+  // Narrow allowlist: only `vscode://file/...` URLs that open a path in
+  // VS Code or Cursor. Other `vscode:` schemes (e.g. `vscode://extension/...`,
+  // `vscode://settings`) can trigger extension commands or settings actions
+  // and must not be reachable from agent-authored markdown.
+  return /^vscode:\/\/file\//i.test(url);
 }
 
 function safeMarkdownUrlTransform(url: string): string {

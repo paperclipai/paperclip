@@ -15,6 +15,12 @@ export function isPlausibleAbsolutePath(value: string | null | undefined): boole
 }
 
 export function buildVscodeFileHref(absPath: string): string {
+  // VS Code's `vscode://file/...` handler expects a fully-resolved POSIX
+  // absolute path. `~/` is a shell convention and is not expanded by the
+  // protocol handler, so paths emitted with a leading `~` will produce a
+  // clickable but non-functional link. We preserve the tilde unencoded so
+  // hover-text still reads naturally; agents that want guaranteed-open
+  // links should emit `/Users/...` paths.
   const segments = absPath.split("/");
   const encoded = segments
     .map((segment, index) => {
