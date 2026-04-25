@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
-import { z } from "zod";
+import type { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { truthPromotionRequests } from "@paperclipai/db";
 import {
@@ -9,53 +9,18 @@ import {
   createTruthBriefSchema,
   createTruthDocumentChunkSchema,
   createTruthDocumentSchema,
+  createTruthDossierSchema,
   createTruthPromotionRequestSchema,
   createTruthRunAuditSchema,
   createTruthRunSchema,
   failTruthPromotionRequestSchema,
   rejectTruthPromotionRequestSchema,
-  truthDossierStatusSchema,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity, truthRuntimeService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 type TruthPromotionRequestRow = typeof truthPromotionRequests.$inferSelect;
-
-const requiredTextSchema = z.string().trim().min(1);
-const sha256HexSchema = z
-  .string()
-  .regex(/^[a-fA-F0-9]{64}$/, "Must be a SHA-256 hex digest")
-  .transform((value) => value.toLowerCase());
-const metadataSchema = z.record(z.unknown());
-const optionalGeneratedAtSchema = z.string().datetime().optional();
-const hasText = (value: string | null | undefined) => typeof value === "string" && value.trim().length > 0;
-
-const createTruthDossierRouteSchema = z
-  .object({
-    truthRunId: z.string().uuid(),
-    briefId: z.string().uuid(),
-    title: requiredTextSchema,
-    status: truthDossierStatusSchema.optional().default("draft"),
-    htmlContent: z.string().optional().nullable(),
-    filePath: z.string().optional().nullable(),
-    contentSha256: sha256HexSchema.optional().nullable(),
-    promptVersion: requiredTextSchema,
-    templateVersion: requiredTextSchema,
-    generatedAt: optionalGeneratedAtSchema,
-    generatedByAgentId: z.string().uuid().optional().nullable(),
-    generatedByUserId: z.string().optional().nullable(),
-    metadata: metadataSchema.optional().default({}),
-  })
-  .superRefine((value, ctx) => {
-    if (!hasText(value.htmlContent) && !hasText(value.filePath)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Either htmlContent or filePath is required",
-        path: ["htmlContent"],
-      });
-    }
-  });
 
 function parseTruthInput<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
@@ -256,7 +221,7 @@ export function truthRuntimeRoutes(db: Db) {
   router.post("/companies/:companyId/truth/dossiers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const input = parseTruthInput(createTruthDossierRouteSchema, req.body);
+    const input = parseTruthInput(createTruthDossierSchema, req.body);
     const dossier = await svc.createDossier(companyId, input);
     await logTruthActivity(req, {
       companyId,

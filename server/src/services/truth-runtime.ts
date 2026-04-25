@@ -461,16 +461,7 @@ export function truthRuntimeService(db: Db) {
     },
 
     createDossier: async (companyId: string, input: unknown) => {
-      const rawInput = typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
-      const data = parseInput(createTruthDossierSchema, {
-        ...rawInput,
-        briefInputHash: Object.prototype.hasOwnProperty.call(rawInput, "briefInputHash")
-          ? rawInput.briefInputHash
-          : sha256Hex(""),
-        briefPayloadHash: Object.prototype.hasOwnProperty.call(rawInput, "briefPayloadHash")
-          ? rawInput.briefPayloadHash
-          : sha256Hex(""),
-      });
+      const data = parseInput(createTruthDossierSchema, input);
 
       const brief = await assertBriefForCompany(db, companyId, data.briefId);
       if (brief.truthRunId !== data.truthRunId) {

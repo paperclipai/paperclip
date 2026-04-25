@@ -314,6 +314,33 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     expect(res.body.error).toBe("Invalid truth runtime input");
   });
 
+  it("creates dossiers without client-supplied brief hashes and snapshots them from the brief", async () => {
+    allowLocalBoard();
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/truth/dossiers`)
+      .send({
+        truthRunId: brief.truthRunId,
+        briefId: brief.id,
+        title: "Board dossier",
+        status: "ready",
+        htmlContent: "<article>Board dossier</article>",
+        promptVersion: "dossier-prompt-v1",
+        templateVersion: "dossier-template-v1",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      companyId,
+      truthRunId: brief.truthRunId,
+      briefId: brief.id,
+      briefInputHash: brief.inputHash,
+      briefPayloadHash: brief.payloadHash,
+    });
+  });
+
   it("accepts run-only promotion request targets", async () => {
     allowLocalBoard();
     const companyId = await seedCompany();

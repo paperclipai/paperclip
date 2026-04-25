@@ -174,8 +174,6 @@ export const createTruthDossierSchema = z
     htmlContent: z.string().optional().nullable(),
     filePath: z.string().optional().nullable(),
     contentSha256: sha256HexSchema.optional().nullable(),
-    briefInputHash: sha256HexSchema,
-    briefPayloadHash: sha256HexSchema,
     promptVersion: requiredTextSchema,
     templateVersion: requiredTextSchema,
     generatedAt: optionalGeneratedAtSchema,
