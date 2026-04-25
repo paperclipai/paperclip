@@ -263,9 +263,17 @@ export function secretService(db: Db) {
       if (!secret) throw notFound("Secret not found");
 
       if (patch.name && patch.name !== secret.name) {
-        const duplicate = await getByName(secret.companyId, patch.name);
-        if (duplicate && duplicate.id !== secret.id) {
-          throw conflict(`Secret already exists: ${patch.name}`);
+        // Instance-scoped uniqueness is enforced by the partial unique index
+        // on (name) WHERE company_id IS NULL — getByName looks up via
+        // (company_id, name) and so cannot detect collisions for the
+        // instance scope. The follow-up commit that adds instance-secret
+        // service methods will add the equivalent global lookup; for now
+        // company-scoped renames keep working unchanged.
+        if (secret.companyId !== null) {
+          const duplicate = await getByName(secret.companyId, patch.name);
+          if (duplicate && duplicate.id !== secret.id) {
+            throw conflict(`Secret already exists: ${patch.name}`);
+          }
         }
       }
 

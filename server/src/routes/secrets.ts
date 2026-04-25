@@ -1,3 +1,4 @@
+import type { Response } from "express";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -10,6 +11,25 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+
+/**
+ * Per-id secret routes (rotate/update/delete) currently only handle
+ * company-scoped secrets. Instance-scoped secrets (companyId === null,
+ * introduced by the schema migration in this same series) get a 501 here
+ * until the follow-up commit wires `assertSecretScope` so the same routes
+ * dispatch instance-admin auth + null-companyId activity logging.
+ */
+function ensureCompanyScoped<T extends { companyId: string | null }>(
+  res: Response,
+  secret: T,
+): secret is T & { companyId: string } {
+  if (secret.companyId !== null) return true;
+  res.status(501).json({
+    error:
+      "Instance-scoped secrets cannot be managed via this endpoint yet — see the instance-secrets routes commit.",
+  });
+  return false;
+}
 
 export function secretRoutes(db: Db) {
   const router = Router();
@@ -74,6 +94,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    if (!ensureCompanyScoped(res, existing)) return;
     assertCompanyAccess(req, existing.companyId);
 
     const rotated = await svc.rotate(
@@ -86,7 +107,7 @@ export function secretRoutes(db: Db) {
     );
 
     await logActivity(db, {
-      companyId: rotated.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.rotated",
@@ -106,6 +127,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    if (!ensureCompanyScoped(res, existing)) return;
     assertCompanyAccess(req, existing.companyId);
 
     const updated = await svc.update(id, {
@@ -120,7 +142,7 @@ export function secretRoutes(db: Db) {
     }
 
     await logActivity(db, {
-      companyId: updated.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.updated",
@@ -140,6 +162,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    if (!ensureCompanyScoped(res, existing)) return;
     assertCompanyAccess(req, existing.companyId);
 
     const removed = await svc.remove(id);
@@ -149,7 +172,7 @@ export function secretRoutes(db: Db) {
     }
 
     await logActivity(db, {
-      companyId: removed.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.deleted",
