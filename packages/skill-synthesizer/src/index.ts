@@ -1,6 +1,6 @@
 import { Client } from "pg";
 import { knowledgeChunks, knowledgeTopics } from "@paperclipai/db/src/schema/knowledge.js";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pg";
 import * as schema from "@paperclipai/db/src/schema/index.js";
 import Anthropic from "@anthropic-ai/sdk";
@@ -178,7 +178,7 @@ export class SkillSynthesizerService {
     };
   }
 
-  async publishOrQueue(skillPath: string, evalScore: number): Promise<void> {
+  async publishOrQueue(skillPath: string, evalScore: number, evalTasks: EvalTask[]): Promise<void> {
     if (!this.db) throw new Error("Service not initialized");
 
     const status: SkillStatus = evalScore >= 0.7 ? "published" : "needs_human_review";
@@ -188,7 +188,7 @@ export class SkillSynthesizerService {
       .set({
         status,
         evalScore,
-        evalTasks: sql`${JSON.stringify({})}::jsonb`,
+        evalTasks: JSON.stringify(evalTasks),
         reviewedAt: new Date(),
       })
       .where(eq(schema.synthesizedSkills.skillPath, skillPath));

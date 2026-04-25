@@ -329,7 +329,7 @@ export function knowledgeRoutes(db: Db) {
 
       const evalResult = await synthesizer.runEvalGate(synthesisResult.skillPath, topicSlug);
 
-      await synthesizer.publishOrQueue(synthesisResult.skillPath, evalResult.averageScore);
+      await synthesizer.publishOrQueue(synthesisResult.skillPath, evalResult.averageScore, evalResult.tasks);
 
       const skill = await synthesizer.getSkillByTopicSlug(topicSlug);
 
