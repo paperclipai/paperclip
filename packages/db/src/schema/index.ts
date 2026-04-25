@@ -45,6 +45,16 @@ export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
+export {
+  truthDocuments,
+  truthDocumentChunks,
+  truthRuns,
+  truthAtoms,
+  truthRunAudits,
+  truthBriefs,
+  truthDossiers,
+  truthPromotionRequests,
+} from "./truth_runtime.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { costEvents } from "./cost_events.js";
