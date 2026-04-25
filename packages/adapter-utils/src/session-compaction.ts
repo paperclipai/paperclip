@@ -3,6 +3,9 @@ export interface SessionCompactionPolicy {
   maxSessionRuns: number;
   maxRawInputTokens: number;
   maxSessionAgeHours: number;
+  maxContextTokens: number;
+  maxOutputTokens: number;
+  abortIfContextExceeds: boolean;
 }
 
 export type NativeContextManagement = "confirmed" | "likely" | "unknown" | "none";
@@ -25,6 +28,9 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 200,
   maxRawInputTokens: 2_000_000,
   maxSessionAgeHours: 72,
+  maxContextTokens: 0,
+  maxOutputTokens: 0,
+  abortIfContextExceeds: false,
 };
 
 // Adapters with native context management still participate in session resume,
@@ -34,6 +40,9 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
   maxSessionAgeHours: 0,
+  maxContextTokens: 0,
+  maxOutputTokens: 0,
+  abortIfContextExceeds: false,
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -140,11 +149,17 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const maxSessionRuns = readNumber(compaction.maxSessionRuns);
   const maxRawInputTokens = readNumber(compaction.maxRawInputTokens);
   const maxSessionAgeHours = readNumber(compaction.maxSessionAgeHours);
+  const maxContextTokens = readNumber(compaction.maxContextTokens);
+  const maxOutputTokens = readNumber(compaction.maxOutputTokens);
+  const abortIfContextExceeds = readBoolean(compaction.abortIfContextExceeds);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
   if (maxRawInputTokens !== undefined) explicit.maxRawInputTokens = maxRawInputTokens;
   if (maxSessionAgeHours !== undefined) explicit.maxSessionAgeHours = maxSessionAgeHours;
+  if (maxContextTokens !== undefined) explicit.maxContextTokens = maxContextTokens;
+  if (maxOutputTokens !== undefined) explicit.maxOutputTokens = maxOutputTokens;
+  if (abortIfContextExceeds !== undefined) explicit.abortIfContextExceeds = abortIfContextExceeds;
 
   return explicit;
 }
@@ -168,6 +183,9 @@ export function resolveSessionCompactionPolicy(
       maxSessionRuns: explicitOverride.maxSessionRuns ?? basePolicy.maxSessionRuns,
       maxRawInputTokens: explicitOverride.maxRawInputTokens ?? basePolicy.maxRawInputTokens,
       maxSessionAgeHours: explicitOverride.maxSessionAgeHours ?? basePolicy.maxSessionAgeHours,
+      maxContextTokens: explicitOverride.maxContextTokens ?? basePolicy.maxContextTokens,
+      maxOutputTokens: explicitOverride.maxOutputTokens ?? basePolicy.maxOutputTokens,
+      abortIfContextExceeds: explicitOverride.abortIfContextExceeds ?? basePolicy.abortIfContextExceeds,
     },
     adapterSessionManagement,
     explicitOverride,
@@ -181,7 +199,22 @@ export function resolveSessionCompactionPolicy(
 
 export function hasSessionCompactionThresholds(policy: Pick<
   SessionCompactionPolicy,
-  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
+  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours" | "maxContextTokens" | "maxOutputTokens"
 >) {
-  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0 || policy.maxContextTokens > 0 || policy.maxOutputTokens > 0;
+}
+
+export function getContextUsagePercent(
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  maxContextTokens: number,
+  maxOutputTokens: number,
+): { inputPercent: number; outputPercent: number; totalPercent: number } {
+  const effectiveInput = Math.max(0, inputTokens - cachedInputTokens);
+  const totalContext = effectiveInput + outputTokens;
+  const inputPercent = maxContextTokens > 0 ? Math.min(1, effectiveInput / maxContextTokens) : 0;
+  const outputPercent = maxOutputTokens > 0 ? Math.min(1, outputTokens / maxOutputTokens) : 0;
+  const totalPercent = Math.max(inputPercent, outputPercent);
+  return { inputPercent, outputPercent, totalPercent };
 }
