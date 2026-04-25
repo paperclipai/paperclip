@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { assertAuthenticated } from "./authz.js";
 
 const DIMENSION = 384;
 
@@ -74,6 +75,7 @@ export function embedRoutes() {
   });
 
   router.post("/", (req, res) => {
+    assertAuthenticated(req);
     const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
     if (!embedRateLimiter.check(ip)) {
       res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
@@ -107,12 +109,12 @@ export function embedRoutes() {
       console.error("[embed] Error:", error);
       res.status(500).json({
         error: "Embedding generation failed",
-        message: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
 
   router.post("/batch", (req, res) => {
+    assertAuthenticated(req);
     const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
     if (!embedRateLimiter.check(ip)) {
       res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
@@ -162,7 +164,6 @@ export function embedRoutes() {
       console.error("[embed/batch] Error:", error);
       res.status(500).json({
         error: "Batch embedding generation failed",
-        message: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
