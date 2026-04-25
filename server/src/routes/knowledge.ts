@@ -164,6 +164,11 @@ export function knowledgeRoutes(db: Db) {
     const limitNum = Math.min(parseInt(limit as string, 10) || 10, 50);
     const query = q.trim();
 
+    if (query.length > 200) {
+      res.status(400).json({ error: "Query must be 200 characters or less" });
+      return;
+    }
+
     try {
       const queryEmbedding = simpleQueryEmbedding(query);
       const conditions = [isNotNull(knowledgeChunks.embedding)];
