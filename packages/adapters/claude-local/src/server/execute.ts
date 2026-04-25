@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -49,6 +50,75 @@ import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolve the path to the bundled plugin-tool MCP bridge entrypoint.
+ * Both source (`src/server/`) and built (`dist/server/`) layouts resolve
+ * to the same sibling-package location. Returns `null` if the file isn't
+ * present (e.g. dev environment without the bridge built yet).
+ */
+async function resolvePluginMcpBridgeBin(): Promise<string | null> {
+  const candidate = path.resolve(
+    __moduleDir,
+    "..",
+    "..",
+    "..",
+    "..",
+    "claude-local-tool-bridge",
+    "dist",
+    "index.js",
+  );
+  try {
+    await fs.access(candidate);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write a per-run `.mcp.json` that spawns the plugin-tool bridge as an MCP
+ * server inside the Claude Code session. Returns the file path (to be passed
+ * via `--mcp-config`), or `null` to skip injection. Reasons to skip:
+ *   - `disablePluginTools` adapter config (operator escape hatch)
+ *   - no agent JWT (the bridge can't authenticate to Paperclip)
+ *   - the bridge bin isn't on disk (dev environment without `pnpm build`)
+ */
+async function maybeWritePluginMcpConfig(input: {
+  runId: string;
+  agentId: string;
+  companyId: string;
+  projectId: string | null;
+  authToken: string | undefined;
+  apiBase: string;
+  disabled: boolean;
+}): Promise<string | null> {
+  if (input.disabled) return null;
+  if (!input.authToken) return null;
+  const bridgeBin = await resolvePluginMcpBridgeBin();
+  if (!bridgeBin) return null;
+
+  const mcpConfig = {
+    mcpServers: {
+      "paperclip-plugin-tools": {
+        command: "node",
+        args: [bridgeBin],
+        env: {
+          PAPERCLIP_API_BASE: input.apiBase,
+          PAPERCLIP_AGENT_TOKEN: input.authToken,
+          PAPERCLIP_AGENT_ID: input.agentId,
+          PAPERCLIP_RUN_ID: input.runId,
+          PAPERCLIP_COMPANY_ID: input.companyId,
+          ...(input.projectId ? { PAPERCLIP_PROJECT_ID: input.projectId } : {}),
+        },
+      },
+    },
+  };
+
+  const filePath = path.join(os.tmpdir(), `paperclip-plugin-mcp-${input.runId}.json`);
+  await fs.writeFile(filePath, JSON.stringify(mcpConfig, null, 2), "utf8");
+  return filePath;
+}
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -505,6 +575,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  const pluginMcpConfigPath = await maybeWritePluginMcpConfig({
+    runId,
+    agentId: agent.id,
+    companyId: agent.companyId,
+    projectId: null,
+    authToken,
+    apiBase: typeof env.PAPERCLIP_API_URL === "string" ? env.PAPERCLIP_API_URL : "http://localhost:3100",
+    disabled: asBoolean(config.disablePluginTools, false),
+  });
+
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
@@ -528,6 +608,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (pluginMcpConfigPath) args.push("--mcp-config", pluginMcpConfigPath);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
