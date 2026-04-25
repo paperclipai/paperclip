@@ -16,7 +16,13 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  isUuidLike,
+  isAgentPriorityTier,
+  normalizeAgentUrlKey,
+  resolveDefaultAgentPriorityTier,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -44,7 +50,10 @@ const CONFIG_REVISION_FIELDS = [
 ] as const;
 
 type ConfigRevisionField = (typeof CONFIG_REVISION_FIELDS)[number];
-type AgentConfigSnapshot = Pick<typeof agents.$inferSelect, ConfigRevisionField>;
+type AgentConfigSnapshot = Pick<
+  typeof agents.$inferSelect,
+  ConfigRevisionField
+>;
 
 interface RevisionMetadata {
   createdByAgentId?: string | null;
@@ -79,17 +88,23 @@ function buildConfigSnapshot(
   row: Pick<typeof agents.$inferSelect, ConfigRevisionField>,
 ): AgentConfigSnapshot {
   const adapterConfig =
-    typeof row.adapterConfig === "object" && row.adapterConfig !== null && !Array.isArray(row.adapterConfig)
+    typeof row.adapterConfig === "object" &&
+    row.adapterConfig !== null &&
+    !Array.isArray(row.adapterConfig)
       ? sanitizeRecord(row.adapterConfig as Record<string, unknown>)
       : {};
   const runtimeConfig =
-    typeof row.runtimeConfig === "object" && row.runtimeConfig !== null && !Array.isArray(row.runtimeConfig)
+    typeof row.runtimeConfig === "object" &&
+    row.runtimeConfig !== null &&
+    !Array.isArray(row.runtimeConfig)
       ? sanitizeRecord(row.runtimeConfig as Record<string, unknown>)
       : {};
   const metadata =
-    typeof row.metadata === "object" && row.metadata !== null && !Array.isArray(row.metadata)
+    typeof row.metadata === "object" &&
+    row.metadata !== null &&
+    !Array.isArray(row.metadata)
       ? sanitizeRecord(row.metadata as Record<string, unknown>)
-      : row.metadata ?? null;
+      : (row.metadata ?? null);
   return {
     name: row.name,
     role: row.role,
@@ -107,13 +122,18 @@ function buildConfigSnapshot(
 
 function containsRedactedMarker(value: unknown): boolean {
   if (value === REDACTED_EVENT_VALUE) return true;
-  if (Array.isArray(value)) return value.some((item) => containsRedactedMarker(item));
+  if (Array.isArray(value))
+    return value.some((item) => containsRedactedMarker(item));
   if (typeof value !== "object" || value === null) return false;
-  return Object.values(value as Record<string, unknown>).some((entry) => containsRedactedMarker(entry));
+  return Object.values(value as Record<string, unknown>).some((entry) =>
+    containsRedactedMarker(entry),
+  );
 }
 
 function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) {
-  return CONFIG_REVISION_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(data, field));
+  return CONFIG_REVISION_FIELDS.some((field) =>
+    Object.prototype.hasOwnProperty.call(data, field),
+  );
 }
 
 function parseFiniteNumberLike(value: unknown): number | null {
@@ -123,8 +143,12 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<string, unknown> {
-  const normalizedRuntimeConfig = isPlainRecord(runtimeConfig) ? { ...runtimeConfig } : {};
+function normalizeRuntimeConfigForNewAgent(
+  runtimeConfig: unknown,
+): Record<string, unknown> {
+  const normalizedRuntimeConfig = isPlainRecord(runtimeConfig)
+    ? { ...runtimeConfig }
+    : {};
   const heartbeat = isPlainRecord(normalizedRuntimeConfig.heartbeat)
     ? { ...normalizedRuntimeConfig.heartbeat }
     : {};
@@ -135,15 +159,41 @@ function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<strin
   return normalizedRuntimeConfig;
 }
 
+// Ensures `metadata.priorityTier` is present and is a valid tier. Preserves
+// any existing valid tier; otherwise fills in the role/name-derived default.
+// Used by both the agent create path and the startup backfill so the rules
+// can't drift apart.
+export function ensureAgentPriorityTierInMetadata(
+  metadata: unknown,
+  identity: {
+    role: string | null | undefined;
+    name: string | null | undefined;
+  },
+): Record<string, unknown> {
+  const base = isPlainRecord(metadata) ? { ...metadata } : {};
+  if (!isAgentPriorityTier(base.priorityTier)) {
+    base.priorityTier = resolveDefaultAgentPriorityTier({
+      role: identity.role,
+      name: identity.name,
+    });
+  }
+  return base;
+}
+
 function diffConfigSnapshot(
   before: AgentConfigSnapshot,
   after: AgentConfigSnapshot,
 ): string[] {
-  return CONFIG_REVISION_FIELDS.filter((field) => !jsonEqual(before[field], after[field]));
+  return CONFIG_REVISION_FIELDS.filter(
+    (field) => !jsonEqual(before[field], after[field]),
+  );
 }
 
-function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$inferInsert> {
-  if (!isPlainRecord(snapshot)) throw unprocessable("Invalid revision snapshot");
+function configPatchFromSnapshot(
+  snapshot: unknown,
+): Partial<typeof agents.$inferInsert> {
+  if (!isPlainRecord(snapshot))
+    throw unprocessable("Invalid revision snapshot");
 
   if (typeof snapshot.name !== "string" || snapshot.name.length === 0) {
     throw unprocessable("Invalid revision snapshot: name");
@@ -151,32 +201,52 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   if (typeof snapshot.role !== "string" || snapshot.role.length === 0) {
     throw unprocessable("Invalid revision snapshot: role");
   }
-  if (typeof snapshot.adapterType !== "string" || snapshot.adapterType.length === 0) {
+  if (
+    typeof snapshot.adapterType !== "string" ||
+    snapshot.adapterType.length === 0
+  ) {
     throw unprocessable("Invalid revision snapshot: adapterType");
   }
-  if (typeof snapshot.budgetMonthlyCents !== "number" || !Number.isFinite(snapshot.budgetMonthlyCents)) {
+  if (
+    typeof snapshot.budgetMonthlyCents !== "number" ||
+    !Number.isFinite(snapshot.budgetMonthlyCents)
+  ) {
     throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
   }
 
   return {
     name: snapshot.name,
     role: snapshot.role,
-    title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
+    title:
+      typeof snapshot.title === "string" || snapshot.title === null
+        ? snapshot.title
+        : null,
     reportsTo:
-      typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
+      typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null
+        ? snapshot.reportsTo
+        : null,
     capabilities:
-      typeof snapshot.capabilities === "string" || snapshot.capabilities === null
+      typeof snapshot.capabilities === "string" ||
+      snapshot.capabilities === null
         ? snapshot.capabilities
         : null,
     adapterType: snapshot.adapterType,
-    adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
-    runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+    adapterConfig: isPlainRecord(snapshot.adapterConfig)
+      ? snapshot.adapterConfig
+      : {},
+    runtimeConfig: isPlainRecord(snapshot.runtimeConfig)
+      ? snapshot.runtimeConfig
+      : {},
     defaultEnvironmentId:
-      typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null
+      typeof snapshot.defaultEnvironmentId === "string" ||
+      snapshot.defaultEnvironmentId === null
         ? snapshot.defaultEnvironmentId
         : null,
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
-    metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
+    metadata:
+      isPlainRecord(snapshot.metadata) || snapshot.metadata === null
+        ? snapshot.metadata
+        : null,
   };
 }
 
@@ -190,7 +260,8 @@ export function hasAgentShortnameCollision(
 
   return existingAgents.some((agent) => {
     if (agent.status === "terminated") return false;
-    if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
+    if (options?.excludeAgentId && agent.id === options.excludeAgentId)
+      return false;
     return normalizeAgentUrlKey(agent.name) === candidateShortname;
   });
 }
@@ -235,7 +306,10 @@ export function agentService(db: Db) {
     });
   }
 
-  async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
+  async function getMonthlySpendByAgentIds(
+    companyId: string,
+    agentIds: string[],
+  ) {
     if (agentIds.length === 0) return new Map<string, number>();
     const { start, end } = currentUtcMonthWindow();
     const rows = await db
@@ -253,10 +327,14 @@ export function agentService(db: Db) {
         ),
       )
       .groupBy(costEvents.agentId);
-    return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
+    return new Map(
+      rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]),
+    );
   }
 
-  async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
+  async function hydrateAgentSpend<
+    T extends { id: string; companyId: string; spentMonthlyCents: number },
+  >(rows: T[]) {
     const agentIds = rows.map((row) => row.id);
     const companyId = rows[0]?.companyId;
     if (!companyId || agentIds.length === 0) return rows;
@@ -287,13 +365,18 @@ export function agentService(db: Db) {
     return manager;
   }
 
-  async function assertNoCycle(agentId: string, reportsTo: string | null | undefined) {
+  async function assertNoCycle(
+    agentId: string,
+    reportsTo: string | null | undefined,
+  ) {
     if (!reportsTo) return;
-    if (reportsTo === agentId) throw unprocessable("Agent cannot report to itself");
+    if (reportsTo === agentId)
+      throw unprocessable("Agent cannot report to itself");
 
     let cursor: string | null = reportsTo;
     while (cursor) {
-      if (cursor === agentId) throw unprocessable("Reporting relationship would create cycle");
+      if (cursor === agentId)
+        throw unprocessable("Reporting relationship would create cycle");
       const next = await getById(cursor);
       cursor = next?.reportsTo ?? null;
     }
@@ -316,7 +399,11 @@ export function agentService(db: Db) {
       .from(agents)
       .where(eq(agents.companyId, companyId));
 
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
+    const hasCollision = hasAgentShortnameCollision(
+      candidateName,
+      existingAgents,
+      options,
+    );
     if (hasCollision) {
       throw conflict(
         `Agent shortname '${candidateShortname}' is already in use in this company`,
@@ -332,7 +419,11 @@ export function agentService(db: Db) {
     const existing = await getById(id);
     if (!existing) return null;
 
-    if (existing.status === "terminated" && data.status && data.status !== "terminated") {
+    if (
+      existing.status === "terminated" &&
+      data.status &&
+      data.status !== "terminated"
+    ) {
       throw conflict("Terminated agents cannot be resumed");
     }
     if (
@@ -355,18 +446,26 @@ export function agentService(db: Db) {
       const previousShortname = normalizeAgentUrlKey(existing.name);
       const nextShortname = normalizeAgentUrlKey(data.name);
       if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
+        await assertCompanyShortnameAvailable(existing.companyId, data.name, {
+          excludeAgentId: id,
+        });
       }
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
       const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizeAgentPermissions(
+        data.permissions,
+        role,
+      );
     }
 
-    const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
-    const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
+    const shouldRecordRevision =
+      Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
+    const beforeConfig = shouldRecordRevision
+      ? buildConfigSnapshot(existing)
+      : null;
 
     const updated = await db
       .update(agents)
@@ -386,7 +485,8 @@ export function agentService(db: Db) {
           createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
           createdByUserId: options?.recordRevision?.createdByUserId ?? null,
           source: options?.recordRevision?.source ?? "patch",
-          rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
+          rolledBackFromRevisionId:
+            options?.recordRevision?.rolledBackFromRevisionId ?? null,
           changedKeys,
           beforeConfig: beforeConfig as unknown as Record<string, unknown>,
           afterConfig: afterConfig as unknown as Record<string, unknown>,
@@ -398,19 +498,28 @@ export function agentService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
+    list: async (
+      companyId: string,
+      options?: { includeTerminated?: boolean },
+    ) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
-      const rows = await db.select().from(agents).where(and(...conditions));
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(and(...conditions));
       const hydrated = await hydrateAgentSpend(rows);
       return hydrated.map(normalizeAgentRow);
     },
 
     getById,
 
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
+    create: async (
+      companyId: string,
+      data: Omit<typeof agents.$inferInsert, "companyId">,
+    ) => {
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
       }
@@ -422,11 +531,28 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
-      const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      const normalizedPermissions = normalizeAgentPermissions(
+        data.permissions,
+        role,
+      );
+      const runtimeConfig = normalizeRuntimeConfigForNewAgent(
+        data.runtimeConfig,
+      );
+      const metadata = ensureAgentPriorityTierInMetadata(data.metadata, {
+        role,
+        name: uniqueName,
+      });
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+        .values({
+          ...data,
+          name: uniqueName,
+          companyId,
+          role,
+          permissions: normalizedPermissions,
+          runtimeConfig,
+          metadata,
+        })
         .returning()
         .then((rows) => rows[0]);
 
@@ -435,10 +561,14 @@ export function agentService(db: Db) {
 
     update: updateAgent,
 
-    pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
+    pause: async (
+      id: string,
+      reason: "manual" | "budget" | "system" = "manual",
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
-      if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
+      if (existing.status === "terminated")
+        throw conflict("Cannot pause terminated agent");
 
       const updated = await db
         .update(agents)
@@ -457,7 +587,8 @@ export function agentService(db: Db) {
     resume: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
-      if (existing.status === "terminated") throw conflict("Cannot resume terminated agent");
+      if (existing.status === "terminated")
+        throw conflict("Cannot resume terminated agent");
       if (existing.status === "pending_approval") {
         throw conflict("Pending approval agents cannot be resumed");
       }
@@ -503,25 +634,44 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
-        await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+        await tx
+          .update(agents)
+          .set({ reportsTo: null })
+          .where(eq(agents.reportsTo, id));
         await tx
           .update(issues)
           .set({ assigneeAgentId: null, createdByAgentId: null })
-          .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx.delete(activityLog).where(
-          or(
-            eq(activityLog.agentId, id),
-            sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
-          ),
-        );
-        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+          .where(
+            or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)),
+          );
+        await tx
+          .delete(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.agentId, id));
+        await tx
+          .delete(agentTaskSessions)
+          .where(eq(agentTaskSessions.agentId, id));
+        await tx
+          .delete(activityLog)
+          .where(
+            or(
+              eq(activityLog.agentId, id),
+              sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+            ),
+          );
+        await tx
+          .delete(issueExecutionDecisions)
+          .where(eq(issueExecutionDecisions.actorAgentId, id));
+        await tx
+          .delete(issueComments)
+          .where(eq(issueComments.authorAgentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
+        await tx
+          .delete(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await tx
+          .delete(agentRuntimeState)
+          .where(eq(agentRuntimeState.agentId, id));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
@@ -547,7 +697,10 @@ export function agentService(db: Db) {
       return existing ? { agent: existing, activated: false } : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (
+      id: string,
+      permissions: { canCreateAgents: boolean },
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
 
@@ -575,7 +728,12 @@ export function agentService(db: Db) {
       db
         .select()
         .from(agentConfigRevisions)
-        .where(and(eq(agentConfigRevisions.agentId, id), eq(agentConfigRevisions.id, revisionId)))
+        .where(
+          and(
+            eq(agentConfigRevisions.agentId, id),
+            eq(agentConfigRevisions.id, revisionId),
+          ),
+        )
         .then((rows) => rows[0] ?? null),
 
     rollbackConfigRevision: async (
@@ -586,11 +744,18 @@ export function agentService(db: Db) {
       const revision = await db
         .select()
         .from(agentConfigRevisions)
-        .where(and(eq(agentConfigRevisions.agentId, id), eq(agentConfigRevisions.id, revisionId)))
+        .where(
+          and(
+            eq(agentConfigRevisions.agentId, id),
+            eq(agentConfigRevisions.id, revisionId),
+          ),
+        )
         .then((rows) => rows[0] ?? null);
       if (!revision) return null;
       if (containsRedactedMarker(revision.afterConfig)) {
-        throw unprocessable("Cannot roll back a revision that contains redacted secret values");
+        throw unprocessable(
+          "Cannot roll back a revision that contains redacted secret values",
+        );
       }
 
       const patch = configPatchFromSnapshot(revision.afterConfig);
@@ -664,7 +829,9 @@ export function agentService(db: Db) {
       const rows = await db
         .update(agentApiKeys)
         .set({ revokedAt: new Date() })
-        .where(and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)))
+        .where(
+          and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)),
+        )
         .returning();
       return rows[0] ?? null;
     },
@@ -673,7 +840,9 @@ export function agentService(db: Db) {
       const rows = await db
         .select()
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+        .where(
+          and(eq(agents.companyId, companyId), ne(agents.status, "terminated")),
+        );
       const normalizedRows = rows.map(normalizeAgentRow);
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {
@@ -683,7 +852,9 @@ export function agentService(db: Db) {
         byManager.set(key, group);
       }
 
-      const build = (managerId: string | null): Array<Record<string, unknown>> => {
+      const build = (
+        managerId: string | null,
+      ): Array<Record<string, unknown>> => {
         const members = byManager.get(managerId) ?? [];
         return members.map((member) => ({
           ...member,
@@ -695,7 +866,12 @@ export function agentService(db: Db) {
     },
 
     getChainOfCommand: async (agentId: string) => {
-      const chain: { id: string; name: string; role: string; title: string | null }[] = [];
+      const chain: {
+        id: string;
+        name: string;
+        role: string;
+        title: string | null;
+      }[] = [];
       const visited = new Set<string>([agentId]);
       const start = await getById(agentId);
       let currentId = start?.reportsTo ?? null;
@@ -703,7 +879,12 @@ export function agentService(db: Db) {
         visited.add(currentId);
         const mgr = await getById(currentId);
         if (!mgr) break;
-        chain.push({ id: mgr.id, name: mgr.name, role: mgr.role, title: mgr.title ?? null });
+        chain.push({
+          id: mgr.id,
+          name: mgr.name,
+          role: mgr.role,
+          title: mgr.title ?? null,
+        });
         currentId = mgr.reportsTo ?? null;
       }
       return chain;
@@ -713,7 +894,12 @@ export function agentService(db: Db) {
       db
         .select()
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"]))),
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        ),
 
     resolveByReference: async (companyId: string, reference: string) => {
       const raw = reference.trim();
@@ -734,10 +920,15 @@ export function agentService(db: Db) {
         return { agent: null, ambiguous: false } as const;
       }
 
-      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
       const matches = rows
         .map(normalizeAgentRow)
-        .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
+        .filter(
+          (agent) => agent.urlKey === urlKey && agent.status !== "terminated",
+        );
       if (matches.length === 1) {
         return { agent: matches[0] ?? null, ambiguous: false } as const;
       }

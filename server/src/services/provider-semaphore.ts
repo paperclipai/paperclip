@@ -9,7 +9,21 @@
 // - State lives in-memory; the Paperclip server is single-process today.
 // - Process restart drops all waiters, but heartbeat_runs.queued is persisted
 //   in DB and `startNextQueuedRunForAgent()` will re-pick those on next tick.
-// - FIFO ordering only. Per-agent priority is layered on in PMSA-17 (Phase 2-B).
+// - Waiters are ordered (priorityTier asc, enqueuedAt asc) so a CEO (p0)
+//   heartbeat always preempts a backlog of researcher (p3) heartbeats waiting
+//   on the same Opus slot. PMSA-17 / [PMSA-11] §3.2.
+// - Aging: a waiter that has been queued longer than
+//   AGENT_PRIORITY_TIER_AGING_INTERVAL_MS bumps one tier toward p0 every
+//   interval, so p3 work cannot be starved indefinitely behind a steady
+//   stream of higher-priority arrivals. PMSA-17 / [PMSA-11] §3.2.
+
+import {
+  AGENT_PRIORITY_TIERS,
+  agentPriorityTierRank,
+  bumpAgentPriorityTier,
+  DEFAULT_AGENT_PRIORITY_TIER,
+  type AgentPriorityTier,
+} from "@paperclipai/shared";
 
 const OPUS_PROVIDER = "anthropic" as const;
 const OPUS_MODEL_FAMILY = "opus" as const;
@@ -17,6 +31,10 @@ const OPUS_MODEL_FAMILY = "opus" as const;
 const DEFAULT_OPUS_CAPACITY = 2;
 const MIN_OPUS_CAPACITY = 1;
 const MAX_OPUS_CAPACITY = 32;
+
+// Time a waiter must sit in the queue before it is bumped one tier toward p0.
+// Five minutes per the [PMSA-11] §3.2 starvation-prevention requirement.
+export const AGENT_PRIORITY_TIER_AGING_INTERVAL_MS = 5 * 60 * 1000;
 
 export type ProviderSlotKey =
   `${string}:${typeof OPUS_PROVIDER}:${typeof OPUS_MODEL_FAMILY}`;
@@ -26,6 +44,10 @@ interface Waiter {
   resolve: () => void;
   reject: (err: Error) => void;
   enqueuedAt: number;
+  // Tier captured at enqueue time. agedTier folds in any aging promotions
+  // applied since enqueue so we keep the original priority for telemetry.
+  initialTier: AgentPriorityTier;
+  agedTier: AgentPriorityTier;
 }
 
 const inflight = new Map<ProviderSlotKey, Set<string>>();
@@ -71,6 +93,61 @@ export function resolveOpusConcurrencyCapacity(
 
 export interface AcquireProviderSlotOptions {
   signal?: AbortSignal;
+  priorityTier?: AgentPriorityTier;
+  // Override for tests so we don't have to advance real clock 5 minutes.
+  agingIntervalMs?: number;
+  now?: () => number;
+}
+
+// Compares two waiters under the (tier asc, enqueuedAt asc) ordering used
+// for both queue insertion and pop selection. Returns negative if `a` should
+// be served first, positive if `b`, zero if tied.
+function compareWaiters(a: Waiter, b: Waiter): number {
+  const tierDelta =
+    agentPriorityTierRank(a.agedTier) - agentPriorityTierRank(b.agedTier);
+  if (tierDelta !== 0) return tierDelta;
+  return a.enqueuedAt - b.enqueuedAt;
+}
+
+// Re-applies aging to every waiter in the queue. Called immediately before
+// any selection (insert or pop) so the queue is always evaluated against the
+// freshest aging snapshot. O(n) — n is bounded by number of agents per
+// company, so cheap in practice.
+function applyAgingToQueue(
+  queue: Waiter[],
+  now: number,
+  agingIntervalMs: number,
+): void {
+  if (agingIntervalMs <= 0) return;
+  for (const waiter of queue) {
+    const waited = now - waiter.enqueuedAt;
+    if (waited <= 0) continue;
+    const bumps = Math.floor(waited / agingIntervalMs);
+    if (bumps <= 0) continue;
+    const initialIdx = agentPriorityTierRank(waiter.initialTier);
+    const targetIdx = Math.max(0, initialIdx - bumps);
+    const targetTier = AGENT_PRIORITY_TIERS[targetIdx];
+    if (
+      agentPriorityTierRank(targetTier) < agentPriorityTierRank(waiter.agedTier)
+    ) {
+      waiter.agedTier = targetTier;
+    }
+  }
+}
+
+// Insert a waiter while keeping the queue sorted by (agedTier asc,
+// enqueuedAt asc). Linear scan from the back since most arrivals share the
+// p2 default tier and append-at-tail is the common case.
+function insertWaiterOrdered(queue: Waiter[], waiter: Waiter): void {
+  let insertAt = queue.length;
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (compareWaiters(queue[i], waiter) <= 0) {
+      insertAt = i + 1;
+      break;
+    }
+    insertAt = i;
+  }
+  queue.splice(insertAt, 0, waiter);
 }
 
 export async function acquireProviderSlot(
@@ -93,15 +170,22 @@ export async function acquireProviderSlot(
     return;
   }
 
+  const now = options.now ? options.now() : Date.now();
+  const agingIntervalMs =
+    options.agingIntervalMs ?? AGENT_PRIORITY_TIER_AGING_INTERVAL_MS;
+  const initialTier = options.priorityTier ?? DEFAULT_AGENT_PRIORITY_TIER;
   const queue = waiters.get(key) ?? [];
   return new Promise<void>((resolve, reject) => {
     const waiter: Waiter = {
       runId,
       resolve,
       reject,
-      enqueuedAt: Date.now(),
+      enqueuedAt: now,
+      initialTier,
+      agedTier: initialTier,
     };
-    queue.push(waiter);
+    applyAgingToQueue(queue, now, agingIntervalMs);
+    insertWaiterOrdered(queue, waiter);
     waiters.set(key, queue);
 
     if (options.signal) {
@@ -129,10 +213,25 @@ export async function acquireProviderSlot(
   });
 }
 
+export interface ReleaseProviderSlotOptions {
+  // Override for tests so we don't have to advance real clock 5 minutes.
+  agingIntervalMs?: number;
+  now?: () => number;
+}
+
+export interface ReleaseProviderSlotResult {
+  released: boolean;
+  promotedRunId: string | null;
+  promotedTier: AgentPriorityTier | null;
+  promotedInitialTier: AgentPriorityTier | null;
+  promotedWaitedMs: number | null;
+}
+
 export function releaseProviderSlot(
   key: ProviderSlotKey,
   runId: string,
-): { released: boolean; promotedRunId: string | null } {
+  options: ReleaseProviderSlotOptions = {},
+): ReleaseProviderSlotResult {
   const occupants = inflight.get(key);
   let released = false;
   if (occupants?.delete(runId)) {
@@ -142,18 +241,40 @@ export function releaseProviderSlot(
 
   const queue = waiters.get(key);
   if (!queue || queue.length === 0) {
-    return { released, promotedRunId: null };
+    return {
+      released,
+      promotedRunId: null,
+      promotedTier: null,
+      promotedInitialTier: null,
+      promotedWaitedMs: null,
+    };
   }
 
-  // Promote the next waiter so the slot is handed off without a tick gap.
-  const nextOccupants = inflight.get(key) ?? new Set<string>();
+  // Re-evaluate aging right before the pick so a waiter that has crossed
+  // the aging threshold while sitting at the back is promoted before the
+  // selection runs.
+  const now = options.now ? options.now() : Date.now();
+  const agingIntervalMs =
+    options.agingIntervalMs ?? AGENT_PRIORITY_TIER_AGING_INTERVAL_MS;
+  applyAgingToQueue(queue, now, agingIntervalMs);
+  queue.sort(compareWaiters);
+
   const next = queue.shift()!;
   if (queue.length === 0) waiters.delete(key);
   else waiters.set(key, queue);
+
+  const nextOccupants = inflight.get(key) ?? new Set<string>();
   nextOccupants.add(next.runId);
   inflight.set(key, nextOccupants);
   next.resolve();
-  return { released, promotedRunId: next.runId };
+
+  return {
+    released,
+    promotedRunId: next.runId,
+    promotedTier: next.agedTier,
+    promotedInitialTier: next.initialTier,
+    promotedWaitedMs: now - next.enqueuedAt,
+  };
 }
 
 export function getInflightCount(key: ProviderSlotKey): number {
@@ -166,7 +287,11 @@ export function getWaiterCount(key: ProviderSlotKey): number {
 
 export interface ProviderSemaphoreSnapshot {
   inflight: Array<{ key: ProviderSlotKey; runIds: string[] }>;
-  waiting: Array<{ key: ProviderSlotKey; runIds: string[] }>;
+  waiting: Array<{
+    key: ProviderSlotKey;
+    runIds: string[];
+    tiers: AgentPriorityTier[];
+  }>;
 }
 
 export function snapshotProviderSemaphore(): ProviderSemaphoreSnapshot {
@@ -178,8 +303,28 @@ export function snapshotProviderSemaphore(): ProviderSemaphoreSnapshot {
     waiting: Array.from(waiters.entries()).map(([key, list]) => ({
       key,
       runIds: list.map((w) => w.runId),
+      tiers: list.map((w) => w.agedTier),
     })),
   };
+}
+
+// Bumps a known waiter one tier toward p0. Currently exposed so tests and
+// future explicit-promotion paths (manual ops escalation) can shortcut the
+// time-based aging logic. No-op when the waiter is already at p0.
+export function bumpWaiterPriority(
+  key: ProviderSlotKey,
+  runId: string,
+): { promoted: boolean; tier: AgentPriorityTier | null } {
+  const queue = waiters.get(key);
+  if (!queue) return { promoted: false, tier: null };
+  const waiter = queue.find((w) => w.runId === runId);
+  if (!waiter) return { promoted: false, tier: null };
+  const next = bumpAgentPriorityTier(waiter.agedTier);
+  if (next === waiter.agedTier)
+    return { promoted: false, tier: waiter.agedTier };
+  waiter.agedTier = next;
+  queue.sort(compareWaiters);
+  return { promoted: true, tier: next };
 }
 
 // Called at server bootstrap. The in-memory map is naturally empty after a

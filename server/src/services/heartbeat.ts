@@ -22,6 +22,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   isEnvironmentDriverSupportedForAdapter,
+  readAgentPriorityTier,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -6204,6 +6205,10 @@ export function heartbeatService(
           const capacity = resolveOpusConcurrencyCapacity(
             companyRow?.metadata ?? null,
           );
+          const priorityTier = readAgentPriorityTier(
+            (agent.metadata ?? null) as Record<string, unknown> | null,
+            { role: agent.role, name: agent.name },
+          );
           const beforeInflight = getInflightCount(providerSlotKey);
           const beforeWaiters = getWaiterCount(providerSlotKey);
           if (beforeInflight >= capacity) {
@@ -6218,11 +6223,14 @@ export function heartbeatService(
                 waiters: beforeWaiters,
                 capacity,
                 model: configuredModel,
+                priorityTier,
               },
             });
           }
           const slotWaitStart = Date.now();
-          await acquireProviderSlot(providerSlotKey, run.id, capacity);
+          await acquireProviderSlot(providerSlotKey, run.id, capacity, {
+            priorityTier,
+          });
           const waitedMs = Date.now() - slotWaitStart;
           if (waitedMs > 0 && beforeInflight >= capacity) {
             await appendRunEvent(currentRun, seq++, {
@@ -6234,6 +6242,7 @@ export function heartbeatService(
                 providerSlotKey,
                 waitedMs,
                 capacity,
+                priorityTier,
               },
             });
           }
