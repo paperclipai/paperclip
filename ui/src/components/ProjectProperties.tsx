@@ -38,6 +38,8 @@ interface ProjectPropertiesProps {
   getFieldSaveState?: (field: ProjectConfigFieldKey) => ProjectFieldSaveState;
   onArchive?: (archived: boolean) => void;
   archivePending?: boolean;
+  onDelete?: (deleteFiles: boolean) => void;
+  deletePending?: boolean;
 }
 
 export type ProjectFieldSaveState = "idle" | "saving" | "saved" | "error";
@@ -221,7 +223,75 @@ function ArchiveDangerZone({
   );
 }
 
-export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+function DeleteProjectDangerZone({
+  project,
+  onDelete,
+  deletePending,
+}: {
+  project: Project;
+  onDelete: (deleteFiles: boolean) => void;
+  deletePending?: boolean;
+}) {
+  const [deleteFiles, setDeleteFiles] = useState(false);
+
+  return (
+    <div className="space-y-3 rounded-md border border-destructive/60 bg-destructive/10 px-4 py-4">
+      <div className="flex items-start gap-3">
+        <Trash2 className="mt-0.5 h-4 w-4 text-destructive" />
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-destructive">
+            Permanently delete this project
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Delete this project and its related records. This cannot be undone.
+          </p>
+        </div>
+      </div>
+      <label className="flex items-start gap-2 text-sm text-muted-foreground">
+        <input
+          type="checkbox"
+          className="mt-1 h-4 w-4 accent-destructive"
+          checked={deleteFiles}
+          disabled={deletePending}
+          onChange={(event) => setDeleteFiles(event.currentTarget.checked)}
+        />
+        <span>Also delete Paperclip-managed files associated with this project.</span>
+      </label>
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={deletePending}
+        onClick={() => {
+          const confirmationText = `DELETE ${project.name}`;
+          const confirmed = window.prompt(
+            `This permanently deletes "${project.name}" and its related data. Type "${confirmationText}" to confirm.`,
+          );
+          if (confirmed !== confirmationText) return;
+          if (
+            deleteFiles &&
+            !window.confirm("Delete Paperclip-managed files for this project as well? This cannot be undone.")
+          ) {
+            return;
+          }
+          onDelete(deleteFiles);
+        }}
+      >
+        {deletePending ? "Deleting..." : "Delete project permanently"}
+      </Button>
+    </div>
+  );
+}
+
+export function ProjectProperties({
+  project,
+  onUpdate,
+  onFieldUpdate,
+  getFieldSaveState,
+  onArchive,
+  archivePending,
+  onDelete,
+  deletePending,
+}: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
@@ -1163,18 +1233,27 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
       </div>
 
-      {onArchive && (
+      {(onArchive || onDelete) && (
         <>
           <Separator className="my-4" />
           <div className="space-y-4 py-4">
             <div className="text-xs font-medium text-destructive uppercase tracking-wide">
               Danger Zone
             </div>
-            <ArchiveDangerZone
-              project={project}
-              onArchive={onArchive}
-              archivePending={archivePending}
-            />
+            {onArchive ? (
+              <ArchiveDangerZone
+                project={project}
+                onArchive={onArchive}
+                archivePending={archivePending}
+              />
+            ) : null}
+            {onDelete ? (
+              <DeleteProjectDangerZone
+                project={project}
+                onDelete={onDelete}
+                deletePending={deletePending}
+              />
+            ) : null}
           </div>
         </>
       )}
