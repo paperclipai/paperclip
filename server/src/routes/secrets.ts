@@ -1,4 +1,4 @@
-import type { Response } from "express";
+import type { Request } from "express";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -9,26 +9,21 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 
 /**
- * Per-id secret routes (rotate/update/delete) currently only handle
- * company-scoped secrets. Instance-scoped secrets (companyId === null,
- * introduced by the schema migration in this same series) get a 501 here
- * until the follow-up commit wires `assertSecretScope` so the same routes
- * dispatch instance-admin auth + null-companyId activity logging.
+ * Dispatch the right auth check based on a secret's scope. Company-scoped
+ * secrets gate on company access (existing behaviour); instance-scoped
+ * secrets (`companyId === null`) gate on instance-admin. Throws on failure
+ * so callers can use it as a guard at the top of per-id routes.
  */
-function ensureCompanyScoped<T extends { companyId: string | null }>(
-  res: Response,
-  secret: T,
-): secret is T & { companyId: string } {
-  if (secret.companyId !== null) return true;
-  res.status(501).json({
-    error:
-      "Instance-scoped secrets cannot be managed via this endpoint yet — see the instance-secrets routes commit.",
-  });
-  return false;
+function assertSecretScope(req: Request, secret: { companyId: string | null }): void {
+  if (secret.companyId) {
+    assertCompanyAccess(req, secret.companyId);
+  } else {
+    assertInstanceAdmin(req);
+  }
 }
 
 export function secretRoutes(db: Db) {
@@ -94,8 +89,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    if (!ensureCompanyScoped(res, existing)) return;
-    assertCompanyAccess(req, existing.companyId);
+    assertSecretScope(req, existing);
 
     const rotated = await svc.rotate(
       id,
@@ -106,15 +100,19 @@ export function secretRoutes(db: Db) {
       { userId: req.actor.userId ?? "board", agentId: null },
     );
 
-    await logActivity(db, {
-      companyId: existing.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "secret.rotated",
-      entityType: "secret",
-      entityId: rotated.id,
-      details: { version: rotated.latestVersion },
-    });
+    if (existing.companyId) {
+      // activity_log.company_id is currently NOT NULL — instance-scoped
+      // operations are skipped until that constraint is loosened (follow-up).
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.rotated",
+        entityType: "secret",
+        entityId: rotated.id,
+        details: { version: rotated.latestVersion },
+      });
+    }
 
     res.json(rotated);
   });
@@ -127,8 +125,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    if (!ensureCompanyScoped(res, existing)) return;
-    assertCompanyAccess(req, existing.companyId);
+    assertSecretScope(req, existing);
 
     const updated = await svc.update(id, {
       name: req.body.name,
@@ -141,15 +138,17 @@ export function secretRoutes(db: Db) {
       return;
     }
 
-    await logActivity(db, {
-      companyId: existing.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "secret.updated",
-      entityType: "secret",
-      entityId: updated.id,
-      details: { name: updated.name },
-    });
+    if (existing.companyId) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.updated",
+        entityType: "secret",
+        entityId: updated.id,
+        details: { name: updated.name },
+      });
+    }
 
     res.json(updated);
   });
@@ -162,8 +161,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    if (!ensureCompanyScoped(res, existing)) return;
-    assertCompanyAccess(req, existing.companyId);
+    assertSecretScope(req, existing);
 
     const removed = await svc.remove(id);
     if (!removed) {
@@ -171,17 +169,55 @@ export function secretRoutes(db: Db) {
       return;
     }
 
-    await logActivity(db, {
-      companyId: existing.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "secret.deleted",
-      entityType: "secret",
-      entityId: removed.id,
-      details: { name: removed.name },
-    });
+    if (existing.companyId) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.deleted",
+        entityType: "secret",
+        entityId: removed.id,
+        details: { name: removed.name },
+      });
+    }
 
     res.json({ ok: true });
+  });
+
+  // ========================================================================
+  // Instance-scoped routes
+  // ========================================================================
+
+  router.get("/instance/secret-providers", (req, res) => {
+    assertInstanceAdmin(req);
+    res.json(svc.listProviders());
+  });
+
+  router.get("/instance/secrets", async (req, res) => {
+    assertInstanceAdmin(req);
+    const secrets = await svc.listInstance();
+    res.json(secrets);
+  });
+
+  router.post("/instance/secrets", validate(createSecretSchema), async (req, res) => {
+    assertInstanceAdmin(req);
+
+    const created = await svc.createInstance(
+      {
+        name: req.body.name,
+        provider: req.body.provider ?? defaultProvider,
+        value: req.body.value,
+        description: req.body.description,
+        externalRef: req.body.externalRef,
+      },
+      { userId: req.actor.userId ?? "board", agentId: null },
+    );
+
+    // activity_log.company_id NOT NULL — see comment in rotate route. Skip
+    // the audit row for instance creates until the activity_log column
+    // becomes nullable.
+
+    res.status(201).json(created);
   });
 
   return router;
