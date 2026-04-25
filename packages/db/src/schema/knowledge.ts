@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid, integer } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp, uuid, integer, boolean } from "drizzle-orm/pg-core";
 
 export const knowledgeTopics = pgTable(
   "knowledge_topics",
