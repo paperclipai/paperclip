@@ -1,12 +1,21 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { prCiStatus } from "@paperclipai/db";
-import { eq, and } from "drizzle-orm";
+import { prCiStatus, projectWorkspaces } from "@paperclipai/db";
+import { eq, and, like } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import { verifyIssueProofByCiResult } from "../services/proof-verification.js";
+import {
+  createReviewState,
+  recordBuilderPosition,
+  recordBreakerPosition,
+  completeReview,
+  getReviewState,
+  invokeJury,
+  type ReviewPosition,
+} from "../services/adversarial-review.js";
 
 const webhookPayloadSchema = z.object({
   action: z.string().optional(),
@@ -58,6 +67,7 @@ const webhookPayloadSchema = z.object({
       state: z.string(),
       pull_request: z.object({
         number: z.number(),
+        head: z.object({ sha: z.string() }),
         base: z.object({ repo: z.object({ full_name: z.string() }) }),
       }),
     })
@@ -248,9 +258,28 @@ async function handlePullRequest(db: Db, data: WebhookPayload) {
   const pr = data.pull_request;
 
   logger.info(
-    { repo: pr.base.repo.full_name, prNumber: pr.number, action: data.action },
+    { repo: pr.base.repo.full_name, prNumber: pr.number, headSha: pr.head.sha, action: data.action },
     "PR event received",
   );
+
+  if (data.action === "opened" || data.action === "synchronize") {
+    const companyId = await resolveCompanyIdForRepo(db, pr.base.repo.full_name);
+    if (companyId) {
+      try {
+        await createReviewState(
+          db,
+          companyId,
+          pr.base.repo.full_name,
+          pr.number,
+          pr.head.sha,
+          "00000000-0000-0000-0000-000000000000",
+        );
+        logger.info({ repo: pr.base.repo.full_name, prNumber: pr.number, headSha: pr.head.sha }, "Created adversarial review state for PR");
+      } catch (err) {
+        logger.warn({ err, repo: pr.base.repo.full_name, prNumber: pr.number }, "Failed to create adversarial review state");
+      }
+    }
+  }
 }
 
 async function handleReview(db: Db, data: WebhookPayload) {
@@ -259,6 +288,7 @@ async function handleReview(db: Db, data: WebhookPayload) {
 
   const repoFullName = review.pull_request.base.repo.full_name;
   const prNumber = review.pull_request.number;
+  const headSha = review.pull_request.head.sha;
 
   const existing = await db.query.prCiStatus.findFirst({
     where: and(
@@ -279,6 +309,57 @@ async function handleReview(db: Db, data: WebhookPayload) {
       .where(eq(prCiStatus.id, existing.id));
   }
 
+  const companyId = await resolveCompanyIdForRepo(db, repoFullName);
+  if (companyId) {
+    const reviewPosition: ReviewPosition = review.state as ReviewPosition;
+    const state = await getReviewState(db, repoFullName, prNumber, headSha);
+
+    if (state) {
+      if (state.builderPosition === null) {
+        try {
+          await recordBuilderPosition(
+            db,
+            repoFullName,
+            prNumber,
+            headSha,
+            reviewPosition,
+          );
+          logger.info({ repoFullName, prNumber, headSha, position: reviewPosition }, "Recorded builder position in adversarial review");
+        } catch (err) {
+          logger.warn({ err, repoFullName, prNumber, headSha }, "Failed to record builder position");
+        }
+      } else {
+        const breakerAgentId = "00000000-0000-0000-0000-000000000000";
+        const breakerFamily = "openai";
+        try {
+          const result = await recordBreakerPosition(
+            db,
+            repoFullName,
+            prNumber,
+            headSha,
+            reviewPosition,
+            breakerAgentId,
+            breakerFamily,
+          );
+          logger.info(
+            { repoFullName, prNumber, headSha, round: result.state.round, juryTriggered: result.juryTriggered },
+            "Recorded breaker position in adversarial review",
+          );
+
+          if (result.state.juryInvoked && !result.state.reviewComplete) {
+            await invokeJury(db, repoFullName, prNumber, headSha);
+          }
+
+          if (review.state === "approved" && !result.state.juryInvoked) {
+            await completeReview(db, repoFullName, prNumber, headSha, "approved_by_reviewer");
+          }
+        } catch (err) {
+          logger.warn({ err, repoFullName, prNumber, headSha }, "Failed to record breaker position");
+        }
+      }
+    }
+  }
+
   if (review.state === "approved") {
     logger.info({ repoFullName, prNumber }, "PR approved, triggering proof verification");
     const verified = await verifyIssueProofByCiResult(db, {
@@ -293,4 +374,11 @@ async function handleReview(db: Db, data: WebhookPayload) {
       );
     }
   }
+}
+
+async function resolveCompanyIdForRepo(db: Db, repositoryFullName: string): Promise<string | null> {
+  const workspace = await db.query.projectWorkspaces.findFirst({
+    where: like(projectWorkspaces.repoUrl, `%${repositoryFullName}%`),
+  });
+  return workspace?.companyId ?? null;
 }
