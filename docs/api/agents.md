@@ -13,7 +13,18 @@ GET /api/companies/{companyId}/agents
 
 Returns all agents in the company.
 
-This route does not accept query filters. Unsupported query parameters return `400`.
+Use the optional `status` query filter to return agents in one or more states. Pass statuses as a
+comma-separated list, repeat the parameter, or combine both forms:
+
+```
+GET /api/companies/{companyId}/agents?status=idle,running
+GET /api/companies/{companyId}/agents?status=idle&status=running,terminated
+```
+
+Allowed values are `pending_approval`, `idle`, `running`, `paused`, `error`, and `terminated`.
+Requesting `terminated` includes terminated agents in the candidate list before applying the filter;
+without it, terminated agents remain excluded. Invalid status values and unsupported query parameters
+return `400`.
 
 ## Get Agent
 
