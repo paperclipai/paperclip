@@ -9,6 +9,7 @@ import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "
 import {
   agents,
   agentContextCache,
+  agentRoleDefinitions,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -3531,6 +3532,31 @@ export function heartbeatService(db: Db) {
       previousSessionParams,
       { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
     );
+    const mountedPathRows = await db
+      .select({ mountedPaths: agentRoleDefinitions.mountedPaths })
+      .from(agentRoleDefinitions)
+      .where(eq(agentRoleDefinitions.role, agent.role))
+      .limit(1);
+    const mountedPaths: string[] = mountedPathRows[0]?.mountedPaths ?? [];
+    if (mountedPaths.length > 0 && resolvedWorkspace.source !== "agent_home") {
+      const cwd = resolvedWorkspace.cwd;
+      const isInScope = mountedPaths.some((scopePath) => {
+        const normalized = scopePath.endsWith("/") ? scopePath : `${scopePath}/`;
+        return cwd.startsWith(normalized) || cwd === scopePath;
+      });
+      if (!isInScope) {
+        const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+        await fs.mkdir(fallbackCwd, { recursive: true });
+        resolvedWorkspace.cwd = fallbackCwd;
+        resolvedWorkspace.source = "agent_home";
+        resolvedWorkspace.workspaceId = null;
+        resolvedWorkspace.repoUrl = null;
+        resolvedWorkspace.repoRef = null;
+        resolvedWorkspace.warnings.push(
+          `Workspace "${cwd}" is outside role "${agent.role}" mounted scope (${mountedPaths.join(", ")}). Using fallback workspace.`,
+        );
+      }
+    }
     const issueRef = issueContext
       ? {
           id: issueContext.id,
