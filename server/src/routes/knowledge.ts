@@ -1,7 +1,94 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { and, desc, eq, like, sql } from "drizzle-orm";
+import { and, desc, eq, like, sql, isNotNull } from "drizzle-orm";
 import { knowledgeChunks, knowledgeTopics, knowledgeSources } from "@paperclipai/db";
+
+function computeCosineSimilarity(vecA: number[], vecB: number[]): number {
+  if (vecA.length !== vecB.length) return 0;
+  
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+  return denominator === 0 ? 0 : dotProduct / denominator;
+}
+
+function parseEmbedding(embeddingStr: string): number[] | null {
+  try {
+    const parsed = JSON.parse(embeddingStr);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map(n => typeof n === 'number' ? n : parseFloat(n));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function simpleQueryEmbedding(text: string): number[] {
+  const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const dimension = 384;
+  const embedding = new Array(dimension).fill(0);
+  
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    let hash = 0;
+    for (let j = 0; j < word.length; j++) {
+      hash = ((hash << 5) - hash) + word.charCodeAt(j);
+      hash = hash & hash;
+    }
+    
+    for (let j = 0; j < Math.min(word.length, dimension); j++) {
+      const idx = Math.abs(hash + j) % dimension;
+      embedding[idx] += (word.charCodeAt(j) / 255) * (1 / (i + 1));
+    }
+  }
+  
+  const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+  if (magnitude > 0) {
+    for (let i = 0; i < embedding.length; i++) {
+      embedding[i] /= magnitude;
+    }
+  }
+  
+  return embedding;
+}
+
+function computeKeywordScore(content: string, title: string, query: string): number {
+  const contentLower = content.toLowerCase();
+  const titleLower = title.toLowerCase();
+  const queryLower = query.toLowerCase();
+  const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+  
+  if (queryWords.length === 0) return 0.5;
+  
+  let score = 0;
+  let maxPossible = 0;
+  
+  for (const word of queryWords) {
+    maxPossible += 3;
+    const contentMatches = (contentLower.match(new RegExp(word, 'g')) || []).length;
+    const titleMatches = (titleLower.match(new RegExp(word, 'g')) || []).length;
+    score += Math.min(contentMatches, 3);
+    score += Math.min(titleMatches, 3) * 2;
+  }
+  
+  return Math.min(1, score / maxPossible);
+}
+
+function hybridScore(keywordScore: number, vectorScore: number | null, vectorWeight = 0.6): number {
+  if (vectorScore === null) {
+    return keywordScore;
+  }
+  return (1 - vectorWeight) * keywordScore + vectorWeight * vectorScore;
+}
 
 export function knowledgeRoutes(db: Db) {
   const router = Router();
@@ -43,7 +130,8 @@ export function knowledgeRoutes(db: Db) {
     const query = q.trim();
 
     try {
-      const conditions = [];
+      const queryEmbedding = simpleQueryEmbedding(query);
+      const conditions = [isNotNull(knowledgeChunks.embedding)];
 
       if (topic && typeof topic === "string") {
         conditions.push(
@@ -61,9 +149,11 @@ export function knowledgeRoutes(db: Db) {
           url: knowledgeChunks.url,
           urlPath: knowledgeChunks.urlPath,
           content: sql<string>`SUBSTRING(${knowledgeChunks.content}, 1, 300)`,
+          fullContent: knowledgeChunks.content,
           topicSlug: knowledgeTopics.slug,
           sourceType: knowledgeSources.sourceType,
           embedding: knowledgeChunks.embedding,
+          bm25Score: knowledgeChunks.bm25Score,
         })
         .from(knowledgeChunks)
         .innerJoin(
@@ -83,41 +173,43 @@ export function knowledgeRoutes(db: Db) {
             : like(knowledgeChunks.content, `%${query}%`)
         )
         .orderBy(desc(knowledgeChunks.updatedAt))
-        .limit(limitNum);
+        .limit(limitNum * 2);
 
-      const results = chunkResults.map((row) => {
-        let score = 0.5;
+      const scoredResults = chunkResults
+        .map((row) => {
+          const keywordScore = computeKeywordScore(row.content, row.title, query);
+          const storedEmbedding = parseEmbedding(row.embedding);
+          const vectorScore = storedEmbedding 
+            ? computeCosineSimilarity(queryEmbedding, storedEmbedding) 
+            : null;
+          const score = hybridScore(keywordScore, vectorScore, 0.6);
 
-        const queryLower = query.toLowerCase();
-        const contentLower = row.content.toLowerCase();
-        const titleLower = row.title.toLowerCase();
+          return {
+            id: row.id,
+            title: row.title,
+            url: row.url,
+            urlPath: row.urlPath,
+            snippet: row.content,
+            score,
+            sourceType: row.sourceType,
+            topic: row.topicSlug,
+          };
+        })
+        .filter(r => r.score > 0.1)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limitNum);
 
-        const queryWords = queryLower.split(/\s+/);
-        let matchCount = 0;
-        for (const word of queryWords) {
-          if (contentLower.includes(word)) matchCount++;
-          if (titleLower.includes(word)) matchCount += 2;
-        }
-        score = Math.min(1, matchCount / (queryWords.length * 3));
-
-        return {
-          id: row.id,
-          title: row.title,
-          url: row.url,
-          urlPath: row.urlPath,
-          snippet: row.content,
-          score,
-          sourceType: row.sourceType,
-          topic: row.topicSlug,
-        };
+      const hasVectorScores = scoredResults.some(r => {
+        const row = chunkResults.find(cr => cr.id === r.id);
+        return row && parseEmbedding(row.embedding) !== null;
       });
 
       res.json({
         query,
         topic: topic || null,
-        results,
-        total: results.length,
-        searchType: "keyword",
+        results: scoredResults,
+        total: scoredResults.length,
+        searchType: hasVectorScores ? "hybrid" : "keyword",
       });
     } catch (error) {
       res.status(500).json({ error: "Search failed" });
