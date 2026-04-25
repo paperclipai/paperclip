@@ -1474,6 +1474,20 @@ export function issueRoutes(
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
 
+    // Quality gate: reject transition to 'done' without verified proof
+    const existingProofStatus = (existing as unknown as { proofStatus?: string }).proofStatus ?? "pending";
+    if (
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      existingProofStatus !== "verified"
+    ) {
+      res.status(422).json({
+        error: "Cannot mark issue as done without verified proof. Current proof_status: " + existingProofStatus,
+        proofStatus: existingProofStatus,
+      });
+      return;
+    }
+
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
       return;
