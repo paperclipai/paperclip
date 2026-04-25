@@ -1,7 +1,8 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, desc, eq, like, sql, isNotNull } from "drizzle-orm";
-import { knowledgeChunks, knowledgeTopics, knowledgeSources } from "@paperclipai/db";
+import { knowledgeChunks, knowledgeTopics, knowledgeSources, synthesizedSkills } from "@paperclipai/db";
+import { SkillSynthesizerService } from "@paperclip-ui/skill-synthesizer";
 
 function computeCosineSimilarity(vecA: number[], vecB: number[]): number {
   if (vecA.length !== vecB.length) return 0;
@@ -309,6 +310,119 @@ export function knowledgeRoutes(db: Db) {
       res.json({ sources });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch sources" });
+    }
+  });
+
+  router.post("/synthesize", async (req, res) => {
+    const { topicSlug } = req.body;
+
+    if (!topicSlug || typeof topicSlug !== "string") {
+      res.status(400).json({ error: "Field 'topicSlug' is required" });
+      return;
+    }
+
+    try {
+      const synthesizer = new SkillSynthesizerService();
+      await synthesizer.initialize();
+
+      const synthesisResult = await synthesizer.synthesizeTopic(topicSlug);
+
+      const evalResult = await synthesizer.runEvalGate(synthesisResult.skillPath, topicSlug);
+
+      await synthesizer.publishOrQueue(synthesisResult.skillPath, evalResult.averageScore);
+
+      const skill = await synthesizer.getSkillByTopicSlug(topicSlug);
+
+      await synthesizer.close();
+
+      res.json({
+        success: true,
+        skill,
+        synthesis: {
+          skillName: synthesisResult.skillName,
+          skillPath: synthesisResult.skillPath,
+          chunksProcessed: synthesisResult.chunksProcessed,
+          synthesisTokens: synthesisResult.synthesisUsedTokens,
+        },
+        eval: {
+          averageScore: evalResult.averageScore,
+          tasks: evalResult.tasks,
+          totalTokens: evalResult.totalTokensUsed,
+        },
+      });
+    } catch (error) {
+      console.error("Synthesis failed:", error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Synthesis failed",
+      });
+    }
+  });
+
+  router.get("/skills", async (_req, res) => {
+    try {
+      const skills = await db
+        .select({
+          id: synthesizedSkills.id,
+          topicId: synthesizedSkills.topicId,
+          skillName: synthesizedSkills.skillName,
+          skillPath: synthesizedSkills.skillPath,
+          status: synthesizedSkills.status,
+          evalScore: synthesizedSkills.evalScore,
+          evalTasks: synthesizedSkills.evalTasks,
+          synthesizedAt: synthesizedSkills.synthesizedAt,
+          reviewedAt: synthesizedSkills.reviewedAt,
+          reviewedBy: synthesizedSkills.reviewedBy,
+        })
+        .from(synthesizedSkills)
+        .orderBy(desc(synthesizedSkills.synthesizedAt));
+
+      res.json({ skills });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch skills" });
+    }
+  });
+
+  router.get("/skills/:topicSlug", async (req, res) => {
+    const { topicSlug } = req.params;
+
+    try {
+      const topicResult = await db
+        .select({ id: knowledgeTopics.id })
+        .from(knowledgeTopics)
+        .where(eq(knowledgeTopics.slug, topicSlug))
+        .limit(1);
+
+      if (topicResult.length === 0) {
+        res.status(404).json({ error: "Topic not found" });
+        return;
+      }
+
+      const skillResult = await db
+        .select({
+          id: synthesizedSkills.id,
+          topicId: synthesizedSkills.topicId,
+          skillName: synthesizedSkills.skillName,
+          skillPath: synthesizedSkills.skillPath,
+          status: synthesizedSkills.status,
+          evalScore: synthesizedSkills.evalScore,
+          evalTasks: synthesizedSkills.evalTasks,
+          synthesizedAt: synthesizedSkills.synthesizedAt,
+          reviewedAt: synthesizedSkills.reviewedAt,
+          reviewedBy: synthesizedSkills.reviewedBy,
+        })
+        .from(synthesizedSkills)
+        .where(eq(synthesizedSkills.topicId, topicResult[0].id))
+        .limit(1);
+
+      if (skillResult.length === 0) {
+        res.status(404).json({ error: "Skill not found for this topic" });
+        return;
+      }
+
+      res.json({ skill: skillResult[0] });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch skill" });
     }
   });
 

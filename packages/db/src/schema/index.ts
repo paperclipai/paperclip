@@ -104,3 +104,8 @@ export {
   type AgentCanaryPairing,
   type NewAgentCanaryPairing,
 } from "./agent_canary_pairings.js";
+export {
+  synthesizedSkills,
+  type SynthesizedSkill,
+  type NewSynthesizedSkill,
+} from "./synthesized_skills.js";
