@@ -402,6 +402,15 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     expect(res.body.error).toBe("Promotion request expired");
     const expired = await service.getPromotionRequest(companyId, requestRow.id);
     expect(expired.status).toBe("expired");
+    const rows = await db.select().from(activityLog).where(eq(activityLog.action, "truth.promotion_expired"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyId,
+      actorType: "user",
+      actorId: "local-board",
+      entityType: "truth_promotion_request",
+      entityId: requestRow.id,
+    });
   });
 
   it("requires completed dossier promotions to have a ready or published dossier and accepted linked brief", async () => {

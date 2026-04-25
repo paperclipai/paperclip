@@ -90,6 +90,17 @@ export function truthRuntimeRoutes(db: Db) {
 
     if (request.expiresAt && request.expiresAt.getTime() <= Date.now() && promotionCanExpire(request)) {
       const expired = await svc.expirePromotionRequest(request.companyId, request.id);
+      await logTruthActivity(req, {
+        companyId: expired.companyId,
+        action: "truth.promotion_expired",
+        entityType: "truth_promotion_request",
+        entityId: expired.id,
+        details: {
+          truthRunId: expired.truthRunId,
+          briefId: expired.briefId,
+          dossierId: expired.dossierId,
+        },
+      });
       throw unprocessable("Promotion request expired", { status: expired.status });
     }
 
