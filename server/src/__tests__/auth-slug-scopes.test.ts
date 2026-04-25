@@ -26,6 +26,7 @@ import { assertCompanyAccess } from "../routes/authz.js";
 import { boardApiKeyExpiresAt, boardAuthService, hashBearerToken } from "../services/board-auth.js";
 import { agentService } from "../services/agents.js";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
+import { companyRoutes } from "../routes/companies.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -53,6 +54,17 @@ function createAccessApp(db: ReturnType<typeof createDb>) {
       next(err);
     }
   });
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 500;
+    res.status(status).json({ message: err instanceof Error ? err.message : "error" });
+  });
+  return app;
+}
+
+function createCompanyRoutesApp(db: ReturnType<typeof createDb>) {
+  const app = express();
+  app.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
+  app.use("/api/companies", companyRoutes(db));
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 500;
     res.status(status).json({ message: err instanceof Error ? err.message : "error" });
@@ -229,6 +241,30 @@ describeEmbeddedPostgres("auth slug scopes", () => {
     expect(res.body.memberships).toEqual([
       expect.objectContaining({ companyId: companyA.id, status: "active" }),
     ]);
+  });
+
+  it("does not treat scoped board API keys as unrestricted instance admin on company collection routes", async () => {
+    const companyA = await createCompany(`List A ${randomUUID().slice(0, 8)}`);
+    const companyB = await createCompany(`List B ${randomUUID().slice(0, 8)}`);
+    const slugA = expectedSlug(companyA.issuePrefix, companyA.id);
+    const user = await createUser();
+    await addMembership(user.id, companyA.id);
+    await addMembership(user.id, companyB.id);
+    await addInstanceAdmin(user.id);
+    await createAgent(companyA.id);
+    await createAgent(companyB.id);
+    const token = await createBoardKey(user.id, [slugA]);
+    const app = createCompanyRoutesApp(db);
+
+    const [listRes, statsRes] = await Promise.all([
+      request(app).get("/api/companies").set("authorization", `Bearer ${token}`),
+      request(app).get("/api/companies/stats").set("authorization", `Bearer ${token}`),
+    ]);
+
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.map((company: { id: string }) => company.id)).toEqual([companyA.id]);
+    expect(statsRes.status).toBe(200);
+    expect(Object.keys(statsRes.body)).toEqual([companyA.id]);
   });
 
   it("stores the requested company slug when approving a company-scoped CLI auth challenge", async () => {

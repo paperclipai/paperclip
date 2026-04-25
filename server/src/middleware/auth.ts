@@ -146,7 +146,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: scopedAccess.memberships,
           allowedCompanySlugs,
           credentialCompanySlugs: scopedAccess.credentialCompanySlugs,
-          isInstanceAdmin: access.isInstanceAdmin,
+          isInstanceAdmin: allowedCompanySlugs.length > 0 ? false : access.isInstanceAdmin,
           keyId: boardKey.id,
           runId: runIdHeader || undefined,
           source: "board_key",
