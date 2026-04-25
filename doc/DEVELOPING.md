@@ -160,6 +160,9 @@ ledger as `operationsFlow` so operators can see whether idle tickets are blocked
 by real constraints or by allocation drift. Planner-selected assignment and
 reassignment actions must execute through the issue service compare-and-set
 allocation methods so stale COO sweeps cannot double-start the same ticket.
+Issue-scoped wakeups reserve the issue when queued; a skipped wake is recorded
+as a blocked policy/capacity outcome and must not increment executed wake counts
+or create an operations cooldown comment.
 
 The core emission points live in:
 

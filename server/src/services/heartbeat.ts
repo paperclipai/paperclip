@@ -2723,6 +2723,41 @@ function isAgentNotInvokableConflict(error: unknown) {
   return error instanceof HttpError && error.status === 409 && error.message === "Agent is not invokable in its current state";
 }
 
+function isWakePolicyConflict(error: unknown) {
+  return error instanceof HttpError && error.status === 409;
+}
+
+function buildIssueWakeupIdempotencyKey(input: {
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  reason: string;
+}) {
+  return [
+    "issue-wakeup",
+    input.companyId,
+    input.issueId,
+    input.agentId,
+    input.reason,
+  ].join(":");
+}
+
+function mapNonQueuedWakeOutcomeToCooBlock(input: {
+  status: string | null | undefined;
+  reason: string | null | undefined;
+}): CooBlockedReason {
+  if (input.status === "deferred_issue_execution") return "pending_wakeup";
+  const reason = input.reason;
+  if (!reason) return "policy_blocked";
+  if (reason === "heartbeat.live_run_limit_reached") return "no_free_slot";
+  if (reason === "roadmap.epic_paused") return "waiting_external";
+  if (reason.startsWith("heartbeat.")) return "policy_blocked";
+  if (reason.includes("budget") || reason.includes("approval") || reason.includes("policy")) {
+    return "policy_blocked";
+  }
+  return "policy_blocked";
+}
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -4368,6 +4403,7 @@ export function heartbeatService(db: Db) {
       .orderBy(
         sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
         asc(heartbeatRuns.createdAt),
+        asc(heartbeatRuns.id),
       );
     const legacyRun = legacyRunRows.find((candidate) => isHeartbeatRunBlockingForWakeup(candidate, nowMs)) ?? null;
 
@@ -5981,8 +6017,38 @@ export function heartbeatService(db: Db) {
     let stabilizationActionCount = 0;
     const ownershipCorrectedIssueIds = new Set<string>();
     const targetReasonByIssueId = new Map<string, string>();
+    const wakeSkippedBlockByIssueId = new Map<string, CooBlockedReason>();
     const opsActiveTargetIssueIdsForAssignment = new Set<string>();
     const attemptedSpecialistCoverageProvision = new Set<string>();
+    const recordSkippedWakeBlock = async (input: {
+      issueId: string;
+      agentId: string;
+      idempotencyKey: string;
+    }) => {
+      const wakeup = await db
+        .select({
+          reason: agentWakeupRequests.reason,
+          status: agentWakeupRequests.status,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, input.agentId),
+            eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      wakeSkippedBlockByIssueId.set(
+        input.issueId,
+        mapNonQueuedWakeOutcomeToCooBlock({
+          status: wakeup?.status,
+          reason: wakeup?.reason,
+        }),
+      );
+    };
     const registerAssignmentCandidate = (candidate: {
       id: string;
       name: string | null;
@@ -7073,25 +7139,7 @@ export function heartbeatService(db: Db) {
       if (await isRetryCircuitOpen(assigneeAgent.companyId, assigneeAgent.adapterType, new Date())) return;
 
       try {
-        await issuesSvc.addComment(
-          targetIssue.id,
-          buildOperationsRecoveryWakeComment({
-            assigneeAgentId: targetIssue.assigneeAgentId,
-            assigneeName: targetIssue.assigneeName,
-            reason,
-          }),
-          { agentId: input.agent.id, runId: input.run.id },
-        );
-        recoveryCommentCount += 1;
-      } catch (err) {
-        logger.warn(
-          { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
-          "operations heartbeat failed to post recovery wake comment",
-        );
-      }
-
-      try {
-        await enqueueWakeup(targetIssue.assigneeAgentId, {
+        const queuedRun = await enqueueWakeup(targetIssue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
           reason: "operations_cross_agent_recovery",
@@ -7110,13 +7158,51 @@ export function heartbeatService(db: Db) {
           },
           idempotencyKey: recoveryIdempotencyKey,
         });
+        if (!queuedRun) {
+          await recordSkippedWakeBlock({
+            issueId: targetIssue.id,
+            agentId: targetIssue.assigneeAgentId,
+            idempotencyKey: recoveryIdempotencyKey,
+          });
+          return;
+        }
         consumeFreeSlot(targetIssue.assigneeAgentId);
+        idleHandledIssueIds.add(targetIssue.id);
         recoveryWakeupCount += 1;
       } catch (err) {
-        if (isAgentNotInvokableConflict(err)) return;
+        if (isAgentNotInvokableConflict(err)) {
+          wakeSkippedBlockByIssueId.set(targetIssue.id, "assignee_unavailable");
+          return;
+        }
+        if (isWakePolicyConflict(err)) {
+          await recordSkippedWakeBlock({
+            issueId: targetIssue.id,
+            agentId: targetIssue.assigneeAgentId,
+            idempotencyKey: recoveryIdempotencyKey,
+          });
+        }
         logger.warn(
           { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
           "operations heartbeat failed to enqueue cross-agent recovery wakeup",
+        );
+        return;
+      }
+
+      try {
+        await issuesSvc.addComment(
+          targetIssue.id,
+          buildOperationsRecoveryWakeComment({
+            assigneeAgentId: targetIssue.assigneeAgentId,
+            assigneeName: targetIssue.assigneeName,
+            reason,
+          }),
+          { agentId: input.agent.id, runId: input.run.id },
+        );
+        recoveryCommentCount += 1;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
+          "operations heartbeat failed to post recovery wake comment",
         );
       }
     };
@@ -7404,26 +7490,15 @@ export function heartbeatService(db: Db) {
         const issue = openAssignedIssueById.get(action.issueId) ?? null;
         if (!issue?.assigneeAgentId || issue.assigneeAgentId !== action.agentId) continue;
         if (!hasFreeSlot(action.agentId)) continue;
+        const idempotencyKey = buildIssueWakeupIdempotencyKey({
+          companyId,
+          issueId: issue.id,
+          agentId: action.agentId,
+          reason: "operations_idle_assignment_wakeup",
+        });
 
         try {
-          await issuesSvc.addComment(
-            issue.id,
-            buildOperationsIdleWakeComment({
-              assigneeAgentId: action.agentId,
-              assigneeName: issue.assigneeName,
-            }),
-            { agentId: input.agent.id, runId: input.run.id },
-          );
-          wakeCommentCount += 1;
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, assigneeAgentId: action.agentId },
-            "operations heartbeat failed to post idle wake comment",
-          );
-        }
-
-        try {
-          await enqueueWakeup(action.agentId, {
+          const queuedRun = await enqueueWakeup(action.agentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "operations_idle_assignment_wakeup",
@@ -7440,14 +7515,50 @@ export function heartbeatService(db: Db) {
               source: "operations.heartbeat",
               wakeReason: "operations_idle_assignment_wakeup",
             },
+            idempotencyKey,
           });
+          if (!queuedRun) {
+            await recordSkippedWakeBlock({
+              issueId: issue.id,
+              agentId: action.agentId,
+              idempotencyKey,
+            });
+            continue;
+          }
           consumeFreeSlot(action.agentId);
           idleHandledIssueIds.add(issue.id);
           wakeupCount += 1;
         } catch (err) {
+          if (isAgentNotInvokableConflict(err)) {
+            wakeSkippedBlockByIssueId.set(issue.id, "assignee_unavailable");
+          } else if (isWakePolicyConflict(err)) {
+            await recordSkippedWakeBlock({
+              issueId: issue.id,
+              agentId: action.agentId,
+              idempotencyKey,
+            });
+          }
           logger.warn(
             { err, issueId: issue.id, assigneeAgentId: action.agentId },
             "operations heartbeat failed to enqueue idle assignee wakeup",
+          );
+          continue;
+        }
+
+        try {
+          await issuesSvc.addComment(
+            issue.id,
+            buildOperationsIdleWakeComment({
+              assigneeAgentId: action.agentId,
+              assigneeName: issue.assigneeName,
+            }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+          wakeCommentCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to post idle wake comment",
           );
         }
         continue;
@@ -7495,29 +7606,15 @@ export function heartbeatService(db: Db) {
           continue;
         }
 
+        const idempotencyKey = buildIssueWakeupIdempotencyKey({
+          companyId,
+          issueId: issue.id,
+          agentId: action.agentId,
+          reason: "operations_assignment",
+        });
+        let wakeDeferred = false;
         try {
-          await issuesSvc.addComment(
-            issue.id,
-            buildOperationsOwnershipCorrectionComment({
-              correctionReason: action.correctionReason,
-              wakeDeferred: false,
-              detail: action.reason,
-              nextStatus,
-              assigneeAgentId: action.agentId,
-              assigneeName: candidate.name,
-            }),
-            { agentId: input.agent.id, runId: input.run.id },
-          );
-          ownershipCorrectionCommentCount += 1;
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, fromAgentId: action.fromAgentId, assigneeAgentId: action.agentId },
-            "operations heartbeat failed to post reassignment correction comment",
-          );
-        }
-
-        try {
-          await enqueueWakeup(action.agentId, {
+          const queuedRun = await enqueueWakeup(action.agentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "operations_assignment",
@@ -7535,13 +7632,54 @@ export function heartbeatService(db: Db) {
               source: "operations.heartbeat",
               wakeReason: "operations_reassignment",
             },
+            idempotencyKey,
           });
-          consumeFreeSlot(action.agentId);
-          ownershipCorrectionWakeupCount += 1;
+          if (!queuedRun) {
+            wakeDeferred = true;
+            await recordSkippedWakeBlock({
+              issueId: issue.id,
+              agentId: action.agentId,
+              idempotencyKey,
+            });
+          } else {
+            consumeFreeSlot(action.agentId);
+            ownershipCorrectionWakeupCount += 1;
+          }
         } catch (err) {
+          wakeDeferred = true;
+          if (isAgentNotInvokableConflict(err)) {
+            wakeSkippedBlockByIssueId.set(issue.id, "assignee_unavailable");
+          } else if (isWakePolicyConflict(err)) {
+            await recordSkippedWakeBlock({
+              issueId: issue.id,
+              agentId: action.agentId,
+              idempotencyKey,
+            });
+          }
           logger.warn(
             { err, issueId: issue.id, assigneeAgentId: action.agentId },
             "operations heartbeat failed to enqueue reassigned issue wakeup",
+          );
+        }
+
+        try {
+          await issuesSvc.addComment(
+            issue.id,
+            buildOperationsOwnershipCorrectionComment({
+              correctionReason: action.correctionReason,
+              wakeDeferred,
+              detail: action.reason,
+              nextStatus,
+              assigneeAgentId: action.agentId,
+              assigneeName: candidate.name,
+            }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+          ownershipCorrectionCommentCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, fromAgentId: action.fromAgentId, assigneeAgentId: action.agentId },
+            "operations heartbeat failed to post reassignment correction comment",
           );
         }
         continue;
@@ -7553,7 +7691,7 @@ export function heartbeatService(db: Db) {
       const candidate = assignmentCandidateById.get(action.agentId) ?? availableAssignmentCandidateById.get(action.agentId) ?? null;
       if (!issue || !candidate) continue;
       if (!hasFreeSlot(action.agentId)) continue;
-      const wakeDeferred = false;
+      let wakeDeferred = false;
       const nextStatus = issue.status === "backlog"
         ? "todo"
         : normalizeUnavailableSpecialistLaneStatus(issue.status);
@@ -7579,6 +7717,60 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      const idempotencyKey = buildIssueWakeupIdempotencyKey({
+        companyId,
+        issueId: issue.id,
+        agentId: action.agentId,
+        reason: "operations_assignment",
+      });
+      try {
+        const queuedRun = await enqueueWakeup(action.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "operations_assignment",
+          payload: {
+            issueId: issue.id,
+            mutation: "operations_assignment",
+            sourceRunId: input.run.id,
+          },
+          requestedByActorType: "agent",
+          requestedByActorId: input.agent.id,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            source: "operations.heartbeat",
+            wakeReason: "operations_assignment",
+          },
+          idempotencyKey,
+        });
+        if (!queuedRun) {
+          wakeDeferred = true;
+          await recordSkippedWakeBlock({
+            issueId: issue.id,
+            agentId: action.agentId,
+            idempotencyKey,
+          });
+        } else {
+          consumeFreeSlot(action.agentId);
+          assignmentWakeupCount += 1;
+        }
+      } catch (err) {
+        wakeDeferred = true;
+        if (isAgentNotInvokableConflict(err)) {
+          wakeSkippedBlockByIssueId.set(issue.id, "assignee_unavailable");
+        } else if (isWakePolicyConflict(err)) {
+          await recordSkippedWakeBlock({
+            issueId: issue.id,
+            agentId: action.agentId,
+            idempotencyKey,
+          });
+        }
+        logger.warn(
+          { err, issueId: issue.id, assigneeAgentId: action.agentId },
+          "operations heartbeat failed to enqueue assignment wakeup",
+        );
+      }
+
       try {
         await issuesSvc.addComment(
           issue.id,
@@ -7596,36 +7788,6 @@ export function heartbeatService(db: Db) {
           { err, issueId: issue.id, assigneeAgentId: action.agentId },
           "operations heartbeat failed to post assignment comment",
         );
-      }
-
-      if (!wakeDeferred) {
-        try {
-          await enqueueWakeup(action.agentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "operations_assignment",
-            payload: {
-              issueId: issue.id,
-              mutation: "operations_assignment",
-              sourceRunId: input.run.id,
-            },
-            requestedByActorType: "agent",
-            requestedByActorId: input.agent.id,
-            contextSnapshot: {
-              issueId: issue.id,
-              taskId: issue.id,
-              source: "operations.heartbeat",
-              wakeReason: "operations_assignment",
-            },
-          });
-          consumeFreeSlot(action.agentId);
-          assignmentWakeupCount += 1;
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, assigneeAgentId: action.agentId },
-            "operations heartbeat failed to enqueue assignment wakeup",
-          );
-        }
       }
     }
 
@@ -7658,6 +7820,10 @@ export function heartbeatService(db: Db) {
       | (typeof openAssignedIssues)[number]
       | (typeof openUnassignedIssues)[number],
     ) => {
+      const skippedWakeBlock = wakeSkippedBlockByIssueId.get(issue.id);
+      if (skippedWakeBlock) {
+        return skippedWakeBlock;
+      }
       if (assignedIssueIds.has(issue.id)) {
         return "assigned_this_sweep";
       }
@@ -7814,6 +7980,14 @@ export function heartbeatService(db: Db) {
           reason: "human_owned",
         };
       }
+      const skippedWakeBlock = wakeSkippedBlockByIssueId.get(issue.id);
+      if (skippedWakeBlock) {
+        return {
+          kind: "blocked",
+          issueId: issue.id,
+          reason: skippedWakeBlock,
+        };
+      }
 
       if (
         reason === "active_execution" ||
@@ -7888,6 +8062,7 @@ export function heartbeatService(db: Db) {
         reason === "merge_blocked" ||
         reason === "assignee_unavailable" ||
         reason === "pending_wakeup" ||
+        reason === "policy_blocked" ||
         reason === "cooldown"
       )
         ? reason
@@ -7913,14 +8088,16 @@ export function heartbeatService(db: Db) {
       ...operationsFlowPlanned,
       executedActionCounts: {
         assign_issue: assignedIssueCount,
-        record_block: Math.max(
-          0,
-          (blockedReasonCounts.blocked_dependency ?? 0)
-          + (blockedReasonCounts.capability_blocked_specialist ?? 0)
-          + (blockedReasonCounts.human_owned ?? 0)
-          + (blockedReasonCounts.waiting_external ?? 0)
-          + (blockedReasonCounts.merge_blocked ?? 0),
-        ),
+        record_block: Object.entries(blockedReasonCounts).reduce((total, [reason, count]) => (
+          reason === "actionable_owned" ||
+          reason === "actionable_unassigned" ||
+          reason === "active_execution" ||
+          reason === "assigned_this_sweep" ||
+          reason === "wake_requested_this_sweep" ||
+          reason === "corrected_this_sweep"
+            ? total
+            : total + count
+        ), 0),
         repair_issue: stabilizationActionCount + finalizedIssueCount + finalizedParentWakeupCount,
         reassign_issue: reassignedIssueCount,
         wake_owner:
@@ -9772,9 +9949,15 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-        // executionRunId is NOT stamped here (enqueueWakeup queues the run but
-        // doesn't start it). It will be stamped in claimQueuedRun() once the run
-        // transitions to "running" — Fix A (lazy locking).
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: newRun.id,
+            executionAgentNameKey: agentNameKey,
+            executionLockedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issue.id));
 
         return { kind: "queued" as const, run: newRun };
       });

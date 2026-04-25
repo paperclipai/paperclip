@@ -225,6 +225,7 @@ Invariants:
 - if a COO sweep leaves actionable ready work with eligible free capacity after assignment/refill, it must emit an allocation invariant breach with residual counts; ready tickets should not sit idle without a dependency, capacity, capability, human-ownership, cooldown, or board-decision reason
 - each COO sweep must produce an operations flow report in heartbeat context that accounts for ready work, blocked reasons, free and unavailable slots by role, planned actions, executed actions, unused-capacity reasons, and allocation invariant breaches
 - COO allocation prioritizes critical/urgent work first, then older actionable work, then stable issue identity; pending wakeups and live runs reserve capacity so the sweep does not create false flow by double-booking an agent
+- issue-scoped wakeups are an execution reservation at queue time; queued, coalesced, and skipped wake outcomes must not be counted the same way, and skipped wakeups must surface a concrete policy/capacity blocker instead of writing misleading cooldown handoff comments
 - COO assignment and reassignment execution must follow planner output and persist through compare-and-set issue service methods; overlapping sweeps must not be able to assign the same issue to different agents or enqueue duplicate starts from stale ownership reads
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
@@ -956,7 +957,7 @@ Dependency graph for `engineering_delivery_v2`:
 
 Execution rules:
 - template application first tries to auto-provision a managed `security` agent from the existing tech-team seed pattern only when no non-terminated security specialist exists; if a security specialist exists but is paused, errored, pending approval, or otherwise unavailable, the request must surface unavailable capacity instead of creating duplicate specialists
-- if legacy or drifted workflow state leaves a security lane unassigned while no eligible security specialist exists, COO should first determine whether the specialist role is truly missing; existing unavailable specialists are blockers, not seed material for another specialist row
+- if legacy or drifted workflow state leaves a security lane unassigned while no eligible security specialist exists, COO should first determine whether the specialist role is truly missing; existing unavailable specialists are blockers, not seed material for another specialist row, and the specialist coverage model must return a repair action pointing at the canonical unavailable specialist to fix or replace
 - when a missing-specialist auto-provision step cannot yield an assignable specialist, or an existing specialist is unavailable, the lane must surface explicit capability-blocked/operator-attention state rather than silently skipping it, routing it to the wrong role, or multiplying agents
 - long-quiet `running` heartbeat rows must stop counting as live occupancy for queue resume, timer-heartbeat suppression, and runtime-integrity issue rebinds once they pass the owned-run quiet threshold
 - new root issue creation in effective `engineering` mode is atomic with workflow application; if the workflow apply fails, the root issue creation rolls back too

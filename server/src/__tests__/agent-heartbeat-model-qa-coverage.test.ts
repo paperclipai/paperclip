@@ -386,6 +386,12 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
       created: false,
       reason: "already_has_security",
       createdAgentId: null,
+      repairAction: {
+        kind: "repair_specialist",
+        role: "security",
+        agentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        reason: "all_specialists_unavailable",
+      },
     });
 
     const securityAgents = await db
@@ -441,6 +447,12 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
       created: false,
       reason: "already_has_qa",
       createdAgentId: null,
+      repairAction: {
+        kind: "repair_specialist",
+        role: "qa",
+        agentId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        reason: "all_specialists_unavailable",
+      },
     });
 
     const qaAgents = await db

@@ -247,6 +247,22 @@ export function planCooFlowAllocation(input: {
   };
   const handledIssueIds = new Set<string>();
 
+  const recordBlock = (input: {
+    issueId: string;
+    reason: CooBlockedReason;
+    requiredRole?: string | null;
+  }) => {
+    actions.push({
+      kind: "record_block",
+      issueId: input.issueId,
+      reason: input.reason,
+      requiredRole: input.requiredRole ?? undefined,
+    });
+    plannedActionCounts.record_block += 1;
+    addCount(blockedReasonCounts, input.reason);
+    handledIssueIds.add(input.issueId);
+  };
+
   const readyIssueCount = input.issues.filter((issue) => (
     issue.kind === "needs_repair" ||
     issue.kind === "ready_owned" ||
@@ -256,15 +272,11 @@ export function planCooFlowAllocation(input: {
 
   for (const issue of input.issues) {
     if (issue.kind !== "blocked") continue;
-    actions.push({
-      kind: "record_block",
+    recordBlock({
       issueId: issue.issueId,
       reason: issue.reason,
       requiredRole: issue.requiredRole ?? undefined,
     });
-    plannedActionCounts.record_block += 1;
-    addCount(blockedReasonCounts, issue.reason);
-    handledIssueIds.add(issue.issueId);
   }
 
   const allocatableIssues = input.issues
@@ -291,7 +303,10 @@ export function planCooFlowAllocation(input: {
     if (issue.kind === "ready_owned") {
       const freeSlots = freeSlotsByAgentId.get(issue.assigneeAgentId) ?? 0;
       if (freeSlots <= 0) {
-        addCount(blockedReasonCounts, "no_free_slot");
+        recordBlock({
+          issueId: issue.issueId,
+          reason: "no_free_slot",
+        });
         continue;
       }
       actions.push({
@@ -309,7 +324,10 @@ export function planCooFlowAllocation(input: {
     if (issue.kind === "ready_reassignable") {
       const selectedAgentId = selectEligibleAgent({ issue, agentById, freeSlotsByAgentId });
       if (!selectedAgentId) {
-        addCount(blockedReasonCounts, "no_free_slot");
+        recordBlock({
+          issueId: issue.issueId,
+          reason: "no_free_slot",
+        });
         continue;
       }
 
@@ -329,21 +347,21 @@ export function planCooFlowAllocation(input: {
 
     if (issue.eligibleAgentIds.length === 0) {
       const reason = issue.requiredRole ? "capability_blocked_specialist" : "no_assignable_agent";
-      actions.push({
-        kind: "record_block",
+      recordBlock({
         issueId: issue.issueId,
         reason,
         requiredRole: issue.requiredRole ?? undefined,
       });
-      plannedActionCounts.record_block += 1;
-      addCount(blockedReasonCounts, reason);
-      handledIssueIds.add(issue.issueId);
       continue;
     }
 
     const selectedAgentId = selectEligibleAgent({ issue, agentById, freeSlotsByAgentId });
     if (!selectedAgentId) {
-      addCount(blockedReasonCounts, "no_free_slot");
+      recordBlock({
+        issueId: issue.issueId,
+        reason: "no_free_slot",
+        requiredRole: issue.requiredRole ?? undefined,
+      });
       continue;
     }
 

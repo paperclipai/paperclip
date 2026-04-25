@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -566,6 +566,94 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0] ?? null);
 
       expect(promotedWake?.status).toBe("completed");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 60_000);
+
+  it("coalesces duplicate issue wake reservations before the queued run is claimed", async () => {
+    const gateway = await createControlledGatewayServer();
+    const { companyId, issueId, ownerAgentId } = await seedGatewaySlotOptimizerCompany(gateway.url);
+    const heartbeat = heartbeatService(db);
+
+    try {
+      const firstRun = await heartbeat.wakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const secondRun = await heartbeat.wakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+          secondProbe: true,
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(secondRun?.id).toBe(firstRun?.id);
+
+      const issueRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, ownerAgentId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+      const wakeups = await db
+        .select({
+          status: agentWakeupRequests.status,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, ownerAgentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.createdAt));
+
+      expect(issueRuns).toHaveLength(1);
+      expect(wakeups.map((wakeup) => wakeup.status)).toEqual(["claimed", "coalesced"]);
+      expect(wakeups[1]?.runId).toBe(firstRun?.id);
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+
+      gateway.releaseFirstWait();
+      await waitFor(async () => {
+        const currentRun = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return currentRun?.status === "succeeded";
+      }, 45_000);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -3093,6 +3181,117 @@ it("reassigns canonical delivery review state when the current QA reviewer becom
         })
         .where(eq(heartbeatRuns.id, busyRunId));
     }
+  });
+
+  it("does not count skipped idle wakes as executed allocation or cooldown markers", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Skipped Idle Wake Accounting Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Product Engineer - App",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            maxConcurrentRuns: 2,
+            wakeOnDemand: false,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Idle assigned work should not look woken when policy skips it",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    const sweep = ((persistedRun?.contextSnapshot as Record<string, unknown> | null)?.operationsHeartbeatSweep ?? {}) as Record<string, unknown>;
+    const operationsFlow = (sweep.operationsFlow ?? {}) as Record<string, unknown>;
+    const executedActionCounts = (operationsFlow.executedActionCounts ?? {}) as Record<string, unknown>;
+    const blockedReasonCounts = (operationsFlow.blockedReasonCounts ?? {}) as Record<string, unknown>;
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const wakeups = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, workerAgentId)))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(executedActionCounts.wake_owner).toBe(0);
+    expect(blockedReasonCounts.policy_blocked).toBe(1);
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-wakeup]"))).toBe(false);
+    expect(wakeups).toEqual([
+      expect.objectContaining({
+        reason: "heartbeat.wakeOnDemand.disabled",
+        status: "skipped",
+      }),
+    ]);
   });
 
   it("emits only one idle wake per assignee when the sweep exhausts the local slot budget", async () => {

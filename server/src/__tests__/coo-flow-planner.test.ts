@@ -133,8 +133,15 @@ describe("COO flow planner", () => {
       },
     });
 
-    expect(report.actions).toEqual([]);
-    expect(report.residualReadyIssueCount).toBe(1);
+    expect(report.actions).toEqual([
+      {
+        kind: "record_block",
+        issueId: "reserved-slot-work",
+        reason: "no_free_slot",
+        requiredRole: undefined,
+      },
+    ]);
+    expect(report.residualReadyIssueCount).toBe(0);
     expect(report.blockedReasonCounts.no_free_slot).toBe(1);
     expect(report.freeSlotsByRole).toEqual({});
   });
@@ -182,8 +189,14 @@ describe("COO flow planner", () => {
         reason: "assigned specialist no longer matches the work",
         correctionReason: "wrong_specialist_reassigned",
       },
+      {
+        kind: "record_block",
+        issueId: "second-work",
+        reason: "no_free_slot",
+        requiredRole: undefined,
+      },
     ]);
-    expect(report.residualReadyIssueCount).toBe(1);
+    expect(report.residualReadyIssueCount).toBe(0);
     expect(report.blockedReasonCounts.no_free_slot).toBe(1);
   });
 
@@ -228,9 +241,65 @@ describe("COO flow planner", () => {
       },
     });
 
-    expect(report.actions.map((action) => action.issueId)).toEqual(["high-old", "high-new"]);
-    expect(report.residualReadyIssueCount).toBe(1);
+    expect(report.actions.map((action) => action.issueId)).toEqual(["high-old", "high-new", "medium-old"]);
+    expect(report.actions).toContainEqual({
+      kind: "record_block",
+      issueId: "medium-old",
+      reason: "no_free_slot",
+      requiredRole: undefined,
+    });
+    expect(report.residualReadyIssueCount).toBe(0);
     expect(report.blockedReasonCounts.no_free_slot).toBe(1);
+  });
+
+  it("attributes capacity blocks to the exact blocked issues", () => {
+    const report = planCooFlowAllocation({
+      issues: [
+        {
+          kind: "ready_owned",
+          issueId: "owned-idle",
+          assigneeAgentId: "eng-1",
+          priority: "high",
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          reason: "owned work is idle",
+        },
+        {
+          kind: "ready_unassigned",
+          issueId: "unassigned-ready",
+          eligibleAgentIds: ["eng-1"],
+          priority: "medium",
+          updatedAt: new Date("2026-04-21T00:00:00.000Z"),
+          reason: "ready unassigned work requires ownership",
+        },
+      ],
+      capacity: {
+        agents: [{
+          agentId: "eng-1",
+          role: "engineer",
+          totalSlots: 0,
+          occupiedSlots: 0,
+          reservedSlots: 0,
+        }],
+      },
+    });
+
+    expect(report.actions).toEqual([
+      {
+        kind: "record_block",
+        issueId: "owned-idle",
+        reason: "no_free_slot",
+        requiredRole: undefined,
+      },
+      {
+        kind: "record_block",
+        issueId: "unassigned-ready",
+        reason: "no_free_slot",
+        requiredRole: undefined,
+      },
+    ]);
+    expect(report.residualReadyIssueCount).toBe(0);
+    expect(report.blockedReasonCounts.no_free_slot).toBe(2);
+    expect(report.invariantBreaches).toEqual([]);
   });
 
   it("explains unused capacity when slots remain open", () => {

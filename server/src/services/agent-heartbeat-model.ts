@@ -79,6 +79,15 @@ type QaCoverageReason =
   | "no_tech_team"
   | "company_not_found";
 
+type SpecialistCoverageRepairAction = {
+  kind: "repair_specialist";
+  role: "qa" | "security";
+  agentId: string;
+  reason: "all_specialists_unavailable";
+  unavailableAgentCount: number;
+  unavailableStatusCounts: Record<string, number>;
+};
+
 type CompanyQaCoverageResult = {
   apply: boolean;
   companyId: string;
@@ -86,6 +95,7 @@ type CompanyQaCoverageResult = {
   created: boolean;
   reason: QaCoverageReason;
   createdAgentId: string | null;
+  repairAction?: SpecialistCoverageRepairAction | null;
 };
 
 type SecurityCoverageReason =
@@ -101,6 +111,7 @@ type CompanySecurityCoverageResult = {
   created: boolean;
   reason: SecurityCoverageReason;
   createdAgentId: string | null;
+  repairAction?: SpecialistCoverageRepairAction | null;
 };
 
 export type QaReleaseCoverageReport = {
@@ -274,6 +285,39 @@ export function agentHeartbeatModelService(db: Db) {
           ne(agents.status, "pending_approval"),
         ),
       );
+  }
+
+  function buildSpecialistRepairAction(
+    role: "qa" | "security",
+    rows: ActiveAgentRow[],
+  ): SpecialistCoverageRepairAction | null {
+    const specialists = rows.filter((row) => normalizeRole(row.role) === role);
+    if (specialists.length === 0) return null;
+    if (specialists.some((row) => isAgentAssignableStatus(row.status))) return null;
+
+    const unavailableStatusCounts: Record<string, number> = {};
+    for (const specialist of specialists) {
+      const status = specialist.status || "unknown";
+      unavailableStatusCounts[status] = (unavailableStatusCounts[status] ?? 0) + 1;
+    }
+
+    const repairTarget = specialists
+      .slice()
+      .sort((left, right) => (
+        left.name.localeCompare(right.name) ||
+        left.status.localeCompare(right.status) ||
+        left.id.localeCompare(right.id)
+      ))[0];
+    if (!repairTarget) return null;
+
+    return {
+      kind: "repair_specialist",
+      role,
+      agentId: repairTarget.id,
+      reason: "all_specialists_unavailable",
+      unavailableAgentCount: specialists.length,
+      unavailableStatusCounts,
+    };
   }
 
   async function ensureCompanyHasCooCoordinator(
@@ -465,6 +509,7 @@ export function agentHeartbeatModelService(db: Db) {
       };
     }
 
+    const qaRepairAction = buildSpecialistRepairAction("qa", rows);
     const hasQa = rows.some((row) => normalizeRole(row.role) === "qa");
     if (hasQa) {
       return {
@@ -474,6 +519,7 @@ export function agentHeartbeatModelService(db: Db) {
         created: false,
         reason: "already_has_qa",
         createdAgentId: null,
+        repairAction: qaRepairAction,
       };
     }
 
@@ -586,6 +632,7 @@ export function agentHeartbeatModelService(db: Db) {
       };
     }
 
+    const securityRepairAction = buildSpecialistRepairAction("security", rows);
     const hasSecurity = rows.some((row) => normalizeRole(row.role) === "security");
     if (hasSecurity) {
       return {
@@ -595,6 +642,7 @@ export function agentHeartbeatModelService(db: Db) {
         created: false,
         reason: "already_has_security",
         createdAgentId: null,
+        repairAction: securityRepairAction,
       };
     }
 
