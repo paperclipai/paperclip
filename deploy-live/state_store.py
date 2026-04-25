@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -118,3 +119,80 @@ def init_schema(path: str | Path) -> None:
         conn.executescript(SCHEMA_DDL)
     finally:
         conn.close()
+
+
+from schemas import PositionRecord
+
+
+_OPEN_STATUSES = ("opening", "open", "closing", "degraded")
+
+
+def insert_position(
+    conn: sqlite3.Connection, *,
+    symbol: str, exchange_a: str, exchange_b: str,
+    side_a: str, side_b: str,
+    size_usd_a: float, size_usd_b: float,
+    entry_spread_pct: float,
+    status: str, opened_at_ms: int,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO positions
+           (symbol, exchange_a, exchange_b, side_a, side_b,
+            size_usd_a, size_usd_b, entry_spread_pct, status, opened_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (symbol, exchange_a, exchange_b, side_a, side_b,
+         size_usd_a, size_usd_b, entry_spread_pct, status, opened_at_ms),
+    )
+    return cur.lastrowid
+
+
+def get_position(conn: sqlite3.Connection, position_id: int) -> Optional[PositionRecord]:
+    row = conn.execute(
+        "SELECT * FROM positions WHERE id=?", (position_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_position(row)
+
+
+def update_position_status(
+    conn: sqlite3.Connection, position_id: int, status: str
+) -> None:
+    conn.execute(
+        "UPDATE positions SET status=? WHERE id=?", (status, position_id)
+    )
+
+
+def close_position(
+    conn: sqlite3.Connection, position_id: int, *,
+    closed_at_ms: int, exit_spread_pct: float, realized_pnl_usd: float,
+) -> None:
+    conn.execute(
+        """UPDATE positions
+           SET status='closed', closed_at=?, exit_spread_pct=?, realized_pnl_usd=?
+           WHERE id=?""",
+        (closed_at_ms, exit_spread_pct, realized_pnl_usd, position_id),
+    )
+
+
+def list_open_positions(conn: sqlite3.Connection) -> list[PositionRecord]:
+    placeholders = ",".join("?" * len(_OPEN_STATUSES))
+    rows = conn.execute(
+        f"SELECT * FROM positions WHERE status IN ({placeholders}) ORDER BY id",
+        _OPEN_STATUSES,
+    ).fetchall()
+    return [_row_to_position(r) for r in rows]
+
+
+def _row_to_position(row: sqlite3.Row) -> PositionRecord:
+    return PositionRecord(
+        id=row["id"], symbol=row["symbol"],
+        exchange_a=row["exchange_a"], exchange_b=row["exchange_b"],
+        side_a=row["side_a"], side_b=row["side_b"],
+        size_usd_a=row["size_usd_a"], size_usd_b=row["size_usd_b"],
+        entry_spread_pct=row["entry_spread_pct"],
+        exit_spread_pct=row["exit_spread_pct"],
+        status=row["status"], opened_at_ms=row["opened_at"],
+        closed_at_ms=row["closed_at"],
+        realized_pnl_usd=row["realized_pnl_usd"],
+    )
