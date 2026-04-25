@@ -1,5 +1,5 @@
 {
-  "version": "7",
+  "version": "67",
   "dialect": "postgresql",
   "entries": [
     {
@@ -462,6 +462,13 @@
       "version": "7",
       "when": 1777468800000,
       "tag": "0071_context_cache",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1777135968385,
+      "tag": "0072_phase1_specialists_b",
       "breakpoints": true
     }
   ]
