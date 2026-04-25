@@ -321,7 +321,11 @@ export function companyService(db: Db) {
         return rows[0] ?? null;
       }).then(async (company) => {
         if (company && options?.deleteFiles) {
-          await removeCompanyFiles(id);
+          try {
+            await removeCompanyFiles(id);
+          } catch (err) {
+            console.error("removeCompanyFiles failed after company deletion:", err);
+          }
         }
         return company;
       }),
