@@ -288,6 +288,7 @@ def list_audit_recent(
 def _row_to_audit(row: sqlite3.Row) -> AuditEntry:
     details = json.loads(row["details"]) if row["details"] else None
     return AuditEntry(
+        id=row["id"],
         timestamp_ms=row["timestamp"], event_type=row["event_type"],
         severity=row["severity"], position_id=row["position_id"],
         exchange=row["exchange"], symbol=row["symbol"],
@@ -417,6 +418,7 @@ def resolve_recon_event(
 
 def _row_to_recon_event(row: sqlite3.Row) -> ReconciliationEvent:
     return ReconciliationEvent(
+        id=row["id"],
         timestamp_ms=row["timestamp"], source=row["source"],
         category=row["category"], severity=row["severity"],
         exchange=row["exchange"], symbol=row["symbol"],

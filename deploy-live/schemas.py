@@ -37,6 +37,7 @@ class FillRecord(BaseModel):
 
 
 class AuditEntry(BaseModel):
+    id: Optional[int] = None
     timestamp_ms: int
     event_type: str
     severity: Literal["info", "warn", "error", "critical"]
@@ -65,6 +66,7 @@ class ExchangeHealthRecord(BaseModel):
 
 
 class ReconciliationEvent(BaseModel):
+    id: Optional[int] = None
     timestamp_ms: int
     source: Literal["reconciler", "invariants"]
     category: str

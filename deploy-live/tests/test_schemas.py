@@ -78,6 +78,7 @@ def test_audit_entry_happy_path():
     )
     assert a.severity == "info"
     assert a.position_id is None
+    assert a.id is None
 
 
 def test_audit_entry_rejects_invalid_severity():
@@ -106,6 +107,7 @@ def test_reconciliation_event_happy_path():
         category="orphan_leg", severity="error",
     )
     assert e.expected is None
+    assert e.id is None
 
 
 def test_exchange_order_response_requires_price_when_filled():

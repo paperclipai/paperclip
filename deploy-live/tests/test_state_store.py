@@ -197,6 +197,8 @@ def test_write_audit_round_trips(fresh_db):
     rows = list_audit_recent(conn, since_ms=0, limit=10)
     assert len(rows) == 1
     assert rows[0].message == "hi"
+    assert rows[0].id is not None
+    assert rows[0].id > 0
     conn.close()
 
 
@@ -283,6 +285,7 @@ def test_write_recon_event_round_trips(fresh_db):
     assert e.expected == {"size": 25}
     assert e.actual == {"size": 0}
     assert e.resolution == "unresolved"
+    assert e.id == eid
     conn.close()
 
 
