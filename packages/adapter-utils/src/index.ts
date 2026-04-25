@@ -46,6 +46,7 @@ export {
   readSessionCompactionOverride,
   resolveSessionCompactionPolicy,
   hasSessionCompactionThresholds,
+  getContextUsagePercent,
 } from "./session-compaction.js";
 export {
   REDACTED_HOME_PATH_USER,
