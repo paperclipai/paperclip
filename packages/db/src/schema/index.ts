@@ -75,3 +75,17 @@ export { agentRoleDefinitions, type AgentRoleDefinition, type NewAgentRoleDefini
 export { prReviewStates, type PrReviewState, type NewPrReviewState } from "./pr_review_states.js";
 export { reviewerFamilyLog, type ReviewerFamilyLog, type NewReviewerFamilyLog } from "./reviewer_family_log.js";
 export { agentContextCache, type AgentContextCache, type NewAgentContextCache } from "./agent_context_cache.js";
+export {
+  knowledgeTopics,
+  knowledgeSources,
+  knowledgeChunks,
+  knowledgeCrawlRuns,
+  type KnowledgeTopic,
+  type NewKnowledgeTopic,
+  type KnowledgeSource,
+  type NewKnowledgeSource,
+  type KnowledgeChunk,
+  type NewKnowledgeChunk,
+  type KnowledgeCrawlRun,
+  type NewKnowledgeCrawlRun,
+} from "./knowledge.js";
