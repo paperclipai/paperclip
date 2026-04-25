@@ -133,6 +133,7 @@ const discoveryCache = new Map<
   string,
   { expiresAt: number; models: AdapterModel[] }
 >();
+const discoveryInFlight = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set([
   "PWD",
@@ -206,6 +207,14 @@ export async function discoverAuggieModels(
   return parsed;
 }
 
+// Indirection so tests can stub the subprocess call while exercising the
+// real cache + singleflight logic. Defaults to the real discovery function.
+let discoverAuggieModelsImpl: (input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+}) => Promise<AdapterModel[]> = discoverAuggieModels;
+
 export async function discoverAuggieModelsCached(
   input: { command?: unknown; cwd?: unknown; env?: unknown } = {},
 ): Promise<AdapterModel[]> {
@@ -219,9 +228,22 @@ export async function discoverAuggieModelsCached(
   }
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
-  const models = await discoverAuggieModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  const existing = discoveryInFlight.get(key);
+  if (existing) return existing;
+  const promise = (async () => {
+    try {
+      const models = await discoverAuggieModelsImpl({ command, cwd, env });
+      discoveryCache.set(key, {
+        expiresAt: Date.now() + MODELS_CACHE_TTL_MS,
+        models,
+      });
+      return models;
+    } finally {
+      discoveryInFlight.delete(key);
+    }
+  })();
+  discoveryInFlight.set(key, promise);
+  return promise;
 }
 
 export async function listAuggieModels(): Promise<AdapterModel[]> {
@@ -236,4 +258,18 @@ export async function listAuggieModels(): Promise<AdapterModel[]> {
 
 export function resetAuggieModelsCacheForTests() {
   discoveryCache.clear();
+  discoveryInFlight.clear();
+  discoverAuggieModelsImpl = discoverAuggieModels;
+}
+
+export function __setAuggieDiscoveryImplForTests(
+  fn:
+    | ((input: {
+        command?: unknown;
+        cwd?: unknown;
+        env?: unknown;
+      }) => Promise<AdapterModel[]>)
+    | null,
+) {
+  discoverAuggieModelsImpl = fn ?? discoverAuggieModels;
 }

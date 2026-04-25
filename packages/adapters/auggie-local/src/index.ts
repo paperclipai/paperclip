@@ -14,6 +14,7 @@ export const models = [
   { id: "haiku4.5", label: "Haiku 4.5" },
   { id: "gpt5.4", label: "GPT-5.4" },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "kimi-k2.6", label: "Kimi K2.6" },
   { id: "sonnet4.5", label: "Sonnet 4.5 (legacy)" },
   { id: "opus4.5", label: "Opus 4.5 (legacy)" },
   { id: "sonnet4", label: "Sonnet 4 (legacy)" },

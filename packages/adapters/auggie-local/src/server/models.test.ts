@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  __setAuggieDiscoveryImplForTests,
+  discoverAuggieModelsCached,
   listAuggieModels,
   parseAuggieModelsJson,
   resetAuggieModelsCacheForTests,
@@ -103,7 +105,44 @@ describe("listAuggieModels", () => {
   });
 
   it("returns [] when discovery command is unavailable (so the server falls back to static models)", async () => {
-    process.env.PAPERCLIP_AUGGIE_COMMAND = "__paperclip_missing_auggie_command__";
+    process.env.PAPERCLIP_AUGGIE_COMMAND =
+      "__paperclip_missing_auggie_command__";
     await expect(listAuggieModels()).resolves.toEqual([]);
+  });
+});
+
+describe("discoverAuggieModelsCached singleflight", () => {
+  afterEach(() => {
+    resetAuggieModelsCacheForTests();
+  });
+
+  it("coalesces concurrent cache misses into a single discovery call", async () => {
+    let callCount = 0;
+    const sampleModels = [{ id: "auto", label: "Auto (account default)" }];
+    __setAuggieDiscoveryImplForTests(async () => {
+      callCount++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return sampleModels;
+    });
+    const results = await Promise.all([
+      discoverAuggieModelsCached(),
+      discoverAuggieModelsCached(),
+      discoverAuggieModelsCached(),
+    ]);
+    expect(callCount).toBe(1);
+    for (const result of results) {
+      expect(result).toEqual(sampleModels);
+    }
+  });
+
+  it("clears the in-flight entry after rejection so subsequent calls retry", async () => {
+    let callCount = 0;
+    __setAuggieDiscoveryImplForTests(async () => {
+      callCount++;
+      throw new Error("boom");
+    });
+    await expect(discoverAuggieModelsCached()).rejects.toThrow("boom");
+    await expect(discoverAuggieModelsCached()).rejects.toThrow("boom");
+    expect(callCount).toBe(2);
   });
 });
