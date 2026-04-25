@@ -34,7 +34,6 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   deleteFile: vi.fn(),
   exportFiles: vi.fn(),
   ensureManagedBundle: vi.fn(),
-  recoverExistingManagedBundleConfig: vi.fn(async () => null),
 }));
 
 const mockBudgetService = vi.hoisted(() => ({
@@ -61,7 +60,6 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
-  agentPoliciesService: vi.fn(() => ({})),
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
@@ -83,7 +81,6 @@ vi.mock("../services/instance-settings.js", () => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
-    agentPoliciesService: vi.fn(() => ({})),
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
@@ -134,9 +131,48 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [
+          {
+            id: "company-1",
+            requireBoardApprovalForNewAgents: false,
+          },
+        ]),
+      })),
+    })),
+  };
+  app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
 }
 
 async function unregisterTestAdapter(type: string) {
@@ -152,7 +188,7 @@ describe("agent routes adapter validation", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -198,12 +234,14 @@ describe("agent routes adapter validation", () => {
     registerServerAdapter(externalAdapter);
 
     const app = await createApp();
-    const res = await request(app)
-      .post("/api/companies/company-1/agents")
-      .send({
-        name: "External Agent",
-        adapterType: "external_test",
-      });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "External Agent",
+          adapterType: "external_test",
+        }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.adapterType).toBe("external_test");
@@ -211,12 +249,14 @@ describe("agent routes adapter validation", () => {
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
-    const res = await request(app)
-      .post("/api/companies/company-1/agents")
-      .send({
-        name: "Missing Adapter",
-        adapterType: missingAdapterType,
-      });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Missing Adapter",
+          adapterType: missingAdapterType,
+        }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);

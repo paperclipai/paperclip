@@ -30,7 +30,6 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
-/** Returns the user's preferred shell from SHELL env var, falling back to /bin/sh (or sh on Windows). */
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
   const shell = process.env.SHELL?.trim();
@@ -278,7 +277,6 @@ export async function ensureServerWorkspaceLinksCurrent(
   );
 }
 
-/** Strips PAPERCLIP_* keys and sensitive database/npm vars from a base environment before passing it to a runtime service. */
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
@@ -415,32 +413,33 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+function trimToLastBytes(value: string, limit: number) {
+  const byteLength = Buffer.byteLength(value, "utf8");
+  if (byteLength <= limit) return value;
+  return Buffer.from(value, "utf8").subarray(byteLength - limit).toString("utf8");
+}
+
 function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
   const limit = Math.max(1, Math.trunc(maxBytes));
-  let chunks: string[] = [];
+  let text = "";
   let truncated = false;
   let totalBytes = 0;
 
   return {
     append(chunk: string) {
       if (!chunk) return;
-      chunks.push(chunk);
       totalBytes += Buffer.byteLength(chunk, "utf8");
 
-      let currentBytes = chunks.reduce((sum, value) => sum + Buffer.byteLength(value, "utf8"), 0);
-      if (currentBytes <= limit) return;
-
-      const combined = Buffer.from(chunks.join(""), "utf8");
-      const tail = combined.subarray(Math.max(0, combined.length - limit)).toString("utf8");
-      chunks = [tail];
-      truncated = true;
-      currentBytes = Buffer.byteLength(tail, "utf8");
-      if (currentBytes > limit) {
-        chunks = [Buffer.from(tail, "utf8").subarray(Math.max(0, currentBytes - limit)).toString("utf8")];
+      const combined = text + chunk;
+      if (Buffer.byteLength(combined, "utf8") <= limit) {
+        text = combined;
+        return;
       }
+
+      text = trimToLastBytes(combined, limit);
+      truncated = true;
     },
     finish(): ProcessOutputCapture {
-      const text = chunks.join("");
       if (!truncated) {
         return {
           text,
@@ -1822,7 +1821,6 @@ function clearIdleTimer(record: RuntimeServiceRecord) {
   record.idleTimer = null;
 }
 
-/** Reconciles adapter-reported runtime service states with the in-memory registry, starting or stopping services as needed. */
 export function normalizeAdapterManagedRuntimeServices(input: {
   adapterType: string;
   runId: string;
@@ -2242,11 +2240,15 @@ function readConfiguredServiceStates(config: Record<string, unknown>) {
   const raw = parseObject(config.serviceStates);
   const states: WorkspaceRuntimeServiceStateMap = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (value === "running" || value === "stopped") {
+    if (value === "running" || value === "stopped" || value === "manual") {
       states[key] = value;
     }
   }
   return states;
+}
+
+function readDesiredRuntimeState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
 }
 
 export function buildWorkspaceRuntimeDesiredStatePatch(input: {
@@ -2260,7 +2262,7 @@ export function buildWorkspaceRuntimeDesiredStatePatch(input: {
   serviceStates: WorkspaceRuntimeServiceStateMap | null;
 } {
   const configuredServices = listConfiguredRuntimeServiceEntries(input.config);
-  const fallbackState: WorkspaceRuntimeDesiredState = input.currentDesiredState === "running" ? "running" : "stopped";
+  const fallbackState: WorkspaceRuntimeDesiredState = readDesiredRuntimeState(input.currentDesiredState) ?? "stopped";
   const nextServiceStates: WorkspaceRuntimeServiceStateMap = {};
 
   for (let index = 0; index < configuredServices.length; index += 1) {
@@ -2268,15 +2270,26 @@ export function buildWorkspaceRuntimeDesiredStatePatch(input: {
   }
 
   const nextState: WorkspaceRuntimeDesiredState = input.action === "stop" ? "stopped" : "running";
+  const applyActionState = (index: number) => {
+    const key = String(index);
+    // Manual services are intentionally left under operator control even when
+    // an API action targets that individual service.
+    if (nextServiceStates[key] === "manual") return;
+    nextServiceStates[key] = nextState;
+  };
   if (input.serviceIndex === undefined || input.serviceIndex === null) {
     for (let index = 0; index < configuredServices.length; index += 1) {
-      nextServiceStates[String(index)] = nextState;
+      applyActionState(index);
     }
   } else if (input.serviceIndex >= 0 && input.serviceIndex < configuredServices.length) {
-    nextServiceStates[String(input.serviceIndex)] = nextState;
+    applyActionState(input.serviceIndex);
   }
 
-  const desiredState = Object.values(nextServiceStates).some((state) => state === "running") ? "running" : "stopped";
+  const desiredState = Object.values(nextServiceStates).some((state) => state === "running")
+    ? "running"
+    : Object.values(nextServiceStates).some((state) => state === "manual")
+      ? "manual"
+      : "stopped";
 
   return {
     desiredState,
@@ -2293,7 +2306,7 @@ function selectRuntimeServiceEntries(input: {
 }) {
   const entries = listConfiguredRuntimeServiceEntries(input.config);
   const states = input.serviceStates ?? readConfiguredServiceStates(input.config);
-  const fallbackState: WorkspaceRuntimeDesiredState = input.defaultDesiredState === "running" ? "running" : "stopped";
+  const fallbackState: WorkspaceRuntimeDesiredState = readDesiredRuntimeState(input.defaultDesiredState) ?? "stopped";
 
   return entries.filter((_, index) => {
     if (input.serviceIndex !== undefined && input.serviceIndex !== null) {
@@ -2315,7 +2328,12 @@ export async function ensureRuntimeServicesForRun(input: {
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<RuntimeServiceRef[]> {
-  const rawServices = readRuntimeServiceEntries(input.config);
+  const rawServices = selectRuntimeServiceEntries({
+    config: input.config,
+    respectDesiredStates: true,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "running",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
@@ -2403,7 +2421,7 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
     config: input.config,
     serviceIndex: input.serviceIndex,
     respectDesiredStates: input.respectDesiredStates,
-    defaultDesiredState: input.config.desiredState === "running" ? "running" : "stopped",
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const refs: RuntimeServiceRef[] = [];
@@ -2892,7 +2910,6 @@ export async function persistAdapterManagedRuntimeServices(input: {
   return refs;
 }
 
-/** Builds a markdown workspace-ready comment listing the strategy, branch, cwd, and active runtime services. */
 export function buildWorkspaceReadyComment(input: {
   workspace: RealizedExecutionWorkspace;
   runtimeServices: RuntimeServiceRef[];

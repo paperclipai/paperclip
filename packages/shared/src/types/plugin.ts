@@ -9,6 +9,13 @@ import type {
   PluginLauncherAction,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +27,13 @@ import type {
  * Plugins provide these as plain JSON Schema compatible objects.
  */
 export type JsonSchema = Record<string, unknown>;
+
+export type {
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+} from "../constants.js";
 
 // ---------------------------------------------------------------------------
 // Manifest sub-types — nested declarations within PaperclipPluginManifestV1
@@ -73,6 +87,30 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+}
+
+/**
+ * Declares an environment runtime driver contributed by the plugin.
+ *
+ * Requires the `environment.drivers.register` capability.
+ */
+export interface PluginEnvironmentDriverDeclaration {
+  /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
+  driverKey: string;
+  /**
+   * Driver classification.
+   *
+   * `environment_driver` is used by core `driver: "plugin"` environments.
+   * `sandbox_provider` is used by core `driver: "sandbox"` environments whose
+   * provider key is implemented by a plugin.
+   */
+  kind?: "environment_driver" | "sandbox_provider";
+  /** Human-readable name shown in environment configuration UI. */
+  displayName: string;
+  /** Optional description for operator-facing docs or UI affordances. */
+  description?: string;
+  /** JSON Schema describing the driver's provider-specific configuration. */
+  configSchema: JsonSchema;
 }
 
 /**
@@ -190,6 +228,44 @@ export interface PluginUiDeclaration {
   launchers?: PluginLauncherDeclaration[];
 }
 
+/**
+ * Declares restricted database access for trusted orchestration plugins.
+ *
+ * The host derives the final namespace from the plugin key and optional slug,
+ * applies SQL migrations before worker startup, and gates runtime SQL through
+ * the `database.namespace.*` capabilities.
+ */
+export interface PluginDatabaseDeclaration {
+  /** Optional stable human-readable slug included in the host-derived namespace. */
+  namespaceSlug?: string;
+  /** SQL migration directory relative to the plugin package root. */
+  migrationsDir: string;
+  /** Public core tables this plugin may read or join at runtime. */
+  coreReadTables?: PluginDatabaseCoreReadTable[];
+}
+
+export type PluginApiRouteCompanyResolution =
+  | { from: "body"; key: string }
+  | { from: "query"; key: string }
+  | { from: "issue"; param: string };
+
+export interface PluginApiRouteDeclaration {
+  /** Stable plugin-defined route key passed to the worker. */
+  routeKey: string;
+  /** HTTP method accepted by this route. */
+  method: PluginApiRouteMethod;
+  /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
+  path: string;
+  /** Actor class allowed to call the route. */
+  auth: PluginApiRouteAuthMode;
+  /** Capability required to expose the route. Currently `api.routes.register`. */
+  capability: "api.routes.register";
+  /** Optional checkout policy enforced by the host before worker dispatch. */
+  checkoutPolicy?: PluginApiRouteCheckoutPolicy;
+  /** How the host resolves company access for this route. */
+  companyResolution?: PluginApiRouteCompanyResolution;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -240,6 +316,12 @@ export interface PaperclipPluginManifestV1 {
   webhooks?: PluginWebhookDeclaration[];
   /** Agent tools this plugin contributes. Requires `agent.tools.register` capability. */
   tools?: PluginToolDeclaration[];
+  /** Restricted plugin-owned database namespace declaration. */
+  database?: PluginDatabaseDeclaration;
+  /** Scoped JSON API routes mounted under `/api/plugins/:pluginId/api/*`. */
+  apiRoutes?: PluginApiRouteDeclaration[];
+  /** Environment drivers this plugin contributes. Requires `environment.drivers.register` capability. */
+  environmentDrivers?: PluginEnvironmentDriverDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.
@@ -284,6 +366,31 @@ export interface PluginRecord {
   installedAt: Date;
   /** Timestamp of the most recent status or metadata change. */
   updatedAt: Date;
+}
+
+export interface PluginDatabaseNamespaceRecord {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  namespaceName: string;
+  namespaceMode: PluginDatabaseNamespaceMode;
+  status: PluginDatabaseNamespaceStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PluginMigrationRecord {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  namespaceName: string;
+  migrationKey: string;
+  checksum: string;
+  pluginVersion: string;
+  status: PluginDatabaseMigrationStatus;
+  startedAt: Date;
+  appliedAt: Date | null;
+  errorMessage: string | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,19 +1,24 @@
-import type { UsageSummary, SkillInvocationReport } from "@paperclipai/adapter-utils";
-import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
+import type { UsageSummary } from "@paperclipai/adapter-utils";
+import {
+  asString,
+  asNumber,
+  parseObject,
+  parseJson,
+} from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
-const CLAUDE_RATE_LIMIT_RE = /(?:rate(?:_| |-)?limit(?:ed)?|too many requests|\b429\b|quota exceeded|usage limit reached|resource exhausted|out of extra usage|overage(?:status)?\W*rejected|rate_limit_event|resets?\s+[a-z]{3,9}\s+\d)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
+
+const CLAUDE_TRANSIENT_UPSTREAM_RE =
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+const CLAUDE_EXTRA_USAGE_RESET_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
-
-  // Track skill invocations: toolUseId -> pending invocation metadata
-  const pendingSkills = new Map<string, { skillName: string; startMs: number }>();
-  const skillInvocations: SkillInvocationReport[] = [];
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -39,47 +44,14 @@ export function parseClaudeStreamJson(stdout: string) {
           const text = asString(block.text, "");
           if (text) assistantTexts.push(text);
         }
-        // Detect Skill tool_use blocks
-        if (asString(block.type, "") === "tool_use" && asString(block.name, "") === "Skill") {
-          const toolUseId = asString(block.id, "");
-          const input = parseObject(block.input);
-          const skillName = asString(input.skill, "unknown");
-          if (toolUseId) {
-            pendingSkills.set(toolUseId, { skillName, startMs: Date.now() });
-          }
-        }
       }
       continue;
     }
 
-    // Match tool_result events to complete skill invocation tracking
-    if (type === "result" || type === "tool_result") {
-      if (type === "tool_result") {
-        const toolUseId = asString(event.tool_use_id, "");
-        const pending = pendingSkills.get(toolUseId);
-        if (pending) {
-          const isError = event.is_error === true || asString(event.type, "") === "error";
-          skillInvocations.push({
-            skillName: pending.skillName,
-            status: isError ? "error" : "success",
-            durationMs: Date.now() - pending.startMs,
-          });
-          pendingSkills.delete(toolUseId);
-        }
-        continue;
-      }
+    if (type === "result") {
       finalResult = event;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
     }
-  }
-
-  // Any pending skills that never got a tool_result are treated as errors
-  for (const [, pending] of pendingSkills) {
-    skillInvocations.push({
-      skillName: pending.skillName,
-      status: "error",
-      durationMs: Date.now() - pending.startMs,
-    });
   }
 
   if (!finalResult) {
@@ -90,17 +62,14 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
-      skillInvocations,
     };
   }
 
   const usageObj = parseObject(finalResult.usage);
-  const cacheCreationInputTokens = asNumber(usageObj.cache_creation_input_tokens, 0);
   const usage: UsageSummary = {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
-    ...(cacheCreationInputTokens > 0 ? { cacheCreationInputTokens } : {}),
   };
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
@@ -113,7 +82,6 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
-    skillInvocations,
   };
 }
 
@@ -180,35 +148,6 @@ export function detectClaudeLoginRequired(input: {
   };
 }
 
-export function detectClaudeRateLimited(input: {
-  parsed: Record<string, unknown> | null;
-  stdout: string;
-  stderr: string;
-}): boolean {
-  const rateLimitEventDetected = [input.stdout, input.stderr].some((text) =>
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .some((line) => {
-        const parsedLine = parseJson(line);
-        if (!parsedLine) return false;
-        if (asString(parsedLine.type, "") === "rate_limit_event") return true;
-        return Object.keys(parseObject(parsedLine.rate_limit_info)).length > 0;
-      }),
-  );
-  if (rateLimitEventDetected) return true;
-
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  return messages.some((line) => CLAUDE_RATE_LIMIT_RE.test(line));
-}
-
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
   const subtype = asString(parsed.subtype, "");
   const resultText = asString(parsed.result, "").trim();
@@ -247,4 +186,198 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
   return allMessages.some((msg) =>
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
+}
+
+function buildClaudeTransientHaystack(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): string {
+  const parsed = input.parsed ?? null;
+  const resultText = parsed ? asString(parsed.result, "") : "";
+  const parsedErrors = parsed ? extractClaudeErrorMessages(parsed) : [];
+  return [
+    input.errorMessage ?? "",
+    resultText,
+    ...parsedErrors,
+    input.stdout ?? "",
+    input.stderr ?? "",
+  ]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function readTimeZoneParts(date: Date, timeZone: string) {
+  const values = new Map(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  return {
+    year: Number.parseInt(values.get("year") ?? "", 10),
+    month: Number.parseInt(values.get("month") ?? "", 10),
+    day: Number.parseInt(values.get("day") ?? "", 10),
+    hour: Number.parseInt(values.get("hour") ?? "", 10),
+    minute: Number.parseInt(values.get("minute") ?? "", 10),
+  };
+}
+
+function normalizeResetTimeZone(timeZoneHint: string | null | undefined): string | null {
+  const normalized = timeZoneHint?.trim();
+  if (!normalized) return null;
+  if (/^(?:utc|gmt)$/i.test(normalized)) return "UTC";
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date(0));
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function dateFromTimeZoneWallClock(input: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}): Date | null {
+  let candidate = new Date(Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0));
+  const targetUtc = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = readTimeZoneParts(candidate, input.timeZone);
+    const actualUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0, 0);
+    const offsetMs = targetUtc - actualUtc;
+    if (offsetMs === 0) break;
+    candidate = new Date(candidate.getTime() + offsetMs);
+  }
+
+  const verified = readTimeZoneParts(candidate, input.timeZone);
+  if (
+    verified.year !== input.year ||
+    verified.month !== input.month ||
+    verified.day !== input.day ||
+    verified.hour !== input.hour ||
+    verified.minute !== input.minute
+  ) {
+    return null;
+  }
+
+  return candidate;
+}
+
+function nextClockTimeInTimeZone(input: {
+  now: Date;
+  hour: number;
+  minute: number;
+  timeZoneHint: string;
+}): Date | null {
+  const timeZone = normalizeResetTimeZone(input.timeZoneHint);
+  if (!timeZone) return null;
+
+  const nowParts = readTimeZoneParts(input.now, timeZone);
+  let retryAt = dateFromTimeZoneWallClock({
+    year: nowParts.year,
+    month: nowParts.month,
+    day: nowParts.day,
+    hour: input.hour,
+    minute: input.minute,
+    timeZone,
+  });
+  if (!retryAt) return null;
+
+  if (retryAt.getTime() <= input.now.getTime()) {
+    const nextDay = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0));
+    retryAt = dateFromTimeZoneWallClock({
+      year: nextDay.getUTCFullYear(),
+      month: nextDay.getUTCMonth() + 1,
+      day: nextDay.getUTCDate(),
+      hour: input.hour,
+      minute: input.minute,
+      timeZone,
+    });
+  }
+
+  return retryAt;
+}
+
+function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
+  const normalized = clockText.trim().replace(/\s+/g, " ");
+  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  if (!match) return null;
+
+  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "0", 10);
+  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+
+  let hour24 = hour12 % 12;
+  if ((match[3] ?? "").toLowerCase() === "p") hour24 += 12;
+
+  if (timeZoneHint) {
+    const explicitRetryAt = nextClockTimeInTimeZone({
+      now,
+      hour: hour24,
+      minute,
+      timeZoneHint,
+    });
+    if (explicitRetryAt) return explicitRetryAt;
+  }
+
+  const retryAt = new Date(now);
+  retryAt.setHours(hour24, minute, 0, 0);
+  if (retryAt.getTime() <= now.getTime()) {
+    retryAt.setDate(retryAt.getDate() + 1);
+  }
+  return retryAt;
+}
+
+export function extractClaudeRetryNotBefore(
+  input: {
+    parsed?: Record<string, unknown> | null;
+    stdout?: string | null;
+    stderr?: string | null;
+    errorMessage?: string | null;
+  },
+  now = new Date(),
+): Date | null {
+  const haystack = buildClaudeTransientHaystack(input);
+  const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
+  if (!match) return null;
+  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+}
+
+export function isClaudeTransientUpstreamError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  // Deterministic failures are handled by their own classifiers.
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))) {
+    return false;
+  }
+  const loginMeta = detectClaudeLoginRequired({
+    parsed,
+    stdout: input.stdout ?? "",
+    stderr: input.stderr ?? "",
+  });
+  if (loginMeta.requiresLogin) return false;
+
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
 }

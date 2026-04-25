@@ -1,5 +1,11 @@
 import type { CSSProperties } from "react";
-import { parseAgentMentionHref, parseProjectMentionHref, parseSkillMentionHref } from "@paperclipai/shared";
+import {
+  parseAgentMentionHref,
+  parseIssueReferenceHref,
+  parseProjectMentionHref,
+  parseSkillMentionHref,
+  parseUserMentionHref,
+} from "@paperclipai/shared";
 import { getAgentIcon } from "./agent-icons";
 import { hexToRgb, pickTextColorForPillBg } from "./color-contrast";
 
@@ -10,9 +16,17 @@ export type ParsedMentionChip =
       icon: string | null;
     }
   | {
+      kind: "issue";
+      identifier: string;
+    }
+  | {
       kind: "project";
       projectId: string;
       color: string | null;
+    }
+  | {
+      kind: "user";
+      userId: string;
     }
   | {
       kind: "skill";
@@ -23,6 +37,14 @@ export type ParsedMentionChip =
 const iconMaskCache = new Map<string, string>();
 
 export function parseMentionChipHref(href: string): ParsedMentionChip | null {
+  const issue = parseIssueReferenceHref(href);
+  if (issue) {
+    return {
+      kind: "issue",
+      identifier: issue.identifier,
+    };
+  }
+
   const agent = parseAgentMentionHref(href);
   if (agent) {
     return {
@@ -38,6 +60,14 @@ export function parseMentionChipHref(href: string): ParsedMentionChip | null {
       kind: "project",
       projectId: project.projectId,
       color: project.color,
+    };
+  }
+
+  const user = parseUserMentionHref(href);
+  if (user) {
+    return {
+      kind: "user",
+      userId: user.userId,
     };
   }
 
@@ -99,7 +129,9 @@ export function clearMentionChipDecoration(element: HTMLElement) {
   element.classList.remove(
     "paperclip-mention-chip",
     "paperclip-mention-chip--agent",
+    "paperclip-mention-chip--issue",
     "paperclip-mention-chip--project",
+    "paperclip-mention-chip--user",
     "paperclip-mention-chip--skill",
     "paperclip-project-mention-chip",
   );

@@ -20,8 +20,8 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
-/** Parses optional from/to date filters from a query params record, throwing on invalid dates. */
 export function parseCostDateRange(query: Record<string, unknown>) {
   const fromRaw = query.from as string | undefined;
   const toRaw = query.to as string | undefined;
@@ -32,7 +32,6 @@ export function parseCostDateRange(query: Record<string, unknown>) {
   return (from || to) ? { from, to } : undefined;
 }
 
-/** Parses and validates an integer result limit from a query params record (1–500, default 100). */
 export function parseCostLimit(query: Record<string, unknown>) {
   const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
   if (raw == null || raw === "") return 100;
@@ -43,10 +42,14 @@ export function parseCostLimit(query: Record<string, unknown>) {
   return limit;
 }
 
-/** Creates the Express router for cost event and budget endpoints. */
-export function costRoutes(db: Db) {
+export function costRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
   };
@@ -128,14 +131,6 @@ export function costRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const range = parseCostDateRange(req.query);
     const rows = await costs.byAgent(companyId, range);
-    res.json(rows);
-  });
-
-  router.get("/companies/:companyId/costs/by-issue", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const range = parseCostDateRange(req.query);
-    const rows = await costs.byIssue(companyId, range);
     res.json(rows);
   });
 
@@ -301,13 +296,7 @@ export function costRoutes(db: Db) {
     }
 
     assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== agentId) {
-        res.status(403).json({ error: "Agent can only change its own budget" });
-        return;
-      }
-    }
+    assertBoard(req);
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!updated) {

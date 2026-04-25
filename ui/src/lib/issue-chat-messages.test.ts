@@ -7,6 +7,7 @@ import {
   type IssueChatComment,
   type IssueChatLinkedRun,
 } from "./issue-chat-messages";
+import type { SuggestTasksInteraction } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
@@ -47,6 +48,39 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     body: "Hello",
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createInteraction(
+  overrides: Partial<SuggestTasksInteraction> = {},
+): SuggestTasksInteraction {
+  return {
+    id: "interaction-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "suggest_tasks",
+    title: "Suggested follow-up work",
+    summary: "Preview the next issue tree before accepting it.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-06T12:02:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      tasks: [
+        {
+          clientKey: "task-1",
+          title: "Prototype the card",
+        },
+      ],
+    },
+    result: null,
     ...overrides,
   };
 }
@@ -234,6 +268,27 @@ describe("buildAssistantPartsFromTranscript", () => {
 });
 
 describe("buildIssueChatMessages", () => {
+  it("uses the company user label for current-user comments instead of collapsing to You", () => {
+    const messages = buildIssueChatMessages({
+      comments: [createComment({ authorUserId: "user-1" })],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      metadata: {
+        custom: {
+          authorName: "Dotta",
+          authorUserId: "user-1",
+        },
+      },
+    });
+  });
+
   it("orders events before comments and appends active live runs as running assistant messages", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
     const comments = [
@@ -319,6 +374,63 @@ describe("buildIssueChatMessages", () => {
     expect(liveRunMessage?.content[0]).toMatchObject({
       type: "text",
       text: "Streaming reply",
+    });
+  });
+
+  it("merges thread interactions into the same chronological feed as comments and runs", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+        }),
+      ],
+      interactions: [
+        createInteraction({
+          id: "interaction-2",
+          createdAt: new Date("2026-04-06T12:02:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [
+        {
+          id: "run-live-1",
+          status: "running",
+          invocationSource: "manual",
+          triggerDetail: null,
+          startedAt: "2026-04-06T12:03:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-04-06T12:03:00.000Z",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          adapterType: "codex_local",
+        },
+      ],
+      transcriptsByRunId: new Map([
+        [
+          "run-live-1",
+          [{ kind: "assistant", ts: "2026-04-06T12:03:01.000Z", text: "Working on it." }],
+        ],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-live-1",
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "user:comment-1",
+      "system:interaction:interaction-2",
+      "assistant:run-assistant:run-live-1",
+    ]);
+    expect(messages[1]).toMatchObject({
+      metadata: {
+        custom: {
+          kind: "interaction",
+          anchorId: "interaction-interaction-2",
+        },
+      },
     });
   });
 

@@ -27,13 +27,11 @@ import type {
   CompanySkillUsageAgent,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
-import { findActiveServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
-import { secretService } from "./secrets.js";
 
 type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillListDbRow = Pick<
@@ -71,6 +69,12 @@ type CompanySkillListRow = Pick<
   | "metadata"
   | "createdAt"
   | "updatedAt"
+>;
+type CompanySkillReferenceRow = Pick<
+  CompanySkillRow,
+  | "id"
+  | "key"
+  | "slug"
 >;
 type SkillReferenceTarget = Pick<CompanySkill, "id" | "key" | "slug">;
 type SkillSourceInfoTarget = Pick<
@@ -146,6 +150,27 @@ type RuntimeSkillEntryOptions = {
 };
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
+
+function selectCompanySkillColumns() {
+  return {
+    id: companySkills.id,
+    companyId: companySkills.companyId,
+    key: companySkills.key,
+    slug: companySkills.slug,
+    name: companySkills.name,
+    description: companySkills.description,
+    markdown: companySkills.markdown,
+    sourceType: companySkills.sourceType,
+    sourceLocator: companySkills.sourceLocator,
+    sourceRef: companySkills.sourceRef,
+    trustLevel: companySkills.trustLevel,
+    compatibility: companySkills.compatibility,
+    fileInventory: companySkills.fileInventory,
+    metadata: companySkills.metadata,
+    createdAt: companySkills.createdAt,
+    updatedAt: companySkills.updatedAt,
+  };
+}
 
 const PROJECT_SCAN_DIRECTORY_ROOTS = [
   "skills",
@@ -236,7 +261,6 @@ function normalizeSkillKey(value: string | null | undefined) {
   return segments.length > 0 ? segments.join("/") : null;
 }
 
-/** Normalizes a GitHub skill directory path to a portable slash-separated form, falling back to the given default. */
 export function normalizeGitHubSkillDirectory(
   value: string | null | undefined,
   fallback: string,
@@ -279,36 +303,6 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 function buildSkillRuntimeName(key: string, slug: string) {
   if (key.startsWith("paperclipai/paperclip/")) return slug;
   return `${slug}--${hashSkillValue(key)}`;
-}
-
-/**
- * Parse the `roles:` field from a SKILL.md frontmatter block.
- * Supports inline array (`roles: [ceo, manager]`) and block-list formats.
- * Returns null when the field is absent or the file cannot be read.
- */
-async function parseSkillRolesFromFile(skillDir: string): Promise<string[] | null> {
-  const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8").catch(() => null);
-  if (!content) return null;
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return null;
-  const frontmatter = fmMatch[1]!;
-  // Inline array: roles: [ceo, manager]
-  const inlineMatch = frontmatter.match(/^roles:\s*\[([^\]]*)\]/m);
-  if (inlineMatch) {
-    return inlineMatch[1]!
-      .split(",")
-      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-      .filter(Boolean);
-  }
-  // Block list: roles:\n  - ceo\n  - manager
-  const blockMatch = frontmatter.match(/^roles:\s*\n((?:[ \t]+-[^\n]*\n?)*)/m);
-  if (blockMatch) {
-    return blockMatch[1]!
-      .split("\n")
-      .map((line) => line.replace(/^\s*-\s*/, "").trim())
-      .filter(Boolean);
-  }
-  return null;
 }
 
 function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: Record<string, unknown> | null) {
@@ -635,7 +629,6 @@ function extractCommandTokens(raw: string) {
   return matches.map((token) => token.replace(/^['"]|['"]$/g, ""));
 }
 
-/** Parses a raw skill import source string into a structured ParsedSkillImportSource, throwing if invalid. */
 export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImportSource {
   const trimmed = rawInput.trim();
   if (!trimmed) {
@@ -1552,11 +1545,9 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
   };
 }
 
-/** Creates the company skill service for managing, syncing, and invoking agent skills. */
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
-  const secretsSvc = secretService(db);
 
   async function ensureBundledSkills(companyId: string) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
@@ -1586,10 +1577,19 @@ export function companySkillService(db: Db) {
 
   async function pruneMissingLocalPathSkills(companyId: string) {
     const rows = await db
-      .select()
+      .select({
+        id: companySkills.id,
+        key: companySkills.key,
+        slug: companySkills.slug,
+        sourceType: companySkills.sourceType,
+        sourceLocator: companySkills.sourceLocator,
+      })
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId));
-    const skills = rows.map((row) => toCompanySkill(row));
+    const skills = rows.map((row) => ({
+      ...row,
+      sourceType: row.sourceType as CompanySkillSourceType,
+    }));
     const missingIds = new Set(await findMissingLocalSkillIds(skills));
     if (missingIds.size === 0) return;
 
@@ -1661,25 +1661,37 @@ export function companySkillService(db: Db) {
   async function listFull(companyId: string): Promise<CompanySkill[]> {
     await ensureSkillInventoryCurrent(companyId);
     const rows = await db
-      .select()
+      .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId))
       .orderBy(asc(companySkills.name), asc(companySkills.key));
     return rows.map((row) => toCompanySkill(row));
   }
 
-  async function getById(id: string) {
-    const row = await db
-      .select()
+  async function listReferenceTargets(companyId: string): Promise<SkillReferenceTarget[]> {
+    const rows = await db
+      .select({
+        id: companySkills.id,
+        key: companySkills.key,
+        slug: companySkills.slug,
+      })
       .from(companySkills)
-      .where(eq(companySkills.id, id))
+      .where(eq(companySkills.companyId, companyId));
+    return rows as CompanySkillReferenceRow[];
+  }
+
+  async function getById(companyId: string, id: string) {
+    const row = await db
+      .select(selectCompanySkillColumns())
+      .from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, id)))
       .then((rows) => rows[0] ?? null);
     return row ? toCompanySkill(row) : null;
   }
 
   async function getByKey(companyId: string, key: string) {
     const row = await db
-      .select()
+      .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
       .then((rows) => rows[0] ?? null);
@@ -1687,67 +1699,36 @@ export function companySkillService(db: Db) {
   }
 
   async function usage(companyId: string, key: string): Promise<CompanySkillUsageAgent[]> {
-    const skills = await listFull(companyId);
+    const skills = await listReferenceTargets(companyId);
     const agentRows = await agents.list(companyId);
     const desiredAgents = agentRows.filter((agent) => {
       const desiredSkills = resolveDesiredSkillKeys(skills, agent.adapterConfig as Record<string, unknown>);
       return desiredSkills.includes(key);
     });
 
-    return Promise.all(
-      desiredAgents.map(async (agent) => {
-        const adapter = findActiveServerAdapter(agent.adapterType);
-        let actualState: string | null = null;
-
-        if (!adapter?.listSkills) {
-          actualState = "unsupported";
-        } else {
-          try {
-            const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
-              agent.companyId,
-              agent.adapterConfig as Record<string, unknown>,
-            );
-            const runtimeSkillEntries = await listRuntimeSkillEntries(agent.companyId);
-            const snapshot = await adapter.listSkills({
-              agentId: agent.id,
-              companyId: agent.companyId,
-              adapterType: agent.adapterType,
-              config: {
-                ...runtimeConfig,
-                paperclipRuntimeSkills: runtimeSkillEntries,
-              },
-            });
-            actualState = snapshot.entries.find((entry) => entry.key === key)?.state
-              ?? (snapshot.supported ? "missing" : "unsupported");
-          } catch {
-            actualState = "unknown";
-          }
-        }
-
-        return {
-          id: agent.id,
-          name: agent.name,
-          urlKey: agent.urlKey,
-          adapterType: agent.adapterType,
-          desired: true,
-          actualState,
-        };
-      }),
-    );
+    return desiredAgents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      urlKey: agent.urlKey,
+      adapterType: agent.adapterType,
+      desired: true,
+      // Runtime adapter state is intentionally omitted from this bounded metadata read.
+      actualState: null,
+    }));
   }
 
   async function detail(companyId: string, id: string): Promise<CompanySkillDetail | null> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(id);
-    if (!skill || skill.companyId !== companyId) return null;
+    const skill = await getById(companyId, id);
+    if (!skill) return null;
     const usedByAgents = await usage(companyId, skill.key);
     return enrichSkill(skill, usedByAgents.length, usedByAgents);
   }
 
   async function updateStatus(companyId: string, skillId: string): Promise<CompanySkillUpdateStatus | null> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) return null;
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
 
     if (skill.sourceType !== "github" && skill.sourceType !== "skills_sh") {
       return {
@@ -1790,8 +1771,8 @@ export function companySkillService(db: Db) {
 
   async function readFile(companyId: string, skillId: string, relativePath: string): Promise<CompanySkillFileDetail | null> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) return null;
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
 
     const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
     const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
@@ -1888,8 +1869,8 @@ export function companySkillService(db: Db) {
 
   async function updateFile(companyId: string, skillId: string, relativePath: string, content: string): Promise<CompanySkillFileDetail> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) throw notFound("Skill not found");
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
 
     const source = deriveSkillSourceInfo(skill);
     if (!source.editable || skill.sourceType !== "local_path") {
@@ -1928,8 +1909,8 @@ export function companySkillService(db: Db) {
 
   async function installUpdate(companyId: string, skillId: string): Promise<CompanySkill | null> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) return null;
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
 
     const status = await updateStatus(companyId, skillId);
     if (!status?.supported) {
@@ -2169,7 +2150,7 @@ export function companySkillService(db: Db) {
     return skillDir;
   }
 
-  function resolveRuntimeSkillMaterializedPath(companyId: string, skill: CompanySkill) {
+  function resolveRuntimeSkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     return path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
   }
@@ -2192,7 +2173,6 @@ export function companySkillService(db: Db) {
       if (!source) continue;
 
       const required = sourceKind === "paperclip_bundled";
-      const roles = await parseSkillRolesFromFile(source);
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
@@ -2201,7 +2181,6 @@ export function companySkillService(db: Db) {
         requiredReason: required
           ? "Bundled Paperclip skills are always available for local adapters."
           : null,
-        roles,
       });
     }
 

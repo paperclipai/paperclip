@@ -104,6 +104,9 @@ vi.mock("../config.js", () => ({
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
+    child: vi.fn(function child() {
+      return this;
+    }),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -119,6 +122,7 @@ vi.mock("../services/index.js", () => ({
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
+    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       dispatchRequeued: 0,
@@ -128,6 +132,15 @@ vi.mock("../services/index.js", () => ({
       issueIds: [],
     })),
     tickTimers: vi.fn(async () => ({ enqueued: 0 })),
+  })),
+  instanceSettingsService: vi.fn(() => ({
+    getGeneral: vi.fn(async () => ({
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    })),
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({

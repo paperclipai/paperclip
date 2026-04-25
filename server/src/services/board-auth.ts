@@ -69,7 +69,11 @@ export function boardAuthService(db: Db) {
         .where(eq(authUsers.id, userId))
         .then((rows) => rows[0] ?? null),
       db
-        .select({ companyId: companyMemberships.companyId })
+        .select({
+          companyId: companyMemberships.companyId,
+          membershipRole: companyMemberships.membershipRole,
+          status: companyMemberships.status,
+        })
         .from(companyMemberships)
         .where(
           and(
@@ -78,7 +82,7 @@ export function boardAuthService(db: Db) {
             eq(companyMemberships.status, "active"),
           ),
         )
-        .then((rows) => rows.map((row) => row.companyId)),
+        .then((rows) => rows),
       db
         .select({ id: instanceUserRoles.id })
         .from(instanceUserRoles)
@@ -88,7 +92,8 @@ export function boardAuthService(db: Db) {
 
     return {
       user,
-      companyIds: memberships,
+      companyIds: memberships.map((row) => row.companyId),
+      memberships,
       isInstanceAdmin: Boolean(adminRole),
     };
   }

@@ -31,8 +31,8 @@ import {
   thematicBreakPlugin,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildAgentMentionHref, buildProjectMentionHref } from "@paperclipai/shared";
-import { Boxes } from "lucide-react";
+import { buildAgentMentionHref, buildProjectMentionHref, buildUserMentionHref } from "@paperclipai/shared";
+import { Boxes, User } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -48,11 +48,12 @@ import { useEditorAutocomplete, type SkillCommandOption } from "../context/Edito
 export interface MentionOption {
   id: string;
   name: string;
-  kind?: "agent" | "project";
+  kind?: "agent" | "project" | "user";
   agentId?: string;
   agentIcon?: string | null;
   projectId?: string;
   projectColor?: string | null;
+  userId?: string;
 }
 
 /* ---- Editor props ---- */
@@ -67,11 +68,15 @@ interface MarkdownEditorProps {
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Called when a non-image file is dropped onto the editor (e.g. .zip). */
   onDropFile?: (file: File) => Promise<void>;
+  /** When set to `parent`, a wrapper owns drag/drop behavior and visuals. */
+  fileDropTarget?: "editor" | "parent";
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  /** Render the rich editor without allowing edits. */
+  readOnly?: boolean;
 }
 
 export interface MarkdownEditorRef {
@@ -123,6 +128,10 @@ function hasMeaningfulEditorContent(node: Node | null): boolean {
   return Array.from(element.childNodes).some((child) => hasMeaningfulEditorContent(child));
 }
 
+function hasMarkdownImage(value: string): boolean {
+  return /!\[[\s\S]*?\]\([^)]+\)/.test(value);
+}
+
 function isRichEditorDomEmpty(
   editable: HTMLElement,
   expectedValue: string,
@@ -130,9 +139,11 @@ function isRichEditorDomEmpty(
 ): boolean {
   const expectedText = expectedValue.trim();
   if (!expectedText) return false;
+  const expectedHasImage = hasMarkdownImage(expectedText);
 
   const visibleText = (editable.textContent ?? "").trim();
   if (visibleText.length === 0) {
+    if (expectedHasImage) return false;
     return !Array.from(editable.childNodes).some((child) => hasMeaningfulEditorContent(child));
   }
 
@@ -142,6 +153,7 @@ function isRichEditorDomEmpty(
     && visibleText === normalizedPlaceholder
     && expectedText !== normalizedPlaceholder
   ) {
+    if (expectedHasImage) return false;
     return true;
   }
 
@@ -354,6 +366,9 @@ function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
   }
+  if (option.kind === "user" && option.userId) {
+    return `[@${option.name}](${buildUserMentionHref(option.userId)}) `;
+  }
   const agentId = option.agentId ?? option.id.replace(/^agent:/, "");
   return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
@@ -399,6 +414,9 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
 
   if (option.kind === "project" && option.projectId) {
     return parsed.kind === "project" && parsed.projectId === option.projectId;
+  }
+  if (option.kind === "user" && option.userId) {
+    return parsed.kind === "user" && parsed.userId === option.userId;
   }
 
   const agentId = option.agentId ?? option.id.replace(/^agent:/, "");
@@ -482,9 +500,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onBlur,
   imageUploadHandler,
   onDropFile,
+  fileDropTarget = "editor",
   bordered = true,
   mentions,
   onSubmit,
+  readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
@@ -526,6 +546,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       if (mention.kind === "agent") {
         const agentId = mention.agentId ?? mention.id.replace(/^agent:/, "");
         map.set(`agent:${agentId}`, mention);
+      }
+      if (mention.kind === "user" && mention.userId) {
+        map.set(`user:${mention.userId}`, mention);
       }
       if (mention.kind === "project" && mention.projectId) {
         map.set(`project:${mention.projectId}`, mention);
@@ -717,6 +740,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
+      if (parsed.kind === "user" || parsed.kind === "issue") {
+        applyMentionChipDecoration(link, parsed);
+        continue;
+      }
+
       const option = mentionOptionByKey.get(`agent:${parsed.agentId}`);
       applyMentionChipDecoration(link, {
         ...parsed,
@@ -879,8 +907,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
   }
 
-  const canDropImage = Boolean(imageUploadHandler);
-  const canDropFile = Boolean(imageUploadHandler || onDropFile);
+  const canDropFile = fileDropTarget === "editor" && Boolean(imageUploadHandler || onDropFile);
   const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
@@ -929,7 +956,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           ref={fallbackTextareaRef}
           value={value}
           placeholder={placeholder}
+          readOnly={readOnly}
           onChange={(event) => {
+            if (readOnly) return;
             onChange(event.target.value);
             autoSizeFallbackTextarea(event.target);
           }}
@@ -959,6 +988,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         className,
       )}
       onKeyDownCapture={(e) => {
+        if (readOnly) return;
         // Cmd/Ctrl+Enter to submit
         if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -1016,21 +1046,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onDragEnter={(evt) => {
+        if (readOnly) return;
         if (!canDropFile || !hasFilePayload(evt)) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(evt) => {
+        if (readOnly) return;
         if (!canDropFile || !hasFilePayload(evt)) return;
         evt.preventDefault();
         evt.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={() => {
+        if (readOnly) return;
         if (!canDropFile) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
       onDrop={(evt) => {
+        if (readOnly) return;
         dragDepthRef.current = 0;
         setIsDragOver(false);
         if (!onDropFile) return;
@@ -1057,8 +1091,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       <MDXEditor
         ref={setEditorRef}
         markdown={editorValue}
+        suppressHtmlProcessing
         placeholder={placeholder}
+        readOnly={readOnly}
         onChange={(next) => {
+          if (readOnly) return;
           const echo = echoIgnoreMarkdownRef.current;
           if (echo !== null && next === echo) {
             echoIgnoreMarkdownRef.current = null;
@@ -1098,7 +1135,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         createPortal(
           <div
             className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-            style={mentionMenuPosition ?? undefined}
+            style={{
+              top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
+              left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
+            }}
           >
             {filteredMentions.map((option, i) => (
               <button
@@ -1125,6 +1165,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
                     style={{ backgroundColor: option.projectColor ?? "#64748b" }}
                   />
+                ) : option.kind === "user" ? (
+                  <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : (
                   <AgentIcon
                     icon={option.agentIcon}
@@ -1135,6 +1177,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Project
+                  </span>
+                )}
+                {option.kind === "user" && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    User
                   </span>
                 )}
                 {option.kind === "skill" && (

@@ -2,6 +2,9 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { AdapterExecutionTarget } from "./execution-target.js";
+
 export interface AdapterAgent {
   id: string;
   companyId: string;
@@ -21,59 +24,6 @@ export interface AdapterRuntime {
 }
 
 // ---------------------------------------------------------------------------
-// Canonical adapter failure taxonomy
-// ---------------------------------------------------------------------------
-
-/**
- * Provider-agnostic failure categories emitted by all local adapters.
- * Adapters MUST map their provider-specific failures to these codes so the
- * heartbeat runner can apply a uniform fallback / retry policy.
- *
- * | Category             | When to use                                              |
- * |----------------------|----------------------------------------------------------|
- * | auth_required        | CLI requires re-login / credentials missing              |
- * | rate_limited         | Provider quota or rate-limit hit (retry later)           |
- * | session_invalid      | Saved session is stale and cannot be resumed             |
- * | startup_failed       | Process exited early with no usable output               |
- * | timeout              | Execution wall-clock limit reached                      |
- * | provider_unavailable | Provider binary missing or service unreachable           |
- * | process_lost         | Process disappeared mid-run (DETACHED_PROCESS_ERROR)     |
- * | crash_no_output      | Process crashed before producing any structured output   |
- * | parse_error          | Output could not be parsed as expected format            |
- * | cancelled            | Run was cancelled by the orchestrator                    |
- * | nonzero_exit         | Process exited with non-zero code, no specific category  |
- * | unknown              | Failure reason could not be determined                   |
- */
-export type AdapterFailureCategory =
-  | "auth_required"
-  | "rate_limited"
-  | "session_invalid"
-  | "startup_failed"
-  | "timeout"
-  | "provider_unavailable"
-  | "process_lost"
-  | "crash_no_output"
-  | "parse_error"
-  | "cancelled"
-  | "nonzero_exit"
-  | "unknown";
-
-/**
- * A single entry in the adapter fallback chain stored in `adapterConfig`.
- * When the primary adapter fails with a category listed in `triggerOn`
- * (or any category when `triggerOn` is omitted), the heartbeat runner
- * retries the run using the fallback adapter configuration.
- */
-export interface AdapterFallbackEntry {
-  adapterType: string;
-  adapterConfig?: Record<string, unknown>;
-  /** Limit this fallback to specific failure categories. Omit to match any failure. */
-  triggerOn?: AdapterFailureCategory[];
-  /** Maximum attempts for this fallback entry. Defaults to 1. */
-  maxAttempts?: number;
-}
-
-// ---------------------------------------------------------------------------
 // Execution types (moved from server/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
 
@@ -81,8 +31,6 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
-  /** Tokens written to the Anthropic prompt cache this heartbeat (billed at 1.25× normal). */
-  cacheCreationInputTokens?: number;
 }
 
 export type AdapterBillingType =
@@ -116,13 +64,7 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export interface SkillInvocationReport {
-  skillName: string;
-  status: "success" | "error";
-  durationMs?: number;
-  tokenEstimate?: number;
-  version?: string | null;
-}
+export type AdapterExecutionErrorFamily = "transient_upstream";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -130,6 +72,8 @@ export interface AdapterExecutionResult {
   timedOut: boolean;
   errorMessage?: string | null;
   errorCode?: string | null;
+  errorFamily?: AdapterExecutionErrorFamily | null;
+  retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
@@ -147,7 +91,6 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
-  skillInvocations?: SkillInvocationReport[];
   question?: {
     prompt: string;
     choices: Array<{
@@ -164,40 +107,6 @@ export interface AdapterSessionCodec {
   getDisplayId?: (params: Record<string, unknown> | null) => string | null;
 }
 
-/**
- * Cognitive role of a heartbeat context fragment.
- *
- * | Class       | What it contains                                       | Source of truth                          | Retention              |
- * |-------------|--------------------------------------------------------|------------------------------------------|------------------------|
- * | episodic    | Time-ordered events: run summaries, comment history,   | heartbeat_runs.resultJson,               | Rolling window;        |
- * |             | status changes                                         | issue_comments, heartbeat_run_events     | oldest drops first     |
- * | semantic    | Meaning about entities: issue descriptions, project    | issues.description, projects,            | Stable until entity    |
- * |             | goals, agent capabilities                              | agents.capabilities                      | changes                |
- * | procedural  | How to do things: skills, agent instructions,          | company_skills,                          | Stable; changes with   |
- * |             | workflow patterns                                      | adapterConfig.instructionsFilePath       | config updates         |
- * | transient   | Only valid for the current run: wake context,          | contextSnapshot, agentTaskSessions,      | Discarded after run;   |
- * |             | session handoff note, workspace state                  | paperclipSessionHandoffMarkdown          | never persisted        |
- */
-export type HeartbeatMemoryClass = "episodic" | "semantic" | "procedural" | "transient";
-
-/**
- * A single layer of context assembled during a heartbeat invocation.
- * Layers are recorded in AdapterInvocationMeta for observability and
- * can be annotated with a {@link HeartbeatMemoryClass} to support
- * class-aware context selection.
- */
-export interface AdapterInvocationLayer {
-  key: string;
-  title: string;
-  kind: "context" | "prompt" | "adapter";
-  summary?: string | null;
-  chars?: number;
-  includedInPrompt?: boolean;
-  metadata?: Record<string, unknown> | null;
-  /** Cognitive role of this layer. Used to filter/prioritise context inputs. */
-  memoryClass?: HeartbeatMemoryClass;
-}
-
 export interface AdapterInvocationMeta {
   adapterType: string;
   command: string;
@@ -207,7 +116,6 @@ export interface AdapterInvocationMeta {
   env?: Record<string, string>;
   prompt?: string;
   promptMetrics?: Record<string, number>;
-  heartbeatLayers?: AdapterInvocationLayer[];
   context?: Record<string, unknown>;
 }
 
@@ -217,6 +125,14 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Legacy remote transport view. Prefer `executionTarget`, which is the
+   * provider-neutral contract produced by core runtime code.
+   */
+  executionTransport?: {
+    remoteExecution?: Record<string, unknown> | null;
+  };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -294,8 +210,6 @@ export interface AdapterSkillContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
-  /** Normalized agent URL key (e.g. "cto", "ceo") used for role-based skill scoping. */
-  agentUrlKey?: string | null;
 }
 
 export interface AdapterEnvironmentTestContext {
@@ -401,6 +315,13 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  /**
+   * Optional explicit refresh hook for model discovery.
+   * Use this when the adapter caches discovered models and needs a bypass path
+   * so the UI can fetch newly released models without waiting for cache expiry
+   * or a Paperclip code update.
+   */
+  refreshModels?: () => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -483,6 +404,7 @@ export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 // ---------------------------------------------------------------------------
 // CLI types (moved from cli/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
+
 export interface CLIAdapterModule {
   type: string;
   formatStdoutEvent: (line: string, debug: boolean) => void;
@@ -491,13 +413,6 @@ export interface CLIAdapterModule {
 // ---------------------------------------------------------------------------
 // UI config form values (moved from ui/src/components/AgentConfigForm.tsx)
 // ---------------------------------------------------------------------------
-
-export interface AdapterFallbackChainEntryConfig {
-  adapterType: string;
-  model?: string;
-  adapterConfig?: Record<string, unknown>;
-  enabled?: boolean;
-}
 
 export interface CreateConfigValues {
   adapterType: string;
@@ -524,10 +439,7 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
-  /** @deprecated Use adapterFallbackChain instead */
-  fallbackToCodexOnRateLimit?: boolean;
-  /** Ordered list of fallback adapters tried on rate-limit errors */
-  adapterFallbackChain?: AdapterFallbackChainEntryConfig[];
+  defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

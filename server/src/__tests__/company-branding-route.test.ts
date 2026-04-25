@@ -40,7 +40,6 @@ const mockFeedbackService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  agentPoliciesService: vi.fn(() => ({})),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   budgetService: () => mockBudgetService,
@@ -92,7 +91,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     vi.doUnmock("../routes/companies.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {

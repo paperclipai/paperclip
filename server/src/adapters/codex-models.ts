@@ -70,14 +70,15 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
   }
 }
 
-export async function listCodexModels(): Promise<AdapterModel[]> {
+async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
+  const forceRefresh = options?.forceRefresh === true;
   const apiKey = resolveOpenAiApiKey();
   const fallback = dedupeModels(codexFallbackModels);
   if (!apiKey) return fallback;
 
   const now = Date.now();
   const keyFingerprint = fingerprint(apiKey);
-  if (cached && cached.keyFingerprint === keyFingerprint && cached.expiresAt > now) {
+  if (!forceRefresh && cached && cached.keyFingerprint === keyFingerprint && cached.expiresAt > now) {
     return cached.models;
   }
 
@@ -99,7 +100,14 @@ export async function listCodexModels(): Promise<AdapterModel[]> {
   return fallback;
 }
 
-/** Clears the cached Codex models result; for use in tests only. */
+export async function listCodexModels(): Promise<AdapterModel[]> {
+  return loadCodexModels();
+}
+
+export async function refreshCodexModels(): Promise<AdapterModel[]> {
+  return loadCodexModels({ forceRefresh: true });
+}
+
 export function resetCodexModelsCacheForTests() {
   cached = null;
 }

@@ -1,30 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-claude-local/server";
-function normalizeResolvedCommandForAssert(value: string | null): string | null {
-  if (value == null) return null;
-  return process.platform === 'win32' ? value.toLowerCase() : value;
-}
 
-async function rmWithRetry(target: string): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      await fs.rm(target, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (
-        attempt === 9 ||
-        !(error instanceof Error) ||
-        !("code" in error) ||
-        (error as NodeJS.ErrnoException).code !== "EBUSY"
-      ) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
+async function writeFailingClaudeCommand(
+  commandPath: string,
+  options: { resultEvent: Record<string, unknown>; exitCode?: number },
+): Promise<void> {
+  const payload = JSON.stringify(options.resultEvent);
+  const exit = options.exitCode ?? 1;
+  const script = `#!/usr/bin/env node
+console.log(${JSON.stringify(payload)});
+process.exit(${exit});
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
 }
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
@@ -38,8 +29,6 @@ const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
 const instructionsIndex = argv.indexOf("--append-system-prompt-file");
 const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
-const promptFileFlagIndex = process.argv.indexOf("--append-system-prompt-file");
-const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[promptFileFlagIndex + 1] : null;
 const payload = {
   argv,
   prompt: fs.readFileSync(0, "utf8"),
@@ -48,8 +37,6 @@ const payload = {
   instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
-  appendedSystemPromptFilePath,
-  appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -140,25 +127,6 @@ async function setupExecuteEnv(
       else process.env.PATH = previousPath;
     },
   };
-}
-
-async function writeWindowsCommandShim(commandPath: string): Promise<string> {
-  const shimPath = `${commandPath}.cmd`;
-  const escapedCommandPath = commandPath.replaceAll('"', '""');
-  const shim = `@echo off\r\nnode "${escapedCommandPath}" %*\r\n`;
-  await fs.writeFile(shimPath, shim, 'utf8');
-  return shimPath;
-}
-
-async function writeFakeClaudeRateLimitedCommand(commandPath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
-console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
-console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1775260800, rateLimitType: "seven_day_sonnet", overageStatus: "rejected", overageDisabledReason: "out_of_credits", isUsingOverage: false }, uuid: "4895ab2a-02cc-47a9-b54e-2cbd794731da", session_id: "claude-session-1" }));
-console.log("You're out of extra usage · resets Apr 4, 3am (Asia/Jerusalem)");
-process.exit(1);
-`;
-  await fs.writeFile(commandPath, script, 'utf8');
-  await fs.chmod(commandPath, 0o755);
 }
 
 describe("claude execute", () => {
@@ -444,8 +412,10 @@ describe("claude execute", () => {
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
 
     try {
       const first = await execute({
@@ -580,6 +550,8 @@ describe("claude execute", () => {
       else process.env.HOME = previousHome;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -599,8 +571,10 @@ describe("claude execute", () => {
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
 
     try {
       const first = await execute({
@@ -681,27 +655,36 @@ describe("claude execute", () => {
       else process.env.HOME = previousHome;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 15_000);
 
-  it("classifies rate-limit failures with a dedicated error code", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
+  it("classifies Claude 'out of extra usage' failures as transient upstream errors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
-    const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "claude");
+    const commandPath = path.join(root, "claude");
     await fs.mkdir(workspace, { recursive: true });
-    await fs.mkdir(binDir, { recursive: true });
-    await writeFakeClaudeRateLimitedCommand(commandPath);
-    if (process.platform === "win32") {
-      await writeWindowsCommandShim(commandPath);
-    }
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error",
+        session_id: "claude-session-extra",
+        is_error: true,
+        result: "You're out of extra usage · resets 4pm (America/Chicago)",
+        errors: [{ type: "rate_limit_error", message: "You're out of extra usage" }],
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 22, 10, 15, 0));
 
     try {
       const result = await execute({
-        runId: "run-rate-limit",
+        runId: "run-claude-transient",
         agent: {
           id: "agent-1",
           companyId: "company-1",
@@ -716,7 +699,7 @@ describe("claude execute", () => {
           taskKey: null,
         },
         config: {
-          command: "claude",
+          command: commandPath,
           cwd: workspace,
           promptTemplate: "Follow the paperclip heartbeat.",
         },
@@ -726,12 +709,131 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("claude_rate_limited");
-      expect(result.errorMessage).toContain("Claude exited with code 1");
+      expect(result.errorCode).toBe("claude_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      const expectedRetryNotBefore = "2026-04-22T21:00:00.000Z";
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.errorMessage ?? "").toContain("extra usage");
+      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
+        new Date("2026-04-22T21:00:00.000Z").getTime(),
+      );
     } finally {
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-      await rmWithRetry(root);
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
     }
-  }, 15000);
+  });
+
+  it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error",
+        session_id: "claude-session-overloaded",
+        is_error: true,
+        result: "Overloaded",
+        errors: [{ type: "overloaded_error", message: "Overloaded_error: API is overloaded." }],
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-overloaded",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("claude_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.retryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.retryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.transientRetryNotBefore ?? null).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reclassify deterministic Claude failures (auth, max turns) as transient", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-max-turns-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error_max_turns",
+        session_id: "claude-session-max-turns",
+        is_error: true,
+        result: "Maximum turns reached.",
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-max-turns",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).not.toBe("claude_transient_upstream");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
