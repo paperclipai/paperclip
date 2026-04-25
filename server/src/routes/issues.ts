@@ -1474,18 +1474,31 @@ export function issueRoutes(
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
 
-    // Quality gate: reject transition to 'done' without verified proof
+    // Quality gate: handle async proof verification flow
     const existingProofStatus = (existing as unknown as { proofStatus?: string }).proofStatus ?? "pending";
     if (
       updateFields.status === "done" &&
-      existing.status !== "done" &&
-      existingProofStatus !== "verified"
+      existing.status !== "done"
     ) {
-      res.status(422).json({
-        error: "Cannot mark issue as done without verified proof. Current proof_status: " + existingProofStatus,
-        proofStatus: existingProofStatus,
-      });
-      return;
+      if (existingProofStatus === "verified") {
+        // proof verified, allow done transition
+      } else if (existingProofStatus === "pending" || existingProofStatus === "verifying") {
+        // initiate async verification: set to verifying, keep issue status, return 202 Accepted
+        updateFields.proofStatus = "verifying";
+        updateFields.status = existing.status; // keep current issue status
+        // Return 202 to signal async completion
+        res.status(202).json({
+          message: "Proof verification in progress. When CI and reviews pass, proof_status will be set to verified. Then retry with status=done.",
+          proofStatus: "verifying",
+        });
+        return;
+      } else {
+        res.status(422).json({
+          error: "Cannot mark issue as done. Current proof_status: " + existingProofStatus,
+          proofStatus: existingProofStatus,
+        });
+        return;
+      }
     }
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
