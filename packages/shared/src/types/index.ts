@@ -157,6 +157,27 @@ export type {
 export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
+  TruthDocumentIngestStatus,
+  TruthDocumentEmbeddingStatus,
+  TruthDocumentExclusionStatus,
+  TruthRunStatus,
+  TruthAtomLedgerSection,
+  TruthAtomStatus,
+  TruthRunAuditType,
+  TruthRunAuditStatus,
+  TruthBriefStatus,
+  TruthDossierStatus,
+  TruthPromotionRequestStatus,
+  TruthDocument,
+  TruthDocumentChunk,
+  TruthRun,
+  TruthAtom,
+  TruthRunAudit,
+  TruthBrief,
+  TruthDossier,
+  TruthPromotionRequest,
+} from "./truth.js";
+export type {
   AgentWakeupResponse,
   AgentWakeupSkipped,
   HeartbeatRun,
