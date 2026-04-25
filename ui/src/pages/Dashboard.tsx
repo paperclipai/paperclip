@@ -214,7 +214,11 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
+      <ActiveAgentsPanel
+        companyId={selectedCompanyId!}
+        displayMode="agents"
+        emptyMessage="No agents yet."
+      />
 
       {data && (
         <>
