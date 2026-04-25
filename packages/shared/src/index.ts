@@ -555,6 +555,10 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  createPilotApplicationSchema,
+  PILOT_PRACTICE_TYPES,
+  PILOT_CAP,
+  type CreatePilotApplication,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

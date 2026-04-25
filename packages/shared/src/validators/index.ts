@@ -291,3 +291,10 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  createPilotApplicationSchema,
+  PILOT_PRACTICE_TYPES,
+  PILOT_CAP,
+  type CreatePilotApplication,
+} from "./pilot-application.js";
