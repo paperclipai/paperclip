@@ -461,8 +461,12 @@ describeEmbeddedPostgres("truth runtime routes", () => {
 
     await service.approvePromotionRequest(companyId, requestRow.id, "board-seed");
     const completeRes = await request(createApp()).post(`/api/truth/promotions/${requestRow.id}/complete`).send({});
+    const failRes = await request(createApp())
+      .post(`/api/truth/promotions/${requestRow.id}/fail`)
+      .send({ failureReason: "agent failure" });
 
     expect(completeRes.status).toBe(403);
+    expect(failRes.status).toBe(403);
     expect(await service.getPromotionRequest(companyId, requestRow.id)).toMatchObject({ status: "approved" });
   });
 
@@ -524,6 +528,45 @@ describeEmbeddedPostgres("truth runtime routes", () => {
       entityType: "truth_promotion_request",
       entityId: requestRow.id,
     });
+  });
+
+  it("logs activity when service-side reject and fail expiry win after route precheck", async () => {
+    allowLocalBoard();
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+
+    const rejectNow = Date.now();
+    const rejectRequest = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      expiresAt: new Date(rejectNow + 1_000).toISOString(),
+    });
+    const rejectNowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(rejectNow).mockReturnValue(rejectNow + 2_000);
+    const rejectRes = await request(createApp())
+      .post(`/api/truth/promotions/${rejectRequest.id}/reject`)
+      .send({ rejectionReason: "Too late" });
+    rejectNowSpy.mockRestore();
+
+    const failNow = Date.now();
+    const failRequest = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      expiresAt: new Date(failNow + 1_000).toISOString(),
+    });
+    const failNowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(failNow).mockReturnValue(failNow + 2_000);
+    const failRes = await request(createApp())
+      .post(`/api/truth/promotions/${failRequest.id}/fail`)
+      .send({ failureReason: "Too late" });
+    failNowSpy.mockRestore();
+
+    expect(rejectRes.status).toBe(422);
+    expect(failRes.status).toBe(422);
+    expect(await service.getPromotionRequest(companyId, rejectRequest.id)).toMatchObject({ status: "expired" });
+    expect(await service.getPromotionRequest(companyId, failRequest.id)).toMatchObject({ status: "expired" });
+    const rows = await db.select().from(activityLog).where(eq(activityLog.action, "truth.promotion_expired"));
+    expect(rows.map((row) => row.entityId).sort()).toEqual([failRequest.id, rejectRequest.id].sort());
   });
 
   it("requires completed dossier promotions to have a ready or published dossier and accepted linked brief", async () => {

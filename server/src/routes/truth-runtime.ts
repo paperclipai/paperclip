@@ -4,6 +4,7 @@ import type { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { truthPromotionRequests } from "@paperclipai/db";
 import {
+  approveTruthPromotionRequestSchema,
   completeTruthPromotionRequestSchema,
   createTruthAtomSchema,
   createTruthBriefSchema,
@@ -252,7 +253,7 @@ export function truthRuntimeRoutes(db: Db) {
     const approvedBy = getBoardApprovalActorId(req);
     const id = req.params.id as string;
     const request = await loadPromotionRequestForLifecycle(req, id);
-    parseTruthInput(completeTruthPromotionRequestSchema, req.body);
+    parseTruthInput(approveTruthPromotionRequestSchema, req.body);
     const promotion = await svc.approvePromotionRequest(request.companyId, id, approvedBy).catch((error) =>
       logServiceExpiryAndRethrow(req, request, error)
     );
@@ -271,7 +272,9 @@ export function truthRuntimeRoutes(db: Db) {
     const id = req.params.id as string;
     const request = await loadPromotionRequestForLifecycle(req, id);
     const input = parseTruthInput(rejectTruthPromotionRequestSchema, req.body);
-    const promotion = await svc.rejectPromotionRequest(request.companyId, id, input.rejectionReason);
+    const promotion = await svc.rejectPromotionRequest(request.companyId, id, input.rejectionReason).catch((error) =>
+      logServiceExpiryAndRethrow(req, request, error)
+    );
     await logTruthActivity(req, {
       companyId: promotion.companyId,
       action: "truth.promotion_rejected",
@@ -301,10 +304,13 @@ export function truthRuntimeRoutes(db: Db) {
   });
 
   router.post("/truth/promotions/:id/fail", async (req, res) => {
+    assertBoard(req);
     const id = req.params.id as string;
     const request = await loadPromotionRequestForLifecycle(req, id);
     const input = parseTruthInput(failTruthPromotionRequestSchema, req.body);
-    const promotion = await svc.failPromotionRequest(request.companyId, id, input.failureReason);
+    const promotion = await svc.failPromotionRequest(request.companyId, id, input.failureReason).catch((error) =>
+      logServiceExpiryAndRethrow(req, request, error)
+    );
     await logTruthActivity(req, {
       companyId: promotion.companyId,
       action: "truth.promotion_failed",

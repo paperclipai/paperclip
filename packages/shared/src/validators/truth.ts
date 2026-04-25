@@ -218,7 +218,6 @@ export const createTruthPromotionRequestSchema = z
 export type CreateTruthPromotionRequest = z.infer<typeof createTruthPromotionRequestSchema>;
 
 export const approveTruthPromotionRequestSchema = z.object({
-  approvedBy: requiredTextSchema,
   metadata: metadataSchema.optional().nullable(),
 });
 

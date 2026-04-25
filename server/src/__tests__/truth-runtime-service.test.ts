@@ -678,6 +678,38 @@ describeEmbeddedPostgres("truth runtime service", () => {
     expect(expired.completedAt).toBeNull();
   });
 
+  it("marks expired promotion requests expired instead of rejected or failed", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const rejectRequest = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const failRequest = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await service.approvePromotionRequest(companyId, failRequest.id, "approver");
+    await db
+      .update(truthPromotionRequests)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(truthPromotionRequests.id, failRequest.id));
+
+    await expectUnprocessable(service.rejectPromotionRequest(companyId, rejectRequest.id, "too late"));
+    await expectUnprocessable(service.failPromotionRequest(companyId, failRequest.id, "too late"));
+
+    const expiredReject = await service.getPromotionRequest(companyId, rejectRequest.id);
+    const expiredFail = await service.getPromotionRequest(companyId, failRequest.id);
+    expect(expiredReject.status).toBe("expired");
+    expect(expiredReject.rejectedAt).toBeNull();
+    expect(expiredFail.status).toBe("expired");
+    expect(expiredFail.failedAt).toBeNull();
+  });
+
   it("does not allow terminal promotion requests to transition again", async () => {
     const companyId = await seedCompany();
     const brief = await seedBrief(companyId);

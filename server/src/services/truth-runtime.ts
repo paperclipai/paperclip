@@ -534,6 +534,7 @@ export function truthRuntimeService(db: Db) {
       const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
+      await assertNotExpired(companyId, request);
       if (request.status !== "pending" && request.status !== "approved") {
         throw conflict("Only pending or approved promotion requests can be rejected");
       }
@@ -584,6 +585,7 @@ export function truthRuntimeService(db: Db) {
       const request = await getPromotionRequestRow(db, companyId, id);
       if (!request) throw notFound("Promotion request not found");
       ensureNotTerminal(request);
+      await assertNotExpired(companyId, request);
       if (request.status !== "pending" && request.status !== "approved") {
         throw conflict("Only pending or approved promotion requests can fail");
       }
