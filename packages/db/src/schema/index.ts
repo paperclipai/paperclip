@@ -89,3 +89,18 @@ export {
   type KnowledgeCrawlRun,
   type NewKnowledgeCrawlRun,
 } from "./knowledge.js";
+export {
+  modelBenchmarkRuns,
+  type ModelBenchmarkRun,
+  type NewModelBenchmarkRun,
+} from "./model_benchmark_runs.js";
+export {
+  modelEvaluations,
+  type ModelEvaluation,
+  type NewModelEvaluation,
+} from "./model_evaluations.js";
+export {
+  agentCanaryPairings,
+  type AgentCanaryPairing,
+  type NewAgentCanaryPairing,
+} from "./agent_canary_pairings.js";
