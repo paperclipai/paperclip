@@ -104,15 +104,19 @@ export function ActiveAgentsPanel({
     enableRealtimeUpdates: false,
   });
 
+  const isAgentsLoading = displayMode === "agents" && agents === undefined;
+
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </h3>
       {visibleCards.length === 0 ? (
-        <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
-        </div>
+        isAgentsLoading ? null : (
+          <div className="rounded-xl border border-border p-4">
+            <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          </div>
+        )
       ) : (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
           {visibleCards.map((card) => {
