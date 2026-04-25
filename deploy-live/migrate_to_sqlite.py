@@ -6,6 +6,7 @@ passing rows; writes failures to a quarantine JSONL file with reason.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import sys
@@ -169,3 +170,50 @@ def _migrate_closed_position(conn, row: dict[str, Any], quarantine: list[str]) -
          coerced["realized_pnl_usd"], pid),
     )
     return True
+
+
+def _main():
+    p = argparse.ArgumentParser(description="Migrate file-based state to SQLite.")
+    p.add_argument("--state", required=True, type=Path)
+    p.add_argument("--csv", required=True, type=Path)
+    p.add_argument("--db", required=True, type=Path)
+    p.add_argument("--quarantine", required=True, type=Path)
+    p.add_argument("--threshold", type=float, default=5.0,
+                   help="Abort if quarantined rows exceed this %% (default 5.0)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Run validation pass only; do not insert into the DB")
+    args = p.parse_args()
+
+    if args.dry_run:
+        # Use an in-memory DB so all inserts are discarded
+        import tempfile, os
+        fd, tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            init_schema_path = Path(tmp)
+            from state_store import init_schema as _init
+            _init(init_schema_path)
+            summary = migrate(
+                state_json_path=args.state,
+                trade_history_csv_path=args.csv,
+                db_path=init_schema_path,
+                quarantine_path=args.quarantine,
+                quarantine_threshold_pct=args.threshold,
+            )
+        finally:
+            os.remove(tmp)
+        print(f"DRY RUN summary: {summary}")
+        return
+
+    summary = migrate(
+        state_json_path=args.state,
+        trade_history_csv_path=args.csv,
+        db_path=args.db,
+        quarantine_path=args.quarantine,
+        quarantine_threshold_pct=args.threshold,
+    )
+    print(f"Migration summary: {summary}")
+
+
+if __name__ == "__main__":
+    _main()

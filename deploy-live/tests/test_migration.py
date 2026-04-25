@@ -78,3 +78,27 @@ def test_migrate_succeeds_when_quarantine_under_threshold(tmp_path):
         quarantine_threshold_pct=5.0,
     )
     assert summary["quarantined"] == 0
+
+
+import subprocess
+import sys
+
+
+def test_cli_dry_run_does_not_write_db(tmp_path):
+    db = tmp_path / "out.db"
+    init_schema(db)
+    quarantine = tmp_path / "q.jsonl"
+    r = subprocess.run(
+        [sys.executable, "migrate_to_sqlite.py",
+         "--state", str(FIXTURES / "sample_state.json"),
+         "--csv", str(FIXTURES / "sample_trade_history.csv"),
+         "--db", str(db),
+         "--quarantine", str(quarantine),
+         "--dry-run"],
+        capture_output=True, text=True, cwd=Path(__file__).parent.parent,
+    )
+    assert r.returncode == 0, r.stderr
+    conn = open_db(db)
+    n = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    conn.close()
+    assert n == 0  # dry-run wrote nothing
