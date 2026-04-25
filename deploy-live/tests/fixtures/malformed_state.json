@@ -1,0 +1,21 @@
+{
+  "open_positions": [
+    {
+      "symbol": "BAD", "exchange_a": "MEXC", "exchange_b": "BLOFIN",
+      "side_a": "buy", "side_b": "sell",
+      "size_usd_a": 0, "size_usd_b": 25.0,
+      "entry_spread_pct": 0.01, "opened_at_ms": 1, "fills": []
+    },
+    {
+      "symbol": "OK", "exchange_a": "MEXC", "exchange_b": "BLOFIN",
+      "side_a": "buy", "side_b": "sell",
+      "size_usd_a": 25.0, "size_usd_b": 25.0,
+      "entry_spread_pct": 0.01, "opened_at_ms": 2,
+      "fills": [
+        {"exchange":"MEXC","leg":"a","intent":"entry","order_id":"x",
+         "side":"buy","size_usd":25.0,"fill_price":0,"fees_usd":0,
+         "filled_at_ms":3,"raw":"{}"}
+      ]
+    }
+  ]
+}
