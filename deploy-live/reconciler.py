@@ -275,3 +275,32 @@ def start_periodic_sweep(
             await asyncio.sleep(interval_s)
 
     return asyncio.create_task(_loop())
+
+
+def schedule_per_trade_reconcile(
+    conn: sqlite3.Connection,
+    fetcher: ExchangeFetcher,
+    *,
+    exchange: str,
+    symbol: str,
+) -> asyncio.Task:
+    """Fire-and-forget reconcile of one (exchange, symbol) after an order placement.
+
+    Returns the asyncio.Task so callers can await it in tests; in production
+    they typically just discard it. Internal failures are caught and surfaced
+    as reconciliation_events rather than propagated as exceptions.
+    """
+    async def _go() -> None:
+        try:
+            reconcile_exchange(
+                conn, fetcher, exchange=exchange, since_ms=0,
+                symbol_filter=symbol,
+            )
+        except Exception as e:  # noqa: BLE001
+            write_recon_event(
+                conn, timestamp_ms=int(time.time() * 1000),
+                source="reconciler", category="reconciler_internal_error",
+                severity="error", exchange=exchange, symbol=symbol, notes=str(e),
+            )
+
+    return asyncio.create_task(_go())

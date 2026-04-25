@@ -310,3 +310,43 @@ def test_periodic_sweep_survives_one_exchange_failure(fresh_db):
         conn.close()
 
     asyncio.run(_go())
+
+
+from reconciler import schedule_per_trade_reconcile
+
+
+def test_per_trade_reconcile_runs_async(fresh_db):
+    async def _go():
+        conn = open_db(fresh_db)
+        fake = FakeExchange()
+        fake.set_open_positions("MEXC", [
+            {"symbol": "ORDIUSDT", "side": "buy", "size_usd": 25.0},
+        ])
+        fake.set_balance("MEXC", available_usd=25.0)
+        fake.set_recent_fills("MEXC", [])
+
+        task = schedule_per_trade_reconcile(
+            conn, fake, exchange="MEXC", symbol="ORDIUSDT",
+        )
+        await asyncio.wait_for(task, timeout=2.0)
+        assert get_exchange_health(conn, "MEXC").status == "ok"
+        conn.close()
+
+    asyncio.run(_go())
+
+
+def test_per_trade_reconcile_does_not_raise_on_failure(fresh_db):
+    """Even if the reconcile call fails internally, the helper completes cleanly."""
+    async def _go():
+        conn = open_db(fresh_db)
+        fake = FakeExchange()
+        fake.set_unreachable("BLOFIN", error="timeout")
+
+        task = schedule_per_trade_reconcile(
+            conn, fake, exchange="BLOFIN", symbol="ORDIUSDT",
+        )
+        await asyncio.wait_for(task, timeout=2.0)
+        assert get_exchange_health(conn, "BLOFIN").status == "degraded"
+        conn.close()
+
+    asyncio.run(_go())
