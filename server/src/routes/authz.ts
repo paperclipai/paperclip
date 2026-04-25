@@ -17,6 +17,9 @@ export function hasBoardOrgAccess(req: Request) {
   if (req.actor.type !== "board") {
     return false;
   }
+  if (req.actor.source === "board_key" && (req.actor.allowedCompanySlugs?.length ?? 0) > 0) {
+    return false;
+  }
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return true;
   }

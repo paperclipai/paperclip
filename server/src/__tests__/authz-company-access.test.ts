@@ -170,4 +170,39 @@ describe("assertBoardOrgAccess", () => {
     expect(hasBoardOrgAccess(req)).toBe(false);
     expect(() => assertBoardOrgAccess(req)).toThrow("Company membership or instance admin access required");
   });
+
+  it("rejects scoped board API keys from org-wide access guards", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "board_key",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }],
+        allowedCompanySlugs: ["company-1"],
+        credentialCompanySlugs: ["company-1"],
+        isInstanceAdmin: false,
+      },
+    });
+
+    expect(hasBoardOrgAccess(req)).toBe(false);
+    expect(() => assertBoardOrgAccess(req)).toThrow("Company membership or instance admin access required");
+  });
+
+  it("preserves org-wide access for unscoped board API keys with company access", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "board_key",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }],
+        allowedCompanySlugs: [],
+        isInstanceAdmin: false,
+      },
+    });
+
+    expect(hasBoardOrgAccess(req)).toBe(true);
+    expect(() => assertBoardOrgAccess(req)).not.toThrow();
+  });
 });

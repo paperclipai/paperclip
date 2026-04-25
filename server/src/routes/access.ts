@@ -2242,11 +2242,14 @@ export function accessRoutes(
       throw unauthorized("Board authentication required");
     }
     const accessSnapshot = await boardAuth.resolveBoardAccess(req.actor.userId);
+    const isScopedBoardKey =
+      req.actor.source === "board_key" && (req.actor.allowedCompanySlugs?.length ?? 0) > 0;
     res.json({
       user: accessSnapshot.user,
       userId: req.actor.userId,
-      isInstanceAdmin: accessSnapshot.isInstanceAdmin,
-      companyIds: accessSnapshot.companyIds,
+      isInstanceAdmin: isScopedBoardKey ? Boolean(req.actor.isInstanceAdmin) : accessSnapshot.isInstanceAdmin,
+      companyIds: isScopedBoardKey ? req.actor.companyIds ?? [] : accessSnapshot.companyIds,
+      memberships: isScopedBoardKey ? req.actor.memberships ?? [] : accessSnapshot.memberships ?? [],
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
     });

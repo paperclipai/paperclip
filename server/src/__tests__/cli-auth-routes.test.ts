@@ -282,4 +282,41 @@ describe("cli auth routes", () => {
       }),
     );
   });
+
+  it("reports effective scoped board key access from cli auth me", async () => {
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({
+      user: { id: "admin-1", name: "Admin One", email: "admin@example.com" },
+      companyIds: ["company-a", "company-b"],
+      memberships: [
+        { companyId: "company-a", membershipRole: "admin", status: "active" },
+        { companyId: "company-b", membershipRole: "admin", status: "active" },
+      ],
+      isInstanceAdmin: true,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-1",
+      keyId: "board-key-1",
+      source: "board_key",
+      isInstanceAdmin: false,
+      companyIds: ["company-a"],
+      memberships: [{ companyId: "company-a", membershipRole: "admin", status: "active" }],
+      allowedCompanySlugs: ["alpha"],
+      credentialCompanySlugs: ["alpha"],
+    });
+
+    const res = await request(app).get("/api/cli-auth/me");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      user: { id: "admin-1", name: "Admin One", email: "admin@example.com" },
+      userId: "admin-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-a"],
+      memberships: [{ companyId: "company-a", membershipRole: "admin", status: "active" }],
+      source: "board_key",
+      keyId: "board-key-1",
+    });
+  });
 });
