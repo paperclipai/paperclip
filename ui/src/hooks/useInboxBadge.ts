@@ -61,7 +61,11 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   });
 
   const dismissMutation = useMutation({
-    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.dismiss(companyId!, itemKey),
+    mutationFn: ({ itemKey }: { itemKey: string }) => {
+      const runId = itemKey.startsWith("run:") ? itemKey.slice("run:".length) : null;
+      if (runId) return heartbeatsApi.resolveFailedRun(runId);
+      return inboxDismissalsApi.dismiss(companyId!, itemKey);
+    },
     onMutate: async ({ itemKey }) => {
       if (!companyId) return { previous: [] as typeof dismissals };
       await queryClient.cancelQueries({ queryKey });
