@@ -597,6 +597,11 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
         }
       })
+      .then(() => {
+        return (db as any).execute(sql`SELECT cleanup_expired_context_caches()`).catch((err: unknown) => {
+          logger.error({ err }, "context cache cleanup failed");
+        });
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
