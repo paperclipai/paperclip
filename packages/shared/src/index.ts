@@ -310,6 +310,7 @@ export type {
   TruthBriefStatus,
   TruthDossierStatus,
   TruthPromotionRequestStatus,
+  TruthBriefCanonicalInput,
   TruthDocument,
   TruthDocumentChunk,
   TruthRun,

@@ -16,6 +16,14 @@ export type TruthPromotionRequestStatus =
   | "failed"
   | "expired";
 
+export interface TruthBriefCanonicalInput {
+  atomIds: string[];
+  auditIds: string[];
+  promptInputs: Record<string, unknown>;
+  templateVariables: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface TruthDocument {
   id: string;
   companyId: string;
@@ -126,7 +134,7 @@ export interface TruthBrief {
   briefKind: string;
   contentMarkdown: string | null;
   contentJson: Record<string, unknown> | null;
-  canonicalInput: Record<string, unknown>;
+  canonicalInput: TruthBriefCanonicalInput;
   promptVersion: string;
   templateVersion: string;
   model: string | null;

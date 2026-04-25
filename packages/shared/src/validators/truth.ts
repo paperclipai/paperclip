@@ -1,6 +1,9 @@
 import { z } from "zod";
 
+const requiredTextSchema = z.string().trim().min(1);
+const sha256HexSchema = z.string().regex(/^[a-fA-F0-9]{64}$/, "Must be a SHA-256 hex digest");
 const optionalDateTimeSchema = z.string().datetime().optional().nullable();
+const optionalGeneratedAtSchema = z.string().datetime().optional();
 const metadataSchema = z.record(z.unknown());
 const hasText = (value: string | null | undefined) => typeof value === "string" && value.trim().length > 0;
 
@@ -46,11 +49,11 @@ export const truthBriefCanonicalInputSchema = z
   .passthrough();
 
 export const createTruthDocumentSchema = z.object({
-  companySlug: z.string().min(1),
+  companySlug: requiredTextSchema,
   title: z.string().optional().nullable(),
-  sourceType: z.string().min(1),
+  sourceType: requiredTextSchema,
   sourceUri: z.string().optional().nullable(),
-  sourceSha256: z.string().optional().nullable(),
+  sourceSha256: sha256HexSchema.optional().nullable(),
   ingestStatus: truthDocumentIngestStatusSchema.optional().default("pending"),
   embeddingStatus: truthDocumentEmbeddingStatusSchema.optional().default("not_required"),
   exclusionStatus: truthDocumentExclusionStatusSchema.optional().default("included"),
@@ -64,24 +67,24 @@ export type CreateTruthDocument = z.infer<typeof createTruthDocumentSchema>;
 export const createTruthDocumentChunkSchema = z.object({
   id: z.string().uuid().optional(),
   truthDocumentId: z.string().uuid(),
-  sourceChunkKey: z.string().min(1),
-  deterministicKey: z.string().min(1),
+  sourceChunkKey: requiredTextSchema,
+  deterministicKey: requiredTextSchema,
   chunkIndex: z.number().int().nonnegative().optional().default(0),
-  chunkKind: z.string().min(1).optional().default("text"),
+  chunkKind: requiredTextSchema.optional().default("text"),
   contentText: z.string().optional().default(""),
-  contentSha256: z.string().optional().nullable(),
+  contentSha256: sha256HexSchema.optional().nullable(),
   metadata: metadataSchema.optional().default({}),
 });
 
 export type CreateTruthDocumentChunk = z.infer<typeof createTruthDocumentChunkSchema>;
 
 export const createTruthRunSchema = z.object({
-  companySlug: z.string().min(1),
+  companySlug: requiredTextSchema,
   truthDocumentId: z.string().uuid(),
   status: truthRunStatusSchema.optional().default("pending"),
   title: z.string().optional().nullable(),
-  extractionVersion: z.string().min(1).optional().default("truth_atom_extractor_v1"),
-  promptVersion: z.string().min(1),
+  extractionVersion: requiredTextSchema.optional().default("truth_atom_extractor_v1"),
+  promptVersion: requiredTextSchema,
   model: z.string().optional().nullable(),
   sourceCounts: metadataSchema.optional().default({}),
   startedAt: optionalDateTimeSchema,
@@ -100,17 +103,17 @@ export const createTruthAtomSchema = z.object({
   rawAtomId: z.string().optional().nullable(),
   atomIndex: z.number().int().nonnegative(),
   ledgerSection: truthAtomLedgerSectionSchema,
-  atomType: z.string().min(1),
-  atomText: z.string().min(1),
+  atomType: requiredTextSchema,
+  atomText: requiredTextSchema,
   durabilityScore: z.number().int(),
-  confidenceScore: z.string().min(1),
-  evidenceMode: z.string().min(1),
+  confidenceScore: requiredTextSchema,
+  evidenceMode: requiredTextSchema,
   speakerName: z.string().optional().nullable(),
   speakerId: z.string().optional().nullable(),
   startTime: z.string().optional().nullable(),
   endTime: z.string().optional().nullable(),
   sourceUtteranceIds: z.array(z.string()).optional().default([]),
-  evidenceQuote: z.string().min(1),
+  evidenceQuote: requiredTextSchema,
   planningRelevance: z.string().optional().nullable(),
   status: truthAtomStatusSchema.optional().default("needs_review"),
   auditFlags: metadataSchema.optional().default({}),
@@ -124,8 +127,8 @@ export const createTruthRunAuditSchema = z.object({
   auditType: truthRunAuditTypeSchema,
   status: truthRunAuditStatusSchema.optional().default("pending"),
   auditorModel: z.string().optional().nullable(),
-  promptVersion: z.string().min(1),
-  templateVersion: z.string().optional().nullable(),
+  promptVersion: requiredTextSchema,
+  templateVersion: requiredTextSchema.optional().nullable(),
   findingCount: z.number().int().nonnegative().optional().default(0),
   summary: z.string().optional().nullable(),
   findings: z.array(metadataSchema).optional().default([]),
@@ -139,17 +142,17 @@ export type CreateTruthRunAudit = z.infer<typeof createTruthRunAuditSchema>;
 
 export const createTruthBriefSchema = z.object({
   truthRunId: z.string().uuid(),
-  title: z.string().min(1),
+  title: requiredTextSchema,
   status: truthBriefStatusSchema.optional().default("draft"),
-  briefKind: z.string().min(1),
+  briefKind: requiredTextSchema,
   contentMarkdown: z.string().optional().nullable(),
   contentJson: metadataSchema.optional().nullable(),
   canonicalInput: truthBriefCanonicalInputSchema,
-  promptVersion: z.string().min(1),
-  templateVersion: z.string().min(1),
+  promptVersion: requiredTextSchema,
+  templateVersion: requiredTextSchema,
   model: z.string().optional().nullable(),
-  inputHash: z.string().min(1),
-  payloadHash: z.string().optional().nullable(),
+  inputHash: sha256HexSchema,
+  payloadHash: sha256HexSchema.optional().nullable(),
   createdByAgentId: z.string().uuid().optional().nullable(),
   createdByUserId: z.string().optional().nullable(),
   reviewedAt: optionalDateTimeSchema,
@@ -163,16 +166,16 @@ export const createTruthDossierSchema = z
   .object({
     truthRunId: z.string().uuid(),
     briefId: z.string().uuid(),
-    title: z.string().min(1),
+    title: requiredTextSchema,
     status: truthDossierStatusSchema.optional().default("draft"),
     htmlContent: z.string().optional().nullable(),
     filePath: z.string().optional().nullable(),
-    contentSha256: z.string().optional().nullable(),
-    briefInputHash: z.string().min(1),
-    briefPayloadHash: z.string().min(1),
-    promptVersion: z.string().min(1),
-    templateVersion: z.string().min(1),
-    generatedAt: optionalDateTimeSchema,
+    contentSha256: sha256HexSchema.optional().nullable(),
+    briefInputHash: sha256HexSchema,
+    briefPayloadHash: sha256HexSchema,
+    promptVersion: requiredTextSchema,
+    templateVersion: requiredTextSchema,
+    generatedAt: optionalGeneratedAtSchema,
     generatedByAgentId: z.string().uuid().optional().nullable(),
     generatedByUserId: z.string().optional().nullable(),
     metadata: metadataSchema.optional().default({}),
@@ -191,11 +194,11 @@ export type CreateTruthDossier = z.infer<typeof createTruthDossierSchema>;
 
 export const createTruthPromotionRequestSchema = z
   .object({
-    companySlug: z.string().min(1),
+    companySlug: requiredTextSchema,
     truthRunId: z.string().uuid().optional().nullable(),
     briefId: z.string().uuid().optional().nullable(),
     dossierId: z.string().uuid().optional().nullable(),
-    requestedBy: z.string().min(1),
+    requestedBy: requiredTextSchema,
     requestReason: z.string().optional().nullable(),
     status: truthPromotionRequestStatusSchema.optional().default("pending"),
     expiresAt: optionalDateTimeSchema,
@@ -214,14 +217,14 @@ export const createTruthPromotionRequestSchema = z
 export type CreateTruthPromotionRequest = z.infer<typeof createTruthPromotionRequestSchema>;
 
 export const approveTruthPromotionRequestSchema = z.object({
-  approvedBy: z.string().min(1),
+  approvedBy: requiredTextSchema,
   metadata: metadataSchema.optional().nullable(),
 });
 
 export type ApproveTruthPromotionRequest = z.infer<typeof approveTruthPromotionRequestSchema>;
 
 export const rejectTruthPromotionRequestSchema = z.object({
-  rejectionReason: z.string().min(1),
+  rejectionReason: requiredTextSchema,
   metadata: metadataSchema.optional().nullable(),
 });
 
@@ -234,7 +237,7 @@ export const completeTruthPromotionRequestSchema = z.object({
 export type CompleteTruthPromotionRequest = z.infer<typeof completeTruthPromotionRequestSchema>;
 
 export const failTruthPromotionRequestSchema = z.object({
-  failureReason: z.string().min(1),
+  failureReason: requiredTextSchema,
   metadata: metadataSchema.optional().nullable(),
 });
 
