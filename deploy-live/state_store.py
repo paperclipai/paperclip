@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -123,6 +124,29 @@ def init_schema(path: str | Path) -> None:
         conn.executescript(SCHEMA_DDL)
     finally:
         conn.close()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """Atomic transaction context.
+
+    Wraps statements in BEGIN / COMMIT, rolling back on exception. Use this
+    when multiple writes must succeed or fail together. Single-statement
+    writes do not need this — the connection is in autocommit mode by default.
+
+    Example:
+        with transaction(conn):
+            insert_position(conn, ...)
+            insert_fill(conn, ...)
+    """
+    conn.execute("BEGIN")
+    try:
+        yield
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 _OPEN_STATUSES = ("opening", "open", "closing", "degraded")

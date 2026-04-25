@@ -313,6 +313,30 @@ def test_list_unresolved_filters_by_severity(fresh_db):
     conn.close()
 
 
+from state_store import transaction
+
+
+def test_transaction_commits_on_success(fresh_db):
+    conn = open_db(fresh_db)
+    with transaction(conn):
+        insert_position(conn, **_sample_position(symbol="A", opened_at_ms=1))
+        insert_position(conn, **_sample_position(symbol="B", opened_at_ms=2))
+    rows = conn.execute("SELECT symbol FROM positions ORDER BY id").fetchall()
+    assert {r["symbol"] for r in rows} == {"A", "B"}
+    conn.close()
+
+
+def test_transaction_rolls_back_on_exception(fresh_db):
+    conn = open_db(fresh_db)
+    with pytest.raises(RuntimeError):
+        with transaction(conn):
+            insert_position(conn, **_sample_position(symbol="A", opened_at_ms=1))
+            raise RuntimeError("boom")
+    rows = conn.execute("SELECT symbol FROM positions").fetchall()
+    assert len(rows) == 0  # rolled back; nothing committed
+    conn.close()
+
+
 import asyncio
 from state_store import AsyncStateStore
 
