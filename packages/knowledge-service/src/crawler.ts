@@ -41,8 +41,7 @@ export class KnowledgeCrawler {
   async crawl(source: SourceConfig): Promise<CrawlResult[]> {
     const results: CrawlResult[] = [];
     
-    if (!await this.canCrawl(source.url, source)) {
-      console.log(`Crawling blocked for ${source.url}`);
+      if (!await this.canCrawl(source.url, source)) {
       return results;
     }
 

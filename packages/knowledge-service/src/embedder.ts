@@ -11,7 +11,7 @@ export class LocalEmbedder {
   }
 
   async initialize(): Promise<void> {
-    console.log(`Embedder initialized with model: ${this.model}`);
+    // Model loaded
   }
 
   async embed(text: string): Promise<number[]> {
