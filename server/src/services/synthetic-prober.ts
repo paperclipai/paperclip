@@ -77,7 +77,13 @@ export class SyntheticProber {
       logger.debug({ count: specs.length }, "SyntheticProber probing apps");
 
       for (const spec of specs) {
-        await this.probeApp(spec.appName, spec.probeUrl, spec.expectedStatus);
+        await this.probeApp(
+          spec.appName,
+          spec.probeUrl,
+          spec.expectedStatus,
+          spec.bodyRegex ?? undefined,
+          spec.bodyExcludesRegex ?? undefined,
+        );
       }
 
       await this.markStableDeployments();
@@ -92,6 +98,8 @@ export class SyntheticProber {
     appName: string,
     probeUrl: string,
     expectedStatus: number,
+    bodyRegex?: string,
+    bodyExcludesRegex?: string,
   ): Promise<ProbeResult> {
     const tracker = this.failureTracker.get(appName) ?? { count: 0, lastFailure: 0 };
     const cooldownUntil = this.cooldownTracker.get(appName) ?? 0;
@@ -111,7 +119,24 @@ export class SyntheticProber {
       });
 
       const body = await response.text().catch(() => "");
-      const success = response.status === expectedStatus;
+
+      let success = response.status === expectedStatus;
+
+      if (success && bodyRegex) {
+        const regex = new RegExp(bodyRegex);
+        success = regex.test(body);
+        if (!success) {
+          logger.debug({ appName, bodyRegex }, "Body content did not match regex");
+        }
+      }
+
+      if (success && bodyExcludesRegex) {
+        const regex = new RegExp(bodyExcludesRegex);
+        success = !regex.test(body);
+        if (!success) {
+          logger.debug({ appName, bodyExcludesRegex }, "Body content matched exclude regex");
+        }
+      }
 
       result = {
         appName,
