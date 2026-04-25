@@ -6,6 +6,7 @@
 | v2.0 | RT2 Refoundation | Shipped | 2026-04-24 | 2026-04-25 | RT2를 primary product shell로 만들고 logging, execution, knowledge, Jarvis, quality, marketplace, collaboration, P&L을 live company-scoped record에 연결한 corrective milestone |
 | v2.1 | 개발기획서 반영 및 운영자 채택 | Shipped | 2026-04-25 | 2026-04-25 | 업로드된 RealTycoon2 개발기획서 gap을 앱에서 보이게 만들고 capture, daily cockpit, OKR/KPI, task mesh, knowledge sync, Jarvis rollout, enterprise readiness를 완료 |
 | v2.2 | 개발기획서 완전 정합성 고도화 | Shipped | 2026-04-25 | 2026-04-25 | 일일업무일지/Trello형 업무 보드/identity hardening/Knowledge Bridge/P&L/rollout evidence로 개발기획서 정합성을 약 94%까지 끌어올림 |
+| v2.3 | 운영 검증 및 외부 연동 실체화 | Active | 2026-04-25 | - | v2.2 `tech_debt`와 remaining 6% gap을 validation, SSO/SCIM, Obsidian sync, settlement governance, advanced board/capture로 닫는 마일스톤 |
 
 ## v2.0 RT2 Refoundation
 
@@ -105,5 +106,30 @@ close-audit artifact 2개는 v2.0에 이어 v2.1 close에서도 인정하고 def
 | uat_gap | Phase 01 / 01-UAT.md | unknown, 0 pending scenarios |
 | uat_gap | Phase m1-6-daily-report / m1-6-UAT.md | unknown, 0 pending scenarios |
 
+## v2.3 운영 검증 및 외부 연동 실체화
+
+**상태:** 2026-04-25 시작  
+**시작:** 2026-04-25  
+**Phases:** 5 planned  
+**Requirements:** 17 planned  
+**현재 문서:**
+
+- `.planning/ROADMAP.md`
+- `.planning/REQUIREMENTS.md`
+
+### 목표
+
+v2.2에서 기능적으로 완료했지만 `tech_debt`로 남긴 strict validation artifact와 외부 연동/운영 깊이 gap을 실제 운영자가 검수 가능한 제품 기능으로 닫는다.
+
+### 계획된 Phase
+
+| Phase | Name | Requirements |
+|-------|------|--------------|
+| 19 | Validation and Route Test Hardening | VALID-01, VALID-02, VALID-03 |
+| 20 | Enterprise Rollout Connectors | ENT-02, ENT-03, ENT-04 |
+| 21 | Obsidian Bidirectional Knowledge Sync | KNOW-02, KNOW-03, KNOW-04 |
+| 22 | Settlement Governance and Anti-Gaming | ECON-02, ECON-03, ECON-04 |
+| 23 | Advanced Work Board and Native Capture | TRELLO-03, TRELLO-04, TRELLO-05, CAPTURE-02, CAPTURE-03 |
+
 ---
-*마지막 업데이트: 2026-04-25, v2.2 개발기획서 완전 정합성 고도화 완료 후*
+*마지막 업데이트: 2026-04-25, v2.3 운영 검증 및 외부 연동 실체화 시작*

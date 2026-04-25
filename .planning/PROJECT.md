@@ -14,16 +14,16 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화
 
-**현재 마일스톤:** 다음 마일스톤 기획 전
+**현재 마일스톤:** v2.3 운영 검증 및 외부 연동 실체화
 
-**Current outcome:** 개발기획서 v3.2와의 정합성을 약 94% 수준으로 끌어올렸고, v2.2의 남은 경제/롤아웃 gap을 운영자 검수 기준으로 닫았다. 일일업무일지 3칸 칸반과 메인 업무 보드는 Trello처럼 직접 드래그해 이동하고 즉시 저장/빠른 편집되는 작업 중심 UI가 되었다.
+**Goal:** v2.2에서 `tech_debt`로 남긴 검증 산출물과 개발기획서 remaining 6% gap을 실제 운영 가능한 외부 연동, 지식 동기화, settlement governance, advanced board/capture 흐름으로 닫는다.
 
 **Target features:**
-- 일일업무일지 3칸 칸반을 Trello형 drag/drop 운영 보드로 고도화.
-- Paperclip/Multica는 엔진으로만 남기고 product-facing 프론트엔드에서는 완전히 숨김.
-- 프론트엔드를 Trello 기반의 RealTycoon2 업무 보드 경험으로 전환. (Phase 16 완료)
-- 개발기획서 alignment scorecard를 실제 코드 증거 기준으로 갱신. (Phase 18 기준 완료)
-- marketplace/P&L depth와 enterprise rollout hardening을 운영 검수 evidence까지 연결. (Phase 18 완료)
+- Phase 14-18 `VALIDATION.md`와 skipped route suite를 보강해 v2.2 검증 부채를 닫는다.
+- SSO provider metadata validation, SCIM sync preview, rollout readiness audit log를 실제 운영 흐름으로 만든다.
+- Obsidian-compatible local writer와 bidirectional sync conflict resolution을 preview-only 상태에서 승인 가능한 sync flow로 고도화한다.
+- 산출물 가격 협상, settlement approval, anti-gaming signal을 gold ledger/P&L/audit log와 연결한다.
+- Trello advanced parity(checklist, due date, attachment preview, filter/sort)와 mobile/native inbound queue 검수 흐름을 완성한다.
 
 v2.0에서 완료한 것:
 
@@ -68,9 +68,11 @@ v2.1에서 완료한 것:
 
 ### 진행 중
 
-- [ ] 다음 마일스톤 범위 정의.
-- [ ] Phase 14-18 `VALIDATION.md` 생성 여부 결정.
-- [ ] 남은 6% 개발기획서 gap 중 실제 외부 연동/운영 깊이 범위 선별.
+- [ ] v2.3 검증 및 안정화 요구사항 3개.
+- [ ] v2.3 enterprise rollout 요구사항 3개.
+- [ ] v2.3 Knowledge Bridge 요구사항 3개.
+- [ ] v2.3 economy/governance 요구사항 3개.
+- [ ] v2.3 work board/capture 요구사항 5개.
 
 ### 범위 밖
 
@@ -88,6 +90,7 @@ v2.1에서 완료한 것:
 - v2.1은 Phase 8-13, 6개 plan, 24개 요구사항을 완료했다.
 - v2.2는 Phase 14-18, 5개 plan, 11개 요구사항을 완료했다.
 - v2.2 audit은 blocker 없이 `tech_debt`로 종료했다. 주요 부채는 Phase 14-18 `VALIDATION.md` 누락, 일부 route test의 embedded Postgres skip, 외부 연동 깊이의 후속 범위다.
+- v2.3은 Phase 19-23으로 이어가며, v2.2의 검증 부채와 개발기획서 remaining 6% gap을 실제 운영 기능으로 닫는다.
 
 ## 제약
 
@@ -109,10 +112,11 @@ v2.1에서 완료한 것:
 | v2.1 close 후 REQUIREMENTS.md를 archive하고 새 milestone에서 다시 생성 | 요구사항 파일이 milestone-scoped여야 다음 milestone scope가 섞이지 않는다 | 좋음 - v2.2 planning 준비 |
 | v2.2는 `tech_debt` 상태로 완료 | 요구사항과 통합 flow는 닫혔지만 Nyquist `VALIDATION.md`는 없었다 | 좋음 - 기능 완료와 검증 부채를 분리해 기록 |
 | Paperclip/Multica 명칭은 product-facing이 아니라 engine/internal compatibility layer로만 유지 | 사용자가 RealTycoon2가 장식처럼 보이는 위험을 명확히 지적했다 | 좋음 - 제품 표면은 RT2/Trello형 업무 흐름으로 전환 |
+| v2.3은 검증 부채와 외부 연동 깊이를 하나의 운영화 마일스톤으로 묶음 | 남은 gap이 독립 신기능보다 실제 검증 가능한 운영 깊이에 집중되어 있다 | 대기 - Phase 19-23에서 검증 |
 
-## 다음 마일스톤 목표
+## 현재 마일스톤 목표
 
-다음 마일스톤은 v2.2에서 남긴 tech debt와 후속 운영 깊이 중 무엇을 먼저 제품화할지 결정해야 한다. 후보는 Phase 14-18 `VALIDATION.md` 보강, 실제 SSO/SCIM/provider 검증, Obsidian bidirectional sync, 가격 협상/settlement approval, mobile/native capture 배포, Trello advanced parity다.
+v2.3은 Phase 19-23에서 Phase 14-18 `VALIDATION.md`, 실제 SSO/SCIM/provider 검증, Obsidian bidirectional sync, 가격 협상/settlement approval, mobile/native capture queue, Trello advanced parity를 순서대로 구현한다.
 
 ---
-*마지막 업데이트: 2026-04-25, v2.2 개발기획서 완전 정합성 고도화 완료 후*
+*마지막 업데이트: 2026-04-25, v2.3 운영 검증 및 외부 연동 실체화 시작*
