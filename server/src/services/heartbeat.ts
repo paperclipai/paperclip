@@ -1165,9 +1165,12 @@ function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
+  issueExecutionRunId: string | null;
   agentId: string;
 }) {
   if (input.issueAssigneeAgentId !== input.agentId) return false;
+
+  if (input.issueExecutionRunId) return false;
 
   const issueStatus = readNonEmptyString(input.issueStatus);
   if (
@@ -1671,6 +1674,7 @@ export function heartbeatService(db: Db) {
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        executionRunId: issues.executionRunId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -3465,6 +3469,7 @@ export function heartbeatService(db: Db) {
         contextSnapshot: context,
         issueStatus: issueContext.status,
         issueAssigneeAgentId: issueContext.assigneeAgentId,
+        issueExecutionRunId: issueContext.executionRunId,
         agentId: agent.id,
       })
     ) {
