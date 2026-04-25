@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid, boolean } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp, uuid, boolean, jsonb } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 
 export const agentContextCache = pgTable(
@@ -8,7 +8,7 @@ export const agentContextCache = pgTable(
     agentId: uuid("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    lastContext: text("last_context").$type<Record<string, unknown>>().notNull(),
+    lastContext: jsonb("last_context").$type<Record<string, unknown>>().notNull(),
     lastLoadedAt: timestamp("last_loaded_at", { withTimezone: true }).notNull(),
     cachedAtXactId: text("cached_at_xact_id").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
