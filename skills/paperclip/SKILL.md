@@ -21,6 +21,39 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
+## Local Execution Context
+
+When running as a local adapter (`claude_local`, `codex_local`), you are executing inside a local codebase — **not** via `npx paperclipai`. Do **not** use `npx paperclipai` commands for API operations during heartbeats. Instead, use `curl` directly against `$PAPERCLIP_API_URL` with `$PAPERCLIP_API_KEY` for all API calls.
+
+**Primary method — curl:**
+
+```bash
+# GET request
+curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/agents/me"
+
+# POST/PATCH request (include run ID on mutating calls)
+curl -s -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/checkout" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"...","expectedStatuses":["todo","backlog","blocked"]}'
+```
+
+**Fallback — Python urllib (if curl is blocked by sandbox):**
+
+```python
+python3 -c "
+import os, urllib.request, json
+req = urllib.request.Request(
+    os.environ['PAPERCLIP_API_URL'] + '/api/agents/me',
+    headers={'Authorization': 'Bearer ' + os.environ['PAPERCLIP_API_KEY']}
+)
+with urllib.request.urlopen(req) as r: print(r.read().decode())
+"
+```
+
+The `npx paperclipai` CLI is only for **manual operator use** outside of heartbeat runs (e.g., `paperclipai agent local-cli`, `paperclipai heartbeat run`). Agents must never depend on `npx` being available or working inside their sandboxed execution environment.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
@@ -486,9 +519,19 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 
 Use this when validating Paperclip itself (assignment flow, checkouts, run visibility, and status transitions).
 
-1. Create a throwaway issue assigned to a known local agent (`claudecoder` or `codexcoder`):
+> **Note:** The examples below show both `curl` (for local agent execution) and `npx paperclipai` (for manual operator use). Agents running inside heartbeats should always use `curl`.
+
+1. Create a throwaway issue assigned to a known local agent:
 
 ```bash
+# curl (local agent execution)
+curl -s -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Self-test: assignment/watch flow","description":"Temporary validation issue","status":"todo","assigneeAgentId":"'"$PAPERCLIP_AGENT_ID"'"}'
+
+# npx (manual operator use only)
 npx paperclipai issue create \
   --company-id "$PAPERCLIP_COMPANY_ID" \
   --title "Self-test: assignment/watch flow" \
@@ -497,7 +540,7 @@ npx paperclipai issue create \
   --assignee-agent-id "$PAPERCLIP_AGENT_ID"
 ```
 
-2. Trigger and watch a heartbeat for that assignee:
+2. Trigger and watch a heartbeat for that assignee (operator only — agents do not trigger their own heartbeats):
 
 ```bash
 npx paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
@@ -506,18 +549,31 @@ npx paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
 3. Verify the issue transitions (`todo -> in_progress -> done` or `blocked`) and that comments are posted:
 
 ```bash
+# curl (local agent execution)
+curl -s "$PAPERCLIP_API_URL/api/issues/<issue-id>" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+# npx (manual operator use only)
 npx paperclipai issue get <issue-id-or-identifier>
 ```
 
-4. Reassignment test (optional): move the same issue between `claudecoder` and `codexcoder` and confirm wake/run behavior:
+4. Reassignment test (optional): move the same issue between agents and confirm wake/run behavior:
 
 ```bash
+# curl (local agent execution)
+curl -s -X PATCH "$PAPERCLIP_API_URL/api/issues/<issue-id>" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"assigneeAgentId":"<other-agent-id>","status":"todo"}'
+
+# npx (manual operator use only)
 npx paperclipai issue update <issue-id> --assignee-agent-id <other-agent-id> --status todo
 ```
 
 5. Cleanup: mark temporary issues done/cancelled with a clear note.
 
-If you use direct `curl` during these tests, include `X-Paperclip-Run-Id` on all mutating issue requests whenever running inside a heartbeat.
+Always include `X-Paperclip-Run-Id` on all mutating issue requests when running inside a heartbeat.
 
 ## Full Reference
 
