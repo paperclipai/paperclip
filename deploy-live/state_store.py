@@ -395,15 +395,17 @@ def write_recon_event(
 def list_unresolved_recon_events(
     conn: sqlite3.Connection, *, min_severity: str = "info"
 ) -> list[ReconciliationEvent]:
+    # Build the IN clause from severities at or above the threshold
     threshold = _SEVERITY_ORDER[min_severity]
+    accepted = [s for s, lvl in _SEVERITY_ORDER.items() if lvl >= threshold]
+    placeholders = ",".join("?" * len(accepted))
     rows = conn.execute(
-        "SELECT * FROM reconciliation_events WHERE resolution='unresolved' ORDER BY timestamp"
+        f"SELECT * FROM reconciliation_events "
+        f"WHERE resolution='unresolved' AND severity IN ({placeholders}) "
+        f"ORDER BY timestamp",
+        accepted,
     ).fetchall()
-    out = []
-    for r in rows:
-        if _SEVERITY_ORDER[r["severity"]] >= threshold:
-            out.append(_row_to_recon_event(r))
-    return out
+    return [_row_to_recon_event(r) for r in rows]
 
 
 def resolve_recon_event(
