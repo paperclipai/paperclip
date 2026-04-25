@@ -2,15 +2,49 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { boardAuthService } from "../services/board-auth.js";
+import { boardAuthService, normalizeV1CompanySlug } from "../services/board-auth.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+async function filterBoardAccessByAllowedSlugs(
+  db: Db,
+  access: Awaited<ReturnType<ReturnType<typeof boardAuthService>["resolveBoardAccess"]>>,
+  allowedCompanySlugs: string[],
+) {
+  if (allowedCompanySlugs.length === 0) {
+    return {
+      companyIds: access.companyIds,
+      memberships: access.memberships,
+      credentialCompanySlugs: [],
+    };
+  }
+
+  const allowed = new Set(allowedCompanySlugs);
+  const companyRows = await db
+    .select({ id: companies.id, issuePrefix: companies.issuePrefix })
+    .from(companies);
+  const allowedCompanyRows = companyRows.filter((company) =>
+    allowed.has(normalizeV1CompanySlug(company.issuePrefix, company.id)),
+  );
+  const allowedCompanyIds = new Set(allowedCompanyRows.map((company) => company.id));
+  const companyIds = access.isInstanceAdmin
+    ? allowedCompanyRows.map((company) => company.id)
+    : access.companyIds.filter((companyId) => allowedCompanyIds.has(companyId));
+
+  return {
+    companyIds,
+    memberships: access.memberships.filter((membership) => allowedCompanyIds.has(membership.companyId)),
+    credentialCompanySlugs: allowedCompanyRows
+      .filter((company) => companyIds.includes(company.id))
+      .map((company) => normalizeV1CompanySlug(company.issuePrefix, company.id)),
+  };
 }
 
 interface ActorMiddlewareOptions {
@@ -100,14 +134,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
+        const allowedCompanySlugs = boardKey.allowedCompanySlugs ?? [];
+        const scopedAccess = await filterBoardAccessByAllowedSlugs(db, access, allowedCompanySlugs);
         await boardAuth.touchBoardApiKey(boardKey.id);
         req.actor = {
           type: "board",
           userId: boardKey.userId,
           userName: access.user?.name ?? null,
           userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
+          companyIds: scopedAccess.companyIds,
+          memberships: scopedAccess.memberships,
+          allowedCompanySlugs,
+          credentialCompanySlugs: scopedAccess.credentialCompanySlugs,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
           runId: runIdHeader || undefined,
@@ -160,26 +198,47 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const [agentRecord, companyRecord] = await Promise.all([
+      db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, key.agentId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: companies.id, issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, key.companyId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    if (
+      !agentRecord ||
+      !companyRecord ||
+      agentRecord.status === "terminated" ||
+      agentRecord.status === "pending_approval"
+    ) {
+      next();
+      return;
+    }
+
+    const credentialCompanySlug = normalizeV1CompanySlug(companyRecord.issuePrefix, companyRecord.id);
+    const allowedCompanySlugs = key.allowedCompanySlugs ?? [];
+    if (allowedCompanySlugs.length > 0 && !allowedCompanySlugs.includes(credentialCompanySlug)) {
+      next();
+      return;
+    }
+
     await db
       .update(agentApiKeys)
       .set({ lastUsedAt: new Date() })
       .where(eq(agentApiKeys.id, key.id));
 
-    const agentRecord = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, key.agentId))
-      .then((rows) => rows[0] ?? null);
-
-    if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-      next();
-      return;
-    }
-
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
+      allowedCompanySlugs,
+      credentialCompanySlugs: [credentialCompanySlug],
       keyId: key.id,
       runId: runIdHeader || undefined,
       source: "agent_key",

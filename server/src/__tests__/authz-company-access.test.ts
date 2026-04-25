@@ -104,6 +104,22 @@ describe("assertCompanyAccess", () => {
 
     expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
   });
+
+  it("rejects credential-scoped actors when credential slugs are outside allowed slugs", () => {
+    const req = makeReq({
+      method: "GET",
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+        allowedCompanySlugs: ["alpha"],
+        credentialCompanySlugs: ["beta"],
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1")).toThrow("Credential cannot access this company");
+  });
 });
 
 describe("assertBoardOrgAccess", () => {

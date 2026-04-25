@@ -16,6 +16,8 @@ declare global {
           membershipRole?: string | null;
           status?: string;
         }>;
+        allowedCompanySlugs?: string[];
+        credentialCompanySlugs?: string[];
         isInstanceAdmin?: boolean;
         keyId?: string;
         runId?: string;

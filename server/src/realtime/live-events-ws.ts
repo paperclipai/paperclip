@@ -4,11 +4,12 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { normalizeV1CompanySlug } from "../services/board-auth.js";
 
 interface WsSocket {
   readyState: number;
@@ -160,6 +161,19 @@ async function authorizeUpgrade(
     .then((rows) => rows[0] ?? null);
 
   if (!key || key.companyId !== companyId) {
+    return null;
+  }
+
+  const requestedCompany = await db
+    .select({ id: companies.id, issuePrefix: companies.issuePrefix })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  if (!requestedCompany) return null;
+
+  const requestedCompanySlug = normalizeV1CompanySlug(requestedCompany.issuePrefix, requestedCompany.id);
+  const allowedCompanySlugs = key.allowedCompanySlugs ?? [];
+  if (allowedCompanySlugs.length > 0 && !allowedCompanySlugs.includes(requestedCompanySlug)) {
     return null;
   }
 

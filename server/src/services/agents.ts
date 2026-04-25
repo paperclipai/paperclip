@@ -5,6 +5,7 @@ import {
   agents,
   agentConfigRevisions,
   agentApiKeys,
+  companies,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -20,6 +21,7 @@ import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { normalizeV1CompanySlug } from "./board-auth.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -587,6 +589,13 @@ export function agentService(db: Db) {
         throw conflict("Cannot create keys for terminated agents");
       }
 
+      const company = await db
+        .select({ id: companies.id, issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, existing.companyId))
+        .then((rows) => rows[0] ?? null);
+      if (!company) throw notFound("Company not found");
+
       const token = createToken();
       const keyHash = hashToken(token);
       const created = await db
@@ -596,6 +605,7 @@ export function agentService(db: Db) {
           companyId: existing.companyId,
           name,
           keyHash,
+          allowedCompanySlugs: [normalizeV1CompanySlug(company.issuePrefix, company.id)],
         })
         .returning()
         .then((rows) => rows[0]);

@@ -41,6 +41,15 @@ export function assertInstanceAdmin(req: Request) {
 
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
+  const allowedCompanySlugs = req.actor.allowedCompanySlugs ?? [];
+  const credentialCompanySlugs = req.actor.credentialCompanySlugs ?? [];
+  if (
+    allowedCompanySlugs.length > 0 &&
+    credentialCompanySlugs.length > 0 &&
+    !credentialCompanySlugs.some((slug) => allowedCompanySlugs.includes(slug))
+  ) {
+    throw forbidden("Credential cannot access this company");
+  }
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }

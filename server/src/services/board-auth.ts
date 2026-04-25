@@ -30,6 +30,16 @@ export function createBoardApiToken() {
   return `pcp_board_${randomBytes(24).toString("hex")}`;
 }
 
+export function normalizeV1CompanySlug(issuePrefix: string | null | undefined, companyId: string) {
+  const normalized =
+    issuePrefix
+      ?.trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") ?? "";
+  return normalized || companyId;
+}
+
 export function createCliAuthSecret() {
   return `pcp_cli_auth_${randomBytes(24).toString("hex")}`;
 }
@@ -280,12 +290,24 @@ export function boardAuthService(db: Db) {
 
       let boardKeyId = challenge.boardApiKeyId;
       if (!boardKeyId) {
+        const allowedCompanySlugs = challenge.requestedCompanyId
+          ? await tx
+              .select({ id: companies.id, issuePrefix: companies.issuePrefix })
+              .from(companies)
+              .where(eq(companies.id, challenge.requestedCompanyId))
+              .then((rows) => {
+                const company = rows[0] ?? null;
+                if (!company) throw notFound("Company not found");
+                return [normalizeV1CompanySlug(company.issuePrefix, company.id)];
+              })
+          : [];
         const createdKey = await tx
           .insert(boardApiKeys)
           .values({
             userId,
             name: challenge.pendingKeyName,
             keyHash: challenge.pendingKeyHash,
+            allowedCompanySlugs,
             expiresAt: boardApiKeyExpiresAt(),
           })
           .returning()
