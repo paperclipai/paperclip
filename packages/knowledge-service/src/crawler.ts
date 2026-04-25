@@ -145,7 +145,7 @@ export class KnowledgeCrawler {
         const directive = trimmed.startsWith("Allow:") ? "allow" : "disallow";
         const rulePath = trimmed.substring(directive.length + 1).trim();
         if (this.pathMatches(path, rulePath)) {
-          allowPath = directive === "Allow:";
+          allowPath = directive === "allow";
         }
       }
     }

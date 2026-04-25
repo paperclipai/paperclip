@@ -3,7 +3,7 @@ import { YamlRegistryReader } from "./yaml-registry.js";
 import { TextChunker } from "./chunker.js";
 import { LocalEmbedder } from "./embedder.js";
 import { KnowledgeDb } from "./db.js";
-import type { KnowledgeTopic } from "@paperclip-ui/db/src/schema/knowledge.js";
+import type { KnowledgeTopic } from "@paperclipai/db/src/schema/knowledge.js";
 
 export class KnowledgeService {
   private crawler: KnowledgeCrawler;

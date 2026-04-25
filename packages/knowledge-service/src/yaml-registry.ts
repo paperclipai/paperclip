@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "yaml";
+import type { SourceConfig } from "./crawler.js";
 
 export interface SourceDefinition {
   url: string;
@@ -53,10 +54,23 @@ export class YamlRegistryReader {
     return topics;
   }
 
-  async getSourcesForTopic(topicSlug: string): Promise<SourceDefinition[]> {
+  async getSourcesForTopic(topicSlug: string): Promise<SourceConfig[]> {
     const topics = await this.getTopicDefinitions();
     const topic = topics.find(t => t.topic === topicSlug);
-    return topic?.sources || [];
+    if (!topic) return [];
+    
+    return topic.sources.map((source, index) => ({
+      id: `${topic.topic}-${index}`,
+      topicId: topic.topic,
+      url: source.url,
+      title: source.title,
+      sourceType: source.source_type,
+      allowedPaths: source.allowed_paths,
+      disallowedPaths: source.disallowed_paths,
+      robotsAllowed: source.robots_allowed,
+      rateLimitRespect: source.rate_limit_respect,
+      crawlFrequencyHours: source.crawl_frequency_hours,
+    }));
   }
 
   async getCrawlerConfig(topicSlug: string): Promise<TopicDefinition["crawler_config"] | undefined> {

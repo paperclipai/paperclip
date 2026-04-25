@@ -1,11 +1,11 @@
-import { createClient } from "pg";
-import type { KnowledgeTopic, KnowledgeSource, KnowledgeChunk, KnowledgeCrawlRun } from "@paperclip-ui/db/src/schema/knowledge";
+import { Client } from "pg";
+import type { KnowledgeTopic, KnowledgeSource, KnowledgeChunk, KnowledgeCrawlRun } from "@paperclipai/db/src/schema/knowledge";
 
 export class KnowledgeDb {
-  private client: ReturnType<typeof createClient> | null = null;
+  private client: Client | null = null;
 
   async initialize(): Promise<void> {
-    this.client = createClient({
+    this.client = new Client({
       connectionString: process.env.DATABASE_URL,
     });
     await this.client.connect();
