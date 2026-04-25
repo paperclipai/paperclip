@@ -365,6 +365,68 @@ describe("MarkdownBody", () => {
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
   });
 
+  it("linkifies absolute paths inside backticks to vscode://file links", () => {
+    const html = renderMarkdown("Plan at `/Users/umid/.paperclip/research.md` for context.");
+
+    expect(html).toContain('href="vscode://file/Users/umid/.paperclip/research.md"');
+    expect(html).toContain("<code");
+    expect(html).toContain(">/Users/umid/.paperclip/research.md</code>");
+    expect(html).toContain('title="Open in VS Code / Cursor"');
+    expect(html).toContain('data-editor-link="true"');
+  });
+
+  it("linkifies tilde-prefixed home paths inside backticks", () => {
+    const html = renderMarkdown("Run from `~/.paperclip/instances/default`.");
+
+    expect(html).toContain('href="vscode://file/~/.paperclip/instances/default"');
+    expect(html).toContain(">~/.paperclip/instances/default</code>");
+  });
+
+  it("URL-encodes path segments containing spaces", () => {
+    const html = renderMarkdown("Open `/Users/Bob Smith/file.md` to review.");
+
+    expect(html).toContain('href="vscode://file/Users/Bob%20Smith/file.md"');
+    expect(html).toContain(">/Users/Bob Smith/file.md</code>");
+  });
+
+  it("does not linkify absolute paths outside of backticks", () => {
+    const html = renderMarkdown("See /Users/umid/.paperclip/research.md for details.");
+
+    expect(html).not.toContain("vscode://");
+  });
+
+  it("does not linkify absolute paths inside fenced code blocks", () => {
+    const html = renderMarkdown("```\n/Users/umid/file.md\n```\n");
+
+    expect(html).not.toContain("vscode://");
+    expect(html).toContain("<pre");
+  });
+
+  it("does not linkify inline code that is a URL", () => {
+    const html = renderMarkdown("See `https://example.com/path/to/thing` for the spec.");
+
+    expect(html).not.toContain("vscode://");
+  });
+
+  it("does not linkify inline code that is not an absolute path", () => {
+    const html = renderMarkdown("Run `npm install --save` then `git status`.");
+
+    expect(html).not.toContain("vscode://");
+  });
+
+  it("does not linkify non-allowlisted absolute paths like /etc/passwd", () => {
+    const html = renderMarkdown("Edit `/etc/hosts` if you must.");
+
+    expect(html).not.toContain("vscode://");
+  });
+
+  it("preserves manually authored vscode:// markdown links through the sanitizer", () => {
+    const html = renderMarkdown("[manual](vscode://file/Users/test.md)");
+
+    expect(html).toContain('href="vscode://file/Users/test.md"');
+    expect(html).toContain('title="Open in VS Code / Cursor"');
+  });
+
   it("renders internal issue links and bare identifiers as inline issue refs", () => {
     const html = renderMarkdown(`See PAP-42 and [linked task](${buildIssueReferenceHref("PAP-77")}) for follow-up.`, [
       { identifier: "PAP-42", status: "done" },
