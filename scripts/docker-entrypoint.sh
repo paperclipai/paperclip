@@ -22,6 +22,8 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
+mkdir -p /paperclip/.gemini
+
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
