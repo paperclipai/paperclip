@@ -6,6 +6,8 @@ import {
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
+import { useNavigate } from "@/lib/router";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
@@ -36,6 +38,8 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
@@ -215,21 +219,29 @@ export function CompanySettings() {
   const deleteMutation = useMutation({
     mutationFn: ({
       companyId,
-      nextCompanyId
+      nextCompanyId,
+      companyName
     }: {
       companyId: string;
       nextCompanyId: string | null;
-    }) => companiesApi.remove(companyId).then(() => ({ nextCompanyId })),
-    onSuccess: async ({ nextCompanyId }) => {
-      if (nextCompanyId) {
-        setSelectedCompanyId(nextCompanyId);
-      }
+      companyName: string;
+    }) => companiesApi.remove(companyId).then(() => ({ nextCompanyId, companyName })),
+    onSuccess: async ({ nextCompanyId, companyName }) => {
+      setSelectedCompanyId(nextCompanyId);
+      pushToast({
+        title: "Company deleted",
+        body: `${companyName} was permanently deleted.`,
+        tone: "success",
+      });
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.all
       });
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.stats
       });
+      if (!nextCompanyId) {
+        navigate("/dashboard", { replace: true });
+      }
     }
   });
 
@@ -642,7 +654,8 @@ export function CompanySettings() {
                   )?.id ?? null;
                 deleteMutation.mutate({
                   companyId: selectedCompanyId,
-                  nextCompanyId
+                  nextCompanyId,
+                  companyName: selectedCompany.name
                 });
               }}
             >
