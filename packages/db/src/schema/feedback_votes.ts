@@ -7,7 +7,7 @@ export const feedbackVotes = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    issueId: uuid("issue_id").notNull().references(() => issues.id),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     targetType: text("target_type").notNull(),
     targetId: text("target_id").notNull(),
     authorUserId: text("author_user_id").notNull(),

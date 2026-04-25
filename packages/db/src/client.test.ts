@@ -541,4 +541,151 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "applies ON DELETE rules from migration 0071 to issue-related foreign keys",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const fkRows = await sql.unsafe<{ table_name: string; confdeltype: string }[]>(
+          `
+            SELECT cls.relname AS table_name, c.confdeltype
+            FROM pg_constraint c
+            JOIN pg_class cls ON cls.oid = c.conrelid
+            JOIN pg_class fcls ON fcls.oid = c.confrelid
+            WHERE c.contype = 'f'
+              AND fcls.relname = 'issues'
+              AND cls.relname IN (
+                'issue_inbox_archives',
+                'finance_events',
+                'feedback_votes',
+                'issue_comments',
+                'issue_read_states'
+              )
+              AND c.conname LIKE '%_issue_id_issues_id_fk'
+            ORDER BY cls.relname
+          `,
+        );
+
+        // confdeltype: 'c' = cascade, 'n' = set null, 'a' = no action
+        const byTable = new Map(fkRows.map((row) => [row.table_name, row.confdeltype]));
+        expect(byTable.get("issue_inbox_archives")).toBe("c");
+        expect(byTable.get("finance_events")).toBe("n");
+        expect(byTable.get("feedback_votes")).toBe("c");
+        expect(byTable.get("issue_comments")).toBe("c");
+        expect(byTable.get("issue_read_states")).toBe("c");
+
+        // Behavioral test: insert rows into each child table referencing an issue,
+        // then delete the issue and assert cascade vs. set-null actually fires.
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name")
+          VALUES ('00000000-0000-0000-0000-000000000aaa', 'FK Test Co')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title")
+          VALUES (
+            '00000000-0000-0000-0000-000000000bbb',
+            '00000000-0000-0000-0000-000000000aaa',
+            'FK Test Issue'
+          )
+        `);
+
+        await sql.unsafe(`
+          INSERT INTO "issue_comments" ("id", "company_id", "issue_id", "body")
+          VALUES (
+            '00000000-0000-0000-0000-00000000c001',
+            '00000000-0000-0000-0000-000000000aaa',
+            '00000000-0000-0000-0000-000000000bbb',
+            'cascade me'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issue_inbox_archives" ("id", "company_id", "issue_id", "user_id")
+          VALUES (
+            '00000000-0000-0000-0000-00000000a001',
+            '00000000-0000-0000-0000-000000000aaa',
+            '00000000-0000-0000-0000-000000000bbb',
+            'user-fk-test'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issue_read_states" ("id", "company_id", "issue_id", "user_id")
+          VALUES (
+            '00000000-0000-0000-0000-00000000d001',
+            '00000000-0000-0000-0000-000000000aaa',
+            '00000000-0000-0000-0000-000000000bbb',
+            'user-fk-test'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "feedback_votes" (
+            "id", "company_id", "issue_id", "target_type", "target_id",
+            "author_user_id", "vote"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-00000000e001',
+            '00000000-0000-0000-0000-000000000aaa',
+            '00000000-0000-0000-0000-000000000bbb',
+            'comment', 'target-1', 'user-fk-test', 'up'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "finance_events" (
+            "id", "company_id", "issue_id", "event_kind", "biller",
+            "amount_cents", "occurred_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-00000000f001',
+            '00000000-0000-0000-0000-000000000aaa',
+            '00000000-0000-0000-0000-000000000bbb',
+            'cost', 'paperclip', 0, now()
+          )
+        `);
+
+        // Delete the parent issue. Without the new FK rules this would raise.
+        await sql.unsafe(`
+          DELETE FROM "issues" WHERE "id" = '00000000-0000-0000-0000-000000000bbb'
+        `);
+
+        // Cascade tables: rows are gone.
+        const commentsCount = await sql.unsafe<{ count: string }[]>(
+          `SELECT count(*) AS count FROM "issue_comments"
+           WHERE "id" = '00000000-0000-0000-0000-00000000c001'`,
+        );
+        expect(commentsCount[0].count).toBe("0");
+
+        const archivesCount = await sql.unsafe<{ count: string }[]>(
+          `SELECT count(*) AS count FROM "issue_inbox_archives"
+           WHERE "id" = '00000000-0000-0000-0000-00000000a001'`,
+        );
+        expect(archivesCount[0].count).toBe("0");
+
+        const readStatesCount = await sql.unsafe<{ count: string }[]>(
+          `SELECT count(*) AS count FROM "issue_read_states"
+           WHERE "id" = '00000000-0000-0000-0000-00000000d001'`,
+        );
+        expect(readStatesCount[0].count).toBe("0");
+
+        const votesCount = await sql.unsafe<{ count: string }[]>(
+          `SELECT count(*) AS count FROM "feedback_votes"
+           WHERE "id" = '00000000-0000-0000-0000-00000000e001'`,
+        );
+        expect(votesCount[0].count).toBe("0");
+
+        // Set-null table: row survives with issue_id nulled.
+        const financeRows = await sql.unsafe<{ id: string; issue_id: string | null }[]>(
+          `SELECT "id", "issue_id" FROM "finance_events"
+           WHERE "id" = '00000000-0000-0000-0000-00000000f001'`,
+        );
+        expect(financeRows).toHaveLength(1);
+        expect(financeRows[0].issue_id).toBeNull();
+      } finally {
+        await sql.end();
+      }
+    },
+    30_000,
+  );
 });
