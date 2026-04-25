@@ -70,7 +70,7 @@ describe("plugin SDK orchestration contract", () => {
     const created = await harness.ctx.issues.create({
       companyId,
       title: "Generated issue",
-      status: "todo",
+      status: "blocked",
       assigneeUserId: "board-user",
       billingCode: "mission:alpha",
       originId: "mission-alpha",
@@ -80,6 +80,7 @@ describe("plugin SDK orchestration contract", () => {
     expect(created.originKind).toBe("plugin:paperclip.test-orchestration");
     expect(created.originId).toBe("mission-alpha");
     expect(created.billingCode).toBe("mission:alpha");
+    expect(created.status).toBe("blocked");
     expect(created.assigneeUserId).toBe("board-user");
 
     await expect(harness.ctx.issues.relations.get(created.id, companyId)).resolves.toEqual({

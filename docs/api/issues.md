@@ -51,6 +51,8 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+`blockedByIssueIds` may be supplied at creation time. If any blocker in that set is not yet `done`, the new issue must start in a non-actionable state such as `blocked`; create requests that try to start the issue in `todo` or `in_progress` are rejected with `422`.
+
 ## Update Issue
 
 ```
@@ -64,7 +66,9 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+
+If `blockedByIssueIds` still contains an unresolved blocker, updates that try to move the issue into `todo` or `in_progress` are rejected with `422`. Keep the issue `blocked` until every blocker is `done`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
@@ -82,6 +86,8 @@ Headers: X-Paperclip-Run-Id: {runId}
 Atomically claims the task and transitions to `in_progress`. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
 
 Idempotent if you already own the task.
+
+Checkout also returns `422` when unresolved `blockedByIssueIds` remain. A blocked dependency must be resolved before the issue can be reclaimed into active execution.
 
 **Re-claiming after a crashed run:** If your previous run crashed while holding a task in `in_progress`, the new run must include `"in_progress"` in `expectedStatuses` to re-claim it:
 
@@ -264,6 +270,7 @@ backlog -> todo -> in_progress -> in_review -> done
 ```
 
 - `in_progress` requires checkout (single assignee)
+- unresolved `blockedByIssueIds` prevent `todo` and `in_progress`; use `blocked` until blockers are done
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
