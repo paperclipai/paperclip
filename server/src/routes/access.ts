@@ -2066,6 +2066,10 @@ export function accessRoutes(
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
     if (isLocalImplicit(req)) return;
+    if (req.actor.source === "board_key" && (req.actor.allowedCompanySlugs?.length ?? 0) > 0) {
+      throw forbidden("Instance admin required");
+    }
+    if (req.actor.isInstanceAdmin) return;
     const allowed = await access.isInstanceAdmin(req.actor.userId);
     if (!allowed) throw forbidden("Instance admin required");
   }
