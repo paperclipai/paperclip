@@ -95,6 +95,8 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+const WATCHDOG_INTERVAL_MS = 60 * 60 * 1000; // 60 minutes
+let _lastWatchdogRun = new Date(0);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -4587,6 +4589,16 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
+    // Quiescent check: timer wakes skip if agent is quiescent unless force=true
+    if (source === "timer") {
+      const isQuiescent = await db.execute(sql`SELECT is_agent_quiescent(${agentId})`);
+      const quiescent = isQuiescent[0]?.is_agent_quiescent ?? false;
+      if (quiescent && payload?.force !== true) {
+        await writeSkippedRequest("agent.quiescent");
+        return null;
+      }
+    }
+
     if (issueId) {
       // Mention-triggered wakes can request input from another agent, but they must
       // still respect the issue execution lock so a second agent cannot start on the
@@ -5862,6 +5874,8 @@ export function heartbeatService(db: Db) {
         const LEADERSHIP_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "manager"]);
         const assigned = assignedByAgent.get(agent.id) ?? 0;
         if (assigned === 0 && !LEADERSHIP_ROLES.has(agent.role)) {
+          // Record empty heartbeat for non-leadership agents with no assigned work
+          await db.execute(sql`SELECT record_empty_heartbeat(${agent.id})`);
           skippedNoWork += 1;
           continue;
         }
@@ -5878,11 +5892,65 @@ export function heartbeatService(db: Db) {
             now: now.toISOString(),
           },
         });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        if (run) {
+          enqueued += 1;
+          // Record meaningful action when work is found and wakeup is enqueued
+          await db.execute(sql`SELECT record_meaningful_action(${agent.id})`);
+        } else {
+          skipped += 1;
+        }
       }
 
       return { checked, enqueued, skipped, skippedNoWork };
+    },
+
+    tickWatchdog: async (now = new Date()) => {
+      const elapsed = now.getTime() - _lastWatchdogRun.getTime();
+      if (elapsed < WATCHDOG_INTERVAL_MS) {
+        return { skipped: true, reason: "interval_not_elapsed" };
+      }
+
+      _lastWatchdogRun = now;
+
+      // Get all quiescent agents due for watchdog wake
+      const dueAgentsResult = await db.execute(sql`SELECT agent_id FROM get_watchdog_due_agents()`);
+      const dueAgents = ((dueAgentsResult as unknown) as { rows?: Array<{ agent_id: string }> }).rows ?? [];
+
+      let woken = 0;
+      let skipped = 0;
+
+      for (const row of dueAgents) {
+        const agentId = row.agent_id;
+        try {
+          const run = await enqueueWakeup(agentId, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "watchdog",
+            payload: { force: true },
+            requestedByActorType: "system",
+            requestedByActorId: "watchdog_scheduler",
+            contextSnapshot: {
+              source: "watchdog",
+              reason: "periodic_re-evaluation",
+              now: now.toISOString(),
+            },
+          });
+          if (run) {
+            woken += 1;
+            // Reschedule watchdog for next interval
+            await db.execute(
+              sql`SELECT reschedule_watchdog(${agentId}, NOW() + INTERVAL '60 minutes')`,
+            );
+          } else {
+            skipped += 1;
+          }
+        } catch (err) {
+          logger.error({ err, agentId }, "watchdog wake failed");
+          skipped += 1;
+        }
+      }
+
+      return { woken, skipped, total: dueAgents.length };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),

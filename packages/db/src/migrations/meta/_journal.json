@@ -449,6 +449,13 @@
       "when": 1777382400000,
       "tag": "0070_phase1_specialists",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1777122472375,
+      "tag": "0064_remarkable_boomerang",
+      "breakpoints": true
     }
   ]
 }

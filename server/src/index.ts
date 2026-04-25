@@ -35,6 +35,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
   startSyntheticProber,
+  startEventRouter,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -739,6 +740,16 @@ export async function startServer(): Promise<StartedServer> {
         }),
       );
 
+      // Watchdog: wake quiescent agents every 60 minutes for re-evaluation
+      tickPromises.push(
+        withSubTaskTimeout("tickWatchdog", subTaskMs, async () => {
+          const result = await heartbeat.tickWatchdog(new Date());
+          if (result.woken != null && result.woken > 0) {
+            logger.info({ ...result }, "watchdog woke quiescent agents");
+          }
+        }),
+      );
+
       // Reap orphaned runs (5-min staleness) + resume queued + reconcile stranded.
       tickPromises.push(
         withSubTaskTimeout("heartbeatRecovery", subTaskMs, async () => {
@@ -797,6 +808,18 @@ export async function startServer(): Promise<StartedServer> {
     }
   } else {
     logger.debug("Synthetic prober disabled (SYNTHETIC_PROBER_ENABLED != true)");
+  }
+
+  const eventRouterEnabled = process.env.EVENT_ROUTER_ENABLED === "true";
+  if (eventRouterEnabled) {
+    try {
+      await startEventRouter(activeDatabaseConnectionString);
+      logger.info("Event router started");
+    } catch (err) {
+      logger.error({ err }, "Failed to start event router");
+    }
+  } else {
+    logger.debug("Event router disabled (EVENT_ROUTER_ENABLED != true)");
   }
   
   if (config.databaseBackupEnabled) {
