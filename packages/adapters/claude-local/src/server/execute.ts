@@ -54,13 +54,15 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 /**
  * Resolve the path to the bundled plugin-tool MCP bridge entrypoint.
  * Both source (`src/server/`) and built (`dist/server/`) layouts resolve
- * to the same sibling-package location. Returns `null` if the file isn't
- * present (e.g. dev environment without the bridge built yet).
+ * to the same sibling-package location: from `<base>/server/`, three
+ * `..`s land at `packages/adapters/`, then sibling-package
+ * `claude-local-tool-bridge/dist/index.js`. Returns `null` if the file
+ * isn't present (e.g. dev environment without the bridge built yet) and
+ * logs to stderr so the silent-skip case is visible.
  */
 async function resolvePluginMcpBridgeBin(): Promise<string | null> {
   const candidate = path.resolve(
     __moduleDir,
-    "..",
     "..",
     "..",
     "..",
@@ -72,6 +74,11 @@ async function resolvePluginMcpBridgeBin(): Promise<string | null> {
     await fs.access(candidate);
     return candidate;
   } catch {
+    process.stderr.write(
+      `[claude-local] plugin-tool bridge bin not found at ${candidate}; ` +
+      `--mcp-config injection skipped. Build the bridge with ` +
+      `\`pnpm --filter @paperclipai/claude-local-tool-bridge build\`.\n`,
+    );
     return null;
   }
 }
