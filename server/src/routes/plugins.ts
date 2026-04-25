@@ -63,6 +63,7 @@ import {
   assertBoardOrgAccess,
   assertCompanyAccess,
   assertInstanceAdmin,
+  assertPluginToolAccess,
   getActorInfo,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
@@ -727,7 +728,7 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertPluginToolAccess(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -761,7 +762,7 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertPluginToolAccess(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -792,6 +793,10 @@ export function pluginRoutes(
         error: '"runContext" must include agentId, runId, companyId, and projectId',
       });
       return;
+    }
+
+    if (req.actor.type === "agent" && req.actor.agentId !== runContext.agentId) {
+      throw forbidden('"runContext.agentId" does not match the calling agent');
     }
 
     assertCompanyAccess(req, runContext.companyId);
