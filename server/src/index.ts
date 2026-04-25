@@ -36,6 +36,7 @@ import {
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { releaseStaleInflightSlots } from "./services/provider-semaphore.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -671,7 +672,21 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-  
+
+    // Reset the in-process Opus concurrency semaphore so any leftover state
+    // (hot-reload, partial previous boot) is discarded before we resume queued
+    // runs.
+    const semaphoreReset = releaseStaleInflightSlots();
+    if (
+      semaphoreReset.inflightCleared > 0 ||
+      semaphoreReset.waitersRejected > 0
+    ) {
+      logger.warn(
+        semaphoreReset,
+        "cleared stale provider semaphore state on startup",
+      );
+    }
+
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat

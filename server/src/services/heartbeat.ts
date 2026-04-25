@@ -34,6 +34,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   activityLog,
+  companies,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -146,6 +147,15 @@ import {
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import { recoveryService } from "./recovery/service.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import {
+  acquireProviderSlot,
+  buildOpusSlotKey,
+  getInflightCount,
+  getWaiterCount,
+  releaseProviderSlot,
+  resolveOpusConcurrencyCapacity,
+  shouldThrottleProviderRun,
+} from "./provider-semaphore.js";
 import {
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -6176,36 +6186,95 @@ export function heartbeatService(
             "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
           );
         }
-        const adapterResult = await adapter.execute({
-          runId: run.id,
-          agent,
-          runtime: runtimeForAdapter,
-          config: runtimeConfig,
-          context,
-          executionTarget,
-          executionTransport: remoteExecution
-            ? {
-                remoteExecution: remoteExecution as unknown as Record<
-                  string,
-                  unknown
-                >,
-              }
-            : undefined,
-          onLog,
-          onMeta: onAdapterMeta,
-          onSpawn: async (meta) => {
-            await persistRunProcessMetadata(run.id, {
-              pid: meta.pid,
-              processGroupId:
-                "processGroupId" in meta &&
-                typeof meta.processGroupId === "number"
-                  ? meta.processGroupId
-                  : null,
-              startedAt: meta.startedAt,
+        const configuredModel = readNonEmptyString(
+          (runtimeConfig as Record<string, unknown>).model,
+        );
+        const providerSlotKey = shouldThrottleProviderRun({
+          adapterType: agent.adapterType,
+          model: configuredModel,
+        })
+          ? buildOpusSlotKey(agent.companyId)
+          : null;
+        if (providerSlotKey) {
+          const companyRow = await db
+            .select({ metadata: companies.metadata })
+            .from(companies)
+            .where(eq(companies.id, agent.companyId))
+            .then((rows) => rows[0] ?? null);
+          const capacity = resolveOpusConcurrencyCapacity(
+            companyRow?.metadata ?? null,
+          );
+          const beforeInflight = getInflightCount(providerSlotKey);
+          const beforeWaiters = getWaiterCount(providerSlotKey);
+          if (beforeInflight >= capacity) {
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "info",
+              message: "waiting on company-wide Opus concurrency slot",
+              payload: {
+                providerSlotKey,
+                inflight: beforeInflight,
+                waiters: beforeWaiters,
+                capacity,
+                model: configuredModel,
+              },
             });
-          },
-          authToken: authToken ?? undefined,
-        });
+          }
+          const slotWaitStart = Date.now();
+          await acquireProviderSlot(providerSlotKey, run.id, capacity);
+          const waitedMs = Date.now() - slotWaitStart;
+          if (waitedMs > 0 && beforeInflight >= capacity) {
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "info",
+              message: "acquired company-wide Opus concurrency slot",
+              payload: {
+                providerSlotKey,
+                waitedMs,
+                capacity,
+              },
+            });
+          }
+        }
+        let adapterResult;
+        try {
+          adapterResult = await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context,
+            executionTarget,
+            executionTransport: remoteExecution
+              ? {
+                  remoteExecution: remoteExecution as unknown as Record<
+                    string,
+                    unknown
+                  >,
+                }
+              : undefined,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, {
+                pid: meta.pid,
+                processGroupId:
+                  "processGroupId" in meta &&
+                  typeof meta.processGroupId === "number"
+                    ? meta.processGroupId
+                    : null,
+                startedAt: meta.startedAt,
+              });
+            },
+            authToken: authToken ?? undefined,
+          });
+        } finally {
+          if (providerSlotKey) {
+            releaseProviderSlot(providerSlotKey, run.id);
+          }
+        }
         const adapterManagedRuntimeServices = adapterResult.runtimeServices
           ? await persistAdapterManagedRuntimeServices({
               db,
