@@ -34,6 +34,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { canaryRoutes } from "./routes/canary.js";
+import { evaluationsRoutes } from "./routes/evaluations.js";
 import { internalRoutes } from "./routes/internal.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { embedRoutes } from "./routes/embed.js";
@@ -216,6 +217,7 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(githubWebhookRoutes(db));
   api.use("/canary", canaryRoutes(db));
+  api.use("/evaluations", evaluationsRoutes(db));
   api.use("/internal", internalRoutes(db));
   api.use("/knowledge", knowledgeRoutes(db));
   api.use("/embed", embedRoutes());

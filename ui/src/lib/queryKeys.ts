@@ -157,4 +157,8 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  evaluations: {
+    summary: ["evaluations", "summary"] as const,
+    posterior: (role: string) => ["evaluations", "posterior", role] as const,
+  },
 };
