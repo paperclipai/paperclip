@@ -1,5 +1,5 @@
 import { createClient } from "pg";
-import type { KnowledgeTopic, KnowledgeSource, KnowledgeChunk, KnowledgeCrawlRun } from "@paperclip-ui/db/src/schema/knowledge.js";
+import type { KnowledgeTopic, KnowledgeSource, KnowledgeChunk, KnowledgeCrawlRun } from "@paperclip-ui/db/src/schema/knowledge";
 
 export class KnowledgeDb {
   private client: ReturnType<typeof createClient> | null = null;
