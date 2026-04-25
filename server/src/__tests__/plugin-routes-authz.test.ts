@@ -506,6 +506,38 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it("allows tool execution when runContext.projectId is omitted (project-less run)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalled();
+  });
+
   it("rejects agent tool execution when runContext.companyId is not the agent's company", async () => {
     const executeTool = vi.fn();
     const { app } = await createApp(agentActor(), {}, {

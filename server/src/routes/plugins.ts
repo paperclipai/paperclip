@@ -590,13 +590,15 @@ export function pluginRoutes(
       return '"runContext.runId" does not belong to "runContext.agentId"';
     }
 
-    const [project] = await db
-      .select({ companyId: projects.companyId })
-      .from(projects)
-      .where(eq(projects.id, runContext.projectId))
-      .limit(1);
-    if (!project || project.companyId !== runContext.companyId) {
-      return '"runContext.projectId" does not belong to "runContext.companyId"';
+    if (runContext.projectId) {
+      const [project] = await db
+        .select({ companyId: projects.companyId })
+        .from(projects)
+        .where(eq(projects.id, runContext.projectId))
+        .limit(1);
+      if (!project || project.companyId !== runContext.companyId) {
+        return '"runContext.projectId" does not belong to "runContext.companyId"';
+      }
     }
 
     return null;
@@ -788,9 +790,9 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    if (!runContext.agentId || !runContext.runId || !runContext.companyId) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error: '"runContext" must include agentId, runId, and companyId',
       });
       return;
     }
