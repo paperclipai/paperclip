@@ -11,9 +11,11 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
-import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
+import { readCodexAuthInfo, type CodexAuthInfo } from "./quota.js";
+import { resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -51,6 +53,127 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
+const CODEX_MODEL_UNSUPPORTED_RE =
+  /(?:unknown|unsupported|invalid|unrecognized)\s+model|model\s+(?:unknown|unsupported|invalid|unrecognized)|model.+(?:not\s+available|not\s+supported)|(?:not\s+available|not\s+supported).+model/i;
+
+type AuthFileMode = "chatgpt_oauth" | "api_key" | "unknown";
+
+function redactMiddle(
+  value: string | null | undefined,
+  options: { prefix?: number; suffix?: number } = {},
+): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const clean = value.trim();
+  const prefix = options.prefix ?? 4;
+  const suffix = options.suffix ?? 4;
+  if (clean.length <= prefix + suffix + 2) return "[redacted]";
+  return `${clean.slice(0, prefix)}…${clean.slice(-suffix)}`;
+}
+
+function redactEmail(value: string | null | undefined): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const clean = value.trim();
+  const at = clean.indexOf("@");
+  if (at <= 0) return redactMiddle(clean, { prefix: 2, suffix: 2 });
+  const local = clean.slice(0, at);
+  const domain = clean.slice(at + 1);
+  const redactedLocal = local.length <= 2 ? `${local[0] ?? "*"}…` : `${local.slice(0, 2)}…`;
+  return `${redactedLocal}@${domain}`;
+}
+
+async function readAuthJsonObject(authPath: string): Promise<Record<string, unknown> | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(authPath, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function summarizeChatGptAuth(auth: CodexAuthInfo, authPath: string): string {
+  const redactedEmail = redactEmail(auth.email);
+  const redactedAccountId = redactMiddle(auth.accountId, { prefix: 6, suffix: 4 });
+  const parts = [
+    `auth.json: ${authPath}`,
+    redactedEmail ? `email: ${redactedEmail}` : null,
+    auth.planType ? `plan: ${auth.planType}` : null,
+    redactedAccountId ? `account: ${redactedAccountId}` : null,
+    auth.refreshToken ? "refresh token: present" : "refresh token: absent",
+    auth.lastRefresh ? `last refresh: ${auth.lastRefresh}` : null,
+  ].filter((part): part is string => Boolean(part));
+  return parts.join("; ");
+}
+
+async function readCodexAuthFileMode(codexHome: string): Promise<{
+  authPath: string;
+  mode: AuthFileMode | null;
+  auth: CodexAuthInfo | null;
+}> {
+  const authPath = path.join(codexHome, "auth.json");
+  const [auth, raw] = await Promise.all([
+    readCodexAuthInfo(codexHome).catch(() => null),
+    readAuthJsonObject(authPath),
+  ]);
+  if (auth) return { authPath, mode: "chatgpt_oauth", auth };
+  if (!raw) return { authPath, mode: null, auth: null };
+  if (hasNonEmptyString(raw.OPENAI_API_KEY)) return { authPath, mode: "api_key", auth: null };
+  return { authPath, mode: "unknown", auth: null };
+}
+
+async function probeCodexVersion(
+  command: string,
+  cwd: string,
+  env: Record<string, string>,
+): Promise<AdapterEnvironmentCheck> {
+  const probe = await runChildProcess(
+    `codex-version-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    command,
+    ["--version"],
+    {
+      cwd,
+      env,
+      timeoutSec: 10,
+      graceSec: 2,
+      onLog: async () => {},
+    },
+  );
+  const detail = summarizeProbeDetail(probe.stdout, probe.stderr, null);
+  if (probe.timedOut) {
+    return {
+      code: "codex_cli_version_probe_timed_out",
+      level: "warn",
+      message: "Codex CLI version probe timed out.",
+      hint: "Run `codex --version` manually and upgrade Codex if the installed CLI is stale.",
+    };
+  }
+  if ((probe.exitCode ?? 1) !== 0) {
+    return {
+      code: "codex_cli_version_unavailable",
+      level: "warn",
+      message: "Could not determine Codex CLI version.",
+      ...(detail ? { detail } : {}),
+      hint: "Run `codex --version` manually and upgrade Codex if the installed CLI is stale.",
+    };
+  }
+  return {
+    code: "codex_cli_version",
+    level: "info",
+    message: detail ? `Codex CLI version: ${detail}` : "Codex CLI version probe succeeded.",
+  };
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -81,6 +204,20 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+  const sharedCodexHome = resolveSharedCodexHomeDir(process.env);
+  const effectiveCodexHome =
+    configuredCodexHome ?? resolveManagedCodexHomeDir(process.env, ctx.companyId);
+  const authSourceCodexHome = configuredCodexHome ?? sharedCodexHome;
+
+  checks.push({
+    code: "codex_home_effective",
+    level: "info",
+    message: `Effective CODEX_HOME: ${effectiveCodexHome}`,
+    detail: configuredCodexHome
+      ? "Source: adapter config env.CODEX_HOME."
+      : `Source: Paperclip-managed Codex home; auth/config are seeded from ${sharedCodexHome} during runs.`,
+  });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -104,25 +241,32 @@ export async function testEnvironment(
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
-      message: "OPENAI_API_KEY is set for Codex authentication.",
-      detail: `Detected in ${source}.`,
+      message: "Codex auth mode: OpenAI API key.",
+      detail: `OPENAI_API_KEY detected in ${source}; value is not shown.`,
     });
   } else {
-    const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
-    const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
-    if (codexAuth) {
+    const codexAuth = await readCodexAuthFileMode(authSourceCodexHome);
+    if (codexAuth.mode === "chatgpt_oauth" && codexAuth.auth) {
       checks.push({
         code: "codex_native_auth_present",
         level: "info",
-        message: "Codex is authenticated via its own auth configuration.",
-        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+        message: "Codex auth mode: ChatGPT login.",
+        detail: summarizeChatGptAuth(codexAuth.auth, codexAuth.authPath),
+      });
+    } else if (codexAuth.mode === "api_key") {
+      checks.push({
+        code: "codex_auth_file_api_key_present",
+        level: "info",
+        message: "Codex auth mode: OpenAI API key from auth.json.",
+        detail: `API key is present in ${codexAuth.authPath}; value is not shown.`,
       });
     } else {
       checks.push({
         code: "codex_openai_api_key_missing",
         level: "warn",
-        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+        message: "Codex authentication is not configured.",
+        detail: `Checked OPENAI_API_KEY and ${codexAuth.authPath}.`,
+        hint: "Set OPENAI_API_KEY in adapter env/shell, or run `codex login` for ChatGPT login auth, then retry.",
       });
     }
   }
@@ -139,6 +283,8 @@ export async function testEnvironment(
         hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
       });
     } else {
+      checks.push(await probeCodexVersion(command, cwd, env));
+
       const execArgs = buildCodexExecArgs({ ...config, fastMode: false });
       const args = execArgs.args;
       if (execArgs.fastModeIgnoredReason) {
@@ -197,6 +343,14 @@ export async function testEnvironment(
           message: "Codex CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
           hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+        });
+      } else if (execArgs.model && CODEX_MODEL_UNSUPPORTED_RE.test(authEvidence)) {
+        checks.push({
+          code: "codex_hello_probe_model_unsupported",
+          level: "error",
+          message: `Codex CLI rejected configured model ${execArgs.model}.`,
+          ...(detail ? { detail } : {}),
+          hint: "Upgrade the Codex CLI to the latest version, or choose a model supported by the installed CLI, then retry.",
         });
       } else {
         checks.push({
