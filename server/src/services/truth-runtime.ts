@@ -329,7 +329,7 @@ export function truthRuntimeService(db: Db) {
     createDocumentChunk: async (companyId: string, input: unknown) => {
       const data = parseInput(createTruthDocumentChunkSchema, input);
       const document = await assertDocumentForCompany(db, companyId, data.truthDocumentId);
-      const id = data.id ?? uuidV5FromName(TRUTH_CHUNK_NAMESPACE, data.deterministicKey);
+      const id = uuidV5FromName(TRUTH_CHUNK_NAMESPACE, data.deterministicKey);
       const [chunk] = await db
         .insert(truthDocumentChunks)
         .values({
@@ -481,6 +481,7 @@ export function truthRuntimeService(db: Db) {
           ...data,
           ...target,
           companyId,
+          status: "pending",
           expiresAt: toOptionalDate(data.expiresAt),
         })
         .returning();

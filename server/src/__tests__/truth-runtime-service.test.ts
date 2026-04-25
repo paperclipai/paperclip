@@ -350,6 +350,26 @@ describeEmbeddedPostgres("truth runtime service", () => {
     expect(brief.inputHash).toBe(sha256Hex(canonicalJson(input)));
   });
 
+  it("rejects creating a brief when inputHash does not match canonicalInput", async () => {
+    const companyId = await seedCompany();
+    const { document, run } = await seedRun(companyId);
+    const atom = await seedAtom(companyId, run.id, document.id);
+    const audit = await seedAudit(companyId, run.id);
+    const input = canonicalInput([atom.id], [audit.id]);
+
+    await expectUnprocessable(
+      service.createBrief(companyId, {
+        truthRunId: run.id,
+        title: "Mismatched hash",
+        briefKind: "board",
+        canonicalInput: input,
+        promptVersion: "brief-prompt-v1",
+        templateVersion: "brief-template-v1",
+        inputHash: sha256Hex("wrong canonical input"),
+      }),
+    );
+  });
+
   it("rejects creating a dossier without htmlContent or filePath", async () => {
     const companyId = await seedCompany();
     const brief = await seedBrief(companyId);
@@ -443,6 +463,58 @@ describeEmbeddedPostgres("truth runtime service", () => {
     );
   });
 
+  it("rejects dossier promotion when an explicit truthRunId does not match dossier lineage", async () => {
+    const companyId = await seedCompany();
+    const { dossier } = await seedDossier(companyId);
+    const { run: otherRun } = await seedRun(companyId);
+
+    await expectUnprocessable(
+      service.createPromotionRequest(companyId, {
+        companySlug: "truth-co",
+        truthRunId: otherRun.id,
+        dossierId: dossier.id,
+        requestedBy: "operator",
+      }),
+    );
+  });
+
+  it("normalizes non-pending promotion creation statuses to pending", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+
+    const approved = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      status: "approved",
+    } as any);
+    const completed = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      status: "completed",
+    } as any);
+
+    expect(approved.status).toBe("pending");
+    expect(completed.status).toBe("pending");
+  });
+
+  it("does not allow run-only promotion requests to be created completed", async () => {
+    const companyId = await seedCompany();
+    const { run } = await seedRun(companyId);
+
+    const request = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      truthRunId: run.id,
+      requestedBy: "operator",
+      status: "completed",
+    } as any);
+
+    expect(request.status).toBe("pending");
+    await service.approvePromotionRequest(request.id, "approver");
+    await expectUnprocessable(service.completePromotionRequest(request.id));
+  });
+
   it("rejects completing a run-only promotion request", async () => {
     const companyId = await seedCompany();
     const { run } = await seedRun(companyId);
@@ -497,6 +569,27 @@ describeEmbeddedPostgres("truth runtime service", () => {
     expect(expired.status).toBe("expired");
   });
 
+  it("marks approved promotion requests expired instead of completed when expiresAt has passed", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const request = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await service.approvePromotionRequest(request.id, "approver");
+    await db
+      .update(truthPromotionRequests)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(truthPromotionRequests.id, request.id));
+
+    await expectUnprocessable(service.completePromotionRequest(request.id));
+    const expired = await service.getPromotionRequest(request.id);
+    expect(expired.status).toBe("expired");
+    expect(expired.completedAt).toBeNull();
+  });
+
   it("does not allow terminal promotion requests to transition again", async () => {
     const companyId = await seedCompany();
     const brief = await seedBrief(companyId);
@@ -515,6 +608,37 @@ describeEmbeddedPostgres("truth runtime service", () => {
     await expectConflict(service.expirePromotionRequest(completed.id));
   });
 
+  it("does not allow rejected, failed, or expired promotion requests to transition again", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const rejected = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+    const failed = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+    const expired = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+
+    await service.rejectPromotionRequest(rejected.id, "not ready");
+    await service.failPromotionRequest(failed.id, "generation failed");
+    await service.expirePromotionRequest(expired.id);
+
+    for (const request of [rejected, failed, expired]) {
+      await expectConflict(service.approvePromotionRequest(request.id, "approver"));
+      await expectConflict(service.rejectPromotionRequest(request.id, "late reject"));
+      await expectConflict(service.completePromotionRequest(request.id));
+      await expectConflict(service.failPromotionRequest(request.id, "late failure"));
+    }
+  });
+
   it("stores deterministic document chunk IDs from deterministicKey", async () => {
     const companyId = await seedCompany();
     const document = await seedDocument(companyId);
@@ -527,6 +651,25 @@ describeEmbeddedPostgres("truth runtime service", () => {
     });
 
     expect(chunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, "truth-co:transcript:source#1"));
+  });
+
+  it("ignores caller-supplied document chunk IDs and persists UUIDv5 from deterministicKey", async () => {
+    const companyId = await seedCompany();
+    const document = await seedDocument(companyId);
+    const suppliedId = randomUUID();
+    const deterministicKey = "truth-co:transcript:source#caller-id";
+
+    const chunk = await service.createDocumentChunk(companyId, {
+      id: suppliedId,
+      truthDocumentId: document.id,
+      sourceChunkKey: "source#caller-id",
+      deterministicKey,
+      chunkIndex: 0,
+      contentText: "Caller ID should not define identity.",
+    });
+
+    expect(chunk.id).not.toBe(suppliedId);
+    expect(chunk.id).toBe(uuidV5FromName(TRUTH_CHUNK_NAMESPACE, deterministicKey));
   });
 
   it("lists only documents for the requested company", async () => {
