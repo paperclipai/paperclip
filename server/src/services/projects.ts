@@ -832,7 +832,11 @@ export function projectService(db: Db) {
         });
 
       if (project && options?.deleteFiles) {
-        await removeProjectFiles({ companyId: project.companyId, projectId: project.id, workspaceCwds });
+        try {
+          await removeProjectFiles({ companyId: project.companyId, projectId: project.id, workspaceCwds });
+        } catch (err) {
+          console.error("removeProjectFiles failed after project deletion:", err);
+        }
       }
       return project;
     },
