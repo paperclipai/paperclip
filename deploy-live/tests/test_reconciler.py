@@ -251,3 +251,62 @@ def test_exchange_health_recovers_after_failure(fresh_db):
     assert h.status == "ok"
     assert h.consecutive_errors == 0
     conn.close()
+
+
+import asyncio
+from reconciler import start_periodic_sweep
+
+
+def test_periodic_sweep_runs_reconcile_for_each_exchange(fresh_db):
+    async def _go():
+        conn = open_db(fresh_db)
+        fake = FakeExchange()
+        for ex in ("MEXC", "BLOFIN", "OKX", "BYBIT"):
+            fake.set_open_positions(ex, [])
+            fake.set_balance(ex, available_usd=50.0)
+            fake.set_recent_fills(ex, [])
+
+        task = start_periodic_sweep(
+            conn, fake, exchanges=["MEXC", "BLOFIN", "OKX", "BYBIT"],
+            interval_s=0.05,
+        )
+        await asyncio.sleep(0.18)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        for ex in ("MEXC", "BLOFIN", "OKX", "BYBIT"):
+            h = get_exchange_health(conn, ex)
+            assert h is not None
+            assert h.status == "ok"
+        conn.close()
+
+    asyncio.run(_go())
+
+
+def test_periodic_sweep_survives_one_exchange_failure(fresh_db):
+    async def _go():
+        conn = open_db(fresh_db)
+        fake = FakeExchange()
+        fake.set_open_positions("MEXC", [])
+        fake.set_balance("MEXC", available_usd=50.0)
+        fake.set_recent_fills("MEXC", [])
+        fake.set_unreachable("BLOFIN", error="conn reset")
+
+        task = start_periodic_sweep(
+            conn, fake, exchanges=["MEXC", "BLOFIN"], interval_s=0.05,
+        )
+        await asyncio.sleep(0.18)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert get_exchange_health(conn, "MEXC").status == "ok"
+        assert get_exchange_health(conn, "BLOFIN").status == "down"
+        conn.close()
+
+    asyncio.run(_go())

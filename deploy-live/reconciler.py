@@ -82,6 +82,7 @@ class FakeExchange:
         return dict(self._balances.get(exchange, {"available_usd": 0.0, "locked_usd": 0.0}))
 
 
+import asyncio
 import sqlite3
 import time
 from typing import Optional
@@ -246,3 +247,31 @@ def reconcile_exchange(
                 expected={"total_usd": prev_total},
                 actual={"total_usd": cur_total, "drift_usd": drift_usd, "drift_pct": drift_pct},
             )
+
+
+def start_periodic_sweep(
+    conn: sqlite3.Connection,
+    fetcher: ExchangeFetcher,
+    *,
+    exchanges: list[str],
+    interval_s: float = 300.0,
+) -> asyncio.Task:
+    """Spawn a background task that reconciles each exchange every `interval_s`.
+
+    The task runs forever until cancelled. Callers should `task.cancel()` and
+    `await task` at shutdown. A single exchange failure does not stop the loop.
+    """
+    async def _loop() -> None:
+        while True:
+            for exchange in exchanges:
+                try:
+                    reconcile_exchange(conn, fetcher, exchange=exchange, since_ms=0)
+                except Exception as e:  # noqa: BLE001
+                    write_recon_event(
+                        conn, timestamp_ms=int(time.time() * 1000),
+                        source="reconciler", category="reconciler_internal_error",
+                        severity="error", exchange=exchange, notes=str(e),
+                    )
+            await asyncio.sleep(interval_s)
+
+    return asyncio.create_task(_loop())
