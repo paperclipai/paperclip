@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { auditPrompt } from "@paperclipai/adapter-utils";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
 const MODE_KEY = "instructionsBundleMode";
@@ -624,6 +625,18 @@ export function agentInstructionsService() {
     const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
+
+    const auditResult = auditPrompt(content);
+    if (!auditResult.passed) {
+      const violationsByCategory = auditResult.violations.reduce((acc, v) => {
+        acc[v.category] = (acc[v.category] ?? 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      throw unprocessable(
+        `Prompt audit failed for ${relativePath}: ${auditResult.violations.length} violations (${Object.entries(violationsByCategory).map(([k, c]) => `${c} ${k}`).join(", ")}). Fix all AI slop patterns before saving.`,
+      );
+    }
+
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
     const [bundle, file] = await Promise.all([
       getBundle(nextAgent),

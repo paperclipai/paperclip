@@ -55,3 +55,4 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export { auditPrompt, auditSummarize, type AuditResult, type AuditViolation } from "./prompt-audit.js";

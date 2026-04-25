@@ -35,7 +35,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -73,6 +73,7 @@ import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   getContextUsagePercent,
+  auditPrompt,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
@@ -4077,6 +4078,36 @@ export function heartbeatService(db: Db) {
           payload: meta as unknown as Record<string, unknown>,
         });
       };
+
+      const managedInstructionsRoot = path.resolve(
+        resolvePaperclipInstanceRoot(),
+        "companies",
+        agent.companyId,
+        "agents",
+        agent.id,
+        "instructions",
+      );
+      try {
+        const entryPath = path.resolve(managedInstructionsRoot, "AGENTS.md");
+        const entryContent = await fs.readFile(entryPath, "utf8");
+        const auditResult = auditPrompt(entryContent);
+        if (!auditResult.passed) {
+          const byCategory = auditResult.violations.reduce((acc, v) => {
+            acc[v.category] = (acc[v.category] ?? 0) + 1;
+            return acc;
+          }, {} as Record<string, number>);
+          const violationSummary = Object.entries(byCategory).map(([k, c]) => `${c} ${k}`).join(", ");
+          await onLog(
+            "stderr",
+            `[paperclip] PROMPT AUDIT FAILED for agent ${agent.id}: ${auditResult.violations.length} violations (${violationSummary}). Agent activation blocked.\n`,
+          );
+          throw new Error(
+            `Prompt audit failed: ${auditResult.violations.length} violations (${violationSummary}). Fix AI slop in agent instructions before running.`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("Prompt audit failed")) throw err;
+      }
 
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt
