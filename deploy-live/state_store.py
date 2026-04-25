@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from schemas import PositionRecord
+from schemas import PositionRecord, FillRecord
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -194,4 +194,52 @@ def _row_to_position(row: sqlite3.Row) -> PositionRecord:
         status=row["status"], opened_at_ms=row["opened_at"],
         closed_at_ms=row["closed_at"],
         realized_pnl_usd=row["realized_pnl_usd"],
+    )
+
+
+def insert_fill(
+    conn: sqlite3.Connection, *,
+    position_id: int, exchange: str, leg: str, intent: str,
+    order_id: str, side: str,
+    size_usd: float, fill_price: float, fees_usd: float,
+    filled_at_ms: int, raw_response: str,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO fills
+           (position_id, exchange, leg, intent, order_id, side,
+            size_usd, fill_price, fees_usd, filled_at, raw_response)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (position_id, exchange, leg, intent, order_id, side,
+         size_usd, fill_price, fees_usd, filled_at_ms, raw_response),
+    )
+    return cur.lastrowid
+
+
+def list_fills_for_position(
+    conn: sqlite3.Connection, position_id: int
+) -> list[FillRecord]:
+    rows = conn.execute(
+        "SELECT * FROM fills WHERE position_id=? ORDER BY filled_at",
+        (position_id,),
+    ).fetchall()
+    return [_row_to_fill(r) for r in rows]
+
+
+def list_recent_fills(
+    conn: sqlite3.Connection, *, exchange: str, since_ms: int
+) -> list[FillRecord]:
+    rows = conn.execute(
+        "SELECT * FROM fills WHERE exchange=? AND filled_at>=? ORDER BY filled_at",
+        (exchange, since_ms),
+    ).fetchall()
+    return [_row_to_fill(r) for r in rows]
+
+
+def _row_to_fill(row: sqlite3.Row) -> FillRecord:
+    return FillRecord(
+        id=row["id"], position_id=row["position_id"],
+        exchange=row["exchange"], leg=row["leg"], intent=row["intent"],
+        order_id=row["order_id"], side=row["side"],
+        size_usd=row["size_usd"], fill_price=row["fill_price"],
+        fees_usd=row["fees_usd"], filled_at_ms=row["filled_at"],
     )

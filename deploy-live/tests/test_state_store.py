@@ -140,3 +140,48 @@ def test_get_position_returns_none_for_missing(fresh_db):
     conn = open_db(fresh_db)
     assert get_position(conn, 999) is None
     conn.close()
+
+
+from state_store import insert_fill, list_fills_for_position, list_recent_fills
+
+
+def _sample_fill(position_id, **overrides):
+    base = dict(
+        position_id=position_id, exchange="MEXC", leg="a", intent="entry",
+        order_id="ord-1", side="buy",
+        size_usd=25.0, fill_price=1.234, fees_usd=0.01,
+        filled_at_ms=1700000000500, raw_response='{"x":1}',
+    )
+    base.update(overrides)
+    return base
+
+
+def test_insert_fill_links_to_position(fresh_db):
+    conn = open_db(fresh_db)
+    pid = insert_position(conn, **_sample_position(status="open"))
+    fid = insert_fill(conn, **_sample_fill(pid))
+    assert fid > 0
+    fills = list_fills_for_position(conn, pid)
+    assert len(fills) == 1
+    assert fills[0].order_id == "ord-1"
+    conn.close()
+
+
+def test_insert_fill_rejects_duplicate_exchange_order(fresh_db):
+    conn = open_db(fresh_db)
+    pid = insert_position(conn, **_sample_position(status="open"))
+    insert_fill(conn, **_sample_fill(pid))
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_fill(conn, **_sample_fill(pid))
+    conn.close()
+
+
+def test_list_recent_fills_filters_by_timestamp(fresh_db):
+    conn = open_db(fresh_db)
+    pid = insert_position(conn, **_sample_position(status="open"))
+    insert_fill(conn, **_sample_fill(pid, order_id="o1", filled_at_ms=100))
+    insert_fill(conn, **_sample_fill(pid, order_id="o2", filled_at_ms=200))
+    insert_fill(conn, **_sample_fill(pid, order_id="o3", filled_at_ms=300))
+    recent = list_recent_fills(conn, exchange="MEXC", since_ms=150)
+    assert {f.order_id for f in recent} == {"o2", "o3"}
+    conn.close()
