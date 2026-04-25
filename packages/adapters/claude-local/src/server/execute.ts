@@ -588,7 +588,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     projectId: null,
     authToken,
-    apiBase: typeof env.PAPERCLIP_API_URL === "string" ? env.PAPERCLIP_API_URL : "http://localhost:3100",
+    // The bridge runs in the same container as the Paperclip server, so
+    // hit it on localhost rather than the public URL. Going via
+    // `env.PAPERCLIP_API_URL` (which can be a Cloudflare-fronted public
+    // host) would round-trip out through the CDN + tunnel and back in,
+    // adding latency and exposure to upstream 502s for what is logically
+    // a same-process call. PAPERCLIP_PORT is set in the deploy compose;
+    // 3100 is the upstream default.
+    apiBase: `http://localhost:${process.env.PAPERCLIP_PORT ?? "3100"}`,
     disabled: asBoolean(config.disablePluginTools, false),
   });
 
