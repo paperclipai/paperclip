@@ -124,3 +124,14 @@ export {
   type PrOutcome,
   type NewPrOutcome,
 } from "./pr_outcomes.js";
+export {
+  trackedDependencies,
+  cveEntries,
+  cveAlerts,
+  type TrackedDependency,
+  type NewTrackedDependency,
+  type CveEntry,
+  type NewCveEntry,
+  type CveAlert,
+  type NewCveAlert,
+} from "./cve.js";
