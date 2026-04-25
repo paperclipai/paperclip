@@ -194,6 +194,7 @@ export function CompanySettings() {
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
+    setDeleteCompanyFiles(false);
   }, [selectedCompanyId]);
 
   const archiveMutation = useMutation({
