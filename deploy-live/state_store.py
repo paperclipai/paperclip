@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from schemas import PositionRecord, FillRecord, AuditEntry
+from schemas import PositionRecord, FillRecord, AuditEntry, BalanceSnapshot, ExchangeHealthRecord
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -291,4 +291,74 @@ def _row_to_audit(row: sqlite3.Row) -> AuditEntry:
         severity=row["severity"], position_id=row["position_id"],
         exchange=row["exchange"], symbol=row["symbol"],
         message=row["message"], details=details,
+    )
+
+
+def snapshot_balance(
+    conn: sqlite3.Connection, *,
+    exchange: str, asset: str,
+    available_usd: float, locked_usd: float, snapshot_at_ms: int,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO balances
+           (exchange, asset, available_usd, locked_usd, snapshot_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (exchange, asset, available_usd, locked_usd, snapshot_at_ms),
+    )
+    return cur.lastrowid
+
+
+def latest_balance(
+    conn: sqlite3.Connection, *, exchange: str, asset: str = "USDT"
+) -> Optional[BalanceSnapshot]:
+    row = conn.execute(
+        """SELECT * FROM balances WHERE exchange=? AND asset=?
+           ORDER BY snapshot_at DESC LIMIT 1""",
+        (exchange, asset),
+    ).fetchone()
+    if row is None:
+        return None
+    return BalanceSnapshot(
+        exchange=row["exchange"], asset=row["asset"],
+        available_usd=row["available_usd"], locked_usd=row["locked_usd"],
+        snapshot_at_ms=row["snapshot_at"],
+    )
+
+
+def upsert_exchange_health(
+    conn: sqlite3.Connection, *,
+    exchange: str, status: str,
+    last_ok_at_ms: Optional[int] = None,
+    last_error_at_ms: Optional[int] = None,
+    last_error_msg: Optional[str] = None,
+    consecutive_errors: int = 0,
+) -> None:
+    conn.execute(
+        """INSERT INTO exchange_health
+           (exchange, status, last_ok_at, last_error_at, last_error_msg, consecutive_errors)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(exchange) DO UPDATE SET
+             status=excluded.status,
+             last_ok_at=COALESCE(excluded.last_ok_at, exchange_health.last_ok_at),
+             last_error_at=COALESCE(excluded.last_error_at, exchange_health.last_error_at),
+             last_error_msg=COALESCE(excluded.last_error_msg, exchange_health.last_error_msg),
+             consecutive_errors=excluded.consecutive_errors""",
+        (exchange, status, last_ok_at_ms, last_error_at_ms,
+         last_error_msg, consecutive_errors),
+    )
+
+
+def get_exchange_health(
+    conn: sqlite3.Connection, exchange: str
+) -> Optional[ExchangeHealthRecord]:
+    row = conn.execute(
+        "SELECT * FROM exchange_health WHERE exchange=?", (exchange,)
+    ).fetchone()
+    if row is None:
+        return None
+    return ExchangeHealthRecord(
+        exchange=row["exchange"], status=row["status"],
+        last_ok_at_ms=row["last_ok_at"], last_error_at_ms=row["last_error_at"],
+        last_error_msg=row["last_error_msg"],
+        consecutive_errors=row["consecutive_errors"],
     )

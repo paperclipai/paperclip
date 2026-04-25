@@ -220,3 +220,42 @@ def test_audit_serializes_details_dict(fresh_db):
     rows = list_audit_recent(conn, since_ms=0, limit=10)
     assert rows[0].details == {"k": "v"}
     conn.close()
+
+
+from state_store import (
+    snapshot_balance, latest_balance,
+    upsert_exchange_health, get_exchange_health,
+)
+
+
+def test_balance_snapshot_and_latest(fresh_db):
+    conn = open_db(fresh_db)
+    snapshot_balance(conn, exchange="MEXC", asset="USDT",
+                     available_usd=50.0, locked_usd=0.0, snapshot_at_ms=100)
+    snapshot_balance(conn, exchange="MEXC", asset="USDT",
+                     available_usd=49.5, locked_usd=0.5, snapshot_at_ms=200)
+    snap = latest_balance(conn, exchange="MEXC")
+    assert snap.snapshot_at_ms == 200
+    assert snap.available_usd == 49.5
+    conn.close()
+
+
+def test_latest_balance_returns_none_for_missing(fresh_db):
+    conn = open_db(fresh_db)
+    assert latest_balance(conn, exchange="OKX") is None
+    conn.close()
+
+
+def test_exchange_health_upsert(fresh_db):
+    conn = open_db(fresh_db)
+    upsert_exchange_health(conn, exchange="MEXC", status="ok",
+                           last_ok_at_ms=100, consecutive_errors=0)
+    h = get_exchange_health(conn, "MEXC")
+    assert h.status == "ok"
+    upsert_exchange_health(conn, exchange="MEXC", status="degraded",
+                           last_error_at_ms=200, last_error_msg="timeout",
+                           consecutive_errors=2)
+    h = get_exchange_health(conn, "MEXC")
+    assert h.status == "degraded"
+    assert h.consecutive_errors == 2
+    conn.close()
