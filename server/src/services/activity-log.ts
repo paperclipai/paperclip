@@ -51,7 +51,13 @@ export function publishPluginDomainEvent(event: PluginEvent): void {
 }
 
 export interface LogActivityInput {
-  companyId: string;
+  /**
+   * Owning company, or `null` for instance-scoped activity (e.g. an
+   * instance-scoped secret create/rotate/delete). Per-company timelines
+   * filter null rows out; the instance settings UI is the surface that
+   * surfaces them.
+   */
+  companyId: string | null;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
   action: string;
@@ -82,38 +88,47 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     details: redactedDetails,
   });
 
-  publishLiveEvent({
-    companyId: input.companyId,
-    type: "activity.logged",
-    payload: {
-      actorType: input.actorType,
-      actorId: input.actorId,
-      action: input.action,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
-      details: redactedDetails,
-    },
-  });
-
-  const pluginEventType = eventTypeForActivityAction(input.action);
-  if (pluginEventType) {
-    const event: PluginEvent = {
-      eventId: randomUUID(),
-      eventType: pluginEventType,
-      occurredAt: new Date().toISOString(),
-      actorId: input.actorId,
-      actorType: input.actorType,
-      entityId: input.entityId,
-      entityType: input.entityType,
-      companyId: input.companyId,
+  // Live + plugin event channels are still company-scoped today: a board
+  // user subscribes to a single company's activity stream, and plugins
+  // filter by company when receiving events. Instance-scoped activity
+  // (companyId === null) writes the audit row but skips the broadcast.
+  // When the per-instance channel ships, route null-companyId events to
+  // it instead of skipping.
+  if (input.companyId !== null) {
+    const companyId = input.companyId;
+    publishLiveEvent({
+      companyId,
+      type: "activity.logged",
       payload: {
-        ...redactedDetails,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
+        details: redactedDetails,
       },
-    };
-    publishPluginDomainEvent(event);
+    });
+
+    const pluginEventType = eventTypeForActivityAction(input.action);
+    if (pluginEventType) {
+      const event: PluginEvent = {
+        eventId: randomUUID(),
+        eventType: pluginEventType,
+        occurredAt: new Date().toISOString(),
+        actorId: input.actorId,
+        actorType: input.actorType,
+        entityId: input.entityId,
+        entityType: input.entityType,
+        companyId,
+        payload: {
+          ...redactedDetails,
+          agentId: input.agentId ?? null,
+          runId: input.runId ?? null,
+        },
+      };
+      publishPluginDomainEvent(event);
+    }
   }
 }

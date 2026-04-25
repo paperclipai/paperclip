@@ -505,6 +505,13 @@
       "when": 1777098897106,
       "tag": "0071_instance_secrets",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777150000000,
+      "tag": "0072_activity_log_instance_scope",
+      "breakpoints": true
     }
   ]
 }

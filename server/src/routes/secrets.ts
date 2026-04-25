@@ -100,19 +100,15 @@ export function secretRoutes(db: Db) {
       { userId: req.actor.userId ?? "board", agentId: null },
     );
 
-    if (existing.companyId) {
-      // activity_log.company_id is currently NOT NULL — instance-scoped
-      // operations are skipped until that constraint is loosened (follow-up).
-      await logActivity(db, {
-        companyId: existing.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "secret.rotated",
-        entityType: "secret",
-        entityId: rotated.id,
-        details: { version: rotated.latestVersion },
-      });
-    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "secret.rotated",
+      entityType: "secret",
+      entityId: rotated.id,
+      details: { version: rotated.latestVersion },
+    });
 
     res.json(rotated);
   });
@@ -138,17 +134,15 @@ export function secretRoutes(db: Db) {
       return;
     }
 
-    if (existing.companyId) {
-      await logActivity(db, {
-        companyId: existing.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "secret.updated",
-        entityType: "secret",
-        entityId: updated.id,
-        details: { name: updated.name },
-      });
-    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "secret.updated",
+      entityType: "secret",
+      entityId: updated.id,
+      details: { name: updated.name },
+    });
 
     res.json(updated);
   });
@@ -169,17 +163,15 @@ export function secretRoutes(db: Db) {
       return;
     }
 
-    if (existing.companyId) {
-      await logActivity(db, {
-        companyId: existing.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "secret.deleted",
-        entityType: "secret",
-        entityId: removed.id,
-        details: { name: removed.name },
-      });
-    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "secret.deleted",
+      entityType: "secret",
+      entityId: removed.id,
+      details: { name: removed.name },
+    });
 
     res.json({ ok: true });
   });
@@ -213,9 +205,15 @@ export function secretRoutes(db: Db) {
       { userId: req.actor.userId ?? "board", agentId: null },
     );
 
-    // activity_log.company_id NOT NULL — see comment in rotate route. Skip
-    // the audit row for instance creates until the activity_log column
-    // becomes nullable.
+    await logActivity(db, {
+      companyId: null,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "instance_secret.created",
+      entityType: "secret",
+      entityId: created.id,
+      details: { name: created.name, provider: created.provider },
+    });
 
     res.status(201).json(created);
   });
