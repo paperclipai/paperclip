@@ -45,8 +45,25 @@ function computeEmbedding(text: string): number[] {
   return embedding;
 }
 
+function createRateLimiter(maxRequests: number, windowMs: number) {
+  const requests = new Map<string, number[]>();
+
+  return {
+    check(key: string): boolean {
+      const now = Date.now();
+      const windowStart = now - windowMs;
+      const existing = (requests.get(key) ?? []).filter((ts) => ts > windowStart);
+      if (existing.length >= maxRequests) return false;
+      existing.push(now);
+      requests.set(key, existing);
+      return true;
+    },
+  };
+}
+
 export function embedRoutes() {
   const router = Router();
+  const embedRateLimiter = createRateLimiter(100, 60_000);
 
   router.get("/health", (_req, res) => {
     res.json({
@@ -57,6 +74,12 @@ export function embedRoutes() {
   });
 
   router.post("/", (req, res) => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    if (!embedRateLimiter.check(ip)) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    }
+
     try {
       const { text } = req.body;
 
@@ -90,6 +113,12 @@ export function embedRoutes() {
   });
 
   router.post("/batch", (req, res) => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    if (!embedRateLimiter.check(ip)) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    }
+
     try {
       const { texts } = req.body;
 

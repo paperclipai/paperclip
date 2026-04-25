@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { and, desc, eq, like, sql, isNotNull } from "drizzle-orm";
 import { knowledgeChunks, knowledgeTopics, knowledgeSources, synthesizedSkills } from "@paperclipai/db";
 import { SkillSynthesizerService } from "@paperclip-ui/skill-synthesizer";
+import { assertAuthenticated } from "./authz.js";
 
 function computeCosineSimilarity(vecA: number[], vecB: number[]): number {
   if (vecA.length !== vecB.length) return 0;
@@ -384,6 +385,7 @@ export function knowledgeRoutes(db: Db) {
   });
 
   router.get("/skills/:topicSlug", async (req, res) => {
+    assertAuthenticated(req);
     const { topicSlug } = req.params;
 
     try {
