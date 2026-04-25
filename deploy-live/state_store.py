@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from schemas import PositionRecord
+
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS positions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,9 +121,6 @@ def init_schema(path: str | Path) -> None:
         conn.executescript(SCHEMA_DDL)
     finally:
         conn.close()
-
-
-from schemas import PositionRecord
 
 
 _OPEN_STATUSES = ("opening", "open", "closing", "degraded")

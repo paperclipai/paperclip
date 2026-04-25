@@ -117,6 +117,7 @@ def test_close_position_records_exit(fresh_db):
     rec = get_position(conn, pid)
     assert rec.status == "closed"
     assert rec.closed_at_ms == 1700000060000
+    assert rec.exit_spread_pct == 0.0014
     assert rec.realized_pnl_usd == 0.42
     conn.close()
 
