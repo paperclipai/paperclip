@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
@@ -204,5 +204,24 @@ describe("assertBoardOrgAccess", () => {
 
     expect(hasBoardOrgAccess(req)).toBe(true);
     expect(() => assertBoardOrgAccess(req)).not.toThrow();
+  });
+});
+
+describe("assertInstanceAdmin", () => {
+  it("rejects scoped board API keys even when the actor has an admin flag", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "admin-1",
+        source: "board_key",
+        isInstanceAdmin: true,
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }],
+        allowedCompanySlugs: ["company-1"],
+        credentialCompanySlugs: ["company-1"],
+      },
+    });
+
+    expect(() => assertInstanceAdmin(req)).toThrow("Instance admin access required");
   });
 });

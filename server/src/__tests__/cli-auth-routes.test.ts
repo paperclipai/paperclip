@@ -219,6 +219,42 @@ describe("cli auth routes", () => {
     );
   });
 
+  it("rejects CLI auth approval from scoped board API keys", async () => {
+    mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
+      status: "approved",
+      challenge: {
+        id: "challenge-1",
+        boardApiKeyId: "board-key-new",
+        requestedAccess: "board",
+        requestedCompanyId: null,
+        expiresAt: new Date("2026-03-23T13:00:00.000Z"),
+      },
+    });
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "board_key",
+      keyId: "board-key-scoped",
+      isInstanceAdmin: false,
+      companyIds: ["company-a"],
+      memberships: [{ companyId: "company-a", membershipRole: "admin", status: "active" }],
+      allowedCompanySlugs: ["alpha"],
+      credentialCompanySlugs: ["alpha"],
+    });
+
+    const res = await request(app)
+      .post("/api/cli-auth/challenges/challenge-1/approve")
+      .send({ token: "pcp_cli_auth_secret" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board API keys cannot approve CLI auth challenges");
+    expect(mockBoardAuthService.approveCliAuthChallenge).not.toHaveBeenCalled();
+    expect(mockBoardAuthService.resolveBoardActivityCompanyIds).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("logs approve activity for instance admins without company memberships", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",

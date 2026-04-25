@@ -2182,6 +2182,9 @@ export function accessRoutes(
       ) {
         throw unauthorized("Sign in before approving CLI access");
       }
+      if (req.actor.source === "board_key") {
+        throw forbidden("Board API keys cannot approve CLI auth challenges");
+      }
 
       const userId = req.actor.userId ?? "local-board";
       const approved = await boardAuth.approveCliAuthChallenge(

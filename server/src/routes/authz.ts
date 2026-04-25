@@ -36,6 +36,9 @@ export function assertBoardOrgAccess(req: Request) {
 
 export function assertInstanceAdmin(req: Request) {
   assertBoard(req);
+  if (req.actor.source === "board_key" && (req.actor.allowedCompanySlugs?.length ?? 0) > 0) {
+    throw forbidden("Instance admin access required");
+  }
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;
   }
