@@ -257,26 +257,40 @@ async function handleReview(db: Db, data: WebhookPayload) {
   if (!data.review) return;
   const review = data.review;
 
-  if (review.state !== "approved") {
-    logger.debug({ prNumber: review.pull_request.number, state: review.state }, "Review not approved, skipping");
-    return;
-  }
-
   const repoFullName = review.pull_request.base.repo.full_name;
   const prNumber = review.pull_request.number;
 
-  logger.info({ repoFullName, prNumber }, "PR approved, triggering proof verification");
-
-  const verified = await verifyIssueProofByCiResult(db, {
-    repositoryFullName: repoFullName,
-    prNumber,
-    headSha: "",
+  const existing = await db.query.prCiStatus.findFirst({
+    where: and(
+      eq(prCiStatus.repositoryFullName, repoFullName),
+      eq(prCiStatus.prNumber, prNumber),
+    ),
   });
 
-  if (verified.length > 0) {
-    logger.info(
-      { repoFullName, prNumber, verifiedIssues: verified.map((v) => v.identifier) },
-      "Issue proofs verified via review approval",
-    );
+  if (existing) {
+    await db
+      .update(prCiStatus)
+      .set({
+        reviewState: review.state,
+        reviewApprovedAt: review.state === "approved" ? new Date() : existing.reviewApprovedAt,
+        reviewApprovedBy: review.state === "approved" ? `review_${review.id}` : existing.reviewApprovedBy,
+        updatedAt: new Date(),
+      })
+      .where(eq(prCiStatus.id, existing.id));
+  }
+
+  if (review.state === "approved") {
+    logger.info({ repoFullName, prNumber }, "PR approved, triggering proof verification");
+    const verified = await verifyIssueProofByCiResult(db, {
+      repositoryFullName: repoFullName,
+      prNumber,
+      headSha: "",
+    });
+    if (verified.length > 0) {
+      logger.info(
+        { repoFullName, prNumber, verifiedIssues: verified.map((v) => v.identifier) },
+        "Issue proofs verified via review approval",
+      );
+    }
   }
 }

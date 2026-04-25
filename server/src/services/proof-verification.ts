@@ -8,6 +8,7 @@ export interface ProofVerificationResult {
   identifier: string;
   proofStatus: string;
   updated: boolean;
+  reason?: string;
 }
 
 export async function verifyIssueProofByCiResult(
@@ -18,7 +19,7 @@ export async function verifyIssueProofByCiResult(
     headSha: string;
   },
 ): Promise<ProofVerificationResult[]> {
-  const { repositoryFullName, prNumber, headSha } = params;
+  const { repositoryFullName, prNumber } = params;
 
   const ciResult = await db.query.prCiStatus.findFirst({
     where: and(
@@ -28,15 +29,7 @@ export async function verifyIssueProofByCiResult(
   });
 
   if (!ciResult) {
-    logger.debug({ repositoryFullName, prNumber }, "No CI result found for PR");
-    return [];
-  }
-
-  if (ciResult.conclusion !== "success" || ciResult.status !== "completed") {
-    logger.debug(
-      { repositoryFullName, prNumber, conclusion: ciResult.conclusion, status: ciResult.status },
-      "CI not yet successful",
-    );
+    logger.debug({ repositoryFullName, prNumber }, "No CI/review result found for PR");
     return [];
   }
 
@@ -68,46 +61,67 @@ export async function verifyIssueProofByCiResult(
       continue;
     }
 
+    const issueKind = determineIssueKind(issue.title);
     const kindSpec = await db.query.issueKindProofSpecs.findFirst({
-      where: eq(issueKindProofSpecs.issueKind, determineIssueKind(issue.title)),
+      where: eq(issueKindProofSpecs.issueKind, issueKind),
     });
 
     const requiresCi = kindSpec?.requiresCiProof ?? true;
-    if (!requiresCi) {
-      await db
-        .update(issues)
-        .set({
-          proofStatus: "verified",
-          proofCiUrl: ciResult.url ?? null,
-          proofVerifiedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, issue.id));
+    const requiresReview = kindSpec?.requiresReviewApproval ?? false;
+    const requiresLiveUrl = kindSpec?.requiresLiveUrlProof ?? false;
 
+    const ciPassed = ciResult.conclusion === "success" && ciResult.status === "completed";
+    const reviewApproved = ciResult.reviewState === "approved";
+
+    if (requiresCi && !ciPassed) {
       results.push({
         issueId: issue.id,
         identifier: issue.identifier ?? "unknown",
-        proofStatus: "verified",
-        updated: true,
+        proofStatus: currentProofStatus,
+        updated: false,
+        reason: `CI not yet passed (conclusion=${ciResult.conclusion}, status=${ciResult.status})`,
       });
-    } else {
-      await db
-        .update(issues)
-        .set({
-          proofStatus: "verified",
-          proofCiUrl: ciResult.url ?? null,
-          proofVerifiedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, issue.id));
-
-      results.push({
-        issueId: issue.id,
-        identifier: issue.identifier ?? "unknown",
-        proofStatus: "verified",
-        updated: true,
-      });
+      continue;
     }
+
+    if (requiresReview && !reviewApproved) {
+      results.push({
+        issueId: issue.id,
+        identifier: issue.identifier ?? "unknown",
+        proofStatus: currentProofStatus,
+        updated: false,
+        reason: `Review not yet approved (state=${ciResult.reviewState})`,
+      });
+      continue;
+    }
+
+    if (requiresLiveUrl) {
+      results.push({
+        issueId: issue.id,
+        identifier: issue.identifier ?? "unknown",
+        proofStatus: currentProofStatus,
+        updated: false,
+        reason: "Live URL verification requires Phase 0.2 synthetic prober",
+      });
+      continue;
+    }
+
+    await db
+      .update(issues)
+      .set({
+        proofStatus: "verified",
+        proofCiUrl: ciResult.url ?? null,
+        proofVerifiedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issue.id));
+
+    results.push({
+      issueId: issue.id,
+      identifier: issue.identifier ?? "unknown",
+      proofStatus: "verified",
+      updated: true,
+    });
   }
 
   return results;

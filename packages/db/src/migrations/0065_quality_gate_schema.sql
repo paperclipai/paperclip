@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS "pr_ci_status" (
   "conclusion" text,
   "status" text,
   "url" text,
+  "review_approved_at" timestamptz,
+  "review_approved_by" text,
+  "review_state" text,
   "received_at" timestamptz NOT NULL DEFAULT NOW(),
   "updated_at" timestamptz NOT NULL DEFAULT NOW()
 );
