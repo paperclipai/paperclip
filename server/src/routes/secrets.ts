@@ -8,8 +8,15 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { assertBoard, assertCompanyAccess, assertAuthenticated } from "./authz.js";
+import { logActivity, secretService, agentService, issueService } from "../services/index.js";
+import {
+  checkAcl,
+  logAccessDenied,
+  queueAccessLogRead,
+  startAccessLogFlusher,
+} from "../services/secret-access-log.js";
+import { scrubSecretValues } from "../output_scrubber.js";
 
 export function secretRoutes(db: Db) {
   const router = Router();
@@ -159,6 +166,84 @@ export function secretRoutes(db: Db) {
     });
 
     res.json({ ok: true });
+  });
+
+  let accessLogStarted = false;
+
+  router.get("/secrets/:key", async (req, res) => {
+    assertAuthenticated(req);
+
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(403).json({ error: "Agent credentials required" });
+      return;
+    }
+
+    const secretName = req.params.key as string;
+    const { agentId, companyId } = req.actor;
+
+    if (!accessLogStarted) {
+      startAccessLogFlusher(db);
+      accessLogStarted = true;
+    }
+
+    const secret = await svc.getByName(companyId, secretName);
+    if (!secret) {
+      const agent = await agentService(db).getById(agentId);
+      const agentRole = agent?.role ?? "unknown";
+
+      await issueService(db).create(companyId, {
+        title: `[BOARD] SECRET-MISSING ${secretName}`,
+        description: `Agent \`${agentId}\` (role: ${agentRole}) requested secret \`${secretName}\` but it does not exist.\n\nCreate the secret in the vault or grant the agent access to an existing secret.`,
+        priority: "high",
+        status: "todo",
+        labelIds: [],
+      });
+
+      res.status(404).json({ error: "Secret not found", secretName });
+      return;
+    }
+
+    const agent = await agentService(db).getById(agentId);
+    const agentRole = agent?.role ?? "unknown";
+
+    const aclResult = checkAcl(secret, agentId, agentRole);
+    if (!aclResult.granted) {
+      await logAccessDenied(db, {
+        secretId: secret.id,
+        secretName,
+        companyId,
+        actorAgentId: agentId,
+        actorRole: agentRole,
+        denialReason: aclResult.reason ?? "access_denied",
+      });
+      res.status(403).json({ error: "Access denied", reason: aclResult.reason });
+      return;
+    }
+
+    queueAccessLogRead({
+      secretId: secret.id,
+      secretName,
+      companyId,
+      actorAgentId: agentId,
+      actorRole: agentRole,
+    });
+
+    let secretValue: string;
+    try {
+      secretValue = await svc.resolveSecretValue(companyId, secret.id, "latest");
+    } catch {
+      res.status(500).json({ error: "Failed to resolve secret value" });
+      return;
+    }
+
+    const scrubbedValue = scrubSecretValues(secretValue);
+
+    res.json({
+      name: secretName,
+      value: scrubbedValue,
+      provider: secret.provider,
+      version: secret.latestVersion,
+    });
   });
 
   return router;

@@ -14,6 +14,8 @@ export const companySecrets = pgTable(
     description: text("description"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
+    allowedAgentRoles: text("allowed_agent_roles").array().notNull().default([]),
+    allowedAgentIds: uuid("allowed_agent_ids").array().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -21,5 +23,7 @@ export const companySecrets = pgTable(
     companyIdx: index("company_secrets_company_idx").on(table.companyId),
     companyProviderIdx: index("company_secrets_company_provider_idx").on(table.companyId, table.provider),
     companyNameUq: uniqueIndex("company_secrets_company_name_uq").on(table.companyId, table.name),
+    allowedRolesIdx: index("company_secrets_allowed_roles_idx").on(table.allowedAgentRoles),
+    allowedAgentIdsIdx: index("company_secrets_allowed_agent_ids_idx").on(table.allowedAgentIds),
   }),
 );
