@@ -22,17 +22,22 @@ No existing tests for knowledge routes auth in this PR scope.
 ```
 
 ## CI (REQUIRED — this is the actual proof)
-- Commit state: `success`
-- Snyk security scan: `12 security tests have passed` (security/snyk)
-- GitHub Actions: No run triggered yet (PR workflow may need manual trigger or depends on branch configuration)
+- Run URL: https://github.com/paperclipai/paperclip/actions/runs/ (PR #4502)
+- Status: **NOT RUN** — 0 checks, "Workflow runs completed with no jobs"
+- Local typecheck: **FAILS** with `Cannot find module '@paperclip-ui/knowledge-service'`
+- Note: PR has grown to 79 commits — includes additional work beyond KIT-3566 scope
 
 ## Deviations from SPEC
-- None identified.
+- PR scope has expanded beyond original KIT-3566 to include Phase 0.1-0.3 foundation work, heartbeat fixes, and other items from local-custom branch.
 
 ## Remaining Risks
-- Rate limiter is in-memory (per-process). In multi-process deployments, each process has its own limiter. This is consistent with the embed.ts pattern already in the codebase.
-- Auth uses `assertAuthenticated` which validates `req.actor.type !== "none"`. This requires the Express middleware to properly set `req.actor`. If the middleware is misconfigured, auth would fail open (unauthenticated).
+- CI has not run — may be blocked by workflow configuration issue or ubuntu-latest runner problem (see KIT-3482)
+- Local typecheck fails due to module resolution — needs investigation before merge
+- PR contains 79 commits including work from multiple agents on this branch — scope creep risk
+
+## Note on Proof-of-Work
+This BUILD doc was created from the original KIT-3566 commit (124c6ae6) but the PR has grown significantly. Full scope now includes Phase 0.1-0.3 quality gate, credential vault, heartbeat fixes, and other foundation work.
 
 ## Verification Artifacts
 - PR: https://github.com/paperclipai/paperclip/pull/4502
-- Commit: `124c6ae65ec153a4d58e46b582cf00ea231284a9`
+- Initial commit: `124c6ae65ec153a4d58e46b582cf00ea231284a9`
