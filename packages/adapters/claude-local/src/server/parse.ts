@@ -6,11 +6,22 @@ import {
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+const CLAUDE_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+
+// PMSA-15 / PMSA-11 §2.1: granular classification for Anthropic-side failures.
+// See /PMSA/issues/PMSA-11#document-plan section 2.1 for the truth table.
+const CLAUDE_API_ERROR_STATUS_RE = /api[_\s-]?error[_\s-]?status[:\s]+(\d{3})/i;
+const CLAUDE_QUOTA_EXHAUSTED_RE =
+  /(?:quota[_\s-]?(?:exhausted|exceeded)|monthly\s+quota|opus\s+quota|out\s+of\s+extra\s+usage|claude\s+usage\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached)/i;
+const CLAUDE_RATE_LIMIT_RE =
+  /(?:rate[-\s]?limit(?:ed|_error)?|too\s+many\s+requests|\b429\b|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception)/i;
+const CLAUDE_RETRY_AFTER_RE =
+  /(?:retry[-_\s]?after|x[-_]?ratelimit[-_]?reset|x[-_]?ratelimit[-_]?reset[-_]?after)[:\s=]+(\d+)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
@@ -38,7 +49,8 @@ export function parseClaudeStreamJson(stdout: string) {
       const message = parseObject(event.message);
       const content = Array.isArray(message.content) ? message.content : [];
       for (const entry of content) {
-        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry))
+          continue;
         const block = entry as Record<string, unknown>;
         if (asString(block.type, "") === "text") {
           const text = asString(block.text, "");
@@ -72,8 +84,12 @@ export function parseClaudeStreamJson(stdout: string) {
     outputTokens: asNumber(usageObj.output_tokens, 0),
   };
   const costRaw = finalResult.total_cost_usd;
-  const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
-  const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
+  const costUsd =
+    typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
+  const summary = asString(
+    finalResult.result,
+    assistantTexts.join("\n\n"),
+  ).trim();
 
   return {
     sessionId,
@@ -101,7 +117,10 @@ function extractClaudeErrorMessages(parsed: Record<string, unknown>): string[] {
     }
 
     const obj = entry as Record<string, unknown>;
-    const msg = asString(obj.message, "") || asString(obj.error, "") || asString(obj.code, "");
+    const msg =
+      asString(obj.message, "") ||
+      asString(obj.error, "") ||
+      asString(obj.code, "");
     if (msg) {
       messages.push(msg);
       continue;
@@ -122,7 +141,11 @@ export function extractClaudeLoginUrl(text: string): string | null {
   if (!match || match.length === 0) return null;
   for (const rawUrl of match) {
     const cleaned = rawUrl.replace(/[\])}.!,?;:'\"]+$/g, "");
-    if (cleaned.includes("claude") || cleaned.includes("anthropic") || cleaned.includes("auth")) {
+    if (
+      cleaned.includes("claude") ||
+      cleaned.includes("anthropic") ||
+      cleaned.includes("auth")
+    ) {
       return cleaned;
     }
   }
@@ -135,20 +158,29 @@ export function detectClaudeLoginRequired(input: {
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const messages = [
+    resultText,
+    ...extractClaudeErrorMessages(input.parsed ?? {}),
+    input.stdout,
+    input.stderr,
+  ]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  const requiresLogin = messages.some((line) =>
+    CLAUDE_AUTH_REQUIRED_RE.test(line),
+  );
   return {
     requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
 }
 
-export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
+export function describeClaudeFailure(
+  parsed: Record<string, unknown>,
+): string | null {
   const subtype = asString(parsed.subtype, "");
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
@@ -164,7 +196,9 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   return parts.length > 1 ? parts.join(": ") : null;
 }
 
-export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
+export function isClaudeMaxTurnsResult(
+  parsed: Record<string, unknown> | null | undefined,
+): boolean {
   if (!parsed) return false;
 
   const subtype = asString(parsed.subtype, "").trim().toLowerCase();
@@ -177,14 +211,18 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
-export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
+export function isClaudeUnknownSessionError(
+  parsed: Record<string, unknown>,
+): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
     .map((msg) => msg.trim())
     .filter(Boolean);
 
   return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+    /no conversation found with session id|unknown session|session .* not found/i.test(
+      msg,
+    ),
   );
 }
 
@@ -221,7 +259,9 @@ function readTimeZoneParts(date: Date, timeZone: string) {
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-    }).formatToParts(date).map((part) => [part.type, part.value]),
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
   );
   return {
     year: Number.parseInt(values.get("year") ?? "", 10),
@@ -232,13 +272,17 @@ function readTimeZoneParts(date: Date, timeZone: string) {
   };
 }
 
-function normalizeResetTimeZone(timeZoneHint: string | null | undefined): string | null {
+function normalizeResetTimeZone(
+  timeZoneHint: string | null | undefined,
+): string | null {
   const normalized = timeZoneHint?.trim();
   if (!normalized) return null;
   if (/^(?:utc|gmt)$/i.test(normalized)) return "UTC";
 
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date(0));
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(
+      new Date(0),
+    );
     return normalized;
   } catch {
     return null;
@@ -253,12 +297,38 @@ function dateFromTimeZoneWallClock(input: {
   minute: number;
   timeZone: string;
 }): Date | null {
-  let candidate = new Date(Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0));
-  const targetUtc = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+  let candidate = new Date(
+    Date.UTC(
+      input.year,
+      input.month - 1,
+      input.day,
+      input.hour,
+      input.minute,
+      0,
+      0,
+    ),
+  );
+  const targetUtc = Date.UTC(
+    input.year,
+    input.month - 1,
+    input.day,
+    input.hour,
+    input.minute,
+    0,
+    0,
+  );
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const actual = readTimeZoneParts(candidate, input.timeZone);
-    const actualUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0, 0);
+    const actualUtc = Date.UTC(
+      actual.year,
+      actual.month - 1,
+      actual.day,
+      actual.hour,
+      actual.minute,
+      0,
+      0,
+    );
     const offsetMs = targetUtc - actualUtc;
     if (offsetMs === 0) break;
     candidate = new Date(candidate.getTime() + offsetMs);
@@ -299,7 +369,9 @@ function nextClockTimeInTimeZone(input: {
   if (!retryAt) return null;
 
   if (retryAt.getTime() <= input.now.getTime()) {
-    const nextDay = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0));
+    const nextDay = new Date(
+      Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0),
+    );
     retryAt = dateFromTimeZoneWallClock({
       year: nextDay.getUTCFullYear(),
       month: nextDay.getUTCMonth() + 1,
@@ -313,7 +385,11 @@ function nextClockTimeInTimeZone(input: {
   return retryAt;
 }
 
-function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
+function parseClaudeResetClockTime(
+  clockText: string,
+  now: Date,
+  timeZoneHint?: string | null,
+): Date | null {
   const normalized = clockText.trim().replace(/\s+/g, " ");
   const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
   if (!match) return null;
@@ -367,7 +443,10 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))) {
+  if (
+    parsed &&
+    (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))
+  ) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
@@ -380,4 +459,170 @@ export function isClaudeTransientUpstreamError(input: {
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
+export type ClaudeFailureKind =
+  | "auth_required"
+  | "quota_exhausted"
+  | "rate_limited"
+  | "provider_5xx"
+  | "transient_upstream"
+  | null;
+
+export interface ClaudeFailureClassification {
+  kind: ClaudeFailureKind;
+  errorCode:
+    | "claude_auth_required"
+    | "claude_quota_exhausted"
+    | "claude_rate_limited"
+    | "claude_provider_5xx"
+    | "claude_transient_upstream"
+    | null;
+  errorFamily:
+    | "auth"
+    | "quota"
+    | "rate_limit"
+    | "provider_5xx"
+    | "transient_upstream"
+    | null;
+  httpStatus: number | null;
+  retryAfterMs: number | null;
+  retryNotBefore: Date | null;
+  loginUrl: string | null;
+}
+
+function extractHttpStatus(haystack: string): number | null {
+  const match = haystack.match(CLAUDE_API_ERROR_STATUS_RE);
+  if (!match) return null;
+  const status = Number.parseInt(match[1] ?? "", 10);
+  return Number.isFinite(status) && status >= 100 && status <= 599
+    ? status
+    : null;
+}
+
+function extractRetryAfterMs(haystack: string): number | null {
+  const match = haystack.match(CLAUDE_RETRY_AFTER_RE);
+  if (!match) return null;
+  const seconds = Number.parseInt(match[1] ?? "", 10);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return seconds * 1000;
+}
+
+/**
+ * PMSA-15 / PMSA-11 §2.1: classify Claude run failures into actionable buckets.
+ *
+ * Precedence: auth_required > quota_exhausted > rate_limited > provider_5xx > transient_upstream.
+ * `auth_required` requires the explicit "not logged in" / "claude login" copy. A bare 401 with
+ * the session already authenticated maps to `quota_exhausted` per the design plan.
+ */
+export function classifyClaudeFailure(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+  now?: Date;
+}): ClaudeFailureClassification {
+  const parsed = input.parsed ?? null;
+  const stdout = input.stdout ?? "";
+  const stderr = input.stderr ?? "";
+  const now = input.now ?? new Date();
+
+  const empty: ClaudeFailureClassification = {
+    kind: null,
+    errorCode: null,
+    errorFamily: null,
+    httpStatus: null,
+    retryAfterMs: null,
+    retryNotBefore: null,
+    loginUrl: null,
+  };
+
+  // Deterministic failures keep their existing handling outside this classifier.
+  if (
+    parsed &&
+    (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))
+  ) {
+    return empty;
+  }
+
+  const loginMeta = detectClaudeLoginRequired({ parsed, stdout, stderr });
+  const haystack = buildClaudeTransientHaystack({
+    parsed,
+    stdout,
+    stderr,
+    errorMessage: input.errorMessage ?? null,
+  });
+  const httpStatus = extractHttpStatus(haystack);
+  const retryAfterMs = extractRetryAfterMs(haystack);
+  const retryNotBefore = extractClaudeRetryNotBefore(
+    { parsed, stdout, stderr, errorMessage: input.errorMessage ?? null },
+    now,
+  );
+
+  if (loginMeta.requiresLogin) {
+    return {
+      kind: "auth_required",
+      errorCode: "claude_auth_required",
+      errorFamily: "auth",
+      httpStatus: httpStatus ?? 401,
+      retryAfterMs: null,
+      retryNotBefore: null,
+      loginUrl: loginMeta.loginUrl,
+    };
+  }
+
+  if (!haystack) return empty;
+
+  // 401 without auth-required copy => quota exhausted (e.g. Anthropic OAuth token rejected
+  // because the subscription's allotment is depleted).
+  const isQuotaTextMatch = CLAUDE_QUOTA_EXHAUSTED_RE.test(haystack);
+  if (httpStatus === 401 || isQuotaTextMatch) {
+    return {
+      kind: "quota_exhausted",
+      errorCode: "claude_quota_exhausted",
+      errorFamily: "transient_upstream",
+      httpStatus,
+      retryAfterMs,
+      retryNotBefore,
+      loginUrl: loginMeta.loginUrl,
+    };
+  }
+
+  if (httpStatus === 429 || CLAUDE_RATE_LIMIT_RE.test(haystack)) {
+    return {
+      kind: "rate_limited",
+      errorCode: "claude_rate_limited",
+      errorFamily: "transient_upstream",
+      httpStatus: httpStatus ?? 429,
+      retryAfterMs,
+      retryNotBefore,
+      loginUrl: loginMeta.loginUrl,
+    };
+  }
+
+  if (httpStatus !== null && httpStatus >= 500 && httpStatus < 600) {
+    return {
+      kind: "provider_5xx",
+      errorCode: "claude_provider_5xx",
+      errorFamily: "transient_upstream",
+      httpStatus,
+      retryAfterMs,
+      retryNotBefore,
+      loginUrl: loginMeta.loginUrl,
+    };
+  }
+
+  if (CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack)) {
+    return {
+      kind: "transient_upstream",
+      errorCode: "claude_transient_upstream",
+      errorFamily: "transient_upstream",
+      httpStatus,
+      retryAfterMs,
+      retryNotBefore,
+      loginUrl: loginMeta.loginUrl,
+    };
+  }
+
+  return { ...empty, loginUrl: loginMeta.loginUrl };
 }

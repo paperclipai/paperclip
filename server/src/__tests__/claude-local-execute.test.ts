@@ -661,7 +661,7 @@ describe("claude execute", () => {
     }
   }, 15_000);
 
-  it("classifies Claude 'out of extra usage' failures as transient upstream errors", async () => {
+  it("classifies Claude 'out of extra usage' failures as quota_exhausted (PMSA-15)", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
@@ -709,7 +709,10 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("claude_transient_upstream");
+      // PMSA-15: "out of extra usage" wording is classified as quota_exhausted
+      // (more granular than the legacy claude_transient_upstream bucket); the
+      // errorFamily and retry contract still route through transient_upstream.
+      expect(result.errorCode).toBe("claude_quota_exhausted");
       expect(result.errorFamily).toBe("transient_upstream");
       const expectedRetryNotBefore = "2026-04-22T21:00:00.000Z";
       expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
@@ -830,6 +833,85 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(1);
       expect(result.errorCode).not.toBe("claude_transient_upstream");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // PMSA-15 §2.2 acceptance: a Claude failure carrying api_error_status: 401
+  // (without the "please log in" wording that selects claude_auth_required) must
+  // surface as claude_quota_exhausted on the adapter execution result. The
+  // server-side heartbeat_runs row mirrors result.errorCode, so this assertion
+  // is the actionable end-to-end signal that quota incidents are now distinct
+  // from the legacy claude_transient_upstream bucket. The DB write itself is
+  // covered by heartbeat-run integration tests, which depend on embedded
+  // postgres and are skipped on hosts without that binary.
+  it("classifies api_error_status:401 (no auth wording) as claude_quota_exhausted (PMSA-15)", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-claude-execute-quota-401-"),
+    );
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error",
+        session_id: "claude-session-quota-401",
+        is_error: true,
+        result:
+          "Anthropic API request failed: api_error_status: 401 (subscription token rejected; please retry later)",
+        errors: [
+          {
+            type: "api_error",
+            message: "api_error_status: 401 — subscription token rejected",
+          },
+        ],
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-quota-401",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      // Top-level errorCode is what heartbeat_runs.errorCode mirrors.
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("claude_quota_exhausted");
+      expect(result.errorFamily).toBe("transient_upstream");
+      // resultJson carries the auxiliary classification metadata (the errorCode
+      // itself stays on the top-level result; see toAdapterResult merger).
+      expect(result.resultJson?.errorFamily).toBe("transient_upstream");
+      expect(result.resultJson?.httpStatus).toBe(401);
+      expect(result.resultJson?.failureKind).toBe("quota_exhausted");
+      // Should NOT route to auth_required: there is no "please log in" wording.
+      expect(result.errorCode).not.toBe("claude_auth_required");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

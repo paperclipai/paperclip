@@ -181,6 +181,17 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
   return "fresh_session_safer_invocation";
 }
 
+// PMSA-15 / PMSA-11 §2.1: Claude error codes that share the transient_upstream
+// retry contract (exponential backoff + retryNotBefore). Adding a new code here
+// is the only step needed to wire it into the existing retry pipeline, so
+// Phase 2-A (PMSA-18) just extends this set instead of touching the resolver.
+const CLAUDE_TRANSIENT_UPSTREAM_ERROR_CODES = new Set<string>([
+  "claude_transient_upstream",
+  "claude_quota_exhausted",
+  "claude_rate_limited",
+  "claude_provider_5xx",
+]);
+
 function readHeartbeatRunErrorFamily(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -188,7 +199,8 @@ function readHeartbeatRunErrorFamily(
   const persistedFamily = readNonEmptyString(resultJson.errorFamily);
   if (persistedFamily) return persistedFamily;
 
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+  if (run.errorCode === "codex_transient_upstream") return "transient_upstream";
+  if (run.errorCode && CLAUDE_TRANSIENT_UPSTREAM_ERROR_CODES.has(run.errorCode)) {
     return "transient_upstream";
   }
   return null;
