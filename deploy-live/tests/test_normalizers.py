@@ -83,3 +83,106 @@ def test_mexc_normalizer_filled_with_zero_price_raises():
     }
     with pytest.raises(ValidationError):
         normalize_mexc_order(raw, requested_size_usd=24.68)
+
+
+from normalizers import normalize_okx_order, normalize_bybit_order, normalize_blofin_order
+
+
+def test_okx_normalizer_happy_path():
+    raw = {
+        "instId": "ORDI-USDT",
+        "ordId": "okx-9001",
+        "side": "buy",
+        "sz": "20",
+        "fillSz": "20",
+        "avgPx": "1.234",
+        "fillPx": "1.234",
+        "fillNotionalUsd": "24.68",
+        "fee": "-0.0247",
+        "uTime": "1700000000000",
+        "state": "filled",
+        "tgtCcy": "quote_ccy",
+    }
+    r = normalize_okx_order(raw, requested_size_usd=24.68)
+    assert r.exchange == "OKX"
+    assert r.success is True
+    assert r.order_id == "okx-9001"
+    assert r.symbol == "ORDIUSDT"
+    assert r.side == "buy"
+    assert r.filled_size_usd == pytest.approx(24.68)
+    assert r.fill_price == pytest.approx(1.234)
+    assert r.fees_usd == pytest.approx(0.0247)
+
+
+def test_okx_normalizer_canceled_status():
+    raw = {
+        "instId": "ORDI-USDT",
+        "ordId": "okx-9002",
+        "side": "buy",
+        "sz": "20", "fillSz": "0", "avgPx": "0", "fillPx": "0",
+        "fillNotionalUsd": "0", "fee": "0",
+        "uTime": "1700000000000", "state": "canceled",
+    }
+    r = normalize_okx_order(raw, requested_size_usd=24.68)
+    assert r.success is False
+
+
+def test_bybit_normalizer_happy_path():
+    raw = {
+        "symbol": "ORDIUSDT",
+        "orderId": "bybit-7001",
+        "side": "Buy",
+        "qty": "20",
+        "cumExecQty": "20",
+        "avgPrice": "1.234",
+        "cumExecValue": "24.68",
+        "cumExecFee": "0.0247",
+        "updatedTime": "1700000000000",
+        "orderStatus": "Filled",
+    }
+    r = normalize_bybit_order(raw, requested_size_usd=24.68)
+    assert r.exchange == "BYBIT"
+    assert r.success is True
+    assert r.order_id == "bybit-7001"
+    assert r.side == "buy"
+    assert r.filled_size_usd == pytest.approx(24.68)
+
+
+def test_blofin_normalizer_happy_path():
+    raw = {
+        "instId": "ORDI-USDT",
+        "orderId": "blofin-5001",
+        "side": "buy",
+        "size": "20",
+        "filledSize": "20",
+        "averagePrice": "1.234",
+        "filledQuoteSize": "24.68",
+        "fee": "-0.0247",
+        "updateTime": "1700000000000",
+        "state": "filled",
+    }
+    r = normalize_blofin_order(raw, requested_size_usd=24.68)
+    assert r.exchange == "BLOFIN"
+    assert r.success is True
+    assert r.order_id == "blofin-5001"
+
+
+def test_blofin_normalizer_silent_failure():
+    """Reproduces the BloFin-silent-failure bug where state=filled but filledSize=0."""
+    raw = {
+        "instId": "ORDI-USDT",
+        "orderId": "blofin-5002",
+        "side": "buy",
+        "size": "20",
+        "filledSize": "0",
+        "averagePrice": "0",
+        "filledQuoteSize": "0",
+        "fee": "0",
+        "updateTime": "1700000000000",
+        "state": "filled",
+    }
+    r = normalize_blofin_order(raw, requested_size_usd=24.68)
+    # The exchange claimed success, but nothing actually filled.
+    # Normalizer must surface this as success=False so reconciler catches it.
+    assert r.success is False
+    assert r.filled_size_usd == 0.0
