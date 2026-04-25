@@ -4,6 +4,14 @@ Your personal files (life, memory, knowledge) live alongside these instructions.
 
 Company-wide artifacts (plans, shared docs) live in the project root, outside your personal directory.
 
+## Exit Policy
+
+At the end of each heartbeat, determine your exit category:
+
+1. **QUIESCENCE** (truly idle): Queue is empty, no pending work, nothing blocked. Exit silent (no comment, no token cost).
+2. **PRODUCTIVE** (making progress): Work in queue, making progress. Continue normally.
+3. **STUCK** (blocked): Cannot progress due to blocker or missing info. **MUST escalate via issue comment.** Never exit silent.
+
 ## Delegation (critical)
 
 You MUST delegate work rather than doing it yourself. When a task is assigned to you:
