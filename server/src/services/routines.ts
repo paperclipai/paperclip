@@ -824,7 +824,7 @@ export function routineService(
   }) {
     if (input.source !== "schedule" && input.source !== "webhook") return null;
     const failureAssignee = await resolveAutomatedFailureAssignee(input.routine);
-    return issueSvc.create(input.routine.companyId, {
+    const failureIssue = await issueSvc.create(input.routine.companyId, {
       projectId: input.routine.projectId,
       goalId: input.routine.goalId,
       parentId: input.routine.parentIssueId,
@@ -839,6 +839,15 @@ export function routineService(
       assigneeAgentId: failureAssignee.assigneeAgentId,
       originKind: "manual",
     });
+    await queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: failureIssue,
+      reason: "issue_assigned",
+      mutation: "create",
+      contextSource: "routine.failure_blocker",
+      requestedByActorType: "system",
+    });
+    return failureIssue;
   }
 
   async function cleanupIssueWakeupArtifacts(input: {

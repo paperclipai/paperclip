@@ -1291,9 +1291,34 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("links automated routine dispatch failures to a visible blocked issue", async () => {
-    const { agentId, routine, svc } = await seedFixture({
-      wakeup: async () => {
-        throw new Error("queue unavailable");
+    const { agentId, routine, svc, wakeups } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (wakeupOpts.contextSnapshot?.source === "routine.dispatch") {
+          throw new Error("queue unavailable");
+        }
+        if (!issueId) return null;
+        const queuedRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: queuedRunId,
+          companyId: routine.companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        });
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRunId,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRunId };
       },
     });
 
@@ -1332,6 +1357,28 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(blocker?.originKind).toBe("manual");
     expect(blocker?.description).toContain("queue unavailable");
     expect(blocker?.description).toContain("If this is a visual review routine and browser or vision access is unavailable");
+    expect(wakeups).toEqual([
+      expect.objectContaining({
+        agentId,
+        opts: expect.objectContaining({
+          reason: "issue_assigned",
+          payload: expect.objectContaining({ mutation: "create" }),
+          contextSnapshot: expect.objectContaining({ source: "routine.dispatch" }),
+        }),
+      }),
+      {
+        agentId,
+        opts: {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId: blocker?.id, mutation: "create" },
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: { issueId: blocker?.id, source: "routine.failure_blocker" },
+        },
+      },
+    ]);
   });
 
   it.each([
