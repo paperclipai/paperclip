@@ -3899,26 +3899,35 @@ export function heartbeatService(
       return issueRow;
     }
 
-    const errorLabel =
-      opts.errorCode === "claude_rate_limited"
-        ? "Anthropic API rate limit"
-        : "Anthropic Opus quota exhaustion";
+    const isRateLimit = opts.errorCode === "claude_rate_limited";
+    const errorLabel = isRateLimit
+      ? "Anthropic API rate limit"
+      : "Anthropic Opus quota exhaustion";
+    const limitNoun = isRateLimit
+      ? "Anthropic's API rate limit"
+      : "Anthropic's Opus quota limit";
+    const retryNotBefore = readTransientRetryNotBeforeFromRun(run);
+    const expectedClearLine = retryNotBefore
+      ? `- Expected to clear after ${retryNotBefore.toISOString().replace(/\.\d{3}Z$/, "Z")} (per provider hint).`
+      : `- The quota / rate-limit window typically rolls over within hours; check the agent's usage panel.`;
+
     const commentBody = [
       `## Blocked: ${errorLabel}`,
       "",
-      `Hit \`${opts.errorCode}\` ${opts.attempts}/${opts.maxAttempts} times in a row; bounded retry budget exhausted.`,
+      `This agent hit ${limitNoun} ${opts.attempts} times in a row. We've parked the work to avoid burning more retries.`,
       "",
       "**What this means**",
       "",
-      `- Heartbeat will no longer auto-retry this run.`,
-      `- The issue is parked at \`blocked\` until quota recovers or the board takes manual action.`,
+      `- The agent will not auto-retry this issue automatically.`,
+      `- Status will stay \`blocked\` until quota recovers or you take action.`,
       "",
-      "**Suggested actions**",
+      "**What you can do**",
       "",
-      "- Wait for the Anthropic quota window to roll over and clear the blocker manually.",
-      "- Or top up / switch the affected agent to a fallback provider (PMSA-11 §3.4 / §3.5).",
+      expectedClearLine,
+      "- Or open the agent settings and switch its provider to a fallback (e.g. Sonnet or Bedrock).",
+      "- After either, manually move this issue back to `todo` to resume.",
       "",
-      `_Triggered by run \`${run.id}\` for agent ${agent.name ?? agent.id}._`,
+      `_Run: \`${run.id}\` · Agent: ${agent.name ?? agent.id}_`,
     ].join("\n");
 
     let blockedIssue: Awaited<ReturnType<typeof issuesSvc.update>> = null;

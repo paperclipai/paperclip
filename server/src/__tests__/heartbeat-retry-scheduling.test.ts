@@ -1091,8 +1091,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(blockerComment?.body).toContain("claude_quota_exhausted");
-    expect(blockerComment?.body).toContain("bounded retry budget exhausted");
+    expect(blockerComment?.body).toContain(
+      "Blocked: Anthropic Opus quota exhaustion",
+    );
+    expect(blockerComment?.body).toContain("hit Anthropic's Opus quota limit");
+    expect(blockerComment?.body).toContain("manually move this issue back");
+    expect(blockerComment?.body).not.toMatch(/PMSA-\d+/);
   });
 
   it("does not overwrite a manual blocker when quota retries exhaust", async () => {
