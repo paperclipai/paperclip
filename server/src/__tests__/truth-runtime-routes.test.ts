@@ -57,7 +57,6 @@ describeEmbeddedPostgres("truth runtime routes", () => {
   }, 20_000);
 
   afterEach(async () => {
-    vi.restoreAllMocks();
     await db.delete(activityLog);
     await db.delete(truthPromotionRequests);
     await db.delete(truthDossiers);
@@ -533,9 +532,13 @@ describeEmbeddedPostgres("truth runtime routes", () => {
       requestedBy: "operator",
       expiresAt: new Date(now + 1_000).toISOString(),
     });
-    vi.spyOn(Date, "now").mockReturnValueOnce(now).mockReturnValue(now + 2_000);
-
-    const res = await request(createApp()).post(`/api/truth/promotions/${requestRow.id}/approve`).send({});
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(now).mockReturnValue(now + 2_000);
+    let res: request.Response;
+    try {
+      res = await request(createApp()).post(`/api/truth/promotions/${requestRow.id}/approve`).send({});
+    } finally {
+      dateNowSpy.mockRestore();
+    }
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("Promotion request expired");
@@ -595,6 +598,7 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     allowLocalBoard();
     const companyId = await seedCompany();
     const { dossier: draftDossier } = await seedDossier(companyId, "draft");
+    await db.update(truthDossiers).set({ status: "draft" }).where(eq(truthDossiers.id, draftDossier.id));
     const draftRequest = await service.createPromotionRequest(companyId, {
       companySlug: "truth-co",
       dossierId: draftDossier.id,
