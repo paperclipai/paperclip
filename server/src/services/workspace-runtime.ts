@@ -1372,6 +1372,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
+    let worktreeWasRemoved = false;
     const worktreeExists = await directoryExists(workspacePath);
     if (worktreeExists) {
       if (!repoRoot) {
@@ -1405,13 +1406,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
               successMessage: `Removed git worktree ${workspacePath}\n`,
               failureLabel: `git worktree remove ${workspacePath}`,
             });
+            worktreeWasRemoved = true;
           } catch (err) {
             warnings.push(err instanceof Error ? err.message : String(err));
           }
         }
       }
     }
-    if (createdByRuntime && input.workspace.branchName) {
+    if (createdByRuntime && input.workspace.branchName && worktreeWasRemoved) {
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
       } else {

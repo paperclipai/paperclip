@@ -2031,9 +2031,9 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     expect(cleanup.cleaned).toBe(false);
-    expect(cleanup.warnings).toEqual(expect.arrayContaining([
+    expect(cleanup.warnings).toEqual([
       `Skipped removing git worktree "${workspace.cwd}" because it has uncommitted or untracked files.`,
-    ]));
+    ]);
     await expect(fs.stat(path.join(workspace.cwd, "scratch.txt"))).resolves.toBeTruthy();
   });
 
