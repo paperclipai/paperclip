@@ -92,10 +92,35 @@ function hybridScore(keywordScore: number, vectorScore: number | null, vectorWei
   return (1 - vectorWeight) * keywordScore + vectorWeight * vectorScore;
 }
 
+function createRateLimiter(maxRequests: number, windowMs: number) {
+  const requests = new Map<string, number[]>();
+
+  return {
+    check(key: string): boolean {
+      const now = Date.now();
+      const windowStart = now - windowMs;
+      const existing = (requests.get(key) ?? []).filter((ts) => ts > windowStart);
+      if (existing.length >= maxRequests) return false;
+      existing.push(now);
+      requests.set(key, existing);
+      return true;
+    },
+  };
+}
+
+function getRateLimitKey(req: any): string {
+  if (req.actor?.type === "agent" && req.actor?.companyId) {
+    return `company:${req.actor.companyId}`;
+  }
+  return `ip:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`;
+}
+
 export function knowledgeRoutes(db: Db) {
   const router = Router();
+  const searchRateLimiter = createRateLimiter(60, 60_000);
 
-  router.get("/topics", async (_req, res) => {
+  router.get("/topics", async (req, res) => {
+    assertAuthenticated(req);
     try {
       const topics = await db
         .select({
@@ -121,6 +146,14 @@ export function knowledgeRoutes(db: Db) {
   });
 
   router.get("/search", async (req, res) => {
+    assertAuthenticated(req);
+
+    const rateLimitKey = getRateLimitKey(req);
+    if (!searchRateLimiter.check(rateLimitKey)) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    }
+
     const { q, topic, limit = "10" } = req.query;
 
     if (!q || typeof q !== "string") {
@@ -219,6 +252,14 @@ export function knowledgeRoutes(db: Db) {
   });
 
   router.post("/research", async (req, res) => {
+    assertAuthenticated(req);
+
+    const rateLimitKey = getRateLimitKey(req);
+    if (!searchRateLimiter.check(rateLimitKey)) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    }
+
     const { topic, question } = req.body;
 
     if (!question || typeof question !== "string") {
@@ -287,6 +328,7 @@ export function knowledgeRoutes(db: Db) {
   });
 
   router.get("/sources/:topicSlug", async (req, res) => {
+    assertAuthenticated(req);
     const { topicSlug } = req.params;
 
     try {
@@ -315,6 +357,7 @@ export function knowledgeRoutes(db: Db) {
   });
 
   router.post("/synthesize", async (req, res) => {
+    assertAuthenticated(req);
     const { topicSlug } = req.body;
 
     if (!topicSlug || typeof topicSlug !== "string") {
@@ -355,12 +398,13 @@ export function knowledgeRoutes(db: Db) {
       console.error("Synthesis failed:", error);
       res.status(500).json({
         success: false,
-        error: error instanceof Error ? error.message : "Synthesis failed",
+        error: "Synthesis failed",
       });
     }
   });
 
-  router.get("/skills", async (_req, res) => {
+  router.get("/skills", async (req, res) => {
+    assertAuthenticated(req);
     try {
       const skills = await db
         .select({
