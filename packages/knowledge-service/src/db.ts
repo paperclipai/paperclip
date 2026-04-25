@@ -1,5 +1,21 @@
 import { Client } from "pg";
-import type { KnowledgeTopic, KnowledgeSource, KnowledgeChunk, KnowledgeCrawlRun } from "@paperclipai/db/src/schema/knowledge";
+import type { KnowledgeTopic, KnowledgeSource, KnowledgeChunk, KnowledgeCrawlRun, KnowledgeStaleReport } from "@paperclipai/db/src/schema/knowledge";
+
+export interface StaleReportInput {
+  topicSlug: string;
+  agentId: string;
+  agentName: string;
+  issueLink: string;
+  companyId: string;
+  priority?: string;
+  trigger?: string;
+}
+
+export interface StaleReportResolution {
+  status: "resolved" | "failed" | "skipped";
+  detail?: string;
+  crawlRunId?: string;
+}
 
 export class KnowledgeDb {
   private client: Client | null = null;
@@ -18,6 +34,64 @@ export class KnowledgeDb {
       `SELECT * FROM knowledge_topics WHERE status = 'active' ORDER BY tier ASC`
     );
     return result.rows;
+  }
+
+  async getTopicBySlug(slug: string): Promise<KnowledgeTopic | null> {
+    if (!this.client) throw new Error("DB not initialized");
+    
+    const result = await this.client.query<KnowledgeTopic>(
+      `SELECT * FROM knowledge_topics WHERE slug = $1`,
+      [slug]
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async updateTopicLastCrawledAt(slug: string): Promise<void> {
+    if (!this.client) throw new Error("DB not initialized");
+    
+    await this.client.query(
+      `UPDATE knowledge_topics
+       SET last_crawled_at = NOW(),
+           updated_at = NOW()
+       WHERE slug = $1`,
+      [slug]
+    );
+  }
+
+  async createStaleReport(input: StaleReportInput): Promise<KnowledgeStaleReport> {
+    if (!this.client) throw new Error("DB not initialized");
+    
+    const result = await this.client.query<KnowledgeStaleReport>(
+      `INSERT INTO knowledge_stale_reports
+       (topic_slug, agent_id, agent_name, issue_link, company_id, priority, trigger)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        input.topicSlug,
+        input.agentId,
+        input.agentName,
+        input.issueLink,
+        input.companyId,
+        input.priority ?? "medium",
+        input.trigger ?? "agent_stale_report",
+      ]
+    );
+    return result.rows[0];
+  }
+
+  async resolveStaleReport(id: string, resolution: StaleReportResolution): Promise<void> {
+    if (!this.client) throw new Error("DB not initialized");
+    
+    await this.client.query(
+      `UPDATE knowledge_stale_reports
+       SET resolution_status = $2,
+           resolution_detail = $3,
+           crawl_run_id = $4,
+           resolved_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [id, resolution.status, resolution.detail ?? null, resolution.crawlRunId ?? null]
+    );
   }
 
   async createCrawlRun(params: {

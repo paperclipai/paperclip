@@ -36,6 +36,7 @@ import {
   routineService,
   startSyntheticProber,
   startEventRouter,
+  startKnowledgeRefreshHandler,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -820,6 +821,16 @@ export async function startServer(): Promise<StartedServer> {
     try {
       await startEventRouter(activeDatabaseConnectionString);
       logger.info("Event router started");
+
+      const knowledgeRefreshEnabled = process.env.KNOWLEDGE_REFRESH_ENABLED !== "false";
+      if (knowledgeRefreshEnabled) {
+        try {
+          await startKnowledgeRefreshHandler(db);
+          logger.info("Knowledge refresh handler started");
+        } catch (err) {
+          logger.error({ err }, "Failed to start knowledge refresh handler");
+        }
+      }
     } catch (err) {
       logger.error({ err }, "Failed to start event router");
     }

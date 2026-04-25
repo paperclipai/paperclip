@@ -13,7 +13,7 @@
     "yaml": "^2.3.4",
     "cheerio": "^1.0.0",
     "playwright": "^1.59.1",
-    "@paperclip-ui/db": "workspace:*",
+    "@paperclipai/db": "workspace:*",
     "drizzle-orm": "^0.29.0",
     "pg": "^8.11.0"
   },
