@@ -68,3 +68,5 @@ export { prCiStatus } from "./pr_ci_status.js";
 export { appProbeSpecs } from "./app_probe_specs.js";
 export { issueKindProofSpecs } from "./issue_kind_proof_specs.js";
 export { appDeployments } from "./app_deployments.js";
+export { subscriptionQuotas } from "./subscription_quotas.js";
+export { agentRoleCandidates, type AgentRoleCandidate } from "./agent_role_candidates.js";
