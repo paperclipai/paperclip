@@ -470,6 +470,48 @@
       "when": 1777135968385,
       "tag": "0072_phase1_specialists_b",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1777569600000,
+      "tag": "0073_knowledge_os",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1777573200000,
+      "tag": "0074_model_evaluation_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1777576800000,
+      "tag": "0075_synthesized_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1777580400000,
+      "tag": "0079_phase1a_role_bound",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777584000000,
+      "tag": "0080_skill_eval_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777555200000,
+      "tag": "0081_knowledge_stale_reports",
+      "breakpoints": true
     }
   ]
 }
