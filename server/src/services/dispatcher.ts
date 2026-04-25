@@ -70,6 +70,40 @@ export interface ReviewDispatchTask extends DispatchTask {
   reviewerFamily: string;
 }
 
+export const HANDOFF_ROLE_KEYWORDS: Record<string, string> = {
+  ui: "ui_engineer",
+  "ui-task": "ui_engineer",
+  "frontend": "ui_engineer",
+  backend: "backend_engineer",
+  "backend-task": "backend_engineer",
+  "api-task": "backend_engineer",
+  data: "data_engineer",
+  "data-task": "data_engineer",
+  devops: "devops_engineer",
+  "devops-task": "devops_engineer",
+  "infra-task": "devops_engineer",
+  test: "test_engineer",
+  "test-task": "test_engineer",
+  qa: "qa_reviewer",
+  security: "security_reviewer",
+  perf: "perf_reviewer",
+  mobile: "mobile_engineer",
+  design: "designer",
+  "design-task": "designer",
+  marketing: "marketer",
+  "content-task": "marketer",
+  architect: "architect",
+  "architecture-task": "architect",
+};
+
+export function detectHandoffRole(issueBody: string): string | null {
+  if (!issueBody) return null;
+  const match = issueBody.match(/\[HANDOFF\s+(\w[\w-]*)\]/);
+  if (!match) return null;
+  const keyword = match[1]!.toLowerCase();
+  return HANDOFF_ROLE_KEYWORDS[keyword] ?? null;
+}
+
 abstract class QuotaTracker {
   abstract readonly subscription: string;
   abstract readonly provider: string;
@@ -576,6 +610,29 @@ export function createDispatcherService(db: Db) {
     };
   }
 
+  async function dispatchForHandoff(
+    issueId: string,
+    issueBody: string,
+    taskComplexity: DispatchTask["taskComplexity"] = "M",
+  ): Promise<DispatchResult & { detectedRole: string | null }> {
+    const detectedRole = detectHandoffRole(issueBody);
+    if (!detectedRole) {
+      return {
+        candidate: null,
+        dispatchAllowed: false,
+        reason: "No [HANDOFF] tag found in issue body",
+        allExhausted: false,
+        detectedRole: null,
+      };
+    }
+    logger.info(
+      { issueId, detectedRole },
+      "HANDOFF detected, dispatching to specialist",
+    );
+    const result = await dispatch({ issueId, role: detectedRole, taskComplexity });
+    return { ...result, detectedRole };
+  }
+
   async function syncQuotaFromProvider(subscription: string): Promise<void> {
     const tracker = createTracker(db, subscription);
     await tracker.resetSaturation();
@@ -677,6 +734,7 @@ export function createDispatcherService(db: Db) {
   return {
     dispatch,
     dispatchForReview,
+    dispatchForHandoff,
     getCandidatesForRole,
     recordFailure,
     recordSuccess,

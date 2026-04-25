@@ -34,5 +34,5 @@ export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { startSyntheticProber, stopSyntheticProber, getSyntheticProber } from "./synthetic-prober.js";
-export { createDispatcherService, SUBSCRIPTION_PROVIDER_MAP, KNOWN_SUBSCRIPTIONS } from "./dispatcher.js";
+export { createDispatcherService, SUBSCRIPTION_PROVIDER_MAP, KNOWN_SUBSCRIPTIONS, detectHandoffRole, HANDOFF_ROLE_KEYWORDS } from "./dispatcher.js";
 export { startEventRouter, stopEventRouter, getEventRouter } from "./event-router.js";
