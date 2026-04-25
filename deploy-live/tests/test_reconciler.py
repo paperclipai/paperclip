@@ -50,3 +50,144 @@ def test_fake_exchange_get_recent_fills_filters_by_since():
     fetcher: ExchangeFetcher = fake
     fills = fetcher.get_recent_fills("MEXC", since_ms=150)
     assert {f["order_id"] for f in fills} == {"o2", "o3"}
+
+
+from state_store import (
+    open_db, init_schema, insert_position, insert_fill, snapshot_balance,
+    list_unresolved_recon_events,
+)
+from reconciler import reconcile_exchange
+
+
+def _seed_position_with_fill(conn, exchange_b="BLOFIN"):
+    pid = insert_position(
+        conn, symbol="ORDIUSDT",
+        exchange_a="MEXC", exchange_b=exchange_b,
+        side_a="buy", side_b="sell",
+        size_usd_a=25.0, size_usd_b=25.0,
+        entry_spread_pct=0.012, status="open", opened_at_ms=1700000000000,
+    )
+    insert_fill(
+        conn, position_id=pid, exchange="MEXC", leg="a", intent="entry",
+        order_id="m-1", side="buy", size_usd=25.0, fill_price=1.234,
+        fees_usd=0.01, filled_at_ms=1700000000500, raw_response="{}",
+    )
+    return pid
+
+
+def test_reconcile_phantom_position(fresh_db):
+    """Exchange has a position the bot doesn't know about."""
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_open_positions("MEXC", [
+        {"symbol": "PEPEUSDT", "side": "buy", "size_usd": 25.0}
+    ])
+    fake.set_balance("MEXC", available_usd=50.0)
+    fake.set_recent_fills("MEXC", [])
+    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    cats = [e.category for e in events]
+    assert "phantom_position" in cats
+    conn.close()
+
+
+def test_reconcile_orphan_leg(fresh_db):
+    """state_store thinks position is open on BLOFIN; exchange shows nothing."""
+    conn = open_db(fresh_db)
+    _seed_position_with_fill(conn)
+    fake = FakeExchange()
+    fake.set_open_positions("BLOFIN", [])  # exchange shows no positions
+    fake.set_balance("BLOFIN", available_usd=50.0)
+    fake.set_recent_fills("BLOFIN", [])
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    cats = [e.category for e in events]
+    assert "orphan_leg" in cats
+    conn.close()
+
+
+def test_reconcile_size_mismatch(fresh_db):
+    """state_store has size 25; exchange shows size 12."""
+    conn = open_db(fresh_db)
+    _seed_position_with_fill(conn, exchange_b="BLOFIN")
+    fake = FakeExchange()
+    fake.set_open_positions("BLOFIN", [
+        {"symbol": "ORDIUSDT", "side": "sell", "size_usd": 12.0},
+    ])
+    fake.set_balance("BLOFIN", available_usd=38.0)
+    fake.set_recent_fills("BLOFIN", [])
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    cats = [e.category for e in events]
+    assert "size_mismatch" in cats
+    conn.close()
+
+
+def test_reconcile_balance_drift_warn(fresh_db):
+    """Bot's last balance snapshot says 50; exchange now says 30 (40% drift)."""
+    conn = open_db(fresh_db)
+    snapshot_balance(conn, exchange="MEXC", asset="USDT",
+                     available_usd=50.0, locked_usd=0.0, snapshot_at_ms=100)
+    fake = FakeExchange()
+    fake.set_open_positions("MEXC", [])
+    fake.set_balance("MEXC", available_usd=30.0, locked_usd=0.0)
+    fake.set_recent_fills("MEXC", [])
+    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    drift = [e for e in events if e.category == "balance_drift"]
+    assert len(drift) == 1
+    assert drift[0].severity == "warn"
+    conn.close()
+
+
+def test_reconcile_balance_drift_info_within_rounding(fresh_db):
+    """Drift of $0.50 on a $50 balance is < $1 AND < 1% — info severity."""
+    conn = open_db(fresh_db)
+    snapshot_balance(conn, exchange="MEXC", asset="USDT",
+                     available_usd=50.0, locked_usd=0.0, snapshot_at_ms=100)
+    fake = FakeExchange()
+    fake.set_open_positions("MEXC", [])
+    fake.set_balance("MEXC", available_usd=49.5, locked_usd=0.0)
+    fake.set_recent_fills("MEXC", [])
+    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    drift = [e for e in events if e.category == "balance_drift"]
+    assert len(drift) == 1
+    assert drift[0].severity == "info"
+    conn.close()
+
+
+def test_reconcile_unlinked_fill(fresh_db):
+    """Exchange returned a fill we can't tie to any position in state_store."""
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_open_positions("MEXC", [])
+    fake.set_balance("MEXC", available_usd=50.0)
+    fake.set_recent_fills("MEXC", [
+        {"order_id": "stranger-1", "symbol": "WIFUSDT", "side": "buy",
+         "size_usd": 25.0, "fill_price": 1.0, "fees_usd": 0.01,
+         "filled_at_ms": 1700000000500},
+    ])
+    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    cats = [e.category for e in events]
+    assert "unlinked_fill" in cats
+    conn.close()
+
+
+def test_reconcile_clean_state_writes_no_events(fresh_db):
+    """When state_store and exchange agree, no events are written."""
+    conn = open_db(fresh_db)
+    _seed_position_with_fill(conn, exchange_b="BLOFIN")
+    snapshot_balance(conn, exchange="BLOFIN", asset="USDT",
+                     available_usd=25.0, locked_usd=0.0, snapshot_at_ms=100)
+    fake = FakeExchange()
+    fake.set_open_positions("BLOFIN", [
+        {"symbol": "ORDIUSDT", "side": "sell", "size_usd": 25.0},
+    ])
+    fake.set_balance("BLOFIN", available_usd=25.0, locked_usd=0.0)
+    fake.set_recent_fills("BLOFIN", [])
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    events = list_unresolved_recon_events(conn)
+    assert events == []
+    conn.close()
