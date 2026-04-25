@@ -108,6 +108,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Cpu,
     comingSoon: true,
   },
+  custom_llm_local: {
+    label: "Custom LLM",
+    description: "Direct local/proxy LLM endpoint",
+    icon: Cpu,
+  },
 };
 
 // ---------------------------------------------------------------------------

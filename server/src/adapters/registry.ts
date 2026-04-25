@@ -85,6 +85,28 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  execute as customLlmLocalExecute,
+  testEnvironment as customLlmLocalTestEnvironment,
+} from "@paperclipai/adapter-custom-llm-local/server";
+import {
+  agentConfigurationDoc as customLlmLocalAgentConfigurationDoc,
+  models as customLlmLocalModels,
+  getConfigSchema as customLlmLocalGetConfigSchema,
+} from "@paperclipai/adapter-custom-llm-local";
+
+const customLlmLocalAdapter: ServerAdapterModule = {
+  type: "custom_llm_local",
+  execute: customLlmLocalExecute,
+  testEnvironment: customLlmLocalTestEnvironment,
+  models: customLlmLocalModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: customLlmLocalAgentConfigurationDoc,
+  getConfigSchema: customLlmLocalGetConfigSchema,
+};
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -237,6 +259,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    customLlmLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
