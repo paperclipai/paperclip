@@ -249,12 +249,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const contextWarningNote = asString(context.paperclipContextWarning, "").trim();
+  const renderedPrompt = renderTemplate(promptTemplate ?? "", templateData);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
-    renderTemplate(promptTemplate ?? "", templateData),
+    contextWarningNote,
+    renderedPrompt,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
@@ -262,7 +265,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedBootstrapPrompt.length,
+    contextWarningChars: contextWarningNote.length,
+    heartbeatPromptChars: renderedPrompt.length,
   };
 
   const execArgs = buildClaudeCodeExecArgs(config, { resumeSessionId: sessionId });
