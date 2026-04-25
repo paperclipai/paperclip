@@ -56,6 +56,18 @@ export interface DispatchResult {
   dispatchAllowed: boolean;
   reason: string;
   allExhausted: boolean;
+  reviewerFamily?: string;
+}
+
+export interface PRContext {
+  repositoryFullName: string;
+  prNumber: number;
+  headSha: string;
+}
+
+export interface ReviewDispatchTask extends DispatchTask {
+  prContext: PRContext;
+  reviewerFamily: string;
 }
 
 abstract class QuotaTracker {
@@ -450,6 +462,120 @@ export function createDispatcherService(db: Db) {
     };
   }
 
+  async function dispatchForReview(task: ReviewDispatchTask): Promise<DispatchResult> {
+    const { issueId, role, taskComplexity, prContext, reviewerFamily } = task;
+    const complexityFactor = TASK_COMPLEXITY_FACTORS[taskComplexity] ?? 1.0;
+
+    if (role === "breaker") {
+      const breakerResult = await db.execute(sql`
+        SELECT get_next_breaker_candidate(${prContext.repositoryFullName}, ${prContext.prNumber}, ${prContext.headSha}, 'breaker') as agent_id
+      `);
+      const breakerRow = (breakerResult as unknown as { rows: { agent_id: string | null }[] }).rows[0];
+      if (!breakerRow?.agent_id) {
+        return {
+          candidate: null,
+          dispatchAllowed: false,
+          reason: `No eligible breaker candidate for ${prContext.repositoryFullName}#${prContext.prNumber} (family diversity exhausted)`,
+          allExhausted: true,
+        };
+      }
+      const breakerAgentRows = await db
+        .select()
+        .from(agentRoleCandidates)
+        .where(eq(agentRoleCandidates.id, breakerRow.agent_id))
+        .limit(1);
+      const breakerCandidate = breakerAgentRows[0];
+      if (!breakerCandidate) {
+        return {
+          candidate: null,
+          dispatchAllowed: false,
+          reason: "Breaker candidate DB row not found",
+          allExhausted: true,
+        };
+      }
+      return {
+        candidate: breakerCandidate as unknown as RankedCandidate,
+        dispatchAllowed: true,
+        reason: `Breaker selected via get_next_breaker_candidate for ${prContext.repositoryFullName}#${prContext.prNumber}`,
+        allExhausted: false,
+        reviewerFamily: "breaker",
+      };
+    }
+
+    const candidates = await getCandidatesForRole(role);
+    if (candidates.length === 0) {
+      return {
+        candidate: null,
+        dispatchAllowed: false,
+        reason: `No candidates found for role: ${role}`,
+        allExhausted: true,
+      };
+    }
+
+    for (const rawCandidate of candidates) {
+      const candidate = rawCandidate as unknown as RankedCandidate;
+      const familyExhaustedResult = await db.execute(sql`
+        SELECT is_family_exhausted_for_pr(
+          ${prContext.repositoryFullName},
+          ${prContext.prNumber},
+          ${prContext.headSha},
+          ${candidate.provider}
+        ) as exhausted
+      `);
+      const familyExhaustedRow = (familyExhaustedResult as unknown as { rows: { exhausted: boolean }[] }).rows[0];
+      if (familyExhaustedRow?.exhausted) {
+        logger.info(
+          { role, provider: candidate.provider, repository: prContext.repositoryFullName, pr: prContext.prNumber },
+          "Candidate skipped: family exhausted for PR",
+        );
+        continue;
+      }
+      if (candidate.provider === reviewerFamily) {
+        logger.info(
+          { role, provider: candidate.provider, reviewerFamily, repository: prContext.repositoryFullName, pr: prContext.prNumber },
+          "Candidate skipped: same family as PR author",
+        );
+        continue;
+      }
+
+      const tracker = createTracker(db, candidate.subscription);
+      const quotaAvailable = await tracker.getQuotaAvailable();
+      candidate.taskComplexityFactor = complexityFactor;
+      candidate.score = Number(candidate.qualityRank) * quotaAvailable * complexityFactor;
+
+      if (candidate.score < 0.2) {
+        await recordFailure(role, candidate.model, candidate.harness);
+        continue;
+      }
+
+      const reserved = await tracker.reserveQuota();
+      if (reserved) {
+        await recordSuccess(role, candidate.model, candidate.harness);
+        return {
+          candidate,
+          dispatchAllowed: true,
+          reason: `Dispatched to ${candidate.model} on ${candidate.subscription} (score: ${candidate.score.toFixed(2)})`,
+          allExhausted: false,
+          reviewerFamily: candidate.provider,
+        };
+      }
+
+      await tracker.markSaturated();
+      await recordFailure(role, candidate.model, candidate.harness);
+      logger.info(
+        { subscription: candidate.subscription, role, model: candidate.model },
+        "Candidate saturated in review dispatch, trying next",
+      );
+    }
+
+    return {
+      candidate: null,
+      dispatchAllowed: false,
+      reason: `All candidates for role ${role} exhausted or same-family for ${prContext.repositoryFullName}#${prContext.prNumber}`,
+      allExhausted: true,
+    };
+  }
+
   async function syncQuotaFromProvider(subscription: string): Promise<void> {
     const tracker = createTracker(db, subscription);
     await tracker.resetSaturation();
@@ -550,6 +676,7 @@ export function createDispatcherService(db: Db) {
 
   return {
     dispatch,
+    dispatchForReview,
     getCandidatesForRole,
     recordFailure,
     recordSuccess,
