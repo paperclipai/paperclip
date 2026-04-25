@@ -105,6 +105,7 @@ export const pluginToolDeclarationSchema = z.object({
   displayName: z.string().min(1),
   description: z.string().min(1),
   parametersSchema: jsonSchemaSchema,
+  exposeToAgents: z.boolean().optional(),
 });
 
 export const pluginEnvironmentDriverDeclarationSchema = z.object({

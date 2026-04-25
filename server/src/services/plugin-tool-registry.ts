@@ -67,6 +67,12 @@ export interface RegisteredTool {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: Record<string, unknown>;
+  /**
+   * Whether this tool is exposed to agents. Defaults to `true`. When `false`,
+   * the tool is hidden from `listToolsForAgent()` and the route layer
+   * rejects agent-initiated execute as if the tool doesn't exist.
+   */
+  exposeToAgents: boolean;
 }
 
 /**
@@ -265,6 +271,7 @@ export function createPluginToolRegistry(
       displayName: decl.displayName,
       description: decl.description,
       parametersSchema: decl.parametersSchema,
+      exposeToAgents: decl.exposeToAgents ?? true,
     };
 
     byNamespace.set(namespacedName, entry);

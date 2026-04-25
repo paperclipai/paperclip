@@ -808,9 +808,16 @@ export function pluginRoutes(
       return;
     }
 
-    // Verify the tool exists
+    // Verify the tool exists. When the caller is an agent, treat
+    // exposeToAgents=false tools as if they don't exist — preserves
+    // the dispatcher invariant that an agent can't see what it can't
+    // call.
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
     if (!registeredTool) {
+      res.status(404).json({ error: `Tool "${tool}" not found` });
+      return;
+    }
+    if (req.actor.type === "agent" && registeredTool.exposeToAgents === false) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
       return;
     }

@@ -386,7 +386,10 @@ export function createPluginToolDispatcher(
     },
 
     listToolsForAgent(filter?: ToolListFilter): AgentToolDescriptor[] {
-      return registry.listTools(filter).map(toAgentDescriptor);
+      return registry
+        .listTools(filter)
+        .filter((t) => t.exposeToAgents !== false)
+        .map(toAgentDescriptor);
     },
 
     getTool(namespacedName: string): RegisteredTool | null {
