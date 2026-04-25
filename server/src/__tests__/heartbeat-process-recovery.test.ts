@@ -457,6 +457,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     status: "todo" | "in_progress";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
+    livenessState?:
+      | "failed"
+      | "completed"
+      | "advanced"
+      | "plan_only"
+      | "empty_response"
+      | "needs_followup"
+      | "blocked"
+      | null;
+    livenessReason?: string | null;
     assignToUser?: boolean;
     activePauseHold?: boolean;
   }) {
@@ -524,6 +534,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: new Date("2026-03-19T00:05:00.000Z"),
       errorCode: input.runStatus === "succeeded" ? null : "process_lost",
       error: input.runStatus === "succeeded" ? null : "run failed before issue advanced",
+      livenessState: input.livenessState ?? null,
+      livenessReason: input.livenessReason ?? null,
     });
 
     await db.insert(issues).values([
@@ -575,7 +587,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     issueId: string;
     runId: string;
     previousStatus: "todo" | "in_progress";
-    retryReason: "assignment_recovery" | "issue_continuation_needed";
+    retryReason: "assignment_recovery" | "issue_continuation_needed" | "unknown";
   }) {
     const recovery = await waitForValue(async () =>
       db.select().from(issues).where(
@@ -1517,6 +1529,89 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("escalates in-progress work when the latest successful run needs manual follow-up", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "needs_followup",
+      livenessReason: "Run produced useful output but no concrete action evidence",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recovery = await expectStrandedRecoveryArtifacts({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "unknown",
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("latest successful run requires manual follow-up");
+    expect(comments[0]?.body).toContain("Run produced useful output but no concrete action evidence");
+    expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("escalates in-progress work when the latest successful run declared a blocker", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+      livenessReason: "Run output declared a concrete blocker",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recovery = await expectStrandedRecoveryArtifacts({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "unknown",
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("latest successful run requires manual follow-up or declared a blocker");
+    expect(comments[0]?.body).toContain("Run output declared a concrete blocker");
+    expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {

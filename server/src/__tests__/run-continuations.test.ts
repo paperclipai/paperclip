@@ -127,6 +127,8 @@ describe("run liveness continuations", () => {
   it("skips non-actionable and guarded issues", () => {
     const guardedCases = [
       { livenessState: "advanced" as const },
+      { livenessState: "needs_followup" as const },
+      { livenessState: "blocked" as const },
       { issue: issue({ status: "done" }) },
       { issue: issue({ assigneeAgentId: "other-agent" }) },
       { issue: issue({ executionState: { status: "pending" } }) },

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -62,7 +62,14 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot"
+  | "id"
+  | "agentId"
+  | "status"
+  | "error"
+  | "errorCode"
+  | "contextSnapshot"
+  | "livenessState"
+  | "livenessReason"
 > | null;
 
 type WatchdogDecisionActor =
@@ -109,6 +116,24 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (errorCode) return ` Latest retry failure: \`${errorCode}\`.`;
   if (summary) return ` Latest retry failure: ${summary}.`;
   return null;
+}
+
+function summarizeRunLivenessForIssueComment(run: LatestIssueRun) {
+  if (!run) return null;
+
+  const livenessState = readNonEmptyString(run.livenessState);
+  const livenessReason = readNonEmptyString(run.livenessReason);
+  if (livenessState && livenessReason) {
+    return ` Latest liveness: \`${livenessState}\` - ${livenessReason}.`;
+  }
+  if (livenessState) return ` Latest liveness: \`${livenessState}\`.`;
+  if (livenessReason) return ` Latest liveness: ${livenessReason}.`;
+  return null;
+}
+
+function isNonContinuableSuccessfulRun(run: LatestIssueRun) {
+  return run?.status === "succeeded" &&
+    (run.livenessState === "needs_followup" || run.livenessState === "blocked");
 }
 
 function didAutomaticRecoveryFail(
@@ -289,12 +314,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
+        livenessReason: heartbeatRuns.livenessReason,
       })
       .from(heartbeatRuns)
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issueId}`,
+          ),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -1219,14 +1249,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
 
     return [
-      "Paperclip exhausted automatic recovery for an assigned issue and created this explicit recovery task.",
+      "Paperclip escalated an assigned issue with no live execution path and created this explicit recovery task.",
       "",
       "## Source",
       "",
       `- Source issue: ${sourceIssue}`,
       `- Previous source status: \`${input.previousStatus}\``,
-      `- Latest retry run: ${runLink}`,
-      `- Latest retry status: \`${input.latestRun?.status ?? "unknown"}\``,
+      `- Latest relevant run: ${runLink}`,
+      `- Latest run status: \`${input.latestRun?.status ?? "unknown"}\``,
       `- Detected invariant: \`stranded_assigned_issue\``,
       `- Retry reason: \`${retryReason}\``,
       failureSummary ? `- Failure: ${failureSummary.trim()}` : "- Failure: none recorded",
@@ -1395,6 +1425,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRunId: input.latestRun?.id ?? null,
         latestRunStatus: input.latestRun?.status ?? null,
         latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        latestRunLivenessState: input.latestRun?.livenessState ?? null,
+        latestRunLivenessReason: input.latestRun?.livenessReason ?? null,
         recoveryIssueId: recoveryIssue?.id ?? null,
         blockerIssueIds: nextBlockerIds,
       },
@@ -1493,6 +1525,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
         result.skipped += 1;
+        continue;
+      }
+      if (isNonContinuableSuccessfulRun(latestRun)) {
+        const livenessSummary = summarizeRunLivenessForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip stopped automatic continuation because the latest successful run requires manual follow-up " +
+            `or declared a blocker, and this assigned \`in_progress\` issue has no live execution path.${livenessSummary ?? ""} ` +
+            "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
