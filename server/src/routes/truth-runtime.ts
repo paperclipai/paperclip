@@ -1,29 +1,61 @@
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
-import type { z } from "zod";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { truthPromotionRequests } from "@paperclipai/db";
 import {
-  approveTruthPromotionRequestSchema,
   completeTruthPromotionRequestSchema,
   createTruthAtomSchema,
   createTruthBriefSchema,
   createTruthDocumentChunkSchema,
   createTruthDocumentSchema,
-  createTruthDossierSchema,
   createTruthPromotionRequestSchema,
   createTruthRunAuditSchema,
   createTruthRunSchema,
   failTruthPromotionRequestSchema,
   rejectTruthPromotionRequestSchema,
+  truthDossierStatusSchema,
 } from "@paperclipai/shared";
-import { notFound, unprocessable } from "../errors.js";
+import { HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity, truthRuntimeService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 type TruthPromotionRequestRow = typeof truthPromotionRequests.$inferSelect;
 
-const ignoredDossierHash = "0".repeat(64);
+const requiredTextSchema = z.string().trim().min(1);
+const sha256HexSchema = z
+  .string()
+  .regex(/^[a-fA-F0-9]{64}$/, "Must be a SHA-256 hex digest")
+  .transform((value) => value.toLowerCase());
+const metadataSchema = z.record(z.unknown());
+const optionalGeneratedAtSchema = z.string().datetime().optional();
+const hasText = (value: string | null | undefined) => typeof value === "string" && value.trim().length > 0;
+
+const createTruthDossierRouteSchema = z
+  .object({
+    truthRunId: z.string().uuid(),
+    briefId: z.string().uuid(),
+    title: requiredTextSchema,
+    status: truthDossierStatusSchema.optional().default("draft"),
+    htmlContent: z.string().optional().nullable(),
+    filePath: z.string().optional().nullable(),
+    contentSha256: sha256HexSchema.optional().nullable(),
+    promptVersion: requiredTextSchema,
+    templateVersion: requiredTextSchema,
+    generatedAt: optionalGeneratedAtSchema,
+    generatedByAgentId: z.string().uuid().optional().nullable(),
+    generatedByUserId: z.string().optional().nullable(),
+    metadata: metadataSchema.optional().default({}),
+  })
+  .superRefine((value, ctx) => {
+    if (!hasText(value.htmlContent) && !hasText(value.filePath)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Either htmlContent or filePath is required",
+        path: ["htmlContent"],
+      });
+    }
+  });
 
 function parseTruthInput<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
@@ -33,21 +65,12 @@ function parseTruthInput<T>(schema: z.ZodType<T>, input: unknown): T {
   return parsed.data;
 }
 
-function parseDossierInput(input: unknown) {
-  const rawInput = typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
-  return parseTruthInput(createTruthDossierSchema, {
-    ...rawInput,
-    briefInputHash: Object.prototype.hasOwnProperty.call(rawInput, "briefInputHash")
-      ? rawInput.briefInputHash
-      : ignoredDossierHash,
-    briefPayloadHash: Object.prototype.hasOwnProperty.call(rawInput, "briefPayloadHash")
-      ? rawInput.briefPayloadHash
-      : ignoredDossierHash,
-  });
-}
-
 function promotionCanExpire(request: TruthPromotionRequestRow) {
   return request.status === "pending" || request.status === "approved";
+}
+
+function isPromotionExpiredError(error: unknown) {
+  return error instanceof HttpError && error.status === 422 && error.message === "Promotion request expired";
 }
 
 export function truthRuntimeRoutes(db: Db) {
@@ -78,6 +101,43 @@ export function truthRuntimeRoutes(db: Db) {
     });
   }
 
+  function getBoardApprovalActorId(req: Request) {
+    assertBoard(req);
+    return req.actor.type === "board" ? req.actor.userId ?? "board" : "board";
+  }
+
+  function promotionTargetDetails(promotion: {
+    truthRunId: string | null;
+    briefId: string | null;
+    dossierId: string | null;
+  }) {
+    return {
+      truthRunId: promotion.truthRunId,
+      briefId: promotion.briefId,
+      dossierId: promotion.dossierId,
+    };
+  }
+
+  async function logPromotionExpired(req: Request, expired: TruthPromotionRequestRow) {
+    await logTruthActivity(req, {
+      companyId: expired.companyId,
+      action: "truth.promotion_expired",
+      entityType: "truth_promotion_request",
+      entityId: expired.id,
+      details: promotionTargetDetails(expired),
+    });
+  }
+
+  async function logServiceExpiryAndRethrow(req: Request, request: TruthPromotionRequestRow, error: unknown): Promise<never> {
+    if (isPromotionExpiredError(error)) {
+      const expired = await svc.getPromotionRequest(request.companyId, request.id);
+      if (expired.status === "expired") {
+        await logPromotionExpired(req, expired);
+      }
+    }
+    throw error;
+  }
+
   async function loadPromotionRequestForLifecycle(req: Request, id: string) {
     const request = await db
       .select()
@@ -90,17 +150,7 @@ export function truthRuntimeRoutes(db: Db) {
 
     if (request.expiresAt && request.expiresAt.getTime() <= Date.now() && promotionCanExpire(request)) {
       const expired = await svc.expirePromotionRequest(request.companyId, request.id);
-      await logTruthActivity(req, {
-        companyId: expired.companyId,
-        action: "truth.promotion_expired",
-        entityType: "truth_promotion_request",
-        entityId: expired.id,
-        details: {
-          truthRunId: expired.truthRunId,
-          briefId: expired.briefId,
-          dossierId: expired.dossierId,
-        },
-      });
+      await logPromotionExpired(req, expired);
       throw unprocessable("Promotion request expired", { status: expired.status });
     }
 
@@ -206,7 +256,7 @@ export function truthRuntimeRoutes(db: Db) {
   router.post("/companies/:companyId/truth/dossiers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const input = parseDossierInput(req.body);
+    const input = parseTruthInput(createTruthDossierRouteSchema, req.body);
     const dossier = await svc.createDossier(companyId, input);
     await logTruthActivity(req, {
       companyId,
@@ -228,31 +278,31 @@ export function truthRuntimeRoutes(db: Db) {
       action: "truth.promotion_requested",
       entityType: "truth_promotion_request",
       entityId: promotion.id,
-      details: {
-        truthRunId: promotion.truthRunId,
-        briefId: promotion.briefId,
-        dossierId: promotion.dossierId,
-      },
+      details: promotionTargetDetails(promotion),
     });
     res.status(201).json(promotion);
   });
 
   router.post("/truth/promotions/:id/approve", async (req, res) => {
+    const approvedBy = getBoardApprovalActorId(req);
     const id = req.params.id as string;
     const request = await loadPromotionRequestForLifecycle(req, id);
-    const input = parseTruthInput(approveTruthPromotionRequestSchema, req.body);
-    const promotion = await svc.approvePromotionRequest(request.companyId, id, input.approvedBy);
+    parseTruthInput(completeTruthPromotionRequestSchema, req.body);
+    const promotion = await svc.approvePromotionRequest(request.companyId, id, approvedBy).catch((error) =>
+      logServiceExpiryAndRethrow(req, request, error)
+    );
     await logTruthActivity(req, {
       companyId: promotion.companyId,
       action: "truth.promotion_approved",
       entityType: "truth_promotion_request",
       entityId: promotion.id,
-      details: { approvedBy: promotion.approvedBy },
+      details: { approvedBy: promotion.approvedBy, ...promotionTargetDetails(promotion) },
     });
     res.json(promotion);
   });
 
   router.post("/truth/promotions/:id/reject", async (req, res) => {
+    assertBoard(req);
     const id = req.params.id as string;
     const request = await loadPromotionRequestForLifecycle(req, id);
     const input = parseTruthInput(rejectTruthPromotionRequestSchema, req.body);
@@ -262,26 +312,25 @@ export function truthRuntimeRoutes(db: Db) {
       action: "truth.promotion_rejected",
       entityType: "truth_promotion_request",
       entityId: promotion.id,
-      details: { rejectionReason: promotion.rejectionReason },
+      details: { rejectionReason: promotion.rejectionReason, ...promotionTargetDetails(promotion) },
     });
     res.json(promotion);
   });
 
   router.post("/truth/promotions/:id/complete", async (req, res) => {
+    assertBoard(req);
     const id = req.params.id as string;
     const request = await loadPromotionRequestForLifecycle(req, id);
     parseTruthInput(completeTruthPromotionRequestSchema, req.body);
-    const promotion = await svc.completePromotionRequest(request.companyId, id);
+    const promotion = await svc.completePromotionRequest(request.companyId, id).catch((error) =>
+      logServiceExpiryAndRethrow(req, request, error)
+    );
     await logTruthActivity(req, {
       companyId: promotion.companyId,
       action: "truth.promotion_completed",
       entityType: "truth_promotion_request",
       entityId: promotion.id,
-      details: {
-        truthRunId: promotion.truthRunId,
-        briefId: promotion.briefId,
-        dossierId: promotion.dossierId,
-      },
+      details: promotionTargetDetails(promotion),
     });
     res.json(promotion);
   });
@@ -296,7 +345,7 @@ export function truthRuntimeRoutes(db: Db) {
       action: "truth.promotion_failed",
       entityType: "truth_promotion_request",
       entityId: promotion.id,
-      details: { failureReason: promotion.failureReason },
+      details: { failureReason: promotion.failureReason, ...promotionTargetDetails(promotion) },
     });
     res.json(promotion);
   });

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -53,6 +53,7 @@ describeEmbeddedPostgres("truth runtime routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await db.delete(activityLog);
     await db.delete(truthPromotionRequests);
     await db.delete(truthDossiers);
@@ -90,6 +91,15 @@ describeEmbeddedPostgres("truth runtime routes", () => {
       companyIds: [],
       memberships: [],
       isInstanceAdmin: true,
+    };
+  }
+
+  function allowAgent(companyId: string) {
+    actor = {
+      type: "agent",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId,
+      source: "agent_key",
     };
   }
 
@@ -383,6 +393,52 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     expect(res.body.error).toContain("already rejected");
   });
 
+  it("uses the authenticated board actor for approval instead of caller supplied approvedBy", async () => {
+    allowLocalBoard();
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const requestRow = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+
+    const res = await request(createApp())
+      .post(`/api/truth/promotions/${requestRow.id}/approve`)
+      .send({ approvedBy: "spoofed-approver" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.approvedBy).toBe("local-board");
+  });
+
+  it("rejects agent promotion governance lifecycle mutations without changing status", async () => {
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const requestRow = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+    });
+    allowAgent(companyId);
+
+    const approveRes = await request(createApp())
+      .post(`/api/truth/promotions/${requestRow.id}/approve`)
+      .send({ approvedBy: "agent-spoof" });
+    const rejectRes = await request(createApp())
+      .post(`/api/truth/promotions/${requestRow.id}/reject`)
+      .send({ rejectionReason: "agent rejection" });
+
+    expect(approveRes.status).toBe(403);
+    expect(rejectRes.status).toBe(403);
+    expect(await service.getPromotionRequest(companyId, requestRow.id)).toMatchObject({ status: "pending" });
+
+    await service.approvePromotionRequest(companyId, requestRow.id, "board-seed");
+    const completeRes = await request(createApp()).post(`/api/truth/promotions/${requestRow.id}/complete`).send({});
+
+    expect(completeRes.status).toBe(403);
+    expect(await service.getPromotionRequest(companyId, requestRow.id)).toMatchObject({ status: "approved" });
+  });
+
   it("expires promotion lifecycle requests after expiresAt", async () => {
     allowLocalBoard();
     const companyId = await seedCompany();
@@ -397,6 +453,36 @@ describeEmbeddedPostgres("truth runtime routes", () => {
     const res = await request(createApp())
       .post(`/api/truth/promotions/${requestRow.id}/reject`)
       .send({ rejectionReason: "Too late" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Promotion request expired");
+    const expired = await service.getPromotionRequest(companyId, requestRow.id);
+    expect(expired.status).toBe("expired");
+    const rows = await db.select().from(activityLog).where(eq(activityLog.action, "truth.promotion_expired"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyId,
+      actorType: "user",
+      actorId: "local-board",
+      entityType: "truth_promotion_request",
+      entityId: requestRow.id,
+    });
+  });
+
+  it("logs activity when service-side lifecycle expiry wins after route precheck", async () => {
+    allowLocalBoard();
+    const companyId = await seedCompany();
+    const brief = await seedBrief(companyId);
+    const now = Date.now();
+    const requestRow = await service.createPromotionRequest(companyId, {
+      companySlug: "truth-co",
+      briefId: brief.id,
+      requestedBy: "operator",
+      expiresAt: new Date(now + 1_000).toISOString(),
+    });
+    vi.spyOn(Date, "now").mockReturnValueOnce(now).mockReturnValue(now + 2_000);
+
+    const res = await request(createApp()).post(`/api/truth/promotions/${requestRow.id}/approve`).send({});
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("Promotion request expired");
