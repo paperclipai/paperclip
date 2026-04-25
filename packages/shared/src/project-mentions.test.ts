@@ -5,6 +5,7 @@ import {
   buildSkillMentionHref,
   buildUserMentionHref,
   extractAgentMentionIds,
+  extractAgentUrlKeyMentions,
   extractProjectMentionIds,
   extractSkillMentionIds,
   extractUserMentionIds,
@@ -48,5 +49,45 @@ describe("project-mentions", () => {
       slug: "release-changelog",
     });
     expect(extractSkillMentionIds(`[/release-changelog](${href})`)).toEqual(["skill-123"]);
+  });
+
+  describe("extractAgentUrlKeyMentions", () => {
+    it("extracts url-key from /PREFIX/agents/url-key mentions", () => {
+      const text = "Handing off to [@Morgan (SrSWE)](/GSTA/agents/morgan-srswe) for review.";
+      expect(extractAgentUrlKeyMentions(text)).toEqual(["morgan-srswe"]);
+    });
+
+    it("extracts multiple url-key mentions", () => {
+      const text = "[@Alex (SrSWE Lead)](/GSTA/agents/alex-srswe-lead) and [@Jordan (SrSWE)](/GSTA/agents/jordan-srswe) please review.";
+      expect(extractAgentUrlKeyMentions(text)).toEqual(["alex-srswe-lead", "jordan-srswe"]);
+    });
+
+    it("deduplicates repeated mentions", () => {
+      const text = "[@Morgan](/GSTA/agents/morgan-srswe) and again [@Morgan (SrSWE)](/GSTA/agents/morgan-srswe).";
+      expect(extractAgentUrlKeyMentions(text)).toEqual(["morgan-srswe"]);
+    });
+
+    it("handles different company prefixes", () => {
+      const text = "[@CTO](/PAP/agents/cto) please approve.";
+      expect(extractAgentUrlKeyMentions(text)).toEqual(["cto"]);
+    });
+
+    it("returns empty array for no mentions", () => {
+      expect(extractAgentUrlKeyMentions("No mentions here")).toEqual([]);
+    });
+
+    it("returns empty array for empty input", () => {
+      expect(extractAgentUrlKeyMentions("")).toEqual([]);
+    });
+
+    it("ignores agent:// scheme mentions (handled by extractAgentMentionIds)", () => {
+      const text = "[@Agent](agent://some-uuid)";
+      expect(extractAgentUrlKeyMentions(text)).toEqual([]);
+    });
+
+    it("normalizes url-keys to lowercase", () => {
+      const text = "[@CTO](/GSTA/agents/CTO)";
+      expect(extractAgentUrlKeyMentions(text)).toEqual(["cto"]);
+    });
   });
 });

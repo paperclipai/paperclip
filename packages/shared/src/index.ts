@@ -876,6 +876,7 @@ export {
   buildSkillMentionHref,
   buildUserMentionHref,
   extractAgentMentionIds,
+  extractAgentUrlKeyMentions,
   extractProjectMentionIds,
   extractSkillMentionIds,
   extractUserMentionIds,
