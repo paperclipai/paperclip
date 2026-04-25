@@ -135,6 +135,14 @@ def _migrate_fills(conn, position_id: int, raws: list[dict], quarantine: list[st
 
 
 def _migrate_closed_position(conn, row: dict[str, Any], quarantine: list[str]) -> bool:
+    """Migrate one closed position from CSV.
+
+    NOTE: This bypasses `state_store.close_position()` and writes the close
+    fields via raw SQL UPDATE because the position is being inserted directly
+    into a `closed` state, not transitioning from `open`. If `close_position()`
+    ever grows behavior beyond the SQL update (e.g. requiring a prior `open`
+    state, emitting an audit log entry), this migration path will not see it.
+    """
     try:
         # CSV gives strings; coerce numerics.
         coerced = {
