@@ -18,3 +18,5 @@ export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { githubWebhookRoutes } from "./github.js";
+export { canaryRoutes } from "./canary.js";
+export { internalRoutes } from "./internal.js";

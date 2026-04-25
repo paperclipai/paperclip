@@ -36,3 +36,4 @@ export { createStorageServiceFromConfig, getStorageService } from "../storage/in
 export { startSyntheticProber, stopSyntheticProber, getSyntheticProber } from "./synthetic-prober.js";
 export { createDispatcherService, SUBSCRIPTION_PROVIDER_MAP, KNOWN_SUBSCRIPTIONS, detectHandoffRole, HANDOFF_ROLE_KEYWORDS } from "./dispatcher.js";
 export { startEventRouter, stopEventRouter, getEventRouter } from "./event-router.js";
+export { createCanaryService, shouldRouteToChallenger, type CanaryStatus, type CanaryPairingInfo, type CanaryDecision } from "./canary.js";

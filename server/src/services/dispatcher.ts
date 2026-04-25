@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { subscriptionQuotas, agentRoleCandidates, type AgentRoleCandidate } from "@paperclipai/db";
 import { fetchAllQuotaWindows } from "./quota-windows.js";
 import { logger } from "../middleware/logger.js";
+import { createCanaryService, shouldRouteToChallenger } from "./canary.js";
 
 export interface DispatchTask {
   issueId: string;
@@ -443,7 +444,10 @@ export function createDispatcherService(db: Db) {
     const { issueId, role, taskComplexity } = task;
     const complexityFactor = TASK_COMPLEXITY_FACTORS[taskComplexity] ?? 1.0;
 
-    const candidates = await getCandidatesForRole(role);
+    const canaryService = createCanaryService(db);
+    const canaryDecision = await canaryService.decideCanaryRoute(issueId, role);
+
+    let candidates = await getCandidatesForRole(role);
 
     if (candidates.length === 0) {
       return {
@@ -452,6 +456,34 @@ export function createDispatcherService(db: Db) {
         reason: `No candidates found for role: ${role}`,
         allExhausted: true,
       };
+    }
+
+    if (canaryDecision.useChallenger && canaryDecision.pairing) {
+      const { challengerModel, challengerHarness } = canaryDecision.pairing;
+      candidates = candidates.filter(
+        (c) => c.model === challengerModel && c.harness === challengerHarness,
+      );
+      logger.info(
+        { issueId, role, challengerModel, challengerHarness },
+        "Canary routing: using challenger model",
+      );
+      if (candidates.length === 0) {
+        return {
+          candidate: null,
+          dispatchAllowed: false,
+          reason: `Challenger model ${challengerModel} not found in candidates for role ${role}`,
+          allExhausted: true,
+        };
+      }
+    } else if (canaryDecision.pairing) {
+      const { primaryModel, primaryHarness } = canaryDecision.pairing;
+      candidates = candidates.filter(
+        (c) => c.model === primaryModel && c.harness === primaryHarness,
+      );
+      logger.info(
+        { issueId, role, primaryModel, primaryHarness },
+        "Canary routing: using primary model",
+      );
     }
 
     for (const rawCandidate of candidates) {
