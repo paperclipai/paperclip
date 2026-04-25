@@ -70,3 +70,7 @@ export { issueKindProofSpecs } from "./issue_kind_proof_specs.js";
 export { appDeployments } from "./app_deployments.js";
 export { subscriptionQuotas } from "./subscription_quotas.js";
 export { agentRoleCandidates, type AgentRoleCandidate } from "./agent_role_candidates.js";
+export { agentIdleState } from "./agent_idle_state.js";
+export { agentRoleDefinitions, type AgentRoleDefinition, type NewAgentRoleDefinition } from "./agent_role_definitions.js";
+export { prReviewStates, type PrReviewState, type NewPrReviewState } from "./pr_review_states.js";
+export { reviewerFamilyLog, type ReviewerFamilyLog, type NewReviewerFamilyLog } from "./reviewer_family_log.js";
