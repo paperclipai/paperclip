@@ -191,3 +191,63 @@ def test_reconcile_clean_state_writes_no_events(fresh_db):
     events = list_unresolved_recon_events(conn)
     assert events == []
     conn.close()
+
+
+from state_store import get_exchange_health
+
+
+def test_exchange_health_marked_ok_on_success(fresh_db):
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_open_positions("MEXC", [])
+    fake.set_balance("MEXC", available_usd=50.0)
+    fake.set_recent_fills("MEXC", [])
+    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    h = get_exchange_health(conn, "MEXC")
+    assert h.status == "ok"
+    assert h.consecutive_errors == 0
+    assert h.last_ok_at_ms is not None
+    conn.close()
+
+
+def test_exchange_health_marked_degraded_on_first_failure(fresh_db):
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_unreachable("BLOFIN", error="connection refused")
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    h = get_exchange_health(conn, "BLOFIN")
+    assert h.status == "degraded"
+    assert h.consecutive_errors == 1
+    conn.close()
+
+
+def test_exchange_health_marked_down_after_three_failures(fresh_db):
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_unreachable("BLOFIN", error="timeout")
+    for _ in range(3):
+        reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    h = get_exchange_health(conn, "BLOFIN")
+    assert h.status == "down"
+    assert h.consecutive_errors == 3
+    # The 3rd failure should have written a critical event
+    events = list_unresolved_recon_events(conn, min_severity="critical")
+    assert any(e.category == "exchange_unreachable" for e in events)
+    conn.close()
+
+
+def test_exchange_health_recovers_after_failure(fresh_db):
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_unreachable("BLOFIN", error="timeout")
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    # Now exchange comes back
+    fake._unreachable.pop("BLOFIN")
+    fake.set_open_positions("BLOFIN", [])
+    fake.set_balance("BLOFIN", available_usd=50.0)
+    fake.set_recent_fills("BLOFIN", [])
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    h = get_exchange_health(conn, "BLOFIN")
+    assert h.status == "ok"
+    assert h.consecutive_errors == 0
+    conn.close()

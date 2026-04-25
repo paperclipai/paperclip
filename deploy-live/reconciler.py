@@ -89,11 +89,13 @@ from typing import Optional
 from state_store import (
     list_open_positions, list_recent_fills, latest_balance,
     snapshot_balance, write_recon_event,
+    upsert_exchange_health, get_exchange_health,
 )
 
 
 _BALANCE_DRIFT_USD_THRESHOLD = 1.0  # within ±$1 = info
 _BALANCE_DRIFT_PCT_THRESHOLD = 1.0  # within 1% = info; otherwise warn
+_HEALTH_DOWN_THRESHOLD = 3  # consecutive errors before status flips to 'down'
 
 
 def reconcile_exchange(
@@ -124,10 +126,20 @@ def reconcile_exchange(
         ex_fills = fetcher.get_recent_fills(exchange, since_ms=since_ms)
         ex_balance = fetcher.get_balance(exchange)
     except ConnectionError as e:
+        prior = get_exchange_health(conn, exchange)
+        consecutive = (prior.consecutive_errors + 1) if prior else 1
+        new_status = "down" if consecutive >= _HEALTH_DOWN_THRESHOLD else "degraded"
+        upsert_exchange_health(
+            conn, exchange=exchange, status=new_status,
+            last_error_at_ms=now_ms, last_error_msg=str(e),
+            consecutive_errors=consecutive,
+        )
+        severity = "critical" if consecutive >= _HEALTH_DOWN_THRESHOLD else "error"
         write_recon_event(
             conn, timestamp_ms=now_ms, source="reconciler",
-            category="exchange_unreachable", severity="error",
+            category="exchange_unreachable", severity=severity,
             exchange=exchange, notes=str(e),
+            actual={"consecutive_errors": consecutive},
         )
         return
 
@@ -136,6 +148,10 @@ def reconcile_exchange(
         available_usd=float(ex_balance.get("available_usd", 0.0)),
         locked_usd=float(ex_balance.get("locked_usd", 0.0)),
         snapshot_at_ms=now_ms,
+    )
+    upsert_exchange_health(
+        conn, exchange=exchange, status="ok",
+        last_ok_at_ms=now_ms, consecutive_errors=0,
     )
 
     sp_positions = list_open_positions(conn)
