@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { z } from "zod";
 import { createCanaryService } from "../services/canary.js";
+import { createModelEvaluationService } from "../services/model-evaluation.js";
 import { logger } from "../middleware/logger.js";
 
 const evaluationResultSchema = z.object({
@@ -27,6 +28,7 @@ export function internalRoutes(db?: Db) {
   }
 
   const canaryService = createCanaryService(db);
+  const evaluationService = createModelEvaluationService(db);
 
   router.post("/evaluation-result", async (req, res) => {
     try {
@@ -41,11 +43,24 @@ export function internalRoutes(db?: Db) {
         return;
       }
 
-      await canaryService.recordEvaluation(parsed.data);
+      const input = parsed.data;
+
+      await canaryService.recordEvaluation(input);
+
+      const posterior = await evaluationService.getPosteriorForRole(input.role);
+      if (posterior && posterior.recommendation) {
+        await evaluationService.updateRecommendation(input.role, posterior.recommendation);
+        logger.info(
+          { role: input.role, recommendation: posterior.recommendation, pBA: posterior.pBA },
+          "Updated recommendation based on new evaluation"
+        );
+      }
 
       res.status(201).json({
         success: true,
         message: "Evaluation recorded",
+        recommendation: posterior?.recommendation ?? null,
+        pBA: posterior?.pBA ?? null,
       });
     } catch (err) {
       logger.error({ err }, "Failed to record evaluation result");
