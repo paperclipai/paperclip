@@ -44,6 +44,8 @@ def check_all(conn: sqlite3.Connection) -> list[Violation]:
     out += _check_overlapping_open_positions(conn)
     out += _check_aged_open_positions(conn)
     out += _check_stuck_transitions(conn)
+    out += _check_audit_orphans(conn)
+    out += _check_fill_orphans(conn)
     return out
 
 
@@ -184,3 +186,60 @@ def _check_fill_quality(conn: sqlite3.Connection) -> list[Violation]:
             notes=f"fill #{r['id']} has fill_price={r['fill_price']} size_usd={r['size_usd']}",
         ))
     return out
+
+
+def _check_audit_orphans(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 7: audit_log entries with position_id pointing nowhere."""
+    rows = conn.execute(
+        "SELECT a.id, a.position_id FROM audit_log a "
+        "LEFT JOIN positions p ON p.id = a.position_id "
+        "WHERE a.position_id IS NOT NULL AND p.id IS NULL"
+    ).fetchall()
+    return [
+        Violation(
+            category="audit_orphan_position_id",
+            severity="warn",
+            notes=f"audit_log #{r['id']} references missing position_id={r['position_id']}",
+        )
+        for r in rows
+    ]
+
+
+def _check_fill_orphans(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 8: fill rows with position_id pointing nowhere."""
+    rows = conn.execute(
+        "SELECT f.id, f.position_id FROM fills f "
+        "LEFT JOIN positions p ON p.id = f.position_id "
+        "WHERE p.id IS NULL"
+    ).fetchall()
+    return [
+        Violation(
+            category="fill_orphan_position_id",
+            severity="error",
+            notes=f"fill #{r['id']} references missing position_id={r['position_id']}",
+        )
+        for r in rows
+    ]
+
+
+def check_inmem_consistency(
+    conn: sqlite3.Connection, *, in_memory_open_count: int
+) -> list[Violation]:
+    """Invariant 9: caller-provided in-memory count vs DB count.
+
+    Separate from check_all() because it requires data only the trader
+    process has (its in-memory tracker).
+    """
+    placeholders = ",".join("?" * len(_OPEN_LIKE_STATUSES))
+    n = conn.execute(
+        f"SELECT COUNT(*) FROM positions WHERE status IN ({placeholders})",
+        _OPEN_LIKE_STATUSES,
+    ).fetchone()[0]
+    if n != in_memory_open_count:
+        return [Violation(
+            category="inmem_db_count_mismatch",
+            severity="error",
+            expected={"in_memory_count": in_memory_open_count},
+            actual={"db_count": n},
+        )]
+    return []

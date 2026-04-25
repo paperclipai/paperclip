@@ -152,3 +152,68 @@ def test_invariant_stuck_transition(fresh_db):
     cats = [v.category for v in violations]
     assert "stuck_transition" in cats
     conn.close()
+
+
+from state_store import write_audit
+from invariants import check_inmem_consistency
+
+
+def test_invariant_audit_orphan_position_id(fresh_db):
+    """Invariant 7: audit_log entry references a position that doesn't exist."""
+    conn = open_db(fresh_db)
+    pid = _seed_open_position(conn)
+    write_audit(conn, timestamp_ms=1, event_type="entry_attempt",
+                severity="info", message="ok", position_id=pid)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, event_type, severity, position_id, message) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (2, "x", "info", 99999, "orphan"),
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        violations = check_all(conn)
+        cats = [v.category for v in violations]
+        assert "audit_orphan_position_id" in cats
+    finally:
+        conn.close()
+
+
+def test_invariant_fill_orphan_position_id(fresh_db):
+    """Invariant 8: a fill row referencing a non-existent position."""
+    conn = open_db(fresh_db)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """INSERT INTO fills
+               (position_id, exchange, leg, intent, order_id, side,
+                size_usd, fill_price, fees_usd, filled_at, raw_response)
+               VALUES (99999, 'MEXC', 'a', 'entry', 'orphan-1', 'buy',
+                       25.0, 1.0, 0.01, 1, '{}')"""
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        violations = check_all(conn)
+        cats = [v.category for v in violations]
+        assert "fill_orphan_position_id" in cats
+    finally:
+        conn.close()
+
+
+def test_invariant_inmem_match_passes(fresh_db):
+    """Invariant 9: in-memory count matches DB count."""
+    conn = open_db(fresh_db)
+    _seed_open_position(conn, symbol="A", opened_at_ms=1)
+    _seed_open_position(conn, symbol="B", opened_at_ms=2)
+    violations = check_inmem_consistency(conn, in_memory_open_count=2)
+    assert violations == []
+    conn.close()
+
+
+def test_invariant_inmem_match_violation(fresh_db):
+    conn = open_db(fresh_db)
+    _seed_open_position(conn, symbol="A", opened_at_ms=1)
+    _seed_open_position(conn, symbol="B", opened_at_ms=2)
+    violations = check_inmem_consistency(conn, in_memory_open_count=5)
+    cats = [v.category for v in violations]
+    assert "inmem_db_count_mismatch" in cats
+    conn.close()
