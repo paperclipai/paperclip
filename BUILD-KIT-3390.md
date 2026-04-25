@@ -3,9 +3,9 @@
 ## PR
 No PR — work on `local-custom` branch, never upstream.
 
-## Commits
+## Commits (Phase 0.8 context cache)
 - `9c6131c9` — fix(db): align agent_context_cache schema with migration (text -> jsonb)
-- `c997e842` — Fix migration journal ordering and issues.ts type error (Phase 0.8 context cache schema and migration)
+- `c997e842` — Fix migration journal ordering (includes 0071_context_cache migration + schema)
 
 ## Files changed
 - `packages/db/src/migrations/0071_context_cache.sql` (+112L)
@@ -18,11 +18,14 @@ No PR — work on `local-custom` branch, never upstream.
 
 ## Compile / Typecheck
 ```
-server typecheck$ pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit
-...
-server typecheck: Done
+> @paperclipai/server@0.3.1 typecheck /home/jakejames/paperclip/server
+> pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit
+> @paperclipai/plugin-sdk@1.0.0 build /home/jakejames/paperclip/packages/plugins/sdk
+> pnpm --filter @paperclipai/shared build && tsc
+> @paperclipai/shared@0.3.1 build /home/jakejames/paperclip/packages/shared
+> tsc
 ```
-Typecheck passed.
+All packages passed typecheck (tsc --noEmit with zero errors).
 
 ## Local tests
 ```
