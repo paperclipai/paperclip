@@ -1,3 +1,5 @@
+import time
+
 from state_store import (
     open_db, init_schema, insert_position, insert_fill,
 )
@@ -76,4 +78,77 @@ def test_invariant_fill_quality_via_constraint_already_enforced(fresh_db):
     violations = check_all(conn)
     bad_fill_violations = [v for v in violations if v.category == "fill_quality"]
     assert bad_fill_violations == []
+    conn.close()
+
+
+def test_invariant_no_overlapping_open_positions(fresh_db):
+    """Invariant 4: no two open positions on same (symbol, exchange, side)."""
+    conn = open_db(fresh_db)
+    insert_position(
+        conn, symbol="ORDIUSDT",
+        exchange_a="MEXC", exchange_b="BLOFIN",
+        side_a="buy", side_b="sell",
+        size_usd_a=25.0, size_usd_b=25.0,
+        entry_spread_pct=0.01, status="open", opened_at_ms=1,
+    )
+    insert_position(
+        conn, symbol="ORDIUSDT",
+        exchange_a="MEXC", exchange_b="OKX",
+        side_a="buy", side_b="sell",  # same MEXC buy
+        size_usd_a=25.0, size_usd_b=25.0,
+        entry_spread_pct=0.01, status="open", opened_at_ms=2,
+    )
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "overlapping_open_positions" in cats
+    conn.close()
+
+
+def test_invariant_aged_open_position(fresh_db):
+    """Invariant 5: open position older than max_hold_minutes + 5 (35 min)."""
+    conn = open_db(fresh_db)
+    too_old_ms = int(time.time() * 1000) - 36 * 60 * 1000
+    insert_position(
+        conn, symbol="STALEUSDT",
+        exchange_a="MEXC", exchange_b="BLOFIN",
+        side_a="buy", side_b="sell",
+        size_usd_a=25.0, size_usd_b=25.0,
+        entry_spread_pct=0.01, status="open", opened_at_ms=too_old_ms,
+    )
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "aged_open_position" in cats
+    conn.close()
+
+
+def test_invariant_aged_open_position_within_limit_passes(fresh_db):
+    conn = open_db(fresh_db)
+    fresh_ms = int(time.time() * 1000) - 5 * 60 * 1000  # 5 min old
+    insert_position(
+        conn, symbol="FRESHUSDT",
+        exchange_a="MEXC", exchange_b="BLOFIN",
+        side_a="buy", side_b="sell",
+        size_usd_a=25.0, size_usd_b=25.0,
+        entry_spread_pct=0.01, status="open", opened_at_ms=fresh_ms,
+    )
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "aged_open_position" not in cats
+    conn.close()
+
+
+def test_invariant_stuck_transition(fresh_db):
+    """Invariant 6: position stuck in 'opening' or 'closing' for > 60s."""
+    conn = open_db(fresh_db)
+    stuck_ms = int(time.time() * 1000) - 120_000  # 2 minutes ago
+    insert_position(
+        conn, symbol="STUCKUSDT",
+        exchange_a="MEXC", exchange_b="BLOFIN",
+        side_a="buy", side_b="sell",
+        size_usd_a=25.0, size_usd_b=25.0,
+        entry_spread_pct=0.01, status="opening", opened_at_ms=stuck_ms,
+    )
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "stuck_transition" in cats
     conn.close()

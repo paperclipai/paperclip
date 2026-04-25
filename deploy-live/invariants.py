@@ -30,6 +30,10 @@ class Violation:
 
 _OPEN_LIKE_STATUSES = ("opening", "open", "closing", "degraded")
 
+_MAX_HOLD_MINUTES = 30  # from live trader EU config
+_MAX_HOLD_GRACE_MINUTES = 5  # invariant fires at max_hold + grace
+_TRANSITION_TIMEOUT_S = 60  # opening/closing should not exceed this
+
 
 def check_all(conn: sqlite3.Connection) -> list[Violation]:
     """Run every invariant. Returns the union of all Violations found."""
@@ -37,6 +41,9 @@ def check_all(conn: sqlite3.Connection) -> list[Violation]:
     out += _check_open_position_legs(conn)
     out += _check_closed_position_legs(conn)
     out += _check_fill_quality(conn)
+    out += _check_overlapping_open_positions(conn)
+    out += _check_aged_open_positions(conn)
+    out += _check_stuck_transitions(conn)
     return out
 
 
@@ -88,6 +95,77 @@ def _check_closed_position_legs(conn: sqlite3.Connection) -> list[Violation]:
                 expected={"entry_fills": 2, "exit_fills": 2},
                 actual={"entry_fills": r["n_entry"], "exit_fills": r["n_exit"]},
             ))
+    return out
+
+
+def _check_overlapping_open_positions(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 4: no two open positions share (symbol, exchange, side)."""
+    placeholders = ",".join("?" * len(_OPEN_LIKE_STATUSES))
+    rows = conn.execute(
+        f"""WITH legs AS (
+            SELECT id AS pid, symbol, exchange_a AS exchange, side_a AS side
+            FROM positions WHERE status IN ({placeholders})
+            UNION ALL
+            SELECT id AS pid, symbol, exchange_b AS exchange, side_b AS side
+            FROM positions WHERE status IN ({placeholders})
+        )
+        SELECT symbol, exchange, side, COUNT(*) AS n, GROUP_CONCAT(pid) AS pids
+        FROM legs GROUP BY symbol, exchange, side HAVING n > 1""",
+        _OPEN_LIKE_STATUSES + _OPEN_LIKE_STATUSES,
+    ).fetchall()
+    out = []
+    for r in rows:
+        out.append(Violation(
+            category="overlapping_open_positions",
+            severity="error",
+            symbol=r["symbol"],
+            exchange=r["exchange"],
+            actual={"side": r["side"], "position_ids": r["pids"], "count": r["n"]},
+        ))
+    return out
+
+
+def _check_aged_open_positions(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 5: position older than max_hold_minutes + grace."""
+    cutoff_ms = int(time.time() * 1000) - (_MAX_HOLD_MINUTES + _MAX_HOLD_GRACE_MINUTES) * 60_000
+    rows = conn.execute(
+        "SELECT id, symbol, opened_at FROM positions "
+        "WHERE status='open' AND opened_at < ?",
+        (cutoff_ms,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        age_min = (int(time.time() * 1000) - r["opened_at"]) / 60_000
+        out.append(Violation(
+            category="aged_open_position",
+            severity="warn",
+            position_id=r["id"],
+            symbol=r["symbol"],
+            actual={"age_minutes": age_min,
+                    "limit_minutes": _MAX_HOLD_MINUTES + _MAX_HOLD_GRACE_MINUTES},
+        ))
+    return out
+
+
+def _check_stuck_transitions(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 6: opening/closing position older than 60s."""
+    cutoff_ms = int(time.time() * 1000) - _TRANSITION_TIMEOUT_S * 1000
+    rows = conn.execute(
+        "SELECT id, symbol, status, opened_at FROM positions "
+        "WHERE status IN ('opening','closing') AND opened_at < ?",
+        (cutoff_ms,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        age_s = (int(time.time() * 1000) - r["opened_at"]) / 1000
+        out.append(Violation(
+            category="stuck_transition",
+            severity="error",
+            position_id=r["id"],
+            symbol=r["symbol"],
+            actual={"status": r["status"], "age_seconds": age_s,
+                    "timeout_seconds": _TRANSITION_TIMEOUT_S},
+        ))
     return out
 
 
