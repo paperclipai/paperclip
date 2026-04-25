@@ -34,6 +34,7 @@ import {
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  startSyntheticProber,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -784,6 +785,18 @@ export async function startServer(): Promise<StartedServer> {
     };
     setTimeout(runPrune, 60_000).unref?.();
     setInterval(runPrune, 60 * 60 * 1000);
+  }
+
+  const syntheticProberEnabled = process.env.SYNTHETIC_PROBER_ENABLED === "true";
+  if (syntheticProberEnabled) {
+    try {
+      startSyntheticProber(db as any);
+      logger.info("Synthetic prober started");
+    } catch (err) {
+      logger.error({ err }, "Failed to start synthetic prober");
+    }
+  } else {
+    logger.debug("Synthetic prober disabled (SYNTHETIC_PROBER_ENABLED != true)");
   }
   
   if (config.databaseBackupEnabled) {
