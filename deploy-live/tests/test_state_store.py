@@ -308,3 +308,30 @@ def test_list_unresolved_filters_by_severity(fresh_db):
     assert len(errs) == 1
     assert errs[0].category == "orphan_leg"
     conn.close()
+
+
+import asyncio
+from state_store import AsyncStateStore
+
+
+def test_async_writer_serializes_writes(fresh_db):
+    async def _go():
+        store = AsyncStateStore(fresh_db)
+        await store.start()
+        try:
+            # Two concurrent writers, both should succeed without contention
+            async def w(symbol, t):
+                return await store.insert_position(
+                    symbol=symbol, exchange_a="MEXC", exchange_b="BLOFIN",
+                    side_a="buy", side_b="sell",
+                    size_usd_a=25.0, size_usd_b=25.0,
+                    entry_spread_pct=0.01, status="opening", opened_at_ms=t,
+                )
+            ids = await asyncio.gather(w("A", 1), w("B", 2), w("C", 3))
+            assert len(set(ids)) == 3
+            opens = await store.list_open_positions()
+            assert {p.symbol for p in opens} == {"A", "B", "C"}
+        finally:
+            await store.stop()
+
+    asyncio.run(_go())

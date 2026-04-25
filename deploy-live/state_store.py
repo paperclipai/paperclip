@@ -5,6 +5,7 @@ balances, exchange health, and reconciliation events.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -424,3 +425,89 @@ def _row_to_recon_event(row: sqlite3.Row) -> ReconciliationEvent:
         actual=json.loads(row["actual"]) if row["actual"] else None,
         notes=row["notes"], resolution=row["resolution"],
     )
+
+
+class AsyncStateStore:
+    """Serializes all writes through a single asyncio lock; reads are direct.
+
+    Holds one connection. Callers should `await start()` before use and
+    `await stop()` at shutdown.
+    """
+
+    def __init__(self, path: str | Path):
+        self._path = path
+        self._conn: Optional[sqlite3.Connection] = None
+        self._write_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        self._conn = open_db(self._path)
+
+    async def stop(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("AsyncStateStore not started")
+        return self._conn
+
+    # Writes (serialized)
+    async def insert_position(self, **kwargs) -> int:
+        async with self._write_lock:
+            return insert_position(self.conn, **kwargs)
+
+    async def update_position_status(self, position_id: int, status: str) -> None:
+        async with self._write_lock:
+            update_position_status(self.conn, position_id, status)
+
+    async def close_position(self, position_id: int, **kwargs) -> None:
+        async with self._write_lock:
+            close_position(self.conn, position_id, **kwargs)
+
+    async def insert_fill(self, **kwargs) -> int:
+        async with self._write_lock:
+            return insert_fill(self.conn, **kwargs)
+
+    async def write_audit(self, **kwargs) -> int:
+        async with self._write_lock:
+            return write_audit(self.conn, **kwargs)
+
+    async def snapshot_balance(self, **kwargs) -> int:
+        async with self._write_lock:
+            return snapshot_balance(self.conn, **kwargs)
+
+    async def upsert_exchange_health(self, **kwargs) -> None:
+        async with self._write_lock:
+            upsert_exchange_health(self.conn, **kwargs)
+
+    async def write_recon_event(self, **kwargs) -> int:
+        async with self._write_lock:
+            return write_recon_event(self.conn, **kwargs)
+
+    async def resolve_recon_event(self, event_id: int, **kwargs) -> None:
+        async with self._write_lock:
+            resolve_recon_event(self.conn, event_id, **kwargs)
+
+    # Reads (direct, no lock — SQLite supports concurrent reads in WAL mode)
+    async def get_position(self, position_id: int):
+        return get_position(self.conn, position_id)
+
+    async def list_open_positions(self):
+        return list_open_positions(self.conn)
+
+    async def list_fills_for_position(self, position_id: int):
+        return list_fills_for_position(self.conn, position_id)
+
+    async def list_recent_fills(self, *, exchange: str, since_ms: int):
+        return list_recent_fills(self.conn, exchange=exchange, since_ms=since_ms)
+
+    async def latest_balance(self, *, exchange: str, asset: str = "USDT"):
+        return latest_balance(self.conn, exchange=exchange, asset=asset)
+
+    async def get_exchange_health(self, exchange: str):
+        return get_exchange_health(self.conn, exchange)
+
+    async def list_unresolved_recon_events(self, *, min_severity: str = "info"):
+        return list_unresolved_recon_events(self.conn, min_severity=min_severity)
