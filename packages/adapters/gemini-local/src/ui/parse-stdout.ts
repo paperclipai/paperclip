@@ -1,4 +1,3 @@
-function safeJsonParse(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
@@ -105,9 +104,8 @@ function collectTextEntries(messageRaw: unknown, ts: string, kind: "user" | "ass
 function parseTopLevelToolEvent(parsed: Record<string, unknown>, ts: string): TranscriptEntry[] {
   const subtype = asString(parsed.subtype).trim().toLowerCase();
   const callId = asString(parsed.call_id) || asString(parsed.callId) || asString(parsed.id);
-  if (!callId) return [];
   const toolCall = asRecord(parsed.tool_call ?? parsed.toolCall);
-  if (!toolCall) {
+  if (!callId || !toolCall) {
     return [{ kind: "system", ts, text: `tool_call${subtype ? ` (${subtype})` : ""}` }];
   }
   const [toolName] = Object.keys(toolCall);
