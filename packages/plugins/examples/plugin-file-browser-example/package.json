@@ -7,6 +7,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "dist/"
+  ],
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
@@ -16,6 +19,8 @@
     "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",
+    "prepublishOnly": "pnpm run build",
+    "release": "node ./scripts/publish.mjs",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
   },
   "dependencies": {
