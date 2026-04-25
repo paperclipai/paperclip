@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+import pytest
 from state_store import open_db, init_schema
 from migrate_to_sqlite import migrate
 
@@ -48,3 +49,32 @@ def test_migrate_quarantines_malformed(tmp_path):
     lines = [json.loads(l) for l in quarantine.read_text().splitlines()]
     kinds = sorted(l["kind"] for l in lines)
     assert kinds == ["closed_position", "fill", "open_position"]
+
+
+def test_migrate_raises_when_quarantine_exceeds_threshold(tmp_path):
+    db = tmp_path / "out.db"
+    init_schema(db)
+    quarantine = tmp_path / "q.jsonl"
+    with pytest.raises(SystemExit) as excinfo:
+        migrate(
+            state_json_path=FIXTURES / "malformed_state.json",
+            trade_history_csv_path=FIXTURES / "malformed_trade_history.csv",
+            db_path=db,
+            quarantine_path=quarantine,
+            quarantine_threshold_pct=10.0,  # 3 quarantined / 5 total = 60% > 10%
+        )
+    assert excinfo.value.code != 0
+
+
+def test_migrate_succeeds_when_quarantine_under_threshold(tmp_path):
+    db = tmp_path / "out.db"
+    init_schema(db)
+    quarantine = tmp_path / "q.jsonl"
+    summary = migrate(
+        state_json_path=FIXTURES / "sample_state.json",
+        trade_history_csv_path=FIXTURES / "sample_trade_history.csv",
+        db_path=db,
+        quarantine_path=quarantine,
+        quarantine_threshold_pct=5.0,
+    )
+    assert summary["quarantined"] == 0

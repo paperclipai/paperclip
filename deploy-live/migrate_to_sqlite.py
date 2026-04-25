@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ def migrate(
     trade_history_csv_path: Path,
     db_path: Path,
     quarantine_path: Path,
+    quarantine_threshold_pct: float | None = None,
 ) -> dict[str, int]:
     summary = {"positions_migrated": 0, "fills_migrated": 0, "quarantined": 0}
     quarantine_lines: list[str] = []
@@ -56,6 +58,23 @@ def migrate(
         with open(quarantine_path, "w") as f:
             f.write("\n".join(quarantine_lines))
     summary["quarantined"] = len(quarantine_lines)
+
+    if quarantine_threshold_pct is not None:
+        total = (
+            summary["positions_migrated"]
+            + summary["fills_migrated"]
+            + summary["quarantined"]
+        )
+        if total > 0:
+            pct = 100.0 * summary["quarantined"] / total
+            if pct > quarantine_threshold_pct:
+                sys.stderr.write(
+                    f"Migration aborted: {summary['quarantined']} of {total} rows "
+                    f"({pct:.1f}%) quarantined, exceeding threshold "
+                    f"{quarantine_threshold_pct:.1f}%\n"
+                )
+                raise SystemExit(2)
+
     return summary
 
 
