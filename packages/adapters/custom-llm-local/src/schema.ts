@@ -27,7 +27,14 @@ export function parseConfig(raw: Record<string, unknown>): CustomLlmLocalConfig 
 
   const baseUrl = asString(raw.baseUrl, "").trim();
   if (!baseUrl) throw new Error("CONFIG_INVALID: baseUrl is required");
-  if (!/^https?:\/\//i.test(baseUrl)) throw new Error("CONFIG_INVALID: baseUrl must be an absolute http/https URL");
+  try {
+    const parsedBaseUrl = new URL(baseUrl);
+    if ((parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") || !parsedBaseUrl.host) {
+      throw new Error("invalid protocol or host");
+    }
+  } catch {
+    throw new Error("CONFIG_INVALID: baseUrl must be an absolute http/https URL");
+  }
 
   const transport = asString(raw.transport, "") as Transport;
   if (!VALID_TRANSPORTS.includes(transport)) {
