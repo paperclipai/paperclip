@@ -1,4 +1,4 @@
-import { index, integer, pgTable, text, timestamp, uuid, boolean } from "drizzle-orm/pg-core";
+import { index, integer, pgTable, text, timestamp, uuid, boolean, real } from "drizzle-orm/pg-core";
 
 export const trackedDependencies = pgTable(
   "tracked_dependencies",

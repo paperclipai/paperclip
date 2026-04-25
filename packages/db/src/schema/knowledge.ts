@@ -127,3 +127,33 @@ export const knowledgeCrawlRuns = pgTable(
 
 export type KnowledgeCrawlRun = typeof knowledgeCrawlRuns.$inferSelect;
 export type NewKnowledgeCrawlRun = typeof knowledgeCrawlRuns.$inferInsert;
+
+export const knowledgeStaleReports = pgTable(
+  "knowledge_stale_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    topicSlug: text("topic_slug").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    agentName: text("agent_name").notNull(),
+    issueLink: text("issue_link").notNull(),
+    companyId: uuid("company_id").notNull(),
+    priority: text("priority").notNull().default("medium"),
+    trigger: text("trigger").notNull().default("agent_stale_report"),
+    resolutionStatus: text("resolution_status").notNull().default("pending"),
+    resolutionDetail: text("resolution_detail"),
+    crawlRunId: uuid("crawl_run_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (table) => ({
+    topicSlugIdx: index("knowledge_stale_reports_topic_slug_idx").on(table.topicSlug),
+    agentIdIdx: index("knowledge_stale_reports_agent_id_idx").on(table.agentId),
+    companyIdIdx: index("knowledge_stale_reports_company_id_idx").on(table.companyId),
+    resolutionStatusIdx: index("knowledge_stale_reports_resolution_status_idx").on(table.resolutionStatus),
+    createdAtIdx: index("knowledge_stale_reports_created_at_idx").on(table.createdAt),
+  }),
+);
+
+export type KnowledgeStaleReport = typeof knowledgeStaleReports.$inferSelect;
+export type NewKnowledgeStaleReport = typeof knowledgeStaleReports.$inferInsert;
