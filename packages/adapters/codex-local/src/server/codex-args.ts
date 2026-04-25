@@ -1,7 +1,9 @@
 import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
+  CODEX_LOCAL_SANDBOX_MODES,
   isCodexLocalFastModeSupported,
+  type CodexLocalSandboxMode,
 } from "../index.js";
 
 export type BuildCodexExecArgsResult = {
@@ -11,6 +13,13 @@ export type BuildCodexExecArgsResult = {
   fastModeApplied: boolean;
   fastModeIgnoredReason: string | null;
 };
+
+const CODEX_SANDBOX_MODES = new Set<string>(CODEX_LOCAL_SANDBOX_MODES);
+
+function readSandboxMode(config: unknown): CodexLocalSandboxMode | null {
+  const value = asString(asRecord(config).sandboxMode, "").trim();
+  return CODEX_SANDBOX_MODES.has(value) ? value as CodexLocalSandboxMode : null;
+}
 
 function readExtraArgs(config: unknown): string[] {
   const fromExtraArgs = asStringArray(asRecord(config).extraArgs);
@@ -45,11 +54,13 @@ export function buildCodexExecArgs(
     record.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(record.dangerouslyBypassSandbox, false),
   );
+  const sandboxMode = bypass ? null : readSandboxMode(record);
   const extraArgs = readExtraArgs(record);
 
   const args = ["exec", "--json"];
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
+  if (sandboxMode) args.push("--sandbox", sandboxMode);
   if (model) args.push("--model", model);
   if (modelReasoningEffort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
