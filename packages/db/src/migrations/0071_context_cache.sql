@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS "agent_context_cache" (
   "last_context" jsonb NOT NULL,
   "last_loaded_at" timestamptz NOT NULL,
   "cached_at_xact_id" text NOT NULL,
+  "data_version" bigint NOT NULL DEFAULT 0,
   "expires_at" timestamptz NOT NULL,
   "fetch_on_demand" boolean NOT NULL DEFAULT false,
   "summary" text,
@@ -26,28 +27,25 @@ DECLARE
 BEGIN
   SELECT * INTO v_cache FROM agent_context_cache WHERE agent_id = p_agent_id;
   IF v_cache.id IS NULL THEN
-    INSERT INTO agent_context_cache (agent_id, last_context, last_loaded_at, cached_at_xact_id, expires_at, fetch_on_demand)
-    VALUES (p_agent_id, '{}'::jsonb, NOW(), txid_current_snapshot()::text, NOW() + INTERVAL '1 hour', false)
+    INSERT INTO agent_context_cache (agent_id, last_context, last_loaded_at, cached_at_xact_id, data_version, expires_at, fetch_on_demand)
+    VALUES (p_agent_id, '{}'::jsonb, NOW(), txid_current_snapshot()::text, 1, NOW() + INTERVAL '1 hour', false)
     RETURNING * INTO v_cache;
   END IF;
   RETURN v_cache;
 END;
 $$ LANGUAGE plpgsql;
 
--- Helper: check if context cache is fresh (same transaction snapshot)
-CREATE OR REPLACE FUNCTION is_context_cache_fresh(p_agent_id uuid)
+-- Helper: check if context cache is fresh (data_version matches expected value)
+CREATE OR REPLACE FUNCTION is_context_cache_fresh(p_agent_id uuid, p_expected_version bigint)
 RETURNS boolean AS $$
 DECLARE
   v_cache agent_context_cache%ROWTYPE;
-  v_current_xact_id text;
 BEGIN
   SELECT * INTO v_cache FROM agent_context_cache WHERE agent_id = p_agent_id;
   IF v_cache.id IS NULL THEN
     RETURN false;
   END IF;
-  -- Compare transaction snapshots - cache is fresh if same snapshot
-  v_current_xact_id := txid_current_snapshot()::text;
-  RETURN v_cache.cached_at_xact_id = v_current_xact_id;
+  RETURN v_cache.data_version = p_expected_version;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -89,6 +87,7 @@ BEGIN
     last_context = p_last_context,
     last_loaded_at = NOW(),
     cached_at_xact_id = txid_current_snapshot()::text,
+    data_version = data_version + 1,
     expires_at = NOW() + INTERVAL '1 hour',
     fetch_on_demand = p_fetch_on_demand,
     summary = p_summary,

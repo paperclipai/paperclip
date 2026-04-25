@@ -134,6 +134,7 @@ async function getCachedAgentContext(
   const cache = await db
     .select({
       lastContext: agentContextCache.lastContext,
+      dataVersion: agentContextCache.dataVersion,
       cachedAtXactId: agentContextCache.cachedAtXactId,
       expiresAt: agentContextCache.expiresAt,
       fetchOnDemand: agentContextCache.fetchOnDemand,
@@ -150,11 +151,7 @@ async function getCachedAgentContext(
     return null;
   }
 
-  const currentXactId = await db.execute(sql`SELECT txid_current_snapshot()::text as xact_id`).then(
-    (rows) => (rows[0] as { xact_id: string } | undefined)?.xact_id ?? "",
-  );
-
-  if (cache.cachedAtXactId !== currentXactId) {
+  if (cache.dataVersion === 0) {
     return null;
   }
 
@@ -177,57 +174,61 @@ async function setCachedAgentContext(
 ): Promise<void> {
   const serialized = JSON.stringify(payload);
   const compressed = gzipSync(Buffer.from(serialized, "utf8"));
+  const expiresAt = new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000);
 
   if (compressed.length > CONTEXT_CACHE_MAX_COMPRESSED_BYTES) {
     const summary = `Context exceeded ${CONTEXT_CACHE_MAX_COMPRESSED_BYTES} bytes (${compressed.length} compressed). Full context requires on-demand fetch.`;
-    await db
-      .insert(agentContextCache)
-      .values({
-        agentId,
-        lastContext: JSON.stringify({ _summary: summary }) as any,
-        lastLoadedAt: new Date(),
-        cachedAtXactId: sql`txid_current_snapshot()::text`,
-        expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
-        fetchOnDemand: true,
-        summary,
-      })
-      .onConflictDoUpdate({
-        target: agentContextCache.agentId,
-        set: {
-          lastContext: JSON.stringify({ _summary: summary }) as any,
-          lastLoadedAt: new Date(),
-          cachedAtXactId: sql`txid_current_snapshot()::text`,
-          expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
-          fetchOnDemand: true,
-          summary,
-          updatedAt: new Date(),
-        },
-      });
+    const summaryJson = JSON.stringify({ _summary: summary });
+    await db.execute(sql`
+      INSERT INTO agent_context_cache (agent_id, last_context, last_loaded_at, cached_at_xact_id, data_version, expires_at, fetch_on_demand, summary, updated_at)
+      VALUES (
+        ${agentId}::uuid,
+        ${summaryJson}::jsonb,
+        NOW(),
+        txid_current_snapshot()::text,
+        1,
+        ${expiresAt},
+        true,
+        ${summary},
+        NOW()
+      )
+      ON CONFLICT (agent_id) DO UPDATE SET
+        last_context = EXCLUDED.last_context,
+        last_loaded_at = EXCLUDED.last_loaded_at,
+        cached_at_xact_id = EXCLUDED.cached_at_xact_id,
+        data_version = agent_context_cache.data_version + 1,
+        expires_at = EXCLUDED.expires_at,
+        fetch_on_demand = true,
+        summary = EXCLUDED.summary,
+        updated_at = NOW()
+    `);
     return;
   }
 
-  await db
-    .insert(agentContextCache)
-    .values({
-      agentId,
-      lastContext: compressed.toString("base64") as any,
-      lastLoadedAt: new Date(),
-      cachedAtXactId: sql`txid_current_snapshot()::text`,
-      expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
-      fetchOnDemand: false,
-    })
-    .onConflictDoUpdate({
-      target: agentContextCache.agentId,
-      set: {
-        lastContext: compressed.toString("base64") as any,
-        lastLoadedAt: new Date(),
-        cachedAtXactId: sql`txid_current_snapshot()::text`,
-        expiresAt: new Date(Date.now() + CONTEXT_CACHE_TTL_HOURS * 60 * 60 * 1000),
-        fetchOnDemand: false,
-        summary: null,
-        updatedAt: new Date(),
-      },
-    });
+  const compressedStr = compressed.toString("base64");
+  await db.execute(sql`
+    INSERT INTO agent_context_cache (agent_id, last_context, last_loaded_at, cached_at_xact_id, data_version, expires_at, fetch_on_demand, summary, updated_at)
+    VALUES (
+      ${agentId}::uuid,
+      ${compressedStr}::text,
+      NOW(),
+      txid_current_snapshot()::text,
+      1,
+      ${expiresAt},
+      false,
+      NULL,
+      NOW()
+    )
+    ON CONFLICT (agent_id) DO UPDATE SET
+      last_context = EXCLUDED.last_context,
+      last_loaded_at = EXCLUDED.last_loaded_at,
+      cached_at_xact_id = EXCLUDED.cached_at_xact_id,
+      data_version = agent_context_cache.data_version + 1,
+      expires_at = EXCLUDED.expires_at,
+      fetch_on_demand = false,
+      summary = NULL,
+      updated_at = NOW()
+  `);
 }
 
 async function invalidateCachedAgentContext(db: Db, agentId: string): Promise<void> {
@@ -1343,10 +1344,10 @@ async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
-  const issueSummary =
-    input.issueSummary ??
-    (issueId
-      ? await input.db
+
+  const [issueSummary, commentRows] = await Promise.all([
+    input.issueSummary ?? (issueId
+      ? input.db
           .select({
             id: issues.id,
             identifier: issues.identifier,
@@ -1357,13 +1358,10 @@ async function buildPaperclipWakePayload(input: {
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
-      : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
-
-  const commentRows =
+      : null),
     commentIds.length === 0
       ? []
-      : await input.db
+      : input.db
           .select({
             id: issueComments.id,
             issueId: issueComments.issueId,
@@ -1378,7 +1376,10 @@ async function buildPaperclipWakePayload(input: {
               eq(issueComments.companyId, input.companyId),
               inArray(issueComments.id, commentIds),
             ),
-          );
+          ),
+  ]);
+
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];

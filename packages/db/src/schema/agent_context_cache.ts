@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid, boolean, jsonb } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp, uuid, boolean, jsonb, bigint } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 
 export const agentContextCache = pgTable(
@@ -11,6 +11,7 @@ export const agentContextCache = pgTable(
     lastContext: jsonb("last_context").$type<Record<string, unknown>>().notNull(),
     lastLoadedAt: timestamp("last_loaded_at", { withTimezone: true }).notNull(),
     cachedAtXactId: text("cached_at_xact_id").notNull(),
+    dataVersion: bigint("data_version", { mode: "number" }).notNull().default(0),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     fetchOnDemand: boolean("fetch_on_demand").notNull().default(false),
     summary: text("summary"),
