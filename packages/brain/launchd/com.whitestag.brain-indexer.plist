@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.whitestag.brain-indexer</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code/Paperclip/packages/brain/dist/indexer/index.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code/Paperclip/packages/brain</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BRAIN_VAULT_PATH</key>
+    <string>/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault</string>
+    <key>BRAIN_DATABASE_URL</key>
+    <string>postgres://walterschoenenbroecher.de@localhost:5432/paperclip_brain</string>
+    <key>BRAIN_LM_STUDIO_URL</key>
+    <string>http://localhost:1234</string>
+    <key>BRAIN_EMBEDDING_MODEL</key>
+    <string>text-embedding-bge-m3</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/walterschoenenbroecher.de/.whitestag-logs/brain-indexer.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/walterschoenenbroecher.de/.whitestag-logs/brain-indexer.err.log</string>
+</dict>
+</plist>
