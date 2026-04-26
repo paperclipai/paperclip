@@ -1,8 +1,8 @@
 diff --git a/dist/index.js b/dist/index.js
-index d6afd5d43617e6ce96b1247ade584532f2385144..5e666f9cf15d452f3d86639f5df128b3308fe9cd 100644
+index d6afd5d43617e6ce96b1247ade584532f2385144..c49456bdebfa44c237b48e27f7bb1a2f57550ac8 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -79,3 +79,22 @@ tools, persistent memory, session persistence, skills, and MCP support.
+@@ -79,3 +79,20 @@ tools, persistent memory, session persistence, skills, and MCP support.
  - \`{{projectName}}\` — Project name (if scoped to a project)
  `;
  //# sourceMappingURL=index.js.map
@@ -23,10 +23,9 @@ index d6afd5d43617e6ce96b1247ade584532f2385144..5e666f9cf15d452f3d86639f5df128b3
 +    models,
 +    agentConfigurationDoc,
 +    supportsLocalAgentJwt: true,
-+  };
-+}
+\ No newline at end of file
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..42db2e5c9d7b67d3dd992620dea8f4d18cd44f73 100644
+index 93cddf8243271f5fb3ab101617f9114257e41328..e6f10e8dea64b0572d701ecbfeadef7cf85da788 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
 @@ -58,18 +58,18 @@ Title: {{taskTitle}}
@@ -74,7 +73,30 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..42db2e5c9d7b67d3dd992620dea8f4d1
  
  4. If truly nothing to do, report briefly what you checked.
  {{/noTask}}`;
-@@ -295,6 +295,8 @@ export async function execute(ctx) {
+@@ -141,7 +141,7 @@ function buildPrompt(ctx, config) {
+ /** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
+ const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+ /** Regex for legacy session output format */
+-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
++const SESSION_ID_REGEX_LEGACY = /^session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/im;
+ /** Regex to extract token usage from Hermes output. */
+ const TOKEN_USAGE_REGEX = /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
+ /** Regex to extract cost from Hermes output. */
+@@ -282,8 +282,12 @@ export async function execute(ctx) {
+     args.push("--source", "tool");
+     // Session resume
+     const prevSessionId = cfgString(ctx.runtime?.sessionParams?.sessionId);
+-    if (persistSession && prevSessionId) {
++    // Validate: real Hermes session IDs match YYYYMMDD_HHMMSS_<hex>
++    const isValidSessionId = prevSessionId && /^\d{8}_\d{6}_/.test(prevSessionId);
++    if (persistSession && isValidSessionId) {
+         args.push("--resume", prevSessionId);
++    } else if (persistSession && prevSessionId) {
++        // bad sessionId, silently drop (regex parser fix already in place)
+     }
+     if (extraArgs?.length) {
+         args.push(...extraArgs);
+@@ -295,6 +299,8 @@ export async function execute(ctx) {
      };
      if (ctx.runId)
          env.PAPERCLIP_RUN_ID = ctx.runId;
