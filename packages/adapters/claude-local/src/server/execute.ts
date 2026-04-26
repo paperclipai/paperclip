@@ -106,6 +106,44 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+function shouldDisableClaudeAutoMemory(desiredSkillNames: Iterable<string>): boolean {
+  for (const skillName of desiredSkillNames) {
+    const normalized = skillName.trim().toLowerCase();
+    if (!normalized) continue;
+    if (normalized === "para-memory-files" || normalized.endsWith("/para-memory-files")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function ensureClaudeAutoMemoryDisabled(baseDir: string): Promise<void> {
+  const claudeDir = path.join(baseDir, ".claude");
+  const settingsPath = path.join(claudeDir, "settings.json");
+  await fs.mkdir(claudeDir, { recursive: true });
+
+  let current: Record<string, unknown> = {};
+  try {
+    const raw = await fs.readFile(settingsPath, "utf8");
+    const parsed = parseJson(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      current = parsed;
+    }
+  } catch {
+    // Missing or unreadable settings files should not block the run; we rewrite below.
+  }
+
+  if (current.autoMemoryEnabled === false) {
+    return;
+  }
+
+  await fs.writeFile(
+    settingsPath,
+    `${JSON.stringify({ ...current, autoMemoryEnabled: false }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, executionTarget, authToken } = input;
 
@@ -352,6 +390,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
+  if (shouldDisableClaudeAutoMemory(desiredSkillNames)) {
+    const claudeConfigRoots = new Set<string>([path.resolve(cwd)]);
+    const agentHomeDir = typeof env.AGENT_HOME === "string" && env.AGENT_HOME.trim().length > 0
+      ? path.resolve(env.AGENT_HOME)
+      : null;
+    if (agentHomeDir) claudeConfigRoots.add(agentHomeDir);
+
+    for (const rootDir of claudeConfigRoots) {
+      await ensureClaudeAutoMemoryDisabled(rootDir);
+    }
+  }
   // When instructionsFilePath is configured, build a stable content-addressed
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
