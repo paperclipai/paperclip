@@ -13,7 +13,6 @@ describe("heartbeat stop metadata", () => {
       "cursor",
       "gemini_local",
       "opencode_local",
-      "pi_local",
       "process",
     ]) {
       expect(resolveHeartbeatRunTimeoutPolicy(adapterType, {})).toEqual({
