@@ -191,7 +191,8 @@ export async function startServer(): Promise<StartedServer> {
     if (!rawUrl) return undefined;
     try {
       const parsed = new URL(rawUrl);
-      if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+      // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
+      if (!parsed.port) return rawUrl;
       parsed.port = String(port);
       return parsed.toString();
     } catch {

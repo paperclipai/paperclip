@@ -4,6 +4,7 @@ const {
   createAppMock,
   createDbMock,
   detectPortMock,
+  loadConfigMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
@@ -11,59 +12,7 @@ const {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
-  const feedbackExportServiceMock = {
-    flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
-  };
-  const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
-  const fakeServer = {
-    once: vi.fn().mockReturnThis(),
-    off: vi.fn().mockReturnThis(),
-    listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
-      callback?.();
-      return fakeServer;
-    }),
-    close: vi.fn(),
-  };
-
-  return {
-    createAppMock,
-    createDbMock,
-    detectPortMock,
-    feedbackExportServiceMock,
-    feedbackServiceFactoryMock,
-    fakeServer,
-  };
-});
-
-vi.mock("node:http", () => ({
-  createServer: vi.fn(() => fakeServer),
-}));
-
-vi.mock("detect-port", () => ({
-  default: detectPortMock,
-}));
-
-vi.mock("@paperclipai/db", () => ({
-  createDb: createDbMock,
-  ensurePostgresDatabase: vi.fn(),
-  getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
-  applyPendingMigrations: vi.fn(),
-  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
-  formatDatabaseBackupResult: vi.fn(() => "ok"),
-  runDatabaseBackup: vi.fn(),
-  authUsers: {},
-  companies: {},
-  companyMemberships: {},
-  instanceUserRoles: {},
-}));
-
-vi.mock("../app.js", () => ({
-  createApp: createAppMock,
-}));
-
-vi.mock("../config.js", () => ({
-  loadConfig: vi.fn(() => ({
+  const loadConfigMock = vi.fn(() => ({
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bind: "loopback",
@@ -99,7 +48,61 @@ vi.mock("../config.js", () => ({
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
-  })),
+  }));
+  const feedbackExportServiceMock = {
+    flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
+  };
+  const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const fakeServer = {
+    once: vi.fn().mockReturnThis(),
+    off: vi.fn().mockReturnThis(),
+    listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
+      callback?.();
+      return fakeServer;
+    }),
+    close: vi.fn(),
+  };
+
+  return {
+    createAppMock,
+    createDbMock,
+    detectPortMock,
+    loadConfigMock,
+    feedbackExportServiceMock,
+    feedbackServiceFactoryMock,
+    fakeServer,
+  };
+});
+
+vi.mock("node:http", () => ({
+  createServer: vi.fn(() => fakeServer),
+}));
+
+vi.mock("detect-port", () => ({
+  default: detectPortMock,
+}));
+
+vi.mock("@paperclipai/db", () => ({
+  createDb: createDbMock,
+  ensurePostgresDatabase: vi.fn(),
+  getPostgresDataDirectory: vi.fn(),
+  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
+  applyPendingMigrations: vi.fn(),
+  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
+  formatDatabaseBackupResult: vi.fn(() => "ok"),
+  runDatabaseBackup: vi.fn(),
+  authUsers: {},
+  companies: {},
+  companyMemberships: {},
+  instanceUserRoles: {},
+}));
+
+vi.mock("../app.js", () => ({
+  createApp: createAppMock,
+}));
+
+vi.mock("../config.js", () => ({
+  loadConfig: loadConfigMock,
 }));
 
 vi.mock("../middleware/logger.js", () => ({
@@ -215,5 +218,37 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
+    loadConfigMock.mockReturnValueOnce({
+      ...loadConfigMock(),
+      port: 3100,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://my-host.ts.net:3100",
+    });
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3110);
+    expect(started.apiUrl).toBe("http://my-host.ts.net:3110");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
+  });
+
+  it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
+    loadConfigMock.mockReturnValueOnce({
+      ...loadConfigMock(),
+      port: 3100,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://paperclip.example",
+    });
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3110);
+    expect(started.apiUrl).toBe("https://paperclip.example");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
   });
 });
