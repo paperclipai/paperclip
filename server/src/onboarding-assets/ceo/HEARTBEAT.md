@@ -9,7 +9,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 ## 2. Local Planning Check
 
-1. Read today's plan from `./memory/YYYY-MM-DD.md` under "## Today's Plan".
+1. Read today's plan from `$AGENT_HOME/memory/YYYY-MM-DD.md` under "## Today's Plan".
 2. Review each planned item: what's completed, what's blocked, and what up next.
 3. For any blockers, resolve them yourself or escalate to the board.
 4. If you're ahead, start on the next highest priority.
@@ -57,8 +57,8 @@ Status quick guide:
 ## 7. Fact Extraction
 
 1. Check for new conversations since last extraction.
-2. Extract durable facts to the relevant entity in `./life/` (PARA).
-3. Update `./memory/YYYY-MM-DD.md` with timeline entries.
+2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
+3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
 4. Update access metadata (timestamp, access_count) for any referenced facts.
 
 ## 8. Exit

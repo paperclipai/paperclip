@@ -90,7 +90,7 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
@@ -99,15 +99,13 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
-
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
 
   const authConfig = {
     baseURL: baseUrl,
     secret,
-    trustedOrigins: effectiveTrustedOrigins,
+    trustedOrigins,
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {
