@@ -75,11 +75,6 @@ function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  const value = hostname.trim().toLowerCase();
-  return value === "127.0.0.1" || value === "localhost" || value === "::1";
-}
-
 export function sanitizeWorktreeInstanceId(rawValue: string): string {
   const trimmed = rawValue.trim().toLowerCase();
   const normalized = trimmed
@@ -168,7 +163,7 @@ export function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): s
   if (!rawUrl) return undefined;
   try {
     const parsed = new URL(rawUrl);
-    if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+    if (!parsed.port) return rawUrl;
     parsed.port = String(port);
     return parsed.toString();
   } catch {
