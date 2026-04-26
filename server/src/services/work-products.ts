@@ -30,6 +30,7 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
   };
 }
 
+/** Creates the work-product service for listing and managing agent-produced artifacts. */
 export function workProductService(db: Db) {
   return {
     listForIssue: async (issueId: string) => {

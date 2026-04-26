@@ -18,6 +18,7 @@ export interface IssueAssignmentWakeupDeps {
   ) => Promise<unknown>;
 }
 
+/** Enqueues a wakeup for the agent assigned to an issue using the given reason. */
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
   issue: { id: string; assigneeAgentId: string | null; status: string };

@@ -15,6 +15,7 @@ export interface FeedbackTraceShareClient {
   uploadTraceBundle(bundle: FeedbackTraceBundle): Promise<{ objectKey: string }>;
 }
 
+/** Creates a feedback trace share client configured from the given backend URL and auth token. */
 export function createFeedbackTraceShareClientFromConfig(
   config: Pick<Config, "feedbackExportBackendUrl" | "feedbackExportBackendToken">,
 ): FeedbackTraceShareClient {

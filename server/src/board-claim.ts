@@ -65,6 +65,7 @@ export async function initializeBoardClaimChallenge(
   }
 }
 
+/** Returns the board-claim URL for displaying in startup output, or null if no active unclaimed challenge. */
 export function getBoardClaimWarningUrl(host: string, port: number): string | null {
   if (!activeChallenge) return null;
   if (activeChallenge.claimedAt || activeChallenge.expiresAt.getTime() <= Date.now()) return null;
@@ -72,6 +73,7 @@ export function getBoardClaimWarningUrl(host: string, port: number): string | nu
   return `http://${visibleHost}:${port}/board-claim/${activeChallenge.token}?code=${activeChallenge.code}`;
 }
 
+/** Returns the current status and metadata of a board-claim challenge for the given token/code pair. */
 export function inspectBoardClaimChallenge(token: string, code: string | undefined) {
   const status = getChallengeStatus(token, code);
   return {

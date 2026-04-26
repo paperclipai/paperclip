@@ -310,7 +310,7 @@ export function createPluginEventBus(): PluginEventBus {
  * rather than thrown so a single misbehaving plugin cannot block delivery to
  * other plugins.
  */
-export interface PluginEventBusEmitResult {
+interface PluginEventBusEmitResult {
   /** Errors thrown by individual handlers, keyed by the plugin that failed. */
   errors: Array<{ pluginId: string; error: unknown }>;
 }
@@ -362,7 +362,7 @@ export interface PluginEventBus {
  * than `void` so the host layer can inspect handler errors; the SDK-facing
  * `PluginEventsClient.emit()` wraps this and returns `void`.
  */
-export interface ScopedPluginEventBus {
+interface ScopedPluginEventBus {
   /**
    * Subscribe to a core domain event or a plugin-namespaced event.
    *

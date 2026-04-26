@@ -24,6 +24,7 @@ function toLiveEvent(input: {
   };
 }
 
+/** Emits a live event scoped to a specific company and returns the constructed event object. */
 export function publishLiveEvent(input: {
   companyId: string;
   type: LiveEventType;
@@ -34,6 +35,7 @@ export function publishLiveEvent(input: {
   return event;
 }
 
+/** Emits a global live event (not scoped to any company) and returns the constructed event object. */
 export function publishGlobalLiveEvent(input: {
   type: LiveEventType;
   payload?: LiveEventPayload;
@@ -43,11 +45,13 @@ export function publishGlobalLiveEvent(input: {
   return event;
 }
 
+/** Subscribes to live events for a specific company and returns an unsubscribe function. */
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
 }
 
+/** Subscribes to all global live events and returns an unsubscribe function. */
 export function subscribeGlobalLiveEvents(listener: LiveEventListener) {
   emitter.on("*", listener);
   return () => emitter.off("*", listener);

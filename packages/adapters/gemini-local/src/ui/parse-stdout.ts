@@ -105,7 +105,7 @@ function parseAssistantMessage(messageRaw: unknown, ts: string): TranscriptEntry
       continue;
     }
 
-    if (type === "tool_call") {
+    if (type === "tool_call" || type === "tool_use" || type === "function_call") {
       const name = asString(part.name, asString(part.tool, "tool"));
       entries.push({
         kind: "tool_call",
@@ -116,7 +116,7 @@ function parseAssistantMessage(messageRaw: unknown, ts: string): TranscriptEntry
       continue;
     }
 
-    if (type === "tool_result" || type === "tool_response") {
+    if (type === "tool_result" || type === "tool_response" || type === "function_response") {
       const toolUseId =
         asString(part.tool_use_id) ||
         asString(part.toolUseId) ||
@@ -268,6 +268,15 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
   if (type === "error") {
     const text = errorText(parsed.error ?? parsed.message ?? parsed.detail);
     return [{ kind: "stderr", ts, text: text || "error" }];
+  }
+
+  if (type === "text") {
+    const text = asString(parsed.text).trim() || asString(parsed.content).trim();
+    return text ? [{ kind: "assistant", ts, text }] : [];
+  }
+
+  if (type === "step_finish" || type === "step_complete") {
+    return [];
   }
 
   return [{ kind: "stdout", ts, text: line }];

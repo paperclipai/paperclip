@@ -17,6 +17,7 @@ function runtimeServiceIdentityKey(row: WorkspaceRuntimeServiceRow) {
   ].join(":");
 }
 
+/** Filters a list of runtime service rows to keep only the most recent row per unique service identity. */
 export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow[]) {
   const current = new Map<string, WorkspaceRuntimeServiceRow>();
   for (const row of rows) {

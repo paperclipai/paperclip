@@ -149,6 +149,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
 
 let cachedStore: RunLogStore | null = null;
 
+/** Returns the singleton RunLogStore, creating it on first call using the configured base path. */
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");

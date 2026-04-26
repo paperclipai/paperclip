@@ -1,0 +1,29 @@
+{
+  "id": "04-information-retrieval",
+  "type": "information_retrieval",
+  "title": "Explain authentication flow",
+  "description": "Tests search, read, synthesize, respond capabilities",
+  "prompt": "Explain how the authentication system works in this codebase. Describe the flow from login request to authenticated session, including which files are involved and what each one does.",
+  "setup": {
+    "create_files": {
+      "src/auth/login.ts": "import { verifyPassword } from './crypto';\nimport { createSession } from './session';\n\nexport async function login(email: string, password: string) {\n  const user = await db.users.findByEmail(email);\n  if (!user) throw new Error('User not found');\n  const valid = await verifyPassword(password, user.passwordHash);\n  if (!valid) throw new Error('Invalid password');\n  return createSession(user.id);\n}",
+      "src/auth/crypto.ts": "import bcrypt from 'bcrypt';\n\nexport async function verifyPassword(plain: string, hash: string): Promise<boolean> {\n  return bcrypt.compare(plain, hash);\n}",
+      "src/auth/session.ts": "import { sign } from 'jsonwebtoken';\n\nexport function createSession(userId: string) {\n  return sign({ userId }, process.env.JWT_SECRET, { expiresIn: '7d' });\n}"
+    }
+  },
+  "expected_outcomes": {
+    "explanation_includes": [
+      "login flow description",
+      "files involved",
+      "password verification",
+      "session creation"
+    ]
+  },
+  "success_criteria": [
+    "All 3 auth files identified",
+    "Flow described correctly",
+    "Password hashing mentioned",
+    "JWT token creation explained"
+  ],
+  "time_limit_turns": 10
+}

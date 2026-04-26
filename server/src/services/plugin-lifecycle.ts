@@ -101,7 +101,7 @@ function isValidTransition(from: PluginStatus, to: PluginStatus): boolean {
  * Consumers can subscribe to these for routing-table updates, UI refresh
  * notifications, and observability.
  */
-export interface PluginLifecycleEvents {
+interface PluginLifecycleEvents {
   /** Emitted after a plugin is loaded (installed → ready). */
   "plugin.loaded": { pluginId: string; pluginKey: string };
   /** Emitted after a plugin transitions to ready (enabled). */
@@ -264,7 +264,7 @@ export interface PluginLifecycleManager {
 /**
  * Options for constructing a PluginLifecycleManager.
  */
-export interface PluginLifecycleManagerOptions {
+interface PluginLifecycleManagerOptions {
   /** Plugin loader instance. Falls back to the default if omitted. */
   loader?: PluginLoader;
 

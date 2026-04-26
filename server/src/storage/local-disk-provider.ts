@@ -35,6 +35,7 @@ async function statOrNull(filePath: string) {
   }
 }
 
+/** Creates a local-disk storage provider rooted at the given base directory. */
 export function createLocalDiskStorageProvider(baseDir: string): StorageProvider {
   const root = path.resolve(baseDir);
 

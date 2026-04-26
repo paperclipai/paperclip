@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { createBufferedTextFileWriter, formatDatabaseBackupResult, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -225,4 +225,75 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+});
+
+// ---------------------------------------------------------------------------
+// formatDatabaseBackupResult — pure formatting function
+// ---------------------------------------------------------------------------
+
+describe("formatDatabaseBackupResult", () => {
+  it("formats a result with no pruned files", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "/backups/db-2026-04-17.jsonl.gz",
+      sizeBytes: 512,
+      prunedCount: 0,
+    });
+    expect(result).toContain("/backups/db-2026-04-17.jsonl.gz");
+    expect(result).not.toContain("pruned");
+  });
+
+  it("includes pruned count when prunedCount > 0", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "backup.jsonl.gz",
+      sizeBytes: 1024,
+      prunedCount: 3,
+    });
+    expect(result).toContain("pruned 3 old backup(s)");
+  });
+
+  it("formats byte sizes under 1 KB as raw bytes", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "small.gz",
+      sizeBytes: 512,
+      prunedCount: 0,
+    });
+    expect(result).toContain("512B");
+  });
+
+  it("formats sizes between 1 KB and 1 MB in kilobytes with one decimal", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "medium.gz",
+      sizeBytes: 2048,
+      prunedCount: 0,
+    });
+    expect(result).toContain("2.0K");
+  });
+
+  it("formats sizes at or above 1 MB in megabytes with one decimal", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "large.gz",
+      sizeBytes: 1024 * 1024 * 5,
+      prunedCount: 0,
+    });
+    expect(result).toContain("5.0M");
+  });
+
+  it("includes both the file name and size in the output", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "db.jsonl.gz",
+      sizeBytes: 1536,
+      prunedCount: 0,
+    });
+    expect(result).toContain("db.jsonl.gz");
+    expect(result).toContain("1.5K");
+  });
+
+  it("formats pruned=1 correctly (singular form treated as plural)", () => {
+    const result = formatDatabaseBackupResult({
+      backupFile: "db.gz",
+      sizeBytes: 1024,
+      prunedCount: 1,
+    });
+    expect(result).toContain("pruned 1 old backup(s)");
+  });
 });

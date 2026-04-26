@@ -17,6 +17,7 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** Merges a summary string into a run result JSON object, injecting it only if no summary field already exists. */
 export function mergeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
   summary: string | null | undefined,
@@ -45,6 +46,7 @@ export function mergeHeartbeatRunResultJson(
   };
 }
 
+/** Extracts a compact summary object from a run result JSON, keeping only text and cost fields. */
 export function summarizeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -92,6 +94,7 @@ export function summarizeHeartbeatRunResultJson(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+/** Extracts the best human-readable comment text from a run result JSON, or returns null. */
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {

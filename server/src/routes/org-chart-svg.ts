@@ -700,6 +700,7 @@ function smartCollapseTree(roots: OrgNode[]): OrgNode[] {
   return tree;
 }
 
+/** Renders a company org chart as an SVG string from a tree of OrgNodes, with optional style and overlay. */
 export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "warmth", overlay?: OrgChartOverlay): string {
   const theme = THEMES[style] || THEMES.warmth;
 

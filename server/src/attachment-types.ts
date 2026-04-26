@@ -29,7 +29,7 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "text/html",
 ];
 
-export const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
+const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
 export const SVG_CONTENT_TYPE = "image/svg+xml";
 export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "image/*",
@@ -70,11 +70,13 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
   });
 }
 
+/** Normalizes a content type string to lowercase, falling back to `application/octet-stream` if empty. */
 export function normalizeContentType(contentType: string | null | undefined): string {
   const normalized = (contentType ?? "").trim().toLowerCase();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
 }
 
+/** Returns true if the content type should be served inline (e.g. images, PDF, plain text). */
 export function isInlineAttachmentContentType(contentType: string): boolean {
   return matchesContentType(contentType, [...INLINE_ATTACHMENT_TYPES]);
 }

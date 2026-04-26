@@ -18,10 +18,12 @@ function signatureForConfig(config: Config): string {
   });
 }
 
+/** Creates a StorageService from a Config object, selecting the appropriate provider. */
 export function createStorageServiceFromConfig(config: Config): StorageService {
   return createStorageService(createStorageProviderFromConfig(config));
 }
 
+/** Returns the cached singleton StorageService, recreating it if the config has changed. */
 export function getStorageService(): StorageService {
   const config = loadConfig();
   const signature = signatureForConfig(config);

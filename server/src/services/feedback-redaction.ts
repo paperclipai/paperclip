@@ -94,6 +94,7 @@ function applyPattern(input: string, pattern: RedactionPattern) {
   return { output, matches };
 }
 
+/** Creates a fresh, empty redaction state to track field sanitization across a feedback payload. */
 export function createFeedbackRedactionState(): FeedbackRedactionState {
   return {
     redactedFields: new Set<string>(),
@@ -104,6 +105,7 @@ export function createFeedbackRedactionState(): FeedbackRedactionState {
   };
 }
 
+/** Redacts secrets, PII, and sensitive patterns from a text string, truncating to `maxLength`. */
 export function sanitizeFeedbackText(
   input: string,
   state: FeedbackRedactionState,
@@ -133,6 +135,7 @@ export function sanitizeFeedbackText(
   return output;
 }
 
+/** Recursively sanitizes a feedback value (string, array, or object), redacting secrets and PII. */
 export function sanitizeFeedbackValue(
   value: unknown,
   state: FeedbackRedactionState,
@@ -163,6 +166,7 @@ export function sanitizeFeedbackValue(
   return output;
 }
 
+/** Converts a redaction state into a serializable summary object for audit logging. */
 export function finalizeFeedbackRedactionSummary(state: FeedbackRedactionState) {
   return {
     strategy: "deterministic_feedback_v2",
@@ -174,6 +178,7 @@ export function finalizeFeedbackRedactionSummary(state: FeedbackRedactionState) 
   } satisfies Record<string, unknown>;
 }
 
+/** Serializes a value to JSON with object keys sorted, producing a stable canonical string. */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
@@ -188,6 +193,7 @@ export function stableStringify(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
+/** Returns the SHA-256 hex digest of the stable JSON serialization of `value`. */
 export function sha256Digest(value: unknown) {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }

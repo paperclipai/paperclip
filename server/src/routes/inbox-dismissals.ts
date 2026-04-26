@@ -9,6 +9,7 @@ const inboxDismissalSchema = z.object({
   itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
 });
 
+/** Creates the Express router for inbox dismissal state endpoints. */
 export function inboxDismissalRoutes(db: Db) {
   const router = Router();
   const svc = inboxDismissalService(db);

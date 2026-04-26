@@ -63,6 +63,7 @@ function toDate(value: Date | undefined): Date | undefined {
   return value instanceof Date ? value : undefined;
 }
 
+/** Creates an S3-backed storage provider from the given config, validating required fields. */
 export function createS3StorageProvider(config: S3ProviderConfig): StorageProvider {
   const bucket = config.bucket.trim();
   const region = config.region.trim();

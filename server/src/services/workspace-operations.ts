@@ -69,6 +69,7 @@ export interface WorkspaceOperationRecorder {
   }): Promise<WorkspaceOperation>;
 }
 
+/** Creates the workspace operation service for tracking and streaming long-running workspace lifecycle operations. */
 export function workspaceOperationService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const logStore = getWorkspaceOperationLogStore();

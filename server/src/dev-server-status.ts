@@ -39,6 +39,7 @@ function normalizeTimestamp(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** Reads the persisted dev-server status file from the path in PAPERCLIP_DEV_SERVER_STATUS_FILE, or returns null. */
 export function readPersistedDevServerStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): PersistedDevServerStatus | null {
@@ -76,6 +77,7 @@ export function readPersistedDevServerStatus(
   }
 }
 
+/** Converts a persisted dev-server status into a structured health status with restart and migration info. */
 export function toDevServerHealthStatus(
   persisted: PersistedDevServerStatus,
   opts: { autoRestartEnabled: boolean; activeRunCount: number },

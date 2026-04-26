@@ -3,6 +3,9 @@ import type { Db } from "@paperclipai/db";
 import { agents, costEvents, financeEvents, goals, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 
+/** Union of Drizzle table objects accepted by assertBelongsToCompany. */
+type CompanyOwnedTable = typeof agents | typeof costEvents | typeof goals | typeof heartbeatRuns | typeof issues | typeof projects;
+
 export interface FinanceDateRange {
   from?: Date;
   to?: Date;
@@ -10,7 +13,7 @@ export interface FinanceDateRange {
 
 async function assertBelongsToCompany(
   db: Db,
-  table: any,
+  table: CompanyOwnedTable,
   id: string,
   companyId: string,
   label: string,
@@ -34,6 +37,7 @@ function rangeConditions(companyId: string, range?: FinanceDateRange) {
   return conditions;
 }
 
+/** Creates the finance service for querying debit/credit summaries and balance reports. */
 export function financeService(db: Db) {
   const debitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
   const creditExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'credit' then ${financeEvents.amountCents} else 0 end), 0)::double precision`;

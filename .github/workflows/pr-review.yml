@@ -1,0 +1,127 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Review PR and post comment
+        uses: actions/github-script@v7
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const apiKey = process.env.ANTHROPIC_API_KEY;
+            if (!apiKey) {
+              core.warning('ANTHROPIC_API_KEY not configured — skipping Claude review');
+              return;
+            }
+
+            const { execSync } = require('child_process');
+            const base = process.env.BASE_SHA;
+            const head = process.env.HEAD_SHA;
+
+            const run = (cmd) => {
+              try { return execSync(cmd, { maxBuffer: 1024 * 1024 }).toString().trim(); }
+              catch { return ''; }
+            };
+
+            const diffStat     = run(`git diff --stat ${base}...${head}`).slice(0, 3000);
+            const changedFiles = run(`git diff --name-only ${base}...${head}`);
+            const commits      = run(`git log --oneline ${base}..${head}`);
+            const prTitle      = context.payload.pull_request.title;
+            const prNumber     = context.payload.pull_request.number;
+            const prBody       = (process.env.PR_BODY || '(empty)').slice(0, 4000);
+
+            const prompt = [
+              'You are reviewing a pull request for Paperclip — an AI agent orchestration platform built in TypeScript/Node.js.',
+              '',
+              'Check two things and respond in concise markdown (under 500 words):',
+              '',
+              '## 1. PR Template Completeness',
+              'Required sections must be meaningfully filled (not just placeholder text):',
+              '- Thinking Path: 5+ reasoning steps tracing from project context down to this change',
+              '- What Changed: concrete bullet list of changes',
+              '- Verification: how a reviewer can confirm the change works',
+              '- Risks: what could go wrong (or explicit "Low risk" justification)',
+              '- Checklist: all boxes honestly checked',
+              '',
+              '## 2. Scope Creep Check',
+              'Every commit and file change should relate directly to the PR title and description.',
+              'Flag anything unrelated or that mixes multiple concerns in one PR.',
+              '',
+              '---',
+              '',
+              `PR #${prNumber}: ${prTitle}`,
+              '',
+              'PR Description:',
+              prBody,
+              '',
+              'Changed Files:',
+              changedFiles,
+              '',
+              'Commits:',
+              commits,
+              '',
+              'Diff Stats:',
+              diffStat,
+              '',
+              '---',
+              'Use checkmark (pass) or warning (issue) emoji. Be specific, constructive, and brief.',
+            ].join('\n');
+
+            let reviewText;
+            try {
+              const resp = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                  'x-api-key': apiKey,
+                  'anthropic-version': '2023-06-01',
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                  model: 'claude-haiku-4-5-20251001',
+                  max_tokens: 1024,
+                  messages: [{ role: 'user', content: prompt }],
+                }),
+              });
+              if (!resp.ok) {
+                reviewText = `⚠️ Claude review unavailable (HTTP ${resp.status})`;
+              } else {
+                const data = await resp.json();
+                reviewText = data.content[0].text;
+              }
+            } catch (err) {
+              reviewText = `⚠️ Claude review unavailable: ${err.message}`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                '## 🤖 Claude PR Review',
+                '',
+                reviewText,
+                '',
+                '---',
+                '*Automated review by Claude Haiku — informational only, does not block merge.*',
+              ].join('\n'),
+            });

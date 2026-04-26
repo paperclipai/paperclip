@@ -478,7 +478,7 @@ export function pluginRegistryService(db: Db) {
         .values({
           ...input,
           pluginId,
-        } as any)
+        } as Omit<typeof pluginEntities.$inferInsert, "id" | "createdAt" | "updatedAt">)
         .returning()
         .then((rows) => rows[0]);
     },

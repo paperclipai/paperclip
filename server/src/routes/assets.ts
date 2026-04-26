@@ -82,6 +82,7 @@ function sanitizeSvgBuffer(input: Buffer): Buffer | null {
   }
 }
 
+/** Creates the Express router for asset upload and retrieval endpoints. */
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);

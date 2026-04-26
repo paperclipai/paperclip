@@ -97,6 +97,7 @@ function resolveAgentJwtSecretStatus(
   };
 }
 
+/** Prints the server startup banner with URLs, version, and configuration summary to stdout. */
 export function printStartupBanner(opts: StartupBannerOptions): void {
   const baseHost = opts.host === "0.0.0.0" ? "localhost" : opts.host;
   const baseUrl = `http://${baseHost}:${opts.listenPort}`;

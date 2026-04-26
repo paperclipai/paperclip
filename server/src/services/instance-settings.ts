@@ -62,6 +62,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
   };
 }
 
+/** Creates the instance settings service for reading and updating global instance configuration. */
 export function instanceSettingsService(db: Db) {
   async function getOrCreateRow() {
     const existing = await db

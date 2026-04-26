@@ -32,6 +32,7 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 
+/** Creates the company service for managing company records, members, and settings. */
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);

@@ -9,6 +9,7 @@ import { serverVersion } from "./version.js";
 
 let client: TelemetryClient | null = null;
 
+/** Initializes the singleton telemetry client with the resolved config, or returns null if telemetry is disabled. */
 export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClient | null {
   if (client) return client;
 
@@ -25,6 +26,7 @@ export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClie
   return client;
 }
 
+/** Returns the initialized telemetry client singleton, or null if telemetry was not initialized. */
 export function getTelemetryClient(): TelemetryClient | null {
   return client;
 }

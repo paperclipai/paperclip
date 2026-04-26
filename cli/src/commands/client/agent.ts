@@ -34,6 +34,14 @@ interface CreatedAgentKey {
   createdAt: string;
 }
 
+interface CreatedAgentRun {
+  id: string;
+  agentId: string;
+  companyId: string;
+  status: string;
+  createdAt: string;
+}
+
 interface SkillsInstallSummary {
   tool: "codex" | "claude";
   target: string;
@@ -146,6 +154,7 @@ function buildAgentEnvExports(input: {
   companyId: string;
   agentId: string;
   apiKey: string;
+  runId: string;
 }): string {
   const escaped = (value: string) => value.replace(/'/g, "'\"'\"'");
   return [
@@ -153,6 +162,7 @@ function buildAgentEnvExports(input: {
     `export PAPERCLIP_COMPANY_ID='${escaped(input.companyId)}'`,
     `export PAPERCLIP_AGENT_ID='${escaped(input.agentId)}'`,
     `export PAPERCLIP_API_KEY='${escaped(input.apiKey)}'`,
+    `export PAPERCLIP_RUN_ID='${escaped(input.runId)}'`,
   ].join("\n");
 }
 
@@ -246,6 +256,11 @@ export function registerAgentCommands(program: Command): void {
             throw new Error("Failed to create API key");
           }
 
+          const run = await ctx.api.post<CreatedAgentRun>(`/api/agents/${agentRow.id}/runs`, {});
+          if (!run) {
+            throw new Error("Failed to register run");
+          }
+
           const installSummaries: SkillsInstallSummary[] = [];
           if (opts.installSkills !== false) {
             const skillsDir = await resolvePaperclipSkillsDir(__moduleDir, [path.resolve(process.cwd(), "skills")]);
@@ -266,6 +281,7 @@ export function registerAgentCommands(program: Command): void {
             companyId: agentRow.companyId,
             agentId: agentRow.id,
             apiKey: key.token,
+            runId: run.id,
           });
 
           if (ctx.json) {
@@ -283,6 +299,11 @@ export function registerAgentCommands(program: Command): void {
                   createdAt: key.createdAt,
                   token: key.token,
                 },
+                run: {
+                  id: run.id,
+                  status: run.status,
+                  createdAt: run.createdAt,
+                },
                 skills: installSummaries,
                 exports: exportsText,
               },
@@ -293,6 +314,7 @@ export function registerAgentCommands(program: Command): void {
 
           console.log(`Agent: ${agentRow.name} (${agentRow.id})`);
           console.log(`API key created: ${key.name} (${key.id})`);
+          console.log(`Run registered: ${run.id}`);
           if (installSummaries.length > 0) {
             for (const summary of installSummaries) {
               console.log(

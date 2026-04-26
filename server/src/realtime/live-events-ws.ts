@@ -175,6 +175,7 @@ async function authorizeUpgrade(
   };
 }
 
+/** Attaches the live-events WebSocket server to an existing HTTP server, wiring up auth and fan-out. */
 export function setupLiveEventsWebSocketServer(
   server: HttpServer,
   db: Db,

@@ -1,0 +1,22 @@
+{
+  "id": "01-file-creation",
+  "type": "file_creation",
+  "title": "Create utility module with tests",
+  "description": "Tests end-to-end tool chain: read, plan, write, verify",
+  "prompt": "Create a new utility module at `lib/string-utils.ts` that exports a function `slugify(text: string): string` which converts text to URL-safe slugs (lowercase, hyphens instead of spaces, remove special chars). Also create a test file at `lib/string-utils.test.ts` with at least 3 test cases.",
+  "expected_outcomes": {
+    "files_created": [
+      "lib/string-utils.ts",
+      "lib/string-utils.test.ts"
+    ],
+    "functions_exported": ["slugify"],
+    "test_cases_minimum": 3
+  },
+  "success_criteria": [
+    "Both files exist",
+    "slugify function is exported",
+    "Tests are runnable",
+    "At least 3 test cases present"
+  ],
+  "time_limit_turns": 20
+}

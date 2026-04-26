@@ -1,5 +1,8 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+
+/** Union of the main database client and a Drizzle transaction context. */
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
@@ -337,6 +340,7 @@ function deriveWorkspaceName(input: {
   return "Workspace";
 }
 
+/** Resolves a unique URL-safe project shortname, appending a numeric suffix if the requested name collides. */
 export function resolveProjectNameForUniqueShortname(
   requestedName: string,
   existingProjects: ProjectShortnameRow[],
@@ -368,7 +372,7 @@ export function resolveProjectNameForUniqueShortname(
 }
 
 async function ensureSinglePrimaryWorkspace(
-  dbOrTx: any,
+  dbOrTx: DbOrTx,
   input: {
     companyId: string;
     projectId: string;
@@ -397,6 +401,7 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
+/** Creates the project service for managing projects, workspaces, and associated resources. */
 export function projectService(db: Db) {
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {

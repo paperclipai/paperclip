@@ -22,6 +22,7 @@ function isDismissed(
   return dismissedAt >= normalizeTimestamp(activityAt);
 }
 
+/** Creates the sidebar badge service for computing unread counts and notification indicators. */
 export function sidebarBadgeService(db: Db) {
   return {
     get: async (

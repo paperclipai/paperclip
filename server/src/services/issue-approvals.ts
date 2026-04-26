@@ -9,6 +9,7 @@ interface LinkActor {
   userId?: string | null;
 }
 
+/** Creates the issue approval service for managing execution approval workflows. */
 export function issueApprovalService(db: Db) {
   async function getIssue(issueId: string) {
     return db

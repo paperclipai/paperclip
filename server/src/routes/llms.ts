@@ -10,6 +10,7 @@ function hasCreatePermission(agent: { role: string; permissions: Record<string, 
   return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
 }
 
+/** Creates the Express router for LLM adapter listing endpoints. */
 export function llmRoutes(db: Db) {
   const router = Router();
   const agentsSvc = agentService(db);

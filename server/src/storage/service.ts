@@ -87,6 +87,7 @@ function assertPutFileInput(input: PutFileInput): void {
   }
 }
 
+/** Wraps a storage provider with validation and a unified StorageService interface. */
 export function createStorageService(provider: StorageProvider): StorageService {
   return {
     provider: provider.id,

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { dashboardService } from "../services/dashboard.js";
 import { assertCompanyAccess } from "./authz.js";
 
+/** Creates the Express router for dashboard summary endpoints. */
 export function dashboardRoutes(db: Db) {
   const router = Router();
   const svc = dashboardService(db);

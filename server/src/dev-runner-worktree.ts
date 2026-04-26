@@ -41,6 +41,7 @@ type WorktreeEnvBootstrapResult =
   | { envPath: string; missingEnv: true }
   | { envPath: string; missingEnv: false };
 
+/** Returns true if the given directory is a git worktree checkout (its .git entry is a file, not a directory). */
 export function isLinkedGitWorktreeCheckout(rootDir: string): boolean {
   const gitMetadataPath = path.join(rootDir, ".git");
   if (!existsSync(gitMetadataPath)) return false;
@@ -51,10 +52,12 @@ export function isLinkedGitWorktreeCheckout(rootDir: string): boolean {
   return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
 }
 
+/** Returns the canonical path of the per-worktree .env file inside a worktree root. */
 export function resolveWorktreeEnvFilePath(rootDir: string): string {
   return path.resolve(rootDir, ".paperclip", ".env");
 }
 
+/** Loads the worktree .env file into the given process env, reporting whether the file was missing. */
 export function bootstrapDevRunnerWorktreeEnv(
   rootDir: string,
   env: NodeJS.ProcessEnv = process.env,

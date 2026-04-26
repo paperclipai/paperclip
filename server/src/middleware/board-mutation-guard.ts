@@ -44,6 +44,7 @@ function isTrustedBoardMutationRequest(req: Request) {
   return false;
 }
 
+/** Returns Express middleware that blocks non-safe HTTP methods when the board is in read-only mode. */
 export function boardMutationGuard(): RequestHandler {
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {

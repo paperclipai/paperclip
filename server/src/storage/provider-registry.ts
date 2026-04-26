@@ -3,6 +3,7 @@ import type { StorageProvider } from "./types.js";
 import { createLocalDiskStorageProvider } from "./local-disk-provider.js";
 import { createS3StorageProvider } from "./s3-provider.js";
 
+/** Instantiates the storage provider (local disk or S3) specified in the given config. */
 export function createStorageProviderFromConfig(config: Config): StorageProvider {
   if (config.storageProvider === "local_disk") {
     return createLocalDiskStorageProvider(config.storageLocalDiskBaseDir);

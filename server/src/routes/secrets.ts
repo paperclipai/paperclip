@@ -11,6 +11,7 @@ import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 
+/** Creates the Express router for secret management endpoints. */
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);

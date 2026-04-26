@@ -209,6 +209,7 @@ async function markApprovalStatus(
     .where(eq(approvals.id, approvalId));
 }
 
+/** Creates the budget service for enforcing agent and project spending limits. */
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();

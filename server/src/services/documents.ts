@@ -17,6 +17,7 @@ function isUniqueViolation(error: unknown): boolean {
   return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505";
 }
 
+/** Extracts the text content of a legacy <plan>...</plan> block from an issue description. */
 export function extractLegacyPlanBody(description: string | null | undefined) {
   if (!description) return null;
   const match = /<plan>\s*([\s\S]*?)\s*<\/plan>/i.exec(description);
@@ -82,6 +83,7 @@ const issueDocumentSelect = {
   updatedAt: documents.updatedAt,
 };
 
+/** Creates the document service for managing issue plan documents and summaries. */
 export function documentService(db: Db) {
   const filterSystemDocuments = <T extends { key: string }>(rows: T[], includeSystem: boolean) =>
     includeSystem ? rows : rows.filter((row) => !isSystemIssueDocumentKey(row.key));

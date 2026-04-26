@@ -4,7 +4,7 @@ import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 
-export interface ErrorContext {
+interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
   method: string;
   url: string;
@@ -32,6 +32,7 @@ function attachErrorContext(
   }
 }
 
+/** Express error-handling middleware that formats and sends structured error responses. */
 export function errorHandler(
   err: unknown,
   req: Request,

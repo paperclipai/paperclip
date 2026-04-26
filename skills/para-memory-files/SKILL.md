@@ -8,6 +8,7 @@ description: >
   handles planning files, memory decay, weekly synthesis, and recall via qmd.
   Trigger on any memory operation: saving facts, writing daily notes, creating
   entities, running weekly synthesis, recalling past context, or managing plans.
+roles: [all]
 ---
 
 # PARA Memory Files

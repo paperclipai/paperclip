@@ -12,12 +12,14 @@ function expandHomePrefix(value: string): string {
   return value;
 }
 
+/** Returns the Paperclip home directory, respecting `PAPERCLIP_HOME` env override. */
 export function resolvePaperclipHomeDir(): string {
   const envHome = process.env.PAPERCLIP_HOME?.trim();
   if (envHome) return path.resolve(expandHomePrefix(envHome));
   return path.resolve(os.homedir(), ".paperclip");
 }
 
+/** Returns the validated Paperclip instance ID from `PAPERCLIP_INSTANCE_ID` env (defaults to "default"). */
 export function resolvePaperclipInstanceId(): string {
   const raw = process.env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
   if (!INSTANCE_ID_RE.test(raw)) {
@@ -26,34 +28,42 @@ export function resolvePaperclipInstanceId(): string {
   return raw;
 }
 
+/** Returns the root directory for the current Paperclip instance. */
 export function resolvePaperclipInstanceRoot(): string {
   return path.resolve(resolvePaperclipHomeDir(), "instances", resolvePaperclipInstanceId());
 }
 
+/** Returns the default config.json path for the current instance. */
 export function resolveDefaultConfigPath(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "config.json");
 }
 
+/** Returns the default embedded Postgres data directory for the current instance. */
 export function resolveDefaultEmbeddedPostgresDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "db");
 }
 
+/** Returns the default logs directory for the current instance. */
 export function resolveDefaultLogsDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "logs");
 }
 
+/** Returns the default master secrets key file path for the current instance. */
 export function resolveDefaultSecretsKeyFilePath(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "secrets", "master.key");
 }
 
+/** Returns the default file storage directory for the current instance. */
 export function resolveDefaultStorageDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "data", "storage");
 }
 
+/** Returns the default backup directory for the current instance. */
 export function resolveDefaultBackupDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
 }
 
+/** Returns the workspace directory for a given agent ID under the current instance. */
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   const trimmed = agentId.trim();
   if (!PATH_SEGMENT_RE.test(trimmed)) {
@@ -71,6 +81,7 @@ function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback 
   return sanitized || fallback;
 }
 
+/** Returns the workspace directory for a managed project, scoped by company, project, and optional repo name. */
 export function resolveManagedProjectWorkspaceDir(input: {
   companyId: string;
   projectId: string;
@@ -90,6 +101,7 @@ export function resolveManagedProjectWorkspaceDir(input: {
   );
 }
 
+/** Resolves a path, expanding a leading `~` to the user's home directory. */
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

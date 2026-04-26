@@ -18,6 +18,7 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+/** Returns Express middleware that resolves and attaches the current actor (board user or agent) to each request. */
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -189,6 +190,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
+/** Returns true if the request actor is a board user (not an agent). */
 export function requireBoard(req: Express.Request) {
   return req.actor.type === "board";
 }

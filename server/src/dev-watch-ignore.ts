@@ -17,6 +17,7 @@ function addIgnorePath(target: Set<string>, candidate: string): void {
   }
 }
 
+/** Returns the set of glob paths that the dev-server file watcher should ignore. */
 export function resolveServerDevWatchIgnorePaths(serverRoot: string): string[] {
   const ignorePaths = new Set<string>([
     "**/{node_modules,bower_components,vendor}/**",

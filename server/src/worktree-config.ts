@@ -315,6 +315,7 @@ function needsWorktreeConfigRepair(
   return false;
 }
 
+/** Applies runtime-selected server and database ports to a config object, returning whether anything changed. */
 export function applyRuntimePortSelectionToConfig(
   config: PaperclipConfig,
   input: {
@@ -371,6 +372,7 @@ export function applyRuntimePortSelectionToConfig(
   return { config: nextConfig, changed };
 }
 
+/** Detects and repairs stale worktree config and .env files, resolving port conflicts with sibling worktrees. */
 export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   repairedConfig: boolean;
   repairedEnv: boolean;
@@ -448,6 +450,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   return { repairedConfig, repairedEnv };
 }
 
+/** Persists the runtime-chosen server/database ports back to the worktree config file, if they differ. */
 export function maybePersistWorktreeRuntimePorts(input: {
   serverPort: number;
   databasePort?: number | null;

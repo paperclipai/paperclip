@@ -175,6 +175,15 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
           command: process.execPath,
           args: ["-e", "process.stdout.write('done\\n')"],
         },
+        runtimeConfig: {
+          heartbeat: {
+            enabled: false,
+            intervalSec: 300,
+            wakeOnDemand: false,
+            cooldownSec: 10,
+            maxConcurrentRuns: 1,
+          },
+        },
       },
     });
     expect(agentRes.ok()).toBe(true);

@@ -34,7 +34,28 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  telegram-bot:
+    build: ./services/telegram-bot
+    ports:
+      - "8000:8000"
+    environment:
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      PAPERCLIP_API_URL: "http://server:3100"
+      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
+      PAPERCLIP_CTO_AGENT_ID: "4e5cbf52-a530-439f-917c-a6cfee78d76d"
+      PAPERCLIP_API_KEY: ""
+      CHAT_IDS_FILE: "/data/chat_ids.json"
+      ANGEL_CHAT_ID: "1978432218"
+    volumes:
+      - telegram-data:/data
+    depends_on:
+      server:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
   pgdata:
   paperclip-data:
+  telegram-data:

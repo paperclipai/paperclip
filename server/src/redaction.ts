@@ -38,6 +38,7 @@ function isPlainBinding(value: unknown): value is { type: "plain"; value: unknow
   return value.type === "plain" && "value" in value;
 }
 
+/** Redacts secret-looking values from a plain record, preserving binding wrappers. */
 export function sanitizeRecord(record: Record<string, unknown>): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
@@ -62,6 +63,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
   return redacted;
 }
 
+/** Sanitizes an event payload record in place, returning null for null input. */
 export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;

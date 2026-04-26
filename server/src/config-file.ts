@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { paperclipConfigSchema, type PaperclipConfig } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "./paths.js";
 
+/** Reads and validates the Paperclip config file, returning null if missing or invalid. */
 export function readConfigFile(): PaperclipConfig | null {
   const configPath = resolvePaperclipConfigPath();
 

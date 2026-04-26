@@ -4,6 +4,7 @@ description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
   draft a new agent prompt/config, and submit a hire request.
+roles: [ceo, manager]
 ---
 
 # Paperclip Create Agent Skill

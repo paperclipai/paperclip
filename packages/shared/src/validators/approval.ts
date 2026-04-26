@@ -34,3 +34,12 @@ export const addApprovalCommentSchema = z.object({
 });
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;
+
+export const requestIssueApprovalSchema = z.object({
+  type: z.enum(APPROVAL_TYPES),
+  payload: z.record(z.unknown()),
+  comment: z.string().min(1),
+  requestedByAgentId: z.string().uuid().optional().nullable(),
+});
+
+export type RequestIssueApproval = z.infer<typeof requestIssueApprovalSchema>;

@@ -1,0 +1,23 @@
+{
+  "id": "02-bug-fix",
+  "type": "bug_fix",
+  "title": "Fix failing test in existing module",
+  "description": "Tests error diagnosis, targeted edit, validation",
+  "prompt": "There's a failing test in `lib/date-formatter.test.ts`. The test 'should format dates in ISO format' is failing because the formatDate function is using the wrong format string. Find and fix the bug, then verify the test passes.",
+  "setup": {
+    "create_files": {
+      "lib/date-formatter.ts": "export function formatDate(date: Date): string {\n  return date.toLocaleDateString('en-US');\n}",
+      "lib/date-formatter.test.ts": "import { formatDate } from './date-formatter';\n\ntest('should format dates in ISO format', () => {\n  const date = new Date('2024-01-15');\n  expect(formatDate(date)).toBe('2024-01-15');\n});"
+    }
+  },
+  "expected_outcomes": {
+    "files_modified": ["lib/date-formatter.ts"],
+    "test_passes": true
+  },
+  "success_criteria": [
+    "Bug identified correctly",
+    "Fix applied to date-formatter.ts",
+    "Test now passes"
+  ],
+  "time_limit_turns": 15
+}

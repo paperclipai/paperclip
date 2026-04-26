@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { inboxDismissals } from "@paperclipai/db";
 
+/** Creates the inbox dismissal service for managing per-user item dismissal state. */
 export function inboxDismissalService(db: Db) {
   return {
     list: async (companyId: string, userId: string) =>

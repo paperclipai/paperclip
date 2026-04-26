@@ -1,0 +1,28 @@
+{
+  "id": "03-refactor",
+  "type": "refactor",
+  "title": "Extract shared helper function",
+  "description": "Tests multi-file coordination and rename safety",
+  "prompt": "Extract the duplicate email validation logic from `src/users/validator.ts` and `src/auth/signup.ts` into a new shared helper `src/utils/email-validator.ts`. Export a function `isValidEmail(email: string): boolean` and update both files to use it.",
+  "setup": {
+    "create_files": {
+      "src/users/validator.ts": "export function validateUser(email: string) {\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(email)) throw new Error('Invalid email');\n  return true;\n}",
+      "src/auth/signup.ts": "export function signup(email: string, password: string) {\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(email)) throw new Error('Invalid email');\n  console.log('User signed up');\n}"
+    }
+  },
+  "expected_outcomes": {
+    "files_created": ["src/utils/email-validator.ts"],
+    "files_modified": [
+      "src/users/validator.ts",
+      "src/auth/signup.ts"
+    ],
+    "duplicate_code_removed": true
+  },
+  "success_criteria": [
+    "New email-validator.ts file created",
+    "isValidEmail function exported",
+    "Both original files updated to import and use it",
+    "No duplicate regex patterns remain"
+  ],
+  "time_limit_turns": 25
+}

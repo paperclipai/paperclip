@@ -1,6 +1,6 @@
 import os from "node:os";
 
-export const CURRENT_USER_REDACTION_TOKEN = "*";
+const CURRENT_USER_REDACTION_TOKEN = "*";
 
 export interface CurrentUserRedactionOptions {
   enabled?: boolean;
@@ -40,6 +40,7 @@ function replaceLastPathSegment(pathValue: string, replacement: string) {
   return `${normalized.slice(0, lastSeparator + 1)}${replacement}`;
 }
 
+/** Returns a masked version of a username (first character followed by asterisks) safe for log output. */
 export function maskUserNameForLogs(value: string, fallback = CURRENT_USER_REDACTION_TOKEN) {
   const trimmed = value.trim();
   if (!trimmed) return fallback;
@@ -104,6 +105,7 @@ function resolveCurrentUserCandidates(opts?: CurrentUserRedactionOptions) {
   return { userNames, homeDirs, replacement };
 }
 
+/** Replaces occurrences of the current OS user name and home directory in a string with masked tokens. */
 export function redactCurrentUserText(input: string, opts?: CurrentUserRedactionOptions) {
   if (!input) return input;
   if (opts?.enabled === false) return input;
@@ -129,6 +131,7 @@ export function redactCurrentUserText(input: string, opts?: CurrentUserRedaction
   return result;
 }
 
+/** Recursively redacts current-user identifiers from strings, arrays, and plain objects. */
 export function redactCurrentUserValue<T>(value: T, opts?: CurrentUserRedactionOptions): T {
   if (typeof value === "string") {
     return redactCurrentUserText(value, opts) as T;

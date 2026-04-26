@@ -177,7 +177,7 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
  * Result of a capability check. When `allowed` is false, `missing` contains
  * the capabilities that the plugin does not declare but the operation requires.
  */
-export interface CapabilityCheckResult {
+interface CapabilityCheckResult {
   allowed: boolean;
   missing: PluginCapability[];
   operation?: string;

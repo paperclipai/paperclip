@@ -147,6 +147,7 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
 
 let cachedStore: WorkspaceOperationLogStore | null = null;
 
+/** Returns the singleton WorkspaceOperationLogStore, creating it on first call. */
 export function getWorkspaceOperationLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH

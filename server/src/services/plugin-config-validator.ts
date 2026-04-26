@@ -28,11 +28,11 @@ export function validateInstanceConfig(
   configJson: Record<string, unknown>,
   schema: JsonSchema,
 ): ConfigValidationResult {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const AjvCtor = (Ajv as any).default ?? Ajv;
+  // ESM/CJS interop: Ajv and ajv-formats may wrap their export under `.default`
+  const AjvCtor = (Ajv as typeof Ajv & { default?: typeof Ajv }).default ?? Ajv;
   const ajv = new AjvCtor({ allErrors: true });
   // ajv-formats v3 default export is a FormatsPlugin object; call it as a plugin.
-  const applyFormats = (addFormats as any).default ?? addFormats;
+  const applyFormats = (addFormats as typeof addFormats & { default?: typeof addFormats }).default ?? addFormats;
   applyFormats(ajv);
   // Register the secret-ref format used by plugin manifests to mark fields that
   // hold a Paperclip secret UUID rather than a raw value. The format is a UI

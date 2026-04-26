@@ -67,6 +67,7 @@ function collectFromJsonValue(value: unknown, target: AdapterModel[]) {
   }
 }
 
+/** Parses Cursor model list output from stdout/stderr into a deduplicated AdapterModel array. */
 export function parseCursorModelsOutput(stdout: string, stderr: string): AdapterModel[] {
   const models: AdapterModel[] = [];
   const combined = `${stdout}\n${stderr}`;
@@ -161,10 +162,12 @@ export async function listCursorModels(): Promise<AdapterModel[]> {
   return dedupeModels(cursorFallbackModels);
 }
 
+/** Clears the cached Cursor models result; for use in tests only. */
 export function resetCursorModelsCacheForTests() {
   cached = null;
 }
 
+/** Overrides the Cursor models runner function; pass null to restore the default. For use in tests only. */
 export function setCursorModelsRunnerForTests(runner: (() => CursorModelsCommandResult) | null) {
   cursorModelsRunner = runner ?? defaultCursorModelsRunner;
 }

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assets } from "@paperclipai/db";
 
+/** Creates the asset service for storing and retrieving company file assets. */
 export function assetService(db: Db) {
   return {
     create: (companyId: string, data: Omit<typeof assets.$inferInsert, "companyId">) =>

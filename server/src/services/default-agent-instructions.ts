@@ -22,6 +22,7 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
   return Object.fromEntries(entries);
 }
 
+/** Maps an agent role string to the appropriate default-instructions bundle role (ceo or default). */
 export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
   return role === "ceo" ? "ceo" : "default";
 }

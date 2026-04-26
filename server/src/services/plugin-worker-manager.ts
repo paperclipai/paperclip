@@ -21,6 +21,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
@@ -36,6 +37,7 @@ import {
   isJsonRpcSuccessResponse,
   JsonRpcParseError,
   JsonRpcCallError,
+  type JsonRpcMessage,
 } from "@paperclipai/plugin-sdk";
 import type {
   JsonRpcId,
@@ -135,6 +137,7 @@ export interface WorkerHandleEvents {
 
 type WorkerHandleEventName = keyof WorkerHandleEvents;
 
+/** Appends a stderr chunk to an existing excerpt, truncating from the start if the total exceeds the max length. */
 export function appendStderrExcerpt(current: string, chunk: string): string {
   const next = current ? `${current}\n${chunk}` : chunk;
   return next.length <= MAX_STDERR_EXCERPT_CHARS
@@ -142,11 +145,39 @@ export function appendStderrExcerpt(current: string, chunk: string): string {
     : next.slice(-MAX_STDERR_EXCERPT_CHARS);
 }
 
+/** Combines a failure message with a trimmed stderr excerpt, avoiding duplication if already included. */
 export function formatWorkerFailureMessage(message: string, stderrExcerpt: string): string {
   const excerpt = stderrExcerpt.trim();
   if (!excerpt) return message;
   if (message.includes(excerpt)) return message;
   return `${message}\n\nWorker stderr:\n${excerpt}`;
+}
+
+/**
+ * Normalizes a module path for use as the first argument to `fork()`.
+ *
+ * On Windows, absolute paths (e.g. `C:\foo\worker.js`) must be passed as a
+ * `URL` object (`file:///C:/foo/worker.js`).  If passed as a plain string,
+ * Node.js resolves the `file:` prefix against `process.cwd()`, corrupting the
+ * path to something like `C:\server\file:\C:\foo\worker.js`.
+ *
+ * On POSIX the path is returned unchanged.
+ *
+ * @internal Exported for testing.
+ */
+export function normalizeForkEntrypoint(
+  modulePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | URL {
+  if (platform === "win32" && /^[A-Za-z]:[/\\]/.test(modulePath)) {
+    // On non-Windows hosts pathToFileURL misinterprets drive-letter paths,
+    // so build the file URL manually when cross-platform testing.
+    if (process.platform === "win32") {
+      return pathToFileURL(modulePath);
+    }
+    return "file:///" + modulePath.replace(/\\/g, "/");
+  }
+  return modulePath;
 }
 
 /**
@@ -420,7 +451,7 @@ export function createPluginWorkerHandle(
     if (!childProcess?.stdin?.writable) {
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
-    const serialized = serializeMessage(message as any);
+    const serialized = serializeMessage(message as JsonRpcMessage);
     childProcess.stdin.write(serialized);
   }
 
@@ -618,7 +649,7 @@ export function createPluginWorkerHandle(
       TZ: process.env.TZ ?? "UTC",
     };
 
-    const child = fork(options.entrypointPath, [], {
+    const child = fork(normalizeForkEntrypoint(options.entrypointPath), [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
       execArgv: options.execArgv ?? [],
       env: workerEnv,

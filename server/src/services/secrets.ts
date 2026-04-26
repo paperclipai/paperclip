@@ -38,6 +38,7 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
   };
 }
 
+/** Creates the secret service for storing, resolving, and managing company secrets. */
 export function secretService(db: Db) {
   type NormalizeEnvOptions = {
     strictMode?: boolean;

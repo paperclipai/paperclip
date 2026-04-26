@@ -1669,6 +1669,7 @@ async function buildFeedbackTraceBundleFromRow(
   return bundle;
 }
 
+/** Creates the feedback service for managing issue votes, comments, and trace bundles. */
 export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
   return {
     listIssueVotesForUser: async (issueId: string, authorUserId: string) =>

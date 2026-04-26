@@ -116,6 +116,7 @@ async function safeReadRegistryRecord(filePath: string) {
   }
 }
 
+/** Derives a deterministic registry key from a local service's identity input by hashing its canonical fields. */
 export function createLocalServiceKey(input: LocalServiceIdentityInput) {
   const digest = createHash("sha256")
     .update(
@@ -211,6 +212,7 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   return candidate;
 }
 
+/** Returns true if the given PID belongs to a live process (uses signal 0 probe). */
 export function isPidAlive(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -221,6 +223,7 @@ export function isPidAlive(pid: number) {
   }
 }
 
+/** Returns true if the given process group ID is alive (sends signal 0 to the negative PGID). */
 export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   if (process.platform === "win32") return false;
   if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
@@ -258,6 +261,11 @@ export async function findAdoptableLocalService(input: {
   if (!record) return null;
 
   if (!isPidAlive(record.pid)) {
+    await removeLocalServiceRegistryRecord(input.serviceKey);
+    return null;
+  }
+  const childPid = typeof record.metadata?.childPid === "number" ? record.metadata.childPid : null;
+  if (childPid !== null && !isPidAlive(childPid)) {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;
   }

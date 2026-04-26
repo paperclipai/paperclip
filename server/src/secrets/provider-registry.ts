@@ -19,12 +19,14 @@ const providerById = new Map<SecretProvider, SecretProviderModule>(
   providers.map((provider) => [provider.id, provider]),
 );
 
+/** Returns the secret provider module for the given provider ID, throwing if unsupported. */
 export function getSecretProvider(id: SecretProvider): SecretProviderModule {
   const provider = providerById.get(id);
   if (!provider) throw unprocessable(`Unsupported secret provider: ${id}`);
   return provider;
 }
 
+/** Returns descriptors for all registered secret providers. */
 export function listSecretProviders(): SecretProviderDescriptor[] {
   return providers.map((provider) => provider.descriptor);
 }

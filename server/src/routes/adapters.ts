@@ -185,6 +185,7 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // Router
 // ---------------------------------------------------------------------------
 
+/** Creates the Express router for adapter configuration and model listing endpoints. */
 export function adapterRoutes() {
   const router = Router();
 

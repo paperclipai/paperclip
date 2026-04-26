@@ -1,0 +1,31 @@
+{
+  "id": "05-multi-step",
+  "type": "multi_step_workflow",
+  "title": "Add feature with tests and docs",
+  "description": "Tests sequential tool use with dependencies",
+  "prompt": "Add a new feature to `src/api/users.ts`: a `getUserStats` function that returns user statistics (postCount, lastLogin). Then:\n1. Add a test for this function in `src/api/users.test.ts`\n2. Document the new function in `docs/API.md`\n3. Export the function from the main module",
+  "setup": {
+    "create_files": {
+      "src/api/users.ts": "export function getUser(id: string) {\n  return db.users.findById(id);\n}\n\nexport function listUsers() {\n  return db.users.findAll();\n}",
+      "src/api/users.test.ts": "import { getUser, listUsers } from './users';\n\ntest('getUser returns user by id', () => {\n  const user = getUser('123');\n  expect(user).toBeDefined();\n});",
+      "docs/API.md": "# API Documentation\n\n## Users\n\n### getUser(id)\nGet a user by ID.\n\n### listUsers()\nList all users."
+    }
+  },
+  "expected_outcomes": {
+    "files_modified": [
+      "src/api/users.ts",
+      "src/api/users.test.ts",
+      "docs/API.md"
+    ],
+    "new_function": "getUserStats",
+    "test_added": true,
+    "documentation_updated": true
+  },
+  "success_criteria": [
+    "getUserStats function implemented",
+    "Function exported",
+    "Test added and passing",
+    "API.md updated with getUserStats documentation"
+  ],
+  "time_limit_turns": 30
+}

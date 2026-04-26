@@ -5,7 +5,7 @@ interface JwtHeader {
   typ?: string;
 }
 
-export interface LocalAgentJwtClaims {
+interface LocalAgentJwtClaims {
   sub: string;
   company_id: string;
   adapter_type: string;
@@ -65,6 +65,7 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
+/** Creates a signed HS256 JWT for a local agent run, or returns null if no JWT secret is configured. */
 export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
   const config = jwtConfig();
   if (!config) return null;
@@ -92,6 +93,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   return `${signingInput}.${signature}`;
 }
 
+/** Verifies a local agent JWT and returns its claims, or null if invalid or expired. */
 export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (!token) return null;
   const config = jwtConfig();

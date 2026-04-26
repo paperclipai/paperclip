@@ -13,6 +13,7 @@ export interface PluginHostServiceCleanupController {
   teardown(): void;
 }
 
+/** Creates a cleanup controller that disposes plugin host service subscriptions on teardown. */
 export function createPluginHostServiceCleanup(
   lifecycle: LifecycleLike,
   disposers: Map<string, () => void>,

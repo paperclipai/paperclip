@@ -7,6 +7,7 @@ import { goalService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 
+/** Creates the Express router for company goal endpoints. */
 export function goalRoutes(db: Db) {
   const router = Router();
   const svc = goalService(db);

@@ -42,6 +42,7 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
     .then((rows) => rows[0] ?? null);
 }
 
+/** Creates the goal service for managing company-level goals and their assignments. */
 export function goalService(db: Db) {
   return {
     list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),

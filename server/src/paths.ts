@@ -23,12 +23,14 @@ function findConfigFileFromAncestors(startDir: string): string | null {
   return null;
 }
 
+/** Resolves the Paperclip config file path from an override, env var, ancestor search, or default location. */
 export function resolvePaperclipConfigPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
   if (process.env.PAPERCLIP_CONFIG) return path.resolve(process.env.PAPERCLIP_CONFIG);
   return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath();
 }
 
+/** Returns the path of the .env file that lives alongside the resolved config file. */
 export function resolvePaperclipEnvPath(overrideConfigPath?: string): string {
   return path.resolve(path.dirname(resolvePaperclipConfigPath(overrideConfigPath)), PAPERCLIP_ENV_FILENAME);
 }

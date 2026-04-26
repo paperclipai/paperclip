@@ -21,6 +21,7 @@ type SkillTelemetryInput = {
   metadata: Record<string, unknown> | null;
 };
 
+/** Creates the Express router for company skill management endpoints. */
 export function companySkillRoutes(db: Db) {
   const router = Router();
   const agents = agentService(db);

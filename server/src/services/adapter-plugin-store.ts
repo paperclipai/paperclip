@@ -130,10 +130,12 @@ function writeSettings(settings: AdapterSettings): void {
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Returns all registered adapter plugin records from the store. */
 export function listAdapterPlugins(): AdapterPluginRecord[] {
   return readStore();
 }
 
+/** Adds or replaces an adapter plugin record in the store (keyed by `type`). */
 export function addAdapterPlugin(record: AdapterPluginRecord): void {
   const store = [...readStore()];
   const idx = store.findIndex((r) => r.type === record.type);
@@ -145,6 +147,7 @@ export function addAdapterPlugin(record: AdapterPluginRecord): void {
   writeStore(store);
 }
 
+/** Removes the adapter plugin with the given type from the store. Returns true if it was found and removed. */
 export function removeAdapterPlugin(type: string): boolean {
   const store = [...readStore()];
   const idx = store.findIndex((r) => r.type === type);
@@ -154,10 +157,12 @@ export function removeAdapterPlugin(type: string): boolean {
   return true;
 }
 
+/** Returns the adapter plugin record matching the given type, or undefined if not found. */
 export function getAdapterPluginByType(type: string): AdapterPluginRecord | undefined {
   return readStore().find((r) => r.type === type);
 }
 
+/** Returns the path to the managed adapter plugins directory, creating it if needed. */
 export function getAdapterPluginsDir(): string {
   return ensureDirs();
 }
@@ -166,14 +171,17 @@ export function getAdapterPluginsDir(): string {
 // Adapter enable/disable (settings)
 // ---------------------------------------------------------------------------
 
+/** Returns the list of adapter type identifiers that are currently disabled. */
 export function getDisabledAdapterTypes(): string[] {
   return readSettings().disabledTypes;
 }
 
+/** Returns true if the given adapter type is currently disabled. */
 export function isAdapterDisabled(type: string): boolean {
   return readSettings().disabledTypes.includes(type);
 }
 
+/** Enables or disables an adapter type. Returns true if the settings were changed. */
 export function setAdapterDisabled(type: string, disabled: boolean): boolean {
   const settings = { ...readSettings(), disabledTypes: [...readSettings().disabledTypes] };
   const idx = settings.disabledTypes.indexOf(type);

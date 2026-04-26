@@ -29,7 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -52,6 +52,10 @@ import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// On Windows, npm is a .cmd batch file and cannot be invoked via execFile
+// without shell:true. Use "npm.cmd" directly on Windows to avoid ENOENT.
+const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -838,7 +842,7 @@ export function pluginLoader(
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
         await execFileAsync(
-          "npm",
+          npmCmd,
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
           { timeout: 120_000 }, // 2 minute timeout for npm install
         );
@@ -931,8 +935,12 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests.
+      // On Windows, absolute paths must be file:// URLs for the ESM loader.
+      const importSpecifier = path.isAbsolute(manifestPath)
+        ? pathToFileURL(manifestPath).href
+        : manifestPath;
+      const mod = await import(importSpecifier) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -1404,7 +1412,7 @@ export function pluginLoader(
       if (existsSync(packageJsonPath)) {
         try {
           await execFileAsync(
-            "npm",
+            npmCmd,
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
             { timeout: 120_000 },
           );

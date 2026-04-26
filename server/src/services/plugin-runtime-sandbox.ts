@@ -53,6 +53,7 @@ const DEFAULT_GLOBALS: Record<string, unknown> = {
   AbortSignal,
 };
 
+/** Creates an invoker that enforces capability permissions declared in the plugin manifest before each call. */
 export function createCapabilityScopedInvoker(
   manifest: PaperclipPluginManifestV1,
   validator: PluginCapabilityValidator,

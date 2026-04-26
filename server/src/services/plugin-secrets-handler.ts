@@ -202,6 +202,7 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
   };
 }
 
+/** Creates a plugin secrets handler that resolves and validates secrets declared in a plugin manifest. */
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {

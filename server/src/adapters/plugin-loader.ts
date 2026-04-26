@@ -27,6 +27,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 
 const uiParserCache = new Map<string, string>();
 
+/** Returns the cached UI parser source string for the given adapter type, or undefined if not yet loaded. */
 export function getUiParserSource(adapterType: string): string | undefined {
   return uiParserCache.get(adapterType);
 }

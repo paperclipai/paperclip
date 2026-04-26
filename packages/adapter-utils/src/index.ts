@@ -5,6 +5,8 @@ export type {
   AdapterBillingType,
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
+  SkillInvocationReport,
+  AdapterInvocationLayer,
   AdapterInvocationMeta,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
@@ -32,7 +34,17 @@ export type {
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
+  AdapterFallbackChainEntryConfig,
+  AdapterFailureCategory,
+  AdapterFallbackEntry,
+  HeartbeatMemoryClass,
 } from "./types.js";
+export type {
+  HeartbeatPromptFragment,
+  AssembleHeartbeatInvocationInput,
+  AssembleHeartbeatInvocationResult,
+} from "./heartbeat-context.js";
+export { assembleHeartbeatInvocation } from "./heartbeat-context.js";
 export type {
   SessionCompactionPolicy,
   NativeContextManagement,

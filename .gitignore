@@ -9,6 +9,8 @@ ui/storybook-static/
 drizzle/meta/
 .vite/
 coverage/
+benchmarks/*.json
+benchmarks/results/
 .DS_Store
 data/
 .paperclip/
@@ -56,3 +58,4 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+cowork-inbox/

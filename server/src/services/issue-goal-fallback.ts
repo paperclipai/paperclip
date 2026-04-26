@@ -1,5 +1,6 @@
 type MaybeId = string | null | undefined;
 
+/** Resolves the goal ID for an issue, preferring explicit goal > project goal > default goal. */
 export function resolveIssueGoalId(input: {
   projectId: MaybeId;
   goalId: MaybeId;
@@ -11,6 +12,7 @@ export function resolveIssueGoalId(input: {
   return input.defaultGoalId ?? null;
 }
 
+/** Computes the goal ID that an issue should have after a project or goal change, preserving explicit overrides. */
 export function resolveNextIssueGoalId(input: {
   currentProjectId: MaybeId;
   currentGoalId: MaybeId;

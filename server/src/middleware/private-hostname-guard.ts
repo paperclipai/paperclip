@@ -28,6 +28,7 @@ function normalizeAllowedHostnames(values: string[]): string[] {
   return Array.from(unique);
 }
 
+/** Builds the set of hostnames that are allowed through the private hostname guard, including localhost aliases. */
 export function resolvePrivateHostnameAllowSet(opts: { allowedHostnames: string[]; bindHost: string }): Set<string> {
   const configuredAllow = normalizeAllowedHostnames(opts.allowedHostnames);
   const bindHost = opts.bindHost.trim().toLowerCase();
@@ -49,6 +50,7 @@ function blockedHostnameMessage(hostname: string): string {
   );
 }
 
+/** Returns Express middleware that rejects requests from hostnames not in the configured allow set. */
 export function privateHostnameGuard(opts: {
   enabled: boolean;
   allowedHostnames: string[];

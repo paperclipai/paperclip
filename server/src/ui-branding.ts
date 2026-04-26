@@ -140,10 +140,12 @@ function createFaviconDataUrl(background: string, foreground: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+/** Returns true if worktree UI branding is enabled via the `PAPERCLIP_IN_WORKTREE` env variable. */
 export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
 }
 
+/** Reads worktree branding config from env vars and derives colors and favicon data URL. */
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {
   if (!isWorktreeUiBrandingEnabled(env)) {
     return {
@@ -168,6 +170,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
   };
 }
 
+/** Renders HTML `<link>` tags for the favicon, using the worktree branded favicon when enabled. */
 export function renderFaviconLinks(branding: WorktreeUiBranding): string {
   if (!branding.enabled || !branding.faviconHref) return DEFAULT_FAVICON_LINKS;
 
@@ -178,6 +181,7 @@ export function renderFaviconLinks(branding: WorktreeUiBranding): string {
   ].join("\n");
 }
 
+/** Renders HTML `<meta>` tags embedding worktree name and colors for runtime UI consumption. */
 export function renderRuntimeBrandingMeta(branding: WorktreeUiBranding): string {
   if (!branding.enabled || !branding.name || !branding.color || !branding.textColor) return "";
 
@@ -205,6 +209,7 @@ function replaceMarkedBlock(html: string, startMarker: string, endMarker: string
   return `${before}${indentedContent}${after}`;
 }
 
+/** Injects favicon and runtime branding meta tags into an HTML string at the designated marker blocks. */
 export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.env): string {
   const branding = getWorktreeUiBranding(env);
   const withFavicon = replaceMarkedBlock(html, FAVICON_BLOCK_START, FAVICON_BLOCK_END, renderFaviconLinks(branding));

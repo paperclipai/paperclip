@@ -16,28 +16,34 @@ export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
 export type CliAuthChallengeStatus = "pending" | "approved" | "cancelled" | "expired";
 
+/** Hashes a bearer token string with SHA-256 and returns the hex digest. */
 export function hashBearerToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/** Compares two token hash strings using a timing-safe equality check. */
 export function tokenHashesMatch(left: string, right: string) {
   const leftBytes = Buffer.from(left, "utf8");
   const rightBytes = Buffer.from(right, "utf8");
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
+/** Generates a new random board API token with a `pcp_board_` prefix. */
 export function createBoardApiToken() {
   return `pcp_board_${randomBytes(24).toString("hex")}`;
 }
 
+/** Generates a new random CLI auth challenge secret with a `pcp_cli_auth_` prefix. */
 export function createCliAuthSecret() {
   return `pcp_cli_auth_${randomBytes(24).toString("hex")}`;
 }
 
+/** Returns the expiry Date for a new board API key (30 days from `nowMs`). */
 export function boardApiKeyExpiresAt(nowMs: number = Date.now()) {
   return new Date(nowMs + BOARD_API_KEY_TTL_MS);
 }
 
+/** Returns the expiry Date for a new CLI auth challenge (10 minutes from `nowMs`). */
 export function cliAuthChallengeExpiresAt(nowMs: number = Date.now()) {
   return new Date(nowMs + CLI_AUTH_CHALLENGE_TTL_MS);
 }
@@ -49,6 +55,7 @@ function challengeStatusForRow(row: typeof cliAuthChallenges.$inferSelect): CliA
   return "pending";
 }
 
+/** Creates the board authentication service for resolving user access and session validation. */
 export function boardAuthService(db: Db) {
   async function resolveBoardAccess(userId: string) {
     const [user, memberships, adminRole] = await Promise.all([

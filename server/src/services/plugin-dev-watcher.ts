@@ -72,6 +72,7 @@ function shouldIgnorePath(filename: string | null | undefined): boolean {
   );
 }
 
+/** Resolves the list of file/directory targets to watch for a plugin package's dev build. */
 export function resolvePluginWatchTargets(
   packagePath: string,
   fsDeps?: Pick<PluginDevWatcherFsDeps, "existsSync" | "readFileSync" | "readdirSync" | "statSync">,
