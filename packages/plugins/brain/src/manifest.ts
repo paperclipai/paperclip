@@ -12,7 +12,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "Exposes Walter's Obsidian vault as a semantically searchable knowledge base. Per-agent ACLs, default-deny, full audit log.",
   author: "WHITESTAG",
   categories: ["connector"],
-  capabilities: ["agent.tools.register"],
+  capabilities: ["agent.tools.register", "instance.settings.register"],
   instanceConfigSchema: {
     type: "object",
     properties: {
