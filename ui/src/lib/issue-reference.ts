@@ -11,18 +11,9 @@ const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
-  let pathname = pathOrUrl.trim();
+  const pathname = pathOrUrl.trim();
   if (!pathname) return null;
-
-  if (/^https?:\/\//i.test(pathname)) {
-    try {
-      const url = new URL(pathname);
-      if (url.hostname === "github.com" || url.hostname === "www.github.com") return null;
-      pathname = url.pathname;
-    } catch {
-      return null;
-    }
-  }
+  if (/^https?:\/\//i.test(pathname)) return null;
 
   const segments = pathname.split("/").filter(Boolean);
   const issueIndex = segments.findIndex((segment) => segment === "issues");
