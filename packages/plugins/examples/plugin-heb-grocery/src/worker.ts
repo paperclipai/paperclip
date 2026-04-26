@@ -54,18 +54,20 @@ async function getConfig(ctx: PluginContext): Promise<HEBConfig> {
 
 /**
  * Build a bearer (mobile) session from config.
+ * Trims tokens to guard against copy-paste whitespace artifacts.
  * Throws a clear message when tokens are not configured.
  */
 function buildBearerSession(cfg: HEBConfig): HEBSession {
-  if (!cfg.hebAccessToken) {
+  const accessToken = cfg.hebAccessToken?.trim();
+  if (!accessToken) {
     throw new Error(
       "HEB bearer token not configured. Set 'hebAccessToken' in the HEB Grocery plugin settings."
     );
   }
   return createTokenSession({
-    accessToken: cfg.hebAccessToken,
-    refreshToken: cfg.hebRefreshToken,
-    idToken: cfg.hebIdToken,
+    accessToken,
+    refreshToken: cfg.hebRefreshToken?.trim(),
+    idToken: cfg.hebIdToken?.trim(),
     expiresIn: 1800,
   });
 }
@@ -250,7 +252,10 @@ const plugin = definePlugin({
       async (_params, _runCtx: ToolRunContext): Promise<ToolResult> => {
         try {
           const cfg = await getConfig(ctx);
-          const session = buildCookieSession(cfg);
+          // Use bearer session (cartV2 via mobile API) — more reliable than
+          // the cookie-based cartEstimated which can return PersistedQueryNotFound
+          const session = buildBearerSession(cfg);
+          if (cfg.storeNumber) await setStore(session, cfg.storeNumber);
           const cart = await getCart(session);
           return { content: formatCart(cart) };
         } catch (err) {

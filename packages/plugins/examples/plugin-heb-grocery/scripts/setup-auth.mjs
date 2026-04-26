@@ -71,13 +71,21 @@ console.log("=".repeat(60));
 console.log("SUCCESS — paste these values into the HEB Grocery plugin settings:");
 console.log("=".repeat(60));
 console.log();
-console.log("  HEB Access Token (Bearer):  " + tokens.access_token);
+// Trim whitespace — a common copy-paste artifact that silently breaks auth
+const accessToken = tokens.access_token?.trim() ?? "";
+const refreshToken = tokens.refresh_token?.trim();
+const idToken = tokens.id_token?.trim();
+
+console.log("  HEB Access Token (Bearer):  " + accessToken);
 console.log();
-console.log("  HEB Refresh Token:          " + (tokens.refresh_token ?? "(none)"));
+console.log("  HEB Refresh Token:          " + (refreshToken ?? "(none)"));
 console.log();
-console.log("  HEB ID Token:               " + (tokens.id_token ?? "(none)"));
+console.log("  HEB ID Token:               " + (idToken ?? "(none)"));
 console.log();
 console.log("Access tokens expire in ~30 minutes. Set the Refresh Token in plugin");
 console.log("settings so the plugin can renew it automatically.");
 console.log();
 console.log("Next: follow the Cookie setup instructions to enable cart operations.");
+console.log();
+console.log("IMPORTANT: When pasting tokens into plugin settings or env vars,");
+console.log("do NOT include any surrounding spaces or quotes.");
