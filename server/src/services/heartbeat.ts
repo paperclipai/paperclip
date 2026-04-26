@@ -300,25 +300,28 @@ async function resolveRunScopedMentionedSkillKeys(input: {
 }): Promise<string[]> {
   if (!input.issueId) return [];
 
-  const issue = await input.db
-    .select({
-      title: issues.title,
-      description: issues.description,
-    })
-    .from(issues)
-    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
-    .then((rows) => rows[0] ?? null);
+  const [issue, comments] = await Promise.all([
+    input.db
+      .select({
+        title: issues.title,
+        description: issues.description,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null),
+    input.db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, input.issueId),
+          eq(issueComments.companyId, input.companyId),
+        ),
+      ),
+  ]);
+
   if (!issue) return [];
 
-  const comments = await input.db
-    .select({ body: issueComments.body })
-    .from(issueComments)
-    .where(
-      and(
-        eq(issueComments.issueId, input.issueId),
-        eq(issueComments.companyId, input.companyId),
-      ),
-    );
   const mentionedSkillIds = extractMentionedSkillIdsFromSources([
     issue.title,
     issue.description ?? "",
