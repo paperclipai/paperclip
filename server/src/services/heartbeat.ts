@@ -5930,7 +5930,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // No audit entry — lenient fallback: treat as fresh and proceed with reopen.
         }
 
-        const shouldReopenDeferredCommentWake = deferredCommentIds.length > 0 && issueIsTerminal;
+        // Mention wakes (`issue_comment_mentioned`) are notifications targeted at
+        // another agent — they must not flip a finished issue back to todo. Other
+        // comment-bearing deferred wakes (e.g. `issue_commented`) keep the existing
+        // implicit reopen behaviour, still gated by the freshness check above.
+        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        const shouldReopenDeferredCommentWake =
+          deferredCommentIds.length > 0 &&
+          issueIsTerminal &&
+          deferredWakeReason !== "issue_comment_mentioned";
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
