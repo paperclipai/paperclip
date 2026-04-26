@@ -44,6 +44,7 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { mergeAdapterEnv } from "../lib/onboarding-env-merge";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { EnvVarEditor } from "./EnvVarEditor";
 import {
@@ -365,15 +366,16 @@ export function OnboardingWizard() {
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
-    if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
-      const env =
-        typeof config.env === "object" &&
-        config.env !== null &&
-        !Array.isArray(config.env)
-          ? { ...(config.env as Record<string, unknown>) }
-          : {};
-      env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
-      config.env = env;
+    const mergedEnv = mergeAdapterEnv({
+      adapterEnv: config.env,
+      userEnv,
+      adapterType,
+      forceUnsetAnthropicApiKey,
+    });
+    if (mergedEnv !== undefined) {
+      config.env = mergedEnv;
+    } else {
+      delete config.env;
     }
     return config;
   }
@@ -1131,6 +1133,39 @@ export function OnboardingWizard() {
                       />
                     </div>
                   )}
+
+                  <details className="rounded-md border border-border bg-muted/30 p-3 group">
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground select-none flex items-center gap-1.5">
+                      <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
+                      Environment variables (advanced)
+                    </summary>
+                    <div className="mt-3 space-y-2">
+                      <p className="text-[11px] text-muted-foreground">
+                        Inject env vars into the spawned subprocess. Useful for
+                        things like{" "}
+                        <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-background">
+                          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+                        </code>{" "}
+                        or pointing{" "}
+                        <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-background">
+                          CLAUDE_CONFIG_DIR
+                        </code>{" "}
+                        at an alternate Claude Code config.
+                      </p>
+                      <EnvVarEditor
+                        value={userEnv}
+                        secrets={availableSecrets}
+                        onCreateSecret={async (name, value) => {
+                          const created = await createSecret.mutateAsync({
+                            name,
+                            value,
+                          });
+                          return created;
+                        }}
+                        onChange={(env) => setUserEnv(env ?? {})}
+                      />
+                    </div>
+                  </details>
                 </div>
               )}
 
