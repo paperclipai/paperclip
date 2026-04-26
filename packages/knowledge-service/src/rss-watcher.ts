@@ -3,9 +3,9 @@ import { YamlRegistryReader, type TopicDefinition } from "./yaml-registry.js";
 
 export interface RssWatcherOptions {
   yamlSourcesDir?: string;
-  checkIntervalMs: number;
-  userAgent: string;
-  rateLimitMs: number;
+  checkIntervalMs?: number;
+  userAgent?: string;
+  rateLimitMs?: number;
   githubApiToken?: string;
 }
 
@@ -133,11 +133,11 @@ export class RssWatcher {
   }
 
   private async fetchWithRateLimit(url: string, options: RequestInit = {}): Promise<Response> {
-    await this.sleep(this.options.rateLimitMs);
+    await this.sleep(this.options.rateLimitMs ?? 2000);
     const response = await fetch(url, {
       ...options,
       headers: {
-        "User-Agent": this.options.userAgent,
+        "User-Agent": this.options.userAgent ?? "Paperclip-Knowledge/1.0",
         Accept: "application/rss+xml, application/xml, text/xml, application/atom+xml, */*",
         ...options.headers,
       },
@@ -325,7 +325,7 @@ export class RssWatcher {
     const url = `https://api.github.com/repos/${repoSlug}/releases`;
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
-      "User-Agent": this.options.userAgent,
+      "User-Agent": this.options.userAgent ?? "Paperclip-Knowledge/1.0",
     };
     if (this.options.githubApiToken) {
       headers["Authorization"] = `Bearer ${this.options.githubApiToken}`;
