@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db, Tx } from "@paperclipai/db";
 import {
-  activityLog,
   agentWakeupRequests,
+  activityLog,
   agents,
   assets,
   companies,
@@ -52,6 +52,24 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+// How long a `queued` heartbeat run may remain in that state before the drain
+// helper treats it as a never-started orphan lock and cancels it.
+//
+// Background (CLI-104 / CLI-126): CLI-104 introduced auto-drain for `active`
+// (running) execution-run locks held by the wrong agent. CLI-126 extended the
+// same drain to the comment and PATCH write paths by factoring the logic into
+// this shared helper (`autoDrainStaleExecutionRunLock`), which is now called
+// from assertCheckoutOwner and checkoutAs as well.
+//
+// A `queued` run is a claimed startup lock: the agent has been woken but has
+// not yet transitioned the run to `running`. Under normal conditions this
+// transition is near-instant. A run still `queued` after 15 minutes means the
+// agent process never started or crashed before its first heartbeat.  That lock
+// is safe to cancel — it carries no live work.  The 15-minute window therefore
+// applies to all three call sites that route through this helper; do not narrow
+// it to the checkout path only.
+const STALE_QUEUED_LOCK_WINDOW_MS = 15 * 60 * 1000;
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -142,6 +160,9 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+// Single alias for the drain helpers so both the top-level db handle and a
+// transaction context are accepted without losing type safety.
+type DbOrTx = Db | Tx;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -180,6 +201,29 @@ export type ChildIssueCompletionSummary = {
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
   return checkoutRunId == null;
+}
+
+function shouldClearStaleExecutionLock(
+  lockRun: { id: string; status: string; agentId: string; startedAt: Date | null; createdAt: Date },
+  assigneeAgentId: string | null,
+  now: Date,
+) {
+  if (lockRun.status !== "queued" && lockRun.status !== "running") {
+    return true;
+  }
+
+  if (assigneeAgentId != null && lockRun.agentId !== assigneeAgentId) {
+    return true;
+  }
+
+  if (lockRun.status === "running" || lockRun.startedAt != null) {
+    return false;
+  }
+
+  if (now.getTime() - lockRun.createdAt.getTime() >= STALE_QUEUED_LOCK_WINDOW_MS) {
+    return true;
+  }
+  return false;
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
@@ -1149,6 +1193,7 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+  quarantineHold: issues.quarantineHold,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
   executionWorkspaceId: issues.executionWorkspaceId,
@@ -1704,12 +1749,12 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
+  async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: any = db) {
+    const run = await dbOrTx
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+      .then((rows: Array<{ status: string }>) => rows[0] ?? null);
     if (!run) return true;
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
@@ -1719,12 +1764,14 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
+    dbOrTx?: DbOrTx;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+    const dbOrTx = input.dbOrTx ?? db;
+    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId, dbOrTx);
     if (!stale) return null;
 
     const now = new Date();
-    const adopted = await db
+    const adopted = await dbOrTx
       .update(issues)
       .set({
         checkoutRunId: input.actorRunId,
@@ -1747,7 +1794,13 @@ export function issueService(db: Db) {
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
-      .then((rows) => rows[0] ?? null);
+      .then((rows: Array<{
+        id: string;
+        status: string;
+        assigneeAgentId: string | null;
+        checkoutRunId: string | null;
+        executionRunId: string | null;
+      }>) => rows[0] ?? null);
 
     return adopted;
   }
@@ -1828,6 +1881,130 @@ export function issueService(db: Db) {
 
       return Boolean(updated);
     });
+  }
+
+  // Restored from CLI-180 commit 30913679 ("Extend stale execution drain to write
+  // paths"). The cli-180-sync merge dropped this function and its call sites,
+  // which broke 4 issues-service tests + 5 e2e signoff-policy tests. The
+  // function detects orphan/stale execution_run locks (terminal, missing,
+  // long-queued, long-running with dead heartbeat) and atomically clears the
+  // issue lock, cancels the orphan run + its wakeup request, and emits an
+  // activity-log entry so the next ownership check on a write path can adopt.
+  async function autoDrainStaleExecutionRunLock(issueId: string, dbOrTx: any = db) {
+    const now = new Date();
+    await dbOrTx.execute(sql`select id from issues where id = ${issueId} for update`);
+
+    const issue = await dbOrTx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows: Array<{
+        id: string;
+        companyId: string;
+        assigneeAgentId: string | null;
+        executionRunId: string | null;
+      }>) => rows[0] ?? null);
+    if (!issue?.executionRunId) return null;
+
+    const lockRun = await dbOrTx
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, issue.executionRunId))
+      .then((rows: Array<{
+        id: string;
+        status: string;
+        agentId: string;
+        startedAt: Date | null;
+        createdAt: Date;
+        wakeupRequestId: string | null;
+      }>) => rows[0] ?? null);
+
+    if (lockRun && !shouldClearStaleExecutionLock(lockRun, issue.assigneeAgentId, now)) {
+      return null;
+    }
+
+    const activeStaleReason = lockRun?.status === "running"
+      ? "stale_running_run"
+      : lockRun?.status === "queued"
+        ? "stale_queued_run"
+        : null;
+
+    const clearedIssue = await dbOrTx
+      .update(issues)
+      .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+      .where(and(eq(issues.id, issueId), eq(issues.executionRunId, issue.executionRunId)))
+      .returning({ id: issues.id })
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (!clearedIssue) return null;
+
+    if (!lockRun || !activeStaleReason) {
+      return null;
+    }
+
+    const [cancelledRun] = await dbOrTx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        error: `stale execution lock auto-drained (${activeStaleReason})`,
+        finishedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, lockRun.id),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ),
+      )
+      .returning({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      });
+
+    if (cancelledRun?.wakeupRequestId) {
+      await dbOrTx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: `stale execution lock auto-drained (${activeStaleReason})`,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, cancelledRun.wakeupRequestId));
+    }
+
+    await dbOrTx.insert(activityLog).values({
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "issue_service:auto_drain",
+      action: "issue.execution_run_auto_drained",
+      entityType: "issue",
+      entityId: issue.id,
+      agentId: issue.assigneeAgentId,
+      runId: lockRun.id,
+      details: {
+        orphanRunId: lockRun.id,
+        orphanAgentId: lockRun.agentId,
+        currentAssigneeAgentId: issue.assigneeAgentId,
+        reason: activeStaleReason,
+      },
+    });
+
+    return {
+      orphanRunId: lockRun.id,
+      reason: activeStaleReason,
+    };
   }
 
   return {
@@ -2780,7 +2957,12 @@ export function issueService(db: Db) {
         });
       }
 
-      await clearExecutionRunIfTerminal(id);
+      // Drain stale/orphan execution_run locks (terminal, missing, stale-queued,
+      // stale-running) so a dead lock from a prior agent can't 409 a legitimate
+      // checkout. Wrapped in a transaction with SELECT FOR UPDATE for atomicity.
+      await db.transaction(async (tx) => {
+        await autoDrainStaleExecutionRunLock(id, tx);
+      });
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -2845,24 +3027,11 @@ export function issueService(db: Db) {
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const adopted = await adoptUnownedCheckoutRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+        });
         if (adopted) return adopted;
       }
 
@@ -2909,7 +3078,11 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
-      await clearExecutionRunIfTerminal(id);
+      // Drain stale/orphan execution_run locks before reading current ownership,
+      // so write paths (comments, patches, signoffs) can adopt instead of 409.
+      await db.transaction(async (tx) => {
+        await autoDrainStaleExecutionRunLock(id, tx);
+      });
       const current = await db
         .select({
           id: issues.id,
@@ -2924,6 +3097,11 @@ export function issueService(db: Db) {
 
       if (!current) throw notFound("Issue not found");
 
+      // Fast-path: actor already owns the lock for this in_progress issue. Return
+      // immediately without re-running adoption helpers, so write paths (comments,
+      // patches, signoffs) don't 409 against themselves. Restored from master's
+      // PR #4258 — this block was dropped during the cli-180-sync merge
+      // resolution and broke 5 verify tests + 5 e2e signoff-policy tests.
       if (
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&

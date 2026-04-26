@@ -80,6 +80,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
+import { getAdapterQuarantineBadgeState } from "../adapters/circuit-breaker.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -437,6 +438,16 @@ export function issueRoutes(
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
     };
+  }
+
+  async function resolveIssueQuarantineResumeAt(issue: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!issue?.quarantineHold || !issue.assigneeAgentId) return null;
+    const assignee = await agentsSvc.getById(issue.assigneeAgentId);
+    if (!assignee) return null;
+    return getAdapterQuarantineBadgeState({
+      adapterType: assignee.adapterType,
+      adapterConfig: assignee.adapterConfig,
+    })?.resumeAt ?? null;
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -1127,7 +1138,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations, blockerAttention, referenceSummary] = await Promise.all([
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations, blockerAttention, referenceSummary, quarantineResumeAt] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
@@ -1135,6 +1146,7 @@ export function issueRoutes(
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      resolveIssueQuarantineResumeAt(issue),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1152,6 +1164,7 @@ export function issueRoutes(
       blocks: relations.blocks,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      quarantineResumeAt,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,

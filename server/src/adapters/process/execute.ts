@@ -57,6 +57,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: true,
+      adapterFailureReason: "adapter_mid_run_timeout",
       errorMessage: `Timed out after ${timeoutSec}s`,
     };
   }

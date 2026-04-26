@@ -63,6 +63,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
+import { getAdapterQuarantineBadgeState } from "../adapters/circuit-breaker.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -233,6 +234,10 @@ export function agentRoutes(
 
     return {
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      adapterQuarantine: getAdapterQuarantineBadgeState({
+        adapterType: agent.adapterType,
+        adapterConfig: agent.adapterConfig,
+      }),
       chainOfCommand,
       access: accessState,
     };

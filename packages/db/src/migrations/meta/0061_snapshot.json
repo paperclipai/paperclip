@@ -952,12 +952,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "requested_at": {
           "name": "requested_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "scheduled_at": {
+          "name": "scheduled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "claimed_at": {
           "name": "claimed_at",
@@ -1052,6 +1064,27 @@
             },
             {
               "expression": "requested_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_status_scheduled_idx": {
+          "name": "agent_wakeup_requests_status_scheduled_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scheduled_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -9430,6 +9463,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "quarantine_hold": {
+          "name": "quarantine_hold",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "execution_policy": {
           "name": "execution_policy",
           "type": "jsonb",
@@ -9607,6 +9647,27 @@
             },
             {
               "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_quarantine_hold_idx": {
+          "name": "issues_company_quarantine_hold_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "quarantine_hold",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

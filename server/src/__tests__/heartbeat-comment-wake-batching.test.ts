@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -13,6 +13,12 @@ import {
   issues,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  buildCircuitKey,
+  getCircuitQuarantineDurationMs,
+  recordCircuitExecutionFailure,
+  resetAllCircuits,
+} from "../adapters/circuit-breaker.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
@@ -26,6 +32,51 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
 
 async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
+}
+
+function createFaultingHeartbeatDb(
+  db: ReturnType<typeof createDb>,
+  opts: { failIssueUpdate?: boolean; failWakeInsert?: boolean },
+) {
+  const wrapped = Object.create(db) as typeof db;
+  wrapped.transaction = async (callback) =>
+    db.transaction(async (tx) => {
+      const proxiedTx = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "update") {
+            return (table: unknown) => {
+              const builder = Reflect.get(target, prop, receiver).call(target, table);
+              if (opts.failIssueUpdate && table === issues) {
+                return {
+                  set: () => ({
+                    where: async () => {
+                      throw new Error("forced issue update failure");
+                    },
+                  }),
+                };
+              }
+              return builder;
+            };
+          }
+          if (prop === "insert") {
+            return (table: unknown) => {
+              const builder = Reflect.get(target, prop, receiver).call(target, table);
+              if (opts.failWakeInsert && table === agentWakeupRequests) {
+                return {
+                  values: async () => {
+                    throw new Error("forced wake insert failure");
+                  },
+                };
+              }
+              return builder;
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return callback(proxiedTx);
+    });
+  return wrapped;
 }
 
 async function createControlledGatewayServer() {
@@ -158,6 +209,10 @@ describe("heartbeat comment wake batching", () => {
   afterAll(async () => {
     await closeDbClient(db);
     await tempDb?.cleanup();
+  });
+
+  afterEach(() => {
+    resetAllCircuits();
   });
 
   it("defers approval-approved wakes for a running issue so the assignee resumes after the run", async () => {
@@ -1599,4 +1654,234 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("rolls back quarantineHold when the deferred wake insert fails", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterConfig = { command: "/usr/bin/missing-binary" };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Circuit Agent",
+      role: "engineer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig,
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Deferred wake rollback",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const circuitKey = buildCircuitKey({ adapterType: "process", adapterConfig });
+    for (let i = 0; i < 3; i += 1) {
+      recordCircuitExecutionFailure({
+        key: circuitKey,
+        adapterType: "process",
+        adapterConfig,
+        adapterFailureReason: "adapter_missing_command",
+      });
+    }
+
+    const heartbeat = heartbeatService(createFaultingHeartbeatDb(db, { failWakeInsert: true }));
+    await expect(heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    })).rejects.toThrow("forced wake insert failure");
+
+    const issueRow = await db
+      .select({ quarantineHold: issues.quarantineHold })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const wakeRows = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(issueRow?.quarantineHold).toBe(false);
+    expect(wakeRows).toHaveLength(0);
+  });
+
+  it("rolls back deferred wake creation when the quarantineHold update fails", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterConfig = { command: "/usr/bin/missing-binary" };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Circuit Agent",
+      role: "engineer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig,
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Deferred wake rollback",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const circuitKey = buildCircuitKey({ adapterType: "process", adapterConfig });
+    for (let i = 0; i < 3; i += 1) {
+      recordCircuitExecutionFailure({
+        key: circuitKey,
+        adapterType: "process",
+        adapterConfig,
+        adapterFailureReason: "adapter_missing_command",
+      });
+    }
+
+    const heartbeat = heartbeatService(createFaultingHeartbeatDb(db, { failIssueUpdate: true }));
+    await expect(heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    })).rejects.toThrow("forced issue update failure");
+
+    const issueRow = await db
+      .select({ quarantineHold: issues.quarantineHold })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const wakeRows = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(issueRow?.quarantineHold).toBe(false);
+    expect(wakeRows).toHaveLength(0);
+  });
+
+  it("reconciles stale deferred issue execution on startup by clearing holds and promoting the wake", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterConfig = { command: "/usr/bin/missing-binary" };
+    const now = new Date("2026-04-21T12:00:00.000Z");
+    const cooldownMs = getCircuitQuarantineDurationMs({ adapterType: "process", adapterConfig });
+    const staleResumeAt = new Date(now.getTime() - cooldownMs - 60_000).toISOString();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Circuit Agent",
+      role: "engineer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig,
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Startup reconciliation",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      quarantineHold: true,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "adapter_quarantined",
+      status: "deferred_issue_execution",
+      requestedAt: new Date(now.getTime() - 1_000),
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          circuitBreaker: {
+            key: buildCircuitKey({ adapterType: "process", adapterConfig }),
+            state: "Open",
+            resumeAt: staleResumeAt,
+          },
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const reconciled = await heartbeat.reconcileCircuitQuarantine({ now });
+
+    expect(reconciled.clearedHolds).toBe(1);
+    expect(reconciled.promotedDeferred).toBe(1);
+
+    const issueRow = await db
+      .select({ quarantineHold: issues.quarantineHold, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const wakeRow = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issueRow?.quarantineHold).toBe(false);
+    expect(issueRow?.executionRunId).not.toBeNull();
+    expect(["queued", "claimed", "running", "succeeded"]).toContain(wakeRow?.status);
+    expect(wakeRow?.runId).not.toBeNull();
+  });
 });

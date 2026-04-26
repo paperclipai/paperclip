@@ -64,6 +64,19 @@ describe("heartbeat stop metadata", () => {
     ).toBe("cancelled");
   });
 
+  it("preserves adapter quarantine stop reasons for dashboards", () => {
+    expect(
+      buildHeartbeatRunStopMetadata({
+        adapterType: "codex_local",
+        adapterConfig: {},
+        outcome: "failed",
+        errorCode: "adapter_quarantined",
+        adapterFailureReason: "adapter_quarantined",
+        errorMessage: "Adapter is quarantined",
+      }).stopReason,
+    ).toBe("adapter_quarantined");
+  });
+
   it("preserves existing result fields when merging stop metadata", () => {
     const result = mergeHeartbeatRunStopMetadata(
       { summary: "done" },

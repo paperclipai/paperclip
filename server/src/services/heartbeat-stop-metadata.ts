@@ -7,6 +7,7 @@ export type HeartbeatRunStopReason =
   | "budget_paused"
   | "paused"
   | "process_lost"
+  | "adapter_quarantined"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
@@ -73,11 +74,13 @@ export function resolveHeartbeatRunTimeoutPolicy(
 export function inferHeartbeatRunStopReason(input: {
   outcome: HeartbeatRunOutcome;
   errorCode?: string | null;
+  adapterFailureReason?: string | null;
   errorMessage?: string | null;
 }): HeartbeatRunStopReason {
   if (input.outcome === "succeeded") return "completed";
   if (input.outcome === "timed_out") return "timeout";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
+  if (input.outcome === "failed" && input.adapterFailureReason === "adapter_quarantined") return "adapter_quarantined";
   if (input.outcome === "cancelled") {
     const message = (input.errorMessage ?? "").toLowerCase();
     if (message.includes("budget")) return "budget_paused";
@@ -92,6 +95,7 @@ export function buildHeartbeatRunStopMetadata(input: {
   adapterConfig: Record<string, unknown> | null | undefined;
   outcome: HeartbeatRunOutcome;
   errorCode?: string | null;
+  adapterFailureReason?: string | null;
   errorMessage?: string | null;
 }): HeartbeatRunStopMetadata {
   const timeoutPolicy = resolveHeartbeatRunTimeoutPolicy(input.adapterType, input.adapterConfig);

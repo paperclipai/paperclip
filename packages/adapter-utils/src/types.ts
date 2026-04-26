@@ -72,6 +72,7 @@ export interface AdapterExecutionResult {
   timedOut: boolean;
   errorMessage?: string | null;
   errorCode?: string | null;
+  adapterFailureReason?: string | null;
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;

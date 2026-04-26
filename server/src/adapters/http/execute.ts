@@ -42,6 +42,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: null,
         signal: null,
         timedOut: true,
+        adapterFailureReason: "adapter_mid_run_timeout",
         errorMessage: `HTTP ${method} ${url} timed out after ${timeoutMs}ms`,
         errorCode: "timeout",
       };

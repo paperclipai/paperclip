@@ -498,6 +498,20 @@
       "when": 1776780004000,
       "tag": "0070_active_run_output_watchdog",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777000000000,
+      "tag": "0071_circuit_quarantine_hold",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777000001000,
+      "tag": "0072_clean_reaper",
+      "breakpoints": true
     }
   ]
 }
