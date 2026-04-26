@@ -9,6 +9,7 @@ import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
+import { deriveRepoNameFromUrl, isGitRepoUrl, isPlainHttpGitRepoUrl } from "../lib/git-repo-url";
 import {
   Dialog,
   DialogContent,
@@ -115,32 +116,10 @@ export function NewProjectDialog() {
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
-  const looksLikeRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== "https:") return false;
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      return segments.length >= 2;
-    } catch {
-      return false;
-    }
-  };
-
   const deriveWorkspaceNameFromPath = (value: string) => {
     const normalized = value.trim().replace(/[\\/]+$/, "");
     const segments = normalized.split(/[\\/]/).filter(Boolean);
     return segments[segments.length - 1] ?? "Local folder";
-  };
-
-  const deriveWorkspaceNameFromRepo = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const repo = segments[segments.length - 1]?.replace(/\.git$/i, "") ?? "";
-      return repo || "GitHub repo";
-    } catch {
-      return "GitHub repo";
-    }
   };
 
   async function handleSubmit() {
@@ -152,8 +131,8 @@ export function NewProjectDialog() {
       setWorkspaceError("Local folder must be a full absolute path.");
       return;
     }
-    if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+    if (repoUrl && !isGitRepoUrl(repoUrl)) {
+      setWorkspaceError("Repo must use a valid HTTP or HTTPS Git remote URL.");
       return;
     }
 
@@ -173,7 +152,7 @@ export function NewProjectDialog() {
         const workspacePayload: Record<string, unknown> = {
           name: localPath
             ? deriveWorkspaceNameFromPath(localPath)
-            : deriveWorkspaceNameFromRepo(repoUrl),
+            : deriveRepoNameFromUrl(repoUrl),
           ...(localPath ? { cwd: localPath } : {}),
           ...(repoUrl ? { repoUrl } : {}),
         };
@@ -289,7 +268,7 @@ export function NewProjectDialog() {
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Link a GitHub repository so agents can clone, read, and push code for this project.
+                  Link a Git repository so agents can clone, read, and push code for this project.
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -297,8 +276,13 @@ export function NewProjectDialog() {
               className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
               value={workspaceRepoUrl}
               onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
-              placeholder="https://github.com/org/repo"
+              placeholder="https://git.example.com/org/repo"
             />
+            {isPlainHttpGitRepoUrl(workspaceRepoUrl) && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+                This URL uses an unencrypted connection. Use HTTPS if your Git server supports it.
+              </p>
+            )}
           </div>
 
           <div>
