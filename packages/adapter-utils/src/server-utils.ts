@@ -111,7 +111,7 @@ export interface InstalledSkillTarget {
   kind: "symlink" | "directory" | "file";
 }
 
-interface PersistentSkillSnapshotOptions {
+export interface PersistentSkillSnapshotOptions {
   adapterType: string;
   availableEntries: PaperclipSkillEntry[];
   desiredSkills: string[];
@@ -1090,18 +1090,50 @@ export function buildPersistentSkillSnapshot(
   const desiredSet = new Set(desiredSkills);
   const entries: AdapterSkillEntry[] = [];
   const warnings = [...(options.warnings ?? [])];
+  // Installed entry names that were consumed as the "home" of a local-path
+  // skill whose source already lives under skillsHome. These are claimed by
+  // the managed entry and must not be re-emitted as external.
+  const sharedHomeClaims = new Set<string>();
+  const normalizedSkillsHome = path.resolve(skillsHome);
 
   for (const available of availableEntries) {
-    const installedEntry = installed.get(available.runtimeName) ?? null;
+    const aliasEntry = installed.get(available.runtimeName) ?? null;
+    const aliasMatches = aliasEntry?.targetPath === available.source;
+
+    // Shared-home detection: if the skill's source directory lives directly
+    // under skillsHome (eg. a local-path skill rooted in ~/.cursor/skills),
+    // the source directory itself is one of the installed entries and must
+    // not be re-emitted as "external". This also lets us report `installed`
+    // when a sibling agent or a previous sync removed the managed alias but
+    // the source still exists on disk.
+    let sharedHomeEntry: InstalledSkillTarget | null = null;
+    let sharedHomeName: string | null = null;
+    const sourceDir = path.resolve(available.source);
+    if (path.dirname(sourceDir) === normalizedSkillsHome) {
+      const basename = path.basename(sourceDir);
+      if (basename !== available.runtimeName) {
+        const candidate = installed.get(basename);
+        if (candidate?.targetPath === available.source) {
+          sharedHomeEntry = candidate;
+          sharedHomeName = basename;
+        }
+      }
+    }
+
+    const installedEntry = aliasMatches
+      ? aliasEntry
+      : sharedHomeEntry ?? aliasEntry;
+    const matchesSource = aliasMatches || sharedHomeEntry !== null;
     const desired = desiredSet.has(available.key);
     let state: AdapterSkillEntry["state"] = "available";
     let managed = false;
     let detail: string | null = null;
 
-    if (installedEntry?.targetPath === available.source) {
+    if (matchesSource) {
       managed = true;
       state = desired ? "installed" : "stale";
       detail = installedDetail ?? null;
+      if (sharedHomeName) sharedHomeClaims.add(sharedHomeName);
     } else if (installedEntry) {
       state = "external";
       detail = desired ? externalConflictDetail : externalDetail;
@@ -1110,6 +1142,10 @@ export function buildPersistentSkillSnapshot(
       detail = missingDetail;
     }
 
+    const effectiveTargetPath = sharedHomeEntry && !aliasMatches
+      ? available.source
+      : path.join(skillsHome, available.runtimeName);
+
     entries.push({
       key: available.key,
       runtimeName: available.runtimeName,
@@ -1117,7 +1153,7 @@ export function buildPersistentSkillSnapshot(
       managed,
       state,
       sourcePath: available.source,
-      targetPath: path.join(skillsHome, available.runtimeName),
+      targetPath: effectiveTargetPath,
       detail,
       required: Boolean(available.required),
       requiredReason: available.requiredReason ?? null,
@@ -1145,6 +1181,7 @@ export function buildPersistentSkillSnapshot(
 
   for (const [name, installedEntry] of installed.entries()) {
     if (availableEntries.some((entry) => entry.runtimeName === name)) continue;
+    if (sharedHomeClaims.has(name)) continue;
     entries.push({
       key: name,
       runtimeName: name,

@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import { promises as fs } from "node:fs";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   appendWithByteCap,
+  buildPersistentSkillSnapshot,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  readInstalledSkillTargets,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
+import type { PaperclipSkillEntry } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -422,6 +428,166 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("buildPersistentSkillSnapshot", () => {
+  const cleanupDirs = new Set<string>();
+
+  afterEach(async () => {
+    await Promise.all(
+      Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })),
+    );
+    cleanupDirs.clear();
+  });
+
+  async function makeTempSkillsHome(prefix: string): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-${prefix}-`));
+    cleanupDirs.add(dir);
+    return dir;
+  }
+
+  async function writeSkillSource(root: string, basename: string): Promise<string> {
+    const dir = path.join(root, basename);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "SKILL.md"), `# ${basename}\n`, "utf8");
+    return dir;
+  }
+
+  it("reports shared-home local-path skills as installed when the source dir already lives under skillsHome", async () => {
+    // Reproduces KOJ-56: multiple agents share ~/.cursor/skills, the skill
+    // source is a directory directly under that shared home, and the
+    // Paperclip-managed alias (runtimeName) may or may not exist. The skill
+    // must still report `installed` because the source is present.
+    const skillsHome = await makeTempSkillsHome("shared-skills-home");
+    const sourceBasename = "jira-cloud-read--6bdfeb01c2";
+    const runtimeName = "jira-cloud-read--3a2bb607df";
+    const sourceDir = await writeSkillSource(skillsHome, sourceBasename);
+
+    const available: PaperclipSkillEntry[] = [
+      {
+        key: "jira-cloud-read",
+        runtimeName,
+        source: sourceDir,
+      },
+    ];
+
+    const installed = await readInstalledSkillTargets(skillsHome);
+    // The alias symlink is absent; only the source directory exists under
+    // skillsHome. Prior to the fix this caused actualState to report
+    // "missing" in the company-skill detail view even though the agent
+    // snapshot reported "installed".
+    expect(installed.has(runtimeName)).toBe(false);
+    expect(installed.has(sourceBasename)).toBe(true);
+
+    const snapshot = buildPersistentSkillSnapshot({
+      adapterType: "cursor",
+      availableEntries: available,
+      desiredSkills: ["jira-cloud-read"],
+      installed,
+      skillsHome,
+      missingDetail: "missing",
+      externalConflictDetail: "conflict",
+      externalDetail: "external",
+    });
+
+    const entry = snapshot.entries.find((e) => e.key === "jira-cloud-read");
+    expect(entry).toBeDefined();
+    expect(entry?.state).toBe("installed");
+    expect(entry?.managed).toBe(true);
+    expect(entry?.desired).toBe(true);
+
+    // The source directory must NOT be re-emitted as a separate "external"
+    // entry: that would show the same on-disk skill twice in the UI.
+    const duplicate = snapshot.entries.find(
+      (e) => e.key !== "jira-cloud-read" && e.runtimeName === sourceBasename,
+    );
+    expect(duplicate).toBeUndefined();
+  });
+
+  it("still reports local-path skills as installed when the alias symlink IS present", async () => {
+    const skillsHome = await makeTempSkillsHome("shared-skills-home-aliased");
+    const sourceBasename = "jira-cloud-read--6bdfeb01c2";
+    const runtimeName = "jira-cloud-read--3a2bb607df";
+    const sourceDir = await writeSkillSource(skillsHome, sourceBasename);
+    // Mimic what `syncCursorSkills` does for this agent: create a symlink
+    // alias pointing at the shared-home source directory.
+    await fs.symlink(sourceDir, path.join(skillsHome, runtimeName));
+
+    const available: PaperclipSkillEntry[] = [
+      { key: "jira-cloud-read", runtimeName, source: sourceDir },
+    ];
+    const installed = await readInstalledSkillTargets(skillsHome);
+
+    const snapshot = buildPersistentSkillSnapshot({
+      adapterType: "cursor",
+      availableEntries: available,
+      desiredSkills: ["jira-cloud-read"],
+      installed,
+      skillsHome,
+      missingDetail: "missing",
+      externalConflictDetail: "conflict",
+      externalDetail: "external",
+    });
+
+    const entry = snapshot.entries.find((e) => e.key === "jira-cloud-read");
+    expect(entry?.state).toBe("installed");
+    expect(entry?.managed).toBe(true);
+
+    // And we still should not duplicate the source dir as an external entry
+    // when both the alias and the source exist in the shared home.
+    const duplicate = snapshot.entries.find(
+      (e) => e.key !== "jira-cloud-read" && e.runtimeName === sourceBasename,
+    );
+    expect(duplicate).toBeUndefined();
+  });
+
+  it("reports managed keys in agent snapshots even when one agent is not the desired consumer", async () => {
+    // This is the multi-agent shared-home regression: two agents share the
+    // same ~/.cursor/skills. Agent A desires the skill; agent B does not.
+    // Neither sync should hide the managed key from the other's snapshot,
+    // and neither should classify the shared source directory as external.
+    const skillsHome = await makeTempSkillsHome("shared-skills-home-multi-agent");
+    const sourceBasename = "jira-cloud-read--6bdfeb01c2";
+    const runtimeName = "jira-cloud-read--3a2bb607df";
+    const sourceDir = await writeSkillSource(skillsHome, sourceBasename);
+
+    const available: PaperclipSkillEntry[] = [
+      { key: "jira-cloud-read", runtimeName, source: sourceDir },
+    ];
+    const installed = await readInstalledSkillTargets(skillsHome);
+
+    const desiredSnapshot = buildPersistentSkillSnapshot({
+      adapterType: "cursor",
+      availableEntries: available,
+      desiredSkills: ["jira-cloud-read"],
+      installed,
+      skillsHome,
+      missingDetail: "missing",
+      externalConflictDetail: "conflict",
+      externalDetail: "external",
+    });
+
+    const undesiredSnapshot = buildPersistentSkillSnapshot({
+      adapterType: "cursor",
+      availableEntries: available,
+      desiredSkills: [],
+      installed,
+      skillsHome,
+      missingDetail: "missing",
+      externalConflictDetail: "conflict",
+      externalDetail: "external",
+    });
+
+    const desiredEntry = desiredSnapshot.entries.find((e) => e.key === "jira-cloud-read");
+    const undesiredEntry = undesiredSnapshot.entries.find((e) => e.key === "jira-cloud-read");
+
+    expect(desiredEntry?.state).toBe("installed");
+    // The non-consumer agent still sees the managed key; it is not hidden
+    // just because this particular agent did not desire it.
+    expect(undesiredEntry).toBeDefined();
+    expect(undesiredEntry?.managed).toBe(true);
+    expect(undesiredEntry?.state).toBe("stale");
   });
 });
 

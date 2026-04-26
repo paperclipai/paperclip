@@ -63,8 +63,6 @@ export async function syncGeminiSkills(
   ]);
   const skillsHome = resolveGeminiSkillsHome(ctx.config);
   await fs.mkdir(skillsHome, { recursive: true });
-  const installed = await readInstalledSkillTargets(skillsHome);
-  const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
 
   for (const available of availableEntries) {
     if (!desiredSet.has(available.key)) continue;
@@ -72,13 +70,10 @@ export async function syncGeminiSkills(
     await ensurePaperclipSkillSymlink(available.source, target);
   }
 
-  for (const [name, installedEntry] of installed.entries()) {
-    const available = availableByRuntimeName.get(name);
-    if (!available) continue;
-    if (desiredSet.has(available.key)) continue;
-    if (installedEntry.targetPath !== available.source) continue;
-    await fs.unlink(path.join(skillsHome, name)).catch(() => {});
-  }
+  // See the comment in cursor-local/skills.ts#syncCursorSkills: per-agent
+  // sync must not unlink aliases for skills that other agents sharing this
+  // skills home may still desire. Cross-agent GC belongs to a caller that
+  // knows the full union of desired skills.
 
   return buildGeminiSkillSnapshot(ctx.config);
 }

@@ -63,8 +63,6 @@ export async function syncCursorSkills(
   ]);
   const skillsHome = resolveCursorSkillsHome(ctx.config);
   await fs.mkdir(skillsHome, { recursive: true });
-  const installed = await readInstalledSkillTargets(skillsHome);
-  const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
 
   for (const available of availableEntries) {
     if (!desiredSet.has(available.key)) continue;
@@ -72,13 +70,13 @@ export async function syncCursorSkills(
     await ensurePaperclipSkillSymlink(available.source, target);
   }
 
-  for (const [name, installedEntry] of installed.entries()) {
-    const available = availableByRuntimeName.get(name);
-    if (!available) continue;
-    if (desiredSet.has(available.key)) continue;
-    if (installedEntry.targetPath !== available.source) continue;
-    await fs.unlink(path.join(skillsHome, name)).catch(() => {});
-  }
+  // NOTE: we intentionally do not unlink aliases for skills that this agent
+  // no longer desires. The Cursor skills home (~/.cursor/skills) is global to
+  // the host and shared across every local cursor agent on the machine, so a
+  // symlink that is stale for this agent may still be the only alias backing
+  // another agent's `installed` state. Cross-agent cleanup must happen from a
+  // caller that knows the full union of desired skills; per-agent sync must
+  // stay additive here.
 
   return buildCursorSkillSnapshot(ctx.config);
 }
