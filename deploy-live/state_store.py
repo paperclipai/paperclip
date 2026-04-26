@@ -99,11 +99,23 @@ CREATE TABLE IF NOT EXISTS reconciliation_events (
     actual          TEXT,
     resolution      TEXT NOT NULL DEFAULT 'unresolved'
                        CHECK (resolution IN ('unresolved','manual','auto','stale')),
-    notes           TEXT
+    notes           TEXT,
+    repeat_count    INTEGER NOT NULL DEFAULT 1,
+    last_seen_ms    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_recon_ts ON reconciliation_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_recon_unresolved
     ON reconciliation_events(resolution) WHERE resolution='unresolved';
+-- Dedup repeated unresolved events for the same condition. The COALESCE
+-- collapses NULL exchange/symbol/position_id into stable sentinels so
+-- the unique key works for invariants events that omit those fields.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_recon_unresolved_key
+    ON reconciliation_events(
+        source, category,
+        COALESCE(exchange, ''),
+        COALESCE(symbol, ''),
+        COALESCE(position_id, -1)
+    ) WHERE resolution='unresolved';
 """
 
 
@@ -118,12 +130,38 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 
 
 def init_schema(path: str | Path) -> None:
-    """Create the database file (if missing) and apply the schema."""
+    """Create the database file (if missing) and apply the schema.
+
+    Also runs in-place column migrations for older databases that pre-date
+    columns added in later plans. New columns are added with safe defaults
+    so the migration is idempotent and non-destructive.
+    """
     conn = open_db(path)
     try:
         conn.executescript(SCHEMA_DDL)
+        _migrate_recon_event_columns(conn)
     finally:
         conn.close()
+
+
+def _migrate_recon_event_columns(conn: sqlite3.Connection) -> None:
+    """Add repeat_count + last_seen_ms columns to reconciliation_events
+    if missing. Backfill last_seen_ms from timestamp on existing rows.
+    Idempotent: re-running is a no-op once columns exist.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(reconciliation_events)")}
+    if "repeat_count" not in cols:
+        conn.execute(
+            "ALTER TABLE reconciliation_events ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 1"
+        )
+    if "last_seen_ms" not in cols:
+        conn.execute(
+            "ALTER TABLE reconciliation_events ADD COLUMN last_seen_ms INTEGER NOT NULL DEFAULT 0"
+        )
+        # Backfill: each existing row's last_seen equals its first-seen timestamp.
+        conn.execute(
+            "UPDATE reconciliation_events SET last_seen_ms = timestamp WHERE last_seen_ms = 0"
+        )
 
 
 @contextmanager
@@ -406,14 +444,73 @@ def write_recon_event(
     cur = conn.execute(
         """INSERT INTO reconciliation_events
            (timestamp, source, category, severity, exchange, symbol, position_id,
-            expected, actual, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            expected, actual, notes, last_seen_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (timestamp_ms, source, category, severity, exchange, symbol, position_id,
          json.dumps(expected) if expected is not None else None,
          json.dumps(actual) if actual is not None else None,
-         notes),
+         notes, timestamp_ms),
     )
     return cur.lastrowid
+
+
+def upsert_recon_event(
+    conn: sqlite3.Connection, *,
+    timestamp_ms: int, source: str, category: str, severity: str,
+    exchange: Optional[str] = None,
+    symbol: Optional[str] = None,
+    position_id: Optional[int] = None,
+    expected: Optional[dict] = None,
+    actual: Optional[dict] = None,
+    notes: Optional[str] = None,
+) -> tuple[int, bool]:
+    """Insert a new event OR — if an unresolved event with the same
+    (source, category, exchange, symbol, position_id) already exists —
+    bump its repeat_count and last_seen_ms. Returns (event_id, was_insert).
+
+    Idempotency is enforced by the partial unique index uniq_recon_unresolved_key.
+    Once an event is resolved (resolution != 'unresolved') the unique key
+    no longer applies, so a fresh occurrence inserts a new row — that's
+    intentional, since 'manually triaged then recurred' is meaningful signal.
+    """
+    try:
+        new_id = write_recon_event(
+            conn,
+            timestamp_ms=timestamp_ms, source=source, category=category,
+            severity=severity, exchange=exchange, symbol=symbol,
+            position_id=position_id, expected=expected, actual=actual,
+            notes=notes,
+        )
+        return new_id, True
+    except sqlite3.IntegrityError as e:
+        if "uniq_recon_unresolved_key" not in str(e):
+            raise
+        # Find the existing unresolved row matching this key and bump it.
+        row = conn.execute(
+            """SELECT id FROM reconciliation_events
+               WHERE resolution='unresolved'
+                 AND source=? AND category=?
+                 AND COALESCE(exchange,'')=COALESCE(?, '')
+                 AND COALESCE(symbol,'')=COALESCE(?, '')
+                 AND COALESCE(position_id,-1)=COALESCE(?, -1)""",
+            (source, category, exchange, symbol, position_id),
+        ).fetchone()
+        if row is None:
+            # Race lost between INSERT failure and the lookup — re-raise.
+            raise
+        existing_id = row["id"]
+        conn.execute(
+            """UPDATE reconciliation_events
+               SET repeat_count = repeat_count + 1,
+                   last_seen_ms = ?,
+                   severity = CASE
+                     WHEN ? IN ('critical','error') THEN ?
+                     ELSE severity
+                   END
+               WHERE id=?""",
+            (timestamp_ms, severity, severity, existing_id),
+        )
+        return existing_id, False
 
 
 def list_unresolved_recon_events(

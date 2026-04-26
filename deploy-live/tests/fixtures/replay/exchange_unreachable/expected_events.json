@@ -1,5 +1,3 @@
 [
-  {"category": "exchange_unreachable", "severity": "error"},
-  {"category": "exchange_unreachable", "severity": "error"},
   {"category": "exchange_unreachable", "severity": "critical"}
 ]

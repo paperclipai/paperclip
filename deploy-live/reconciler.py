@@ -17,7 +17,7 @@ from typing import Any, Optional, Protocol
 
 from state_store import (
     list_open_positions, list_recent_fills,
-    snapshot_balance, write_recon_event,
+    snapshot_balance, upsert_recon_event,
     upsert_exchange_health, get_exchange_health,
 )
 
@@ -133,7 +133,7 @@ def reconcile_exchange(
             consecutive_errors=consecutive,
         )
         severity = "critical" if consecutive >= _HEALTH_DOWN_THRESHOLD else "error"
-        write_recon_event(
+        upsert_recon_event(
             conn, timestamp_ms=now_ms, source="reconciler",
             category="exchange_unreachable", severity=severity,
             exchange=exchange, notes=str(e),
@@ -180,7 +180,7 @@ def reconcile_exchange(
     # Phantom: in exchange, not in state_store
     for key, ex_size in ex_index.items():
         if key not in sp_index:
-            write_recon_event(
+            upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="phantom_position", severity="error",
                 exchange=exchange, symbol=key[0],
@@ -191,7 +191,7 @@ def reconcile_exchange(
     # Orphan / size mismatch
     for key, (pid, sp_size) in sp_index.items():
         if key not in ex_index:
-            write_recon_event(
+            upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="orphan_leg", severity="error",
                 exchange=exchange, symbol=key[0], position_id=pid,
@@ -201,7 +201,7 @@ def reconcile_exchange(
         else:
             ex_size = ex_index[key]
             if abs(ex_size - sp_size) > 0.01:
-                write_recon_event(
+                upsert_recon_event(
                     conn, timestamp_ms=now_ms, source="reconciler",
                     category="size_mismatch", severity="warn",
                     exchange=exchange, symbol=key[0], position_id=pid,
@@ -214,7 +214,7 @@ def reconcile_exchange(
     sp_order_ids = {f.order_id for f in sp_recent}
     for f in ex_fills:
         if str(f.get("order_id", "")) not in sp_order_ids:
-            write_recon_event(
+            upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="unlinked_fill", severity="warn",
                 exchange=exchange, symbol=str(f.get("symbol", "")),
@@ -237,7 +237,7 @@ def reconcile_exchange(
         # Always emit a balance_drift event so callers can audit; severity reflects materiality
         severity = "info" if (within_dollar and within_pct) else "warn"
         if abs(drift_usd) > 0.001:  # don't emit pure-zero drift events
-            write_recon_event(
+            upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="balance_drift", severity=severity,
                 exchange=exchange,
@@ -264,7 +264,7 @@ def start_periodic_sweep(
                 try:
                     reconcile_exchange(conn, fetcher, exchange=exchange, since_ms=0)
                 except Exception as e:  # noqa: BLE001
-                    write_recon_event(
+                    upsert_recon_event(
                         conn, timestamp_ms=int(time.time() * 1000),
                         source="reconciler", category="reconciler_internal_error",
                         severity="error", exchange=exchange, notes=str(e),
@@ -294,7 +294,7 @@ def schedule_per_trade_reconcile(
                 symbol_filter=symbol,
             )
         except Exception as e:  # noqa: BLE001
-            write_recon_event(
+            upsert_recon_event(
                 conn, timestamp_ms=int(time.time() * 1000),
                 source="reconciler", category="reconciler_internal_error",
                 severity="error", exchange=exchange, symbol=symbol, notes=str(e),

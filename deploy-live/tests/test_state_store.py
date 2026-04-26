@@ -266,7 +266,7 @@ def test_exchange_health_upsert(fresh_db):
 
 from state_store import (
     write_recon_event, list_unresolved_recon_events,
-    resolve_recon_event,
+    resolve_recon_event, upsert_recon_event,
 )
 
 
@@ -311,6 +311,111 @@ def test_list_unresolved_filters_by_severity(fresh_db):
     assert len(errs) == 1
     assert errs[0].category == "orphan_leg"
     conn.close()
+
+
+def test_upsert_recon_event_inserts_new(fresh_db):
+    conn = open_db(fresh_db)
+    eid, was_insert = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+    )
+    assert was_insert is True
+    assert eid > 0
+    row = conn.execute(
+        "SELECT repeat_count, last_seen_ms FROM reconciliation_events WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["repeat_count"] == 1
+    assert row["last_seen_ms"] == 1000
+    conn.close()
+
+
+def test_upsert_recon_event_dedups_unresolved(fresh_db):
+    conn = open_db(fresh_db)
+    eid1, was_insert1 = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+    )
+    eid2, was_insert2 = upsert_recon_event(
+        conn, timestamp_ms=2000, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+    )
+    eid3, was_insert3 = upsert_recon_event(
+        conn, timestamp_ms=3000, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+    )
+    assert was_insert1 is True
+    assert was_insert2 is False
+    assert was_insert3 is False
+    assert eid1 == eid2 == eid3
+    row = conn.execute(
+        "SELECT repeat_count, last_seen_ms, timestamp FROM reconciliation_events WHERE id=?",
+        (eid1,),
+    ).fetchone()
+    assert row["repeat_count"] == 3
+    assert row["last_seen_ms"] == 3000
+    assert row["timestamp"] == 1000  # original first-seen preserved
+    # Only one row in DB total.
+    count = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_events"
+    ).fetchone()[0]
+    assert count == 1
+    conn.close()
+
+
+def test_upsert_recon_event_after_resolution_reinserts(fresh_db):
+    conn = open_db(fresh_db)
+    eid1, _ = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+    )
+    resolve_recon_event(conn, eid1, resolution="manual")
+    eid2, was_insert2 = upsert_recon_event(
+        conn, timestamp_ms=2000, source="reconciler",
+        category="orphan_leg", severity="error",
+        exchange="MEXC", symbol="ORDIUSDT",
+    )
+    assert was_insert2 is True
+    assert eid2 != eid1
+    count = conn.execute("SELECT COUNT(*) FROM reconciliation_events").fetchone()[0]
+    assert count == 2
+    conn.close()
+
+
+def test_upsert_recon_event_escalates_severity(fresh_db):
+    conn = open_db(fresh_db)
+    eid, _ = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="exchange_unreachable", severity="error", exchange="BLOFIN",
+    )
+    upsert_recon_event(
+        conn, timestamp_ms=2000, source="reconciler",
+        category="exchange_unreachable", severity="critical", exchange="BLOFIN",
+    )
+    row = conn.execute(
+        "SELECT severity FROM reconciliation_events WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["severity"] == "critical"
+    conn.close()
+
+
+def test_upsert_recon_event_distinct_keys_inserts_separately(fresh_db):
+    """orphan_leg on MEXC vs orphan_leg on BLOFIN are different conditions."""
+    conn = open_db(fresh_db)
+    eid1, ins1 = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="orphan_leg", severity="error", exchange="MEXC",
+    )
+    eid2, ins2 = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="orphan_leg", severity="error", exchange="BLOFIN",
+    )
+    assert ins1 is True and ins2 is True
+    assert eid1 != eid2
 
 
 from state_store import transaction
