@@ -33,6 +33,8 @@ _OPEN_LIKE_STATUSES = ("opening", "open", "closing", "degraded")
 _MAX_HOLD_MINUTES = 30  # from live trader EU config
 _MAX_HOLD_GRACE_MINUTES = 5  # invariant fires at max_hold + grace
 _TRANSITION_TIMEOUT_S = 60  # opening/closing should not exceed this
+_UNRESOLVED_AGE_LIMIT_MIN = 30
+_OK_HEALTH_FRESHNESS_LIMIT_MIN = 5
 
 
 def check_all(conn: sqlite3.Connection) -> list[Violation]:
@@ -46,6 +48,9 @@ def check_all(conn: sqlite3.Connection) -> list[Violation]:
     out += _check_stuck_transitions(conn)
     out += _check_audit_orphans(conn)
     out += _check_fill_orphans(conn)
+    out += _check_exposure_vs_balance(conn)
+    out += _check_stale_unresolved_recon_events(conn)
+    out += _check_stale_ok_exchange_health(conn)
     return out
 
 
@@ -220,6 +225,86 @@ def _check_fill_orphans(conn: sqlite3.Connection) -> list[Violation]:
         )
         for r in rows
     ]
+
+
+def _check_exposure_vs_balance(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 10: sum(open size_usd) per exchange <= latest balance."""
+    rows = conn.execute(
+        f"""WITH legs AS (
+            SELECT exchange_a AS exchange, size_usd_a AS sz
+            FROM positions WHERE status IN ({",".join("?" * len(_OPEN_LIKE_STATUSES))})
+            UNION ALL
+            SELECT exchange_b AS exchange, size_usd_b AS sz
+            FROM positions WHERE status IN ({",".join("?" * len(_OPEN_LIKE_STATUSES))})
+        )
+        SELECT exchange, SUM(sz) AS open_total FROM legs GROUP BY exchange""",
+        _OPEN_LIKE_STATUSES + _OPEN_LIKE_STATUSES,
+    ).fetchall()
+    out = []
+    for r in rows:
+        bal_row = conn.execute(
+            "SELECT available_usd, locked_usd FROM balances "
+            "WHERE exchange=? AND asset='USDT' "
+            "ORDER BY snapshot_at DESC LIMIT 1",
+            (r["exchange"],),
+        ).fetchone()
+        if bal_row is None:
+            continue  # no balance snapshot yet; can't compare
+        bal_total = bal_row["available_usd"] + bal_row["locked_usd"]
+        if r["open_total"] > bal_total:
+            out.append(Violation(
+                category="exposure_exceeds_balance",
+                severity="warn",
+                exchange=r["exchange"],
+                expected={"max_exposure_usd": bal_total},
+                actual={"open_exposure_usd": r["open_total"]},
+            ))
+    return out
+
+
+def _check_stale_unresolved_recon_events(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 11: unresolved recon_event older than 30 min."""
+    cutoff_ms = int(time.time() * 1000) - _UNRESOLVED_AGE_LIMIT_MIN * 60_000
+    rows = conn.execute(
+        "SELECT id, category, exchange, symbol, timestamp FROM reconciliation_events "
+        "WHERE resolution='unresolved' AND timestamp < ?",
+        (cutoff_ms,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        age_min = (int(time.time() * 1000) - r["timestamp"]) / 60_000
+        out.append(Violation(
+            category="stale_unresolved_recon_event",
+            severity="warn",
+            exchange=r["exchange"],
+            symbol=r["symbol"],
+            notes=f"recon_event #{r['id']} ({r['category']}) unresolved for {age_min:.0f} min",
+        ))
+    return out
+
+
+def _check_stale_ok_exchange_health(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 12: exchange marked 'ok' but last_ok_at is too old."""
+    cutoff_ms = int(time.time() * 1000) - _OK_HEALTH_FRESHNESS_LIMIT_MIN * 60_000
+    rows = conn.execute(
+        "SELECT exchange, last_ok_at FROM exchange_health "
+        "WHERE status='ok' AND (last_ok_at IS NULL OR last_ok_at < ?)",
+        (cutoff_ms,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        age_min = (
+            (int(time.time() * 1000) - r["last_ok_at"]) / 60_000
+            if r["last_ok_at"] else None
+        )
+        out.append(Violation(
+            category="stale_ok_exchange_health",
+            severity="error",
+            exchange=r["exchange"],
+            actual={"last_ok_age_minutes": age_min,
+                    "limit_minutes": _OK_HEALTH_FRESHNESS_LIMIT_MIN},
+        ))
+    return out
 
 
 def check_inmem_consistency(
