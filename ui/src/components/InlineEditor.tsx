@@ -26,6 +26,14 @@ const pad = "px-1 -mx-1";
 const markdownPad = "px-1";
 const AUTOSAVE_DEBOUNCE_MS = 900;
 
+export function normalizeInlineEditorValue(value: string): string {
+  return value.trim();
+}
+
+export function shouldSaveInlineEditorValue(nextValue: string, currentValue: string): boolean {
+  return normalizeInlineEditorValue(nextValue) !== normalizeInlineEditorValue(currentValue);
+}
+
 export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: () => void) {
   let frameId = requestAnimationFrame(() => {
     frameId = requestAnimationFrame(() => {
@@ -154,13 +162,13 @@ export function InlineEditor({
 
 
   const commit = useCallback(async (nextValue = draft) => {
-    const valueToSave = nextValue.trim();
-    const valueChanged = valueToSave !== value;
-    const shouldSave = nullable
+    const normalizedNextValue = normalizeInlineEditorValue(nextValue);
+    const valueChanged = shouldSaveInlineEditorValue(nextValue, value);
+    const shouldPersist = nullable
       ? valueChanged
-      : Boolean(valueToSave && valueChanged);
-    if (shouldSave) {
-      await Promise.resolve(onSave(valueToSave));
+      : Boolean(normalizedNextValue && valueChanged);
+    if (shouldPersist) {
+      await Promise.resolve(onSave(normalizedNextValue));
     } else {
       setDraft(value);
     }
@@ -171,18 +179,18 @@ export function InlineEditor({
 
   /** Multiline blur/submit: show autosave indicator when persisting */
   const finalizeMultilineBlurOrSubmit = useCallback(() => {
-    const trimmed = draft.trim();
-    if (trimmed === value) {
+    if (!shouldSaveInlineEditorValue(draft, value)) {
       reset();
       void commit();
       return;
     }
-    if (!trimmed && !nullable) {
+    const normalizedDraft = normalizeInlineEditorValue(draft);
+    if (!normalizedDraft && !nullable) {
       reset();
       void commit();
       return;
     }
-    void runSave(() => commit());
+    void runSave(() => commit(normalizedDraft));
   }, [commit, draft, nullable, reset, runSave, value]);
 
   const cancelPendingBlurCommit = useCallback(() => {
@@ -230,9 +238,14 @@ export function InlineEditor({
   useEffect(() => {
     if (!multiline) return;
     if (!multilineFocused) return;
-    const trimmed = draft.trim();
-    // Nullable: empty draft can still be a real edit (clearing); only skip debounce when unchanged or empty is invalid.
-    if (trimmed === value || (!trimmed && !nullable)) {
+    const normalizedDraft = normalizeInlineEditorValue(draft);
+    if (!shouldSaveInlineEditorValue(draft, value)) {
+      if (autosaveState !== "saved") {
+        reset();
+      }
+      return;
+    }
+    if (!normalizedDraft && !nullable) {
       if (autosaveState !== "saved") {
         reset();
       }
@@ -243,7 +256,7 @@ export function InlineEditor({
       clearTimeout(autosaveDebounceRef.current);
     }
     autosaveDebounceRef.current = setTimeout(() => {
-      void runSave(() => commit(trimmed));
+      void runSave(() => commit(normalizedDraft));
     }, AUTOSAVE_DEBOUNCE_MS);
 
     return () => {

@@ -3,6 +3,11 @@
 import { act, forwardRef, useImperativeHandle, useRef, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  normalizeInlineEditorValue,
+  queueContainedBlurCommit,
+  shouldSaveInlineEditorValue,
+} from "./InlineEditor";
 
 vi.mock("./MarkdownEditor", () => ({
   MarkdownEditor: forwardRef<
@@ -30,7 +35,7 @@ vi.mock("./MarkdownBody", () => ({
   ),
 }));
 
-import { InlineEditor, queueContainedBlurCommit } from "./InlineEditor";
+import { InlineEditor } from "./InlineEditor";
 
 /** Enter multiline edit mode by clicking the preview surface. */
 function enterMultilineEdit(container: HTMLDivElement) {
@@ -368,5 +373,25 @@ describe("queueContainedBlurCommit", () => {
 
     expect(onCommit).not.toHaveBeenCalled();
     cancel();
+  });
+});
+
+describe("normalizeInlineEditorValue", () => {
+  it("trims values before save comparisons", () => {
+    expect(normalizeInlineEditorValue("  hello world  ")).toBe("hello world");
+  });
+});
+
+describe("shouldSaveInlineEditorValue", () => {
+  it("skips saves when normalized values are unchanged", () => {
+    expect(shouldSaveInlineEditorValue("  hello  ", "hello")).toBe(false);
+  });
+
+  it("normalizes the current value before comparing", () => {
+    expect(shouldSaveInlineEditorValue("hello", "  hello  ")).toBe(false);
+  });
+
+  it("saves when clearing an existing value", () => {
+    expect(shouldSaveInlineEditorValue("   ", "hello")).toBe(true);
   });
 });
