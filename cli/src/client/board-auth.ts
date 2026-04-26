@@ -171,23 +171,32 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function openUrl(url: string): boolean {
   const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
+
+  function spawnDetached(cmd: string, args: string[]): boolean {
+    try {
+      const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+      // Attach a no-op error handler so a missing binary (ENOENT) does not
+      // become an unhandled 'error' event that crashes the process.
+      child.on("error", () => {});
       child.unref();
       return true;
+    } catch {
+      return false;
     }
-    if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
-    }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
-    child.unref();
-    return true;
-  } catch {
-    return false;
   }
+
+  if (platform === "darwin") return spawnDetached("open", [url]);
+  if (platform === "win32") return spawnDetached("cmd", ["/c", "start", "", url]);
+
+  // Linux — check for WSL and prefer wslview (from wslu) so the URL opens in
+  // the Windows browser. Fall back to xdg-open for native Linux desktops.
+  const isWsl = Boolean(
+    process.env.WSL_DISTRO_NAME ||
+    process.env.WSLENV ||
+    process.env.WSL_INTEROP,
+  );
+  if (isWsl) return spawnDetached("wslview", [url]) || spawnDetached("xdg-open", [url]);
+  return spawnDetached("xdg-open", [url]);
 }
 
 export async function loginBoardCli(params: {
