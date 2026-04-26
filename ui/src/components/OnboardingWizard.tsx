@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import type { AdapterEnvironmentTestResult, EnvBinding } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
+import { secretsApi } from "../api/secrets";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -44,6 +45,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { EnvVarEditor } from "./EnvVarEditor";
 import {
   Building2,
   Bot,
@@ -121,6 +123,7 @@ export function OnboardingWizard() {
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  const [userEnv, setUserEnv] = useState<Record<string, EnvBinding>>({});
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState(
@@ -200,6 +203,31 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+
+  const { data: availableSecrets = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.secrets.list(createdCompanyId)
+      : ["secrets", "none"],
+    queryFn: () => secretsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2,
+  });
+
+  const createSecret = useMutation({
+    mutationFn: async (input: { name: string; value: string }) => {
+      if (!createdCompanyId) {
+        throw new Error("Create a company before creating secrets");
+      }
+      return secretsApi.create(createdCompanyId, input);
+    },
+    onSuccess: () => {
+      if (createdCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.secrets.list(createdCompanyId),
+        });
+      }
+    },
+  });
+
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
@@ -293,6 +321,7 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setUserEnv({});
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -771,6 +800,9 @@ export function OnboardingWizard() {
                           )}
                           onClick={() => {
                             const nextType = opt.type;
+                            if (nextType !== adapterType) {
+                              setUserEnv({});
+                            }
                             setAdapterType(nextType);
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
@@ -824,6 +856,9 @@ export function OnboardingWizard() {
                              onClick={() => {
                                if (opt.comingSoon) return;
                                const nextType = opt.type;
+                              if (nextType !== adapterType) {
+                                setUserEnv({});
+                              }
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
