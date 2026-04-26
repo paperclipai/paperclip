@@ -41,6 +41,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
+    scheduledFor: null,
     hiddenAt: null,
     labels: [],
     labelIds: [],

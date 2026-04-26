@@ -103,6 +103,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
+    scheduledFor: null,
     hiddenAt: null,
     createdAt: new Date("2026-04-16T04:30:00.000Z"),
     updatedAt: new Date("2026-04-16T05:30:00.000Z"),
