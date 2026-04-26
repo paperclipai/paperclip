@@ -307,6 +307,29 @@ def _check_stale_ok_exchange_health(conn: sqlite3.Connection) -> list[Violation]
     return out
 
 
+class RateLimiter:
+    """Coalesces repeated violations within a fixed window.
+
+    Key is (category, position_id, exchange, symbol). Same key within
+    `window_s` seconds is suppressed.
+    """
+
+    def __init__(self, *, window_s: float = 60.0) -> None:
+        self._window_s = window_s
+        self._last_seen: dict[tuple, float] = {}
+
+    def allow(self, violation: Violation, *, now_s: Optional[float] = None) -> bool:
+        if now_s is None:
+            now_s = time.time()
+        key = (violation.category, violation.position_id,
+               violation.exchange, violation.symbol)
+        prev = self._last_seen.get(key)
+        if prev is not None and (now_s - prev) < self._window_s:
+            return False
+        self._last_seen[key] = now_s
+        return True
+
+
 def check_inmem_consistency(
     conn: sqlite3.Connection, *, in_memory_open_count: int
 ) -> list[Violation]:

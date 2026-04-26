@@ -280,3 +280,24 @@ def test_invariant_exchange_health_stale_ok_status_passes_when_fresh(fresh_db):
     cats = [v.category for v in violations]
     assert "stale_ok_exchange_health" not in cats
     conn.close()
+
+
+from invariants import RateLimiter
+
+
+def test_rate_limiter_suppresses_repeat_within_window():
+    rl = RateLimiter(window_s=60.0)
+    v = Violation(category="orphan_leg", severity="error", position_id=42)
+    assert rl.allow(v, now_s=1000.0) is True
+    assert rl.allow(v, now_s=1030.0) is False  # within window
+    assert rl.allow(v, now_s=1061.0) is True  # window expired
+
+
+def test_rate_limiter_allows_different_categories_independently():
+    rl = RateLimiter(window_s=60.0)
+    v1 = Violation(category="orphan_leg", severity="error", position_id=42)
+    v2 = Violation(category="size_mismatch", severity="warn", position_id=42)
+    v3 = Violation(category="orphan_leg", severity="error", position_id=43)
+    assert rl.allow(v1, now_s=1000.0) is True
+    assert rl.allow(v2, now_s=1000.0) is True  # different category
+    assert rl.allow(v3, now_s=1000.0) is True  # different position_id
