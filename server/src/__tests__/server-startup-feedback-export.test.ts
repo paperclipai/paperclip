@@ -180,7 +180,6 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    loadConfigMock.mockClear();
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
@@ -201,7 +200,6 @@ describe("startServer feedback export wiring", () => {
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    loadConfigMock.mockClear();
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
   });

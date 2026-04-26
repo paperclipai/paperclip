@@ -31,6 +31,7 @@ function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string |
   if (!rawUrl) return undefined;
   try {
     const parsed = new URL(rawUrl);
+    // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
     if (!parsed.port) return rawUrl;
     parsed.port = String(port);
     return parsed.toString();
