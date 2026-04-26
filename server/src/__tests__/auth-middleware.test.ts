@@ -45,6 +45,19 @@ describe("actorMiddleware run id header validation", () => {
     expect(res.body.runId).toBe(runId);
   });
 
+  it("keeps a valid UUID v7 run id header", async () => {
+    const app = express();
+    const db = {} as Db;
+    app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+    app.get("/actor", (req, res) => res.json(req.actor));
+
+    const runId = "77777777-7777-7777-8777-777777777777";
+    const res = await request(app).get("/actor").set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBe(runId);
+  });
+
   it("drops a malformed run id header", async () => {
     const app = express();
     const db = {} as Db;
