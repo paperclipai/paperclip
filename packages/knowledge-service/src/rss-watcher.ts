@@ -133,6 +133,11 @@ export class RssWatcher {
   }
 
   private async fetchWithRateLimit(url: string, options: RequestInit = {}): Promise<Response> {
+    const parsedUrl = new URL(url);
+    const protocol = parsedUrl.protocol;
+    if (protocol !== "http:" && protocol !== "https:") {
+      throw new Error(`Invalid URL protocol: ${protocol}. Only http and https are allowed.`);
+    }
     await this.sleep(this.options.rateLimitMs ?? 2000);
     const response = await fetch(url, {
       ...options,
@@ -322,6 +327,10 @@ export class RssWatcher {
   }
 
   async checkGitHubReleases(repoSlug: string, topicSlug: string): Promise<FeedChange | null> {
+    const repoSlugPattern = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+    if (!repoSlugPattern.test(repoSlug)) {
+      throw new Error(`Invalid GitHub repo slug: ${repoSlug}`);
+    }
     const url = `https://api.github.com/repos/${repoSlug}/releases`;
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
