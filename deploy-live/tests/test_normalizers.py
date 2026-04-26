@@ -67,8 +67,11 @@ def test_mexc_normalizer_partial_fill():
     assert r.filled_size_usd == pytest.approx(14.808)
 
 
-def test_mexc_normalizer_filled_with_zero_price_raises():
-    """Cross-field validator on ExchangeOrderResponse must reject this."""
+def test_mexc_normalizer_filled_with_missing_quote_qty_fails_loud():
+    """When MEXC reports FILLED but cummulativeQuoteQty=0 with executedQty>0,
+    the USD figure cannot be trusted. Mirror BloFin's silent-failure handling:
+    return success=False with filled_size_usd=0.0 (no fallback to executedQty,
+    which is base-currency, not USD)."""
     raw = {
         "symbol": "ORDIUSDT",
         "orderId": "mexc-1237",
@@ -77,6 +80,27 @@ def test_mexc_normalizer_filled_with_zero_price_raises():
         "executedQty": "20.0",
         "price": "0",
         "cummulativeQuoteQty": "0",
+        "fees": "0",
+        "transactTime": 1700000000000,
+        "status": "FILLED",
+    }
+    r = normalize_mexc_order(raw, requested_size_usd=24.68)
+    assert r.success is False
+    assert r.filled_size_usd == 0.0
+    assert r.fill_price == 0.0
+
+
+def test_mexc_normalizer_filled_with_quote_qty_but_zero_price_raises():
+    """If quote qty is sane but price is zero, the cross-field validator
+    on ExchangeOrderResponse still catches the inconsistency."""
+    raw = {
+        "symbol": "ORDIUSDT",
+        "orderId": "mexc-1238",
+        "side": "BUY",
+        "origQty": "20.0",
+        "executedQty": "20.0",
+        "price": "0",
+        "cummulativeQuoteQty": "24.68",
         "fees": "0",
         "transactTime": 1700000000000,
         "status": "FILLED",

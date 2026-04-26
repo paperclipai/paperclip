@@ -21,9 +21,10 @@ def normalize_mexc_order(raw: dict[str, Any], *, requested_size_usd: float) -> E
     `cummulativeQuoteQty` (note the typo in MEXC's API). We use the quote
     quantity as `filled_size_usd` since the strategy works in USD terms.
 
-    When a FILLED order reports cummulativeQuoteQty=0 but executedQty>0 we
-    fall back to executedQty so the ExchangeOrderResponse cross-field validator
-    can detect the zero-price anomaly and raise ValidationError.
+    When a FILLED order reports cummulativeQuoteQty=0 but executedQty>0 the
+    USD figure is missing from the exchange response and cannot be trusted
+    (executedQty is base-currency, not USD). Mirror BloFin's silent-failure
+    handling: flip success to False rather than fabricating a USD figure.
     """
     status = raw.get("status", "")
     success = status in _MEXC_FILLED_STATUSES
@@ -34,13 +35,16 @@ def normalize_mexc_order(raw: dict[str, Any], *, requested_size_usd: float) -> E
     if side_raw not in ("buy", "sell"):
         raise ValueError(f"unexpected MEXC side: {side_raw!r}")
 
-    # If FILLED but quote qty is zero while base qty is nonzero, the quote
-    # field is missing/corrupt.  Use executedQty as a non-zero sentinel so
-    # the schema's price_required_when_filled validator fires on fill_price=0.
-    if success and filled_size_usd == 0:
-        executed_qty = float(raw.get("executedQty", 0) or 0)
-        if executed_qty > 0:
-            filled_size_usd = executed_qty
+    # FILLED but quote qty is zero while base qty is nonzero = missing USD field.
+    # Refuse to invent a number; flip success off so callers don't treat this
+    # as a successful fill. The cross-field validator on the schema would also
+    # reject filled_size_usd>0 with fill_price=0, but we want explicit
+    # failure semantics, not a ValidationError, so the caller can record
+    # an unparseable_response event without exception handling.
+    if success and filled_size_usd == 0 and float(raw.get("executedQty", 0) or 0) > 0:
+        success = False
+        filled_size_usd = 0.0
+        fill_price = 0.0
 
     return ExchangeOrderResponse(
         exchange="MEXC",
