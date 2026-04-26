@@ -58,7 +58,7 @@ export function OpenCodeLocalConfigFields({
             : eff(
                 "adapterConfig",
                 "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
+                config.dangerouslySkipPermissions === true,
               )
         }
         onChange={(v) =>
