@@ -59,6 +59,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -70,6 +72,30 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Bootstrap lockfile if a new workspace package was added
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          added="$(git diff --name-only --diff-filter=A "$base_sha" "$head_sha" || true)"
+          new_pkgs=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              packages/plugins/examples/plugin-orchestration-smoke-example/package.json)
+                continue
+                ;;
+              packages/*/package.json|packages/*/*/package.json|packages/*/*/*/package.json)
+                new_pkgs="${new_pkgs}${new_pkgs:+ }${f}"
+                ;;
+            esac
+          done <<<"$added"
+          if [ -n "$new_pkgs" ]; then
+            echo "::notice title=Lockfile bootstrap::New workspace package(s) detected (${new_pkgs}). Running 'pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile' to align pnpm-lock.yaml before the strict install."
+            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          else
+            echo "No new workspace package detected — keeping strict --frozen-lockfile install."
+          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -97,6 +123,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -108,6 +136,30 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Bootstrap lockfile if a new workspace package was added
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          added="$(git diff --name-only --diff-filter=A "$base_sha" "$head_sha" || true)"
+          new_pkgs=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              packages/plugins/examples/plugin-orchestration-smoke-example/package.json)
+                continue
+                ;;
+              packages/*/package.json|packages/*/*/package.json|packages/*/*/*/package.json)
+                new_pkgs="${new_pkgs}${new_pkgs:+ }${f}"
+                ;;
+            esac
+          done <<<"$added"
+          if [ -n "$new_pkgs" ]; then
+            echo "::notice title=Lockfile bootstrap::New workspace package(s) detected (${new_pkgs}). Running 'pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile' to align pnpm-lock.yaml before the strict install."
+            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          else
+            echo "No new workspace package detected — keeping strict --frozen-lockfile install."
+          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
