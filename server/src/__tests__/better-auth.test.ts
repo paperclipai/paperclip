@@ -72,9 +72,7 @@ describe("Better Auth cookie scoping", () => {
       "https://board.example.test:3101",
       "http://board.example.test:3101",
     ]));
-    expect(trustedOrigins).not.toEqual(expect.arrayContaining([
-      "https://board.example.test:3100",
-      "http://board.example.test:3100",
-    ]));
+    expect(trustedOrigins).not.toContain("https://board.example.test:3100");
+    expect(trustedOrigins).not.toContain("http://board.example.test:3100");
   });
 });
