@@ -32,6 +32,7 @@ if (worktreeEnvBootstrap.missingEnv) {
 
 const devJwtBootstrap = ensureDevAgentJwtSecret(process.env);
 if (devJwtBootstrap.action === "generated") {
+  process.env.PAPERCLIP_AGENT_JWT_EPHEMERAL = "1";
   console.log(
     "[paperclip] Generated ephemeral PAPERCLIP_AGENT_JWT_SECRET for this dev session " +
       "(not persisted; regenerated on next boot — set the env var or run `paperclipai onboard` for a stable secret).",
