@@ -103,7 +103,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, CheckCircle2, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, XCircle } from "lucide-react";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 
 interface IssueChatMessageContext {
@@ -296,6 +296,8 @@ interface IssueChatThreadProps {
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  onReviewApprove?: () => Promise<void>;
+  onReviewRequestChanges?: () => Promise<void>;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -1700,6 +1702,12 @@ function IssueChatFeedbackButtons({
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                handleSubmitReason();
+              }
+            }}
             placeholder="Add a short note"
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
@@ -2549,8 +2557,12 @@ export function IssueChatThread({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   composerRef,
+  onReviewApprove,
+  onReviewRequestChanges,
 }: IssueChatThreadProps) {
   const location = useLocation();
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const showReviewBanner = issueStatus === "in_review" && (onReviewApprove || onReviewRequestChanges);
   const hasScrolledRef = useRef(false);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -2673,12 +2685,13 @@ export function IssueChatThread({
     return map;
   }, [feedbackVotes]);
 
+  const issueIsClosed = issueStatus === "done" || issueStatus === "cancelled";
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
     onSend: ({ body, reopen, reassignment }) => {
       pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment);
+      return onAdd(body, reopen ?? (issueIsClosed ? true : undefined), reassignment);
     },
     onCancel: onCancelRun,
   });
@@ -2882,6 +2895,55 @@ export function IssueChatThread({
             </div>
           </div>
         </IssueChatErrorBoundary>
+
+        {showReviewBanner && (
+          <div className="rounded-lg border border-amber-300/70 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-amber-900 dark:text-amber-100">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+              </span>
+              Aguardando revisão
+            </div>
+            <div className="flex items-center gap-2">
+              {onReviewRequestChanges && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={reviewSubmitting}
+                  onClick={async () => {
+                    setReviewSubmitting(true);
+                    try {
+                      await onReviewRequestChanges();
+                    } finally {
+                      setReviewSubmitting(false);
+                    }
+                  }}
+                >
+                  <XCircle className="h-3.5 w-3.5 mr-1.5" />
+                  {reviewSubmitting ? "Enviando..." : "Solicitar alterações"}
+                </Button>
+              )}
+              {onReviewApprove && (
+                <Button
+                  size="sm"
+                  disabled={reviewSubmitting}
+                  onClick={async () => {
+                    setReviewSubmitting(true);
+                    try {
+                      await onReviewApprove();
+                    } finally {
+                      setReviewSubmitting(false);
+                    }
+                  }}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
+                  {reviewSubmitting ? "Enviando..." : "Aprovar"}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
 
         {showComposer ? (
           <div
