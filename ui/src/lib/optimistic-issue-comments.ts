@@ -150,6 +150,21 @@ export function getNextIssueCommentPageParam(
   return lastPage[lastPage.length - 1]?.id;
 }
 
+export function shouldAutoloadOlderIssueComments(params: {
+  activeDetailTab: string;
+  hasOlderComments: boolean;
+  loadedCommentCount: number;
+  initialPageLoading: boolean;
+  olderPageLoading: boolean;
+  autoLoadLimit: number;
+}) {
+  if (params.activeDetailTab !== "chat") return false;
+  if (!params.hasOlderComments) return false;
+  if (params.initialPageLoading || params.olderPageLoading) return false;
+  if (params.loadedCommentCount === 0) return false;
+  return params.loadedCommentCount < params.autoLoadLimit;
+}
+
 export function upsertIssueComment(
   comments: IssueComment[] | undefined,
   nextComment: IssueComment,
