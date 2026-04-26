@@ -1,3 +1,4 @@
 [
-  {"category": "exchange_unreachable", "severity": "critical"}
+  {"category": "exchange_unreachable", "severity": "critical"},
+  {"category": "unchecked_exchange", "severity": "info"}
 ]

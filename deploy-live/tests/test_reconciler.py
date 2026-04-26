@@ -236,6 +236,24 @@ def test_exchange_health_marked_down_after_three_failures(fresh_db):
     conn.close()
 
 
+def test_unchecked_exchange_event_emitted_on_unreachable(fresh_db):
+    """When an exchange is unreachable, the diff checks are silently skipped.
+    The reconciler emits an info-severity unchecked_exchange event so the
+    gap is visible to operators monitoring for outages-that-mask-issues."""
+    conn = open_db(fresh_db)
+    fake = FakeExchange()
+    fake.set_unreachable("BLOFIN", error="connection refused")
+    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    events = list_unresolved_recon_events(conn, min_severity="info")
+    cats = [e.category for e in events]
+    assert "exchange_unreachable" in cats
+    assert "unchecked_exchange" in cats
+    unchecked = next(e for e in events if e.category == "unchecked_exchange")
+    assert unchecked.severity == "info"
+    assert unchecked.exchange == "BLOFIN"
+    conn.close()
+
+
 def test_exchange_health_recovers_after_failure(fresh_db):
     conn = open_db(fresh_db)
     fake = FakeExchange()

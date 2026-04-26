@@ -139,6 +139,16 @@ def reconcile_exchange(
             exchange=exchange, notes=str(e),
             actual={"consecutive_errors": consecutive},
         )
+        # Make the implicit "no comparison this cycle" gap visible. Info
+        # severity — the underlying exchange_unreachable event already
+        # alerts at error/critical. This event is for operators who want
+        # to know *which* checks were skipped during an outage.
+        upsert_recon_event(
+            conn, timestamp_ms=now_ms, source="reconciler",
+            category="unchecked_exchange", severity="info",
+            exchange=exchange,
+            notes="diff checks (orphan_leg, size_mismatch, unlinked_fill, balance_drift) skipped this cycle",
+        )
         return
 
     snapshot_balance(
