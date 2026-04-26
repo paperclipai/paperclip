@@ -26,6 +26,22 @@ These were intentionally deferred:
 
 ## Concrete next-session entry points
 
+### ⚠️ Risks identified during self-review
+
+These were caught in the review pass on the 8 commits and need attention during the wiring tasks:
+
+1. **`shadow_writer` is not idempotent.** If `real_trader.py` retries an order placement and the wiring calls `mirror_position_open` twice for the same logical position, SQLite will have two rows. The reconciler will then flag one as `orphan_leg` (no matching exchange position). **Mitigation options for Task 7/9/10:**
+   - Only call `mirror_position_open` after the trader has confirmed both legs filled (not on attempt).
+   - OR: add a `client_order_id` column to `positions` and have the writer upsert on conflict.
+   - OR: accept the noise during shadow mode and explicitly resolve orphan rows for retried positions.
+   The cleanest path is option 1 (mirror at confirmed-success boundaries, not at attempt boundaries).
+
+2. **`_looks_like_network_error` heuristic in `live_exchange_fetcher`** is greedy — any class whose name contains `"Timeout"`, `"Network"`, or starts with `"Client"` becomes a `ConnectionError`. Real bugs in helper modules with such names would be silently misclassified as exchange outages. Tighten if it becomes a problem.
+
+3. **`live_exchange_fetcher.get_recent_fills` returns empty silently.** Reconciler's `unlinked_fill` detection is inactive in production until per-exchange fill endpoints are added. A startup log line at trader init would make this visible to operators (Task 9 wiring should include it).
+
+4. **`shadow_writer` connection has no recovery.** After any SQLite write failure, the connection may be unusable; subsequent mirrors all return None until the trader restarts. Acceptable for shadow mode (we *want* to know if mirroring breaks), but document for Task 18 watch-window expectations.
+
 ### Task 7 — Normalizer wiring inside each `ExchangeExecutor.place_market_order`
 
 Five sites in `real_trader.py`:
