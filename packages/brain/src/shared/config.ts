@@ -4,7 +4,7 @@ const ConfigSchema = z.object({
   brainDatabaseUrl: z.string().url(),
   vaultPath: z.string().min(1),
   lmStudioUrl: z.string().url().default("http://localhost:1234"),
-  embeddingModel: z.string().default("bge-m3"),
+  embeddingModel: z.string().default("text-embedding-bge-m3"),
   mcpPort: z.coerce.number().int().positive().default(7777),
   paperclipBearerToken: z.string().optional(),
   claudeCodeBearerToken: z.string().optional(),
