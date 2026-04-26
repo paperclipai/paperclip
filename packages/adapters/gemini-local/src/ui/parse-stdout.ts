@@ -1,4 +1,3 @@
-  try {
     return JSON.parse(text);
   } catch {
     return null;
@@ -93,7 +92,11 @@ function collectTextEntries(messageRaw: unknown, ts: string, kind: "user" | "ass
   const entries: TranscriptEntry[] = [];
   const directText = asString(message.text).trim();
   if (directText) entries.push({ kind, ts, text: directText });
-  const content = Array.isArray(message.content) ? message.content : [];
+  const content = Array.isArray(message.content)
+    ? message.content
+    : typeof message.content === "string"
+      ? [{ text: message.content }]
+      : [];
   for (const partRaw of content) {
     const part = asRecord(partRaw);
     const text = asString(part?.text).trim();
