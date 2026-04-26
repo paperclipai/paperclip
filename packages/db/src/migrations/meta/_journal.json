@@ -540,6 +540,13 @@
       "when": 1777600000000,
       "tag": "0083_knowledge_rss_watch_state",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1777603600000,
+      "tag": "0084_subscription_quotas",
+      "breakpoints": true
     }
   ]
 }
