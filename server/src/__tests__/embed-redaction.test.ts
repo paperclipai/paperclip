@@ -108,4 +108,38 @@ describe("redactForIndex", () => {
       expect(redactForIndex(plainText)).toBe(plainText);
     });
   });
+
+  describe("API key patterns", () => {
+    it("redacts sk_live_ patterns with 20+ char suffix", () => {
+      expect(redactForIndex("sk_live_REDACTED000000000000")).toBe("[REDACTED]");
+    });
+
+    it("redacts sk_test_ patterns with 20+ char suffix", () => {
+      expect(redactForIndex("sk_test_REDACTED0000000000000")).toBe("[REDACTED]");
+    });
+
+    it("redacts pk_live_ patterns with 20+ char suffix", () => {
+      expect(redactForIndex("pk_live_REDACTED00000000000000")).toBe("[REDACTED]");
+    });
+
+    it("redacts whsec_ patterns with 20+ char suffix", () => {
+      expect(redactForIndex("whsec_REDACTED000000000000000")).toBe("[REDACTED]");
+    });
+
+    it("redacts gho_ patterns with 20+ char suffix", () => {
+      expect(redactForIndex("gho_REDACTED00000000000000000")).toBe("[REDACTED]");
+    });
+
+    it("does not redact sk_live_ with short suffix", () => {
+      expect(redactForIndex("sk_live_short")).toBe("sk_live_short");
+    });
+
+    it("redacts multiple API key types in combined text", () => {
+      const input = "Key1: sk_live_REDACTED000000000000, Key2: whsec_REDACTED000000000000000";
+      const result = redactForIndex(input);
+      expect(result).toBe("Key1: [REDACTED], Key2: [REDACTED]");
+      expect(result).not.toContain("sk_live");
+      expect(result).not.toContain("whsec_");
+    });
+  });
 });

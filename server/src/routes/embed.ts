@@ -6,7 +6,7 @@ const DIMENSION = 384;
 const API_KEY_RE = /\b(pk_live_[a-zA-Z0-9]{20,}|sk_live_[a-zA-Z0-9]{20,}|sk_test_[a-zA-Z0-9]{20,}|whsec_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,})\b/g;
 const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
 const EMAIL_RE = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
-const AWS_ARN_RE = /\barn:aws:[a-zA-Z0-9-]+:[a-zA-Z0-9-]+:[a-zA-Z0-9:]+\b/g;
+const AWS_ARN_RE = /\barn:aws:[a-zA-Z0-9:./-]+(?<![\/.-])(?=\s|,|;|\.\s|$)/g;
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
 const IPV6_RE = /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g;
 const IPV6_COMPRESSED_RE = /\b(?:[0-9a-fA-F]{1,4}:)*:[0-9a-fA-F]{1,4}\b/g;
