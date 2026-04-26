@@ -53,6 +53,10 @@ Read tools:
 - `paperclipGetApproval`
 - `paperclipGetApprovalIssues`
 - `paperclipListApprovalComments`
+- `paperclipListIssueRuns`
+- `paperclipGetRun`
+- `paperclipSearchKnowledge`
+- `paperclipListKnowledgeTopics`
 
 Write tools:
 
@@ -68,6 +72,7 @@ Write tools:
 - `paperclipUnlinkIssueApproval`
 - `paperclipApprovalDecision`
 - `paperclipAddApprovalComment`
+- `paperclipResearchKnowledge`
 
 Escape hatch:
 

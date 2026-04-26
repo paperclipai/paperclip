@@ -427,5 +427,50 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         });
       },
     ),
+    makeTool(
+      "paperclipListIssueRuns",
+      "List agent runs associated with an issue",
+      z.object({ issueId: issueIdSchema }),
+      async ({ issueId }) => client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/runs`),
+    ),
+    makeTool(
+      "paperclipGetRun",
+      "Get a specific agent run by ID",
+      z.object({ runId: z.string().uuid() }),
+      async ({ runId }) => client.requestJson("GET", `/heartbeat-runs/${encodeURIComponent(runId)}`),
+    ),
+    makeTool(
+      "paperclipSearchKnowledge",
+      "Search the Paperclip knowledge base for relevant information",
+      z.object({
+        q: z.string().min(1).max(200),
+        topic: z.string().optional(),
+        limit: z.number().int().positive().max(50).optional(),
+      }),
+      async ({ q, topic, limit }) => {
+        const params = new URLSearchParams({ q });
+        if (topic) params.set("topic", topic);
+        if (limit) params.set("limit", String(limit));
+        return client.requestJson("GET", `/knowledge/search?${params.toString()}`);
+      },
+    ),
+    makeTool(
+      "paperclipListKnowledgeTopics",
+      "List available knowledge topics",
+      z.object({}),
+      async () => client.requestJson("GET", "/knowledge/topics"),
+    ),
+    makeTool(
+      "paperclipResearchKnowledge",
+      "Research a specific topic in the knowledge base",
+      z.object({
+        topic: z.string().min(1),
+        question: z.string().min(1).max(500),
+      }),
+      async ({ topic, question }) =>
+        client.requestJson("POST", "/knowledge/research", {
+          body: { topic, question },
+        }),
+    ),
   ];
 }
