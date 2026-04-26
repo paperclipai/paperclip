@@ -10,9 +10,20 @@ function collectMessageText(message: unknown): string[] {
 
   const record = parseObject(message);
 
+  if (typeof record.text === "string") {
+    const trimmed = record.text.trim();
+    if (trimmed) {
+      lines.push(trimmed);
+      return lines;
+    }
+  }
+
   if (typeof record.content === "string") {
     const trimmed = record.content.trim();
-    if (trimmed) lines.push(trimmed);
+    if (trimmed) {
+      lines.push(trimmed);
+      return lines;
+    }
   }
 
   if (Array.isArray(record.content)) {
@@ -24,11 +35,6 @@ function collectMessageText(message: unknown): string[] {
         if (text) lines.push(text);
       }
     }
-  }
-
-  if (typeof record.text === "string") {
-    const trimmed = record.text.trim();
-    if (trimmed) lines.push(trimmed);
   }
 
   return lines;
@@ -115,6 +121,24 @@ export function parseGeminiJsonl(stdout: string) {
       const role = asString(event.role, "").trim().toLowerCase();
       if (role === "assistant") {
         messages.push(...collectMessageText(event));
+        const content = Array.isArray(event.content) ? event.content : [];
+        for (const partRaw of content) {
+          const part = parseObject(partRaw);
+          if (asString(part.type, "").trim() === "question") {
+            question = {
+              prompt: asString(part.prompt, "").trim(),
+              choices: (Array.isArray(part.choices) ? part.choices : []).map((choiceRaw) => {
+                const choice = parseObject(choiceRaw);
+                return {
+                  key: asString(choice.key, "").trim(),
+                  label: asString(choice.label, "").trim(),
+                  description: asString(choice.description, "").trim() || undefined,
+                };
+              }),
+            };
+            break; // only one question per message
+          }
+        }
       }
       continue;
     }
