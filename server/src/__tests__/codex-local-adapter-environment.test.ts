@@ -7,6 +7,14 @@ import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 const itWindows = process.platform === "win32" ? it : it.skip;
 const itNotWindows = process.platform === "win32" ? it.skip : it;
 
+function base64UrlEncode(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function fakeJwt(payload: Record<string, unknown>): string {
+  return `header.${base64UrlEncode(payload)}.signature`;
+}
+
 describe("codex_local environment diagnostics", () => {
   beforeEach(() => {
     vi.stubEnv("OPENAI_API_KEY", "");
@@ -51,7 +59,17 @@ describe("codex_local environment diagnostics", () => {
       await fs.mkdir(codexHome, { recursive: true });
       await fs.writeFile(
         path.join(codexHome, "auth.json"),
-        JSON.stringify({ accessToken: "fake-token", accountId: "acct-1" }),
+        JSON.stringify({
+          tokens: {
+            access_token: "fake-token",
+            account_id: "acct-1",
+            refresh_token: "refresh-token",
+            id_token: fakeJwt({
+              email: "alex@internal.acme-corp.com",
+              "https://api.openai.com/auth": { chatgpt_plan_type: "pro" },
+            }),
+          },
+        }),
       );
 
       const result = await testEnvironment({
@@ -68,6 +86,12 @@ describe("codex_local environment diagnostics", () => {
       expect(nativeAuthCheck).toBeTruthy();
       expect(nativeAuthCheck?.message).toContain("ChatGPT login");
       expect(nativeAuthCheck?.detail).not.toContain("fake-token");
+      expect(nativeAuthCheck?.detail).not.toContain("alex@internal.acme-corp.com");
+      expect(nativeAuthCheck?.detail).not.toContain("internal.acme-corp.com");
+      expect(nativeAuthCheck?.detail).toContain("al…@i…l.a…p.com");
+      const homeCheck = result.checks.find((check) => check.code === "codex_home_effective");
+      expect(homeCheck?.detail).not.toContain("undefined");
+      expect(homeCheck?.detail).not.toContain("null");
       expect(result.checks.some((check) => check.code === "codex_home_effective")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
     } finally {

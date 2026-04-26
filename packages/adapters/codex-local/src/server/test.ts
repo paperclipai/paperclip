@@ -70,6 +70,21 @@ function redactMiddle(
   return `${clean.slice(0, prefix)}…${clean.slice(-suffix)}`;
 }
 
+function redactDomain(value: string): string {
+  const labels = value
+    .split(".")
+    .map((label) => label.trim())
+    .filter(Boolean);
+  if (labels.length === 0) return "[redacted]";
+  if (labels.length === 1) return redactMiddle(labels[0], { prefix: 1, suffix: 1 }) ?? "[redacted]";
+
+  const tld = labels.at(-1) ?? "";
+  const redactedLabels = labels.slice(0, -1).map((label) =>
+    label.length <= 2 ? `${label[0] ?? "*"}…` : `${label.slice(0, 1)}…${label.slice(-1)}`,
+  );
+  return [...redactedLabels, tld].join(".");
+}
+
 function redactEmail(value: string | null | undefined): string | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   const clean = value.trim();
@@ -78,7 +93,7 @@ function redactEmail(value: string | null | undefined): string | null {
   const local = clean.slice(0, at);
   const domain = clean.slice(at + 1);
   const redactedLocal = local.length <= 2 ? `${local[0] ?? "*"}…` : `${local.slice(0, 2)}…`;
-  return `${redactedLocal}@${domain}`;
+  return `${redactedLocal}@${redactDomain(domain)}`;
 }
 
 async function readAuthJsonObject(authPath: string): Promise<Record<string, unknown> | null> {
@@ -205,7 +220,7 @@ export async function testEnvironment(
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
-  const sharedCodexHome = resolveSharedCodexHomeDir(process.env);
+  const sharedCodexHome = resolveSharedCodexHomeDir(process.env) || "system default Codex home";
   const effectiveCodexHome =
     configuredCodexHome ?? resolveManagedCodexHomeDir(process.env, ctx.companyId);
   const authSourceCodexHome = configuredCodexHome ?? sharedCodexHome;
