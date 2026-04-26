@@ -73,11 +73,17 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     }
   }
   if (config.deploymentMode === "authenticated") {
+    const port = config.port;
+    const needsPortVariants = port !== 80 && port !== 443;
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;
       trustedOrigins.add(`https://${trimmed}`);
       trustedOrigins.add(`http://${trimmed}`);
+      if (needsPortVariants) {
+        trustedOrigins.add(`https://${trimmed}:${port}`);
+        trustedOrigins.add(`http://${trimmed}:${port}`);
+      }
     }
   }
 
