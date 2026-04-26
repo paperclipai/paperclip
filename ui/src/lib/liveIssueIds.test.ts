@@ -57,6 +57,19 @@ describe("collectLiveIssueIds", () => {
         adapterType: "codex_local",
         issueId: "issue-2",
       },
+      {
+        id: "run-5",
+        status: "succeeded",
+        invocationSource: "scheduler",
+        triggerDetail: null,
+        startedAt: "2026-04-20T10:04:00.000Z",
+        finishedAt: "2026-04-20T10:05:00.000Z",
+        createdAt: "2026-04-20T10:04:00.000Z",
+        agentId: "agent-5",
+        agentName: "Done",
+        adapterType: "codex_local",
+        issueId: "completed-issue",
+      },
     ];
 
     expect([...collectLiveIssueIds(liveRuns)]).toEqual(["issue-1", "issue-2"]);

@@ -3,20 +3,89 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanySettings } from "./CompanySettings";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const pauseMock = vi.hoisted(() => vi.fn());
-const resumeMock = vi.hoisted(() => vi.fn());
-const updateMock = vi.hoisted(() => vi.fn());
-const archiveMock = vi.hoisted(() => vi.fn());
-const createInviteMock = vi.hoisted(() => vi.fn());
-const getInviteOnboardingMock = vi.hoisted(() => vi.fn());
-const uploadLogoMock = vi.hoisted(() => vi.fn());
-const pushToastMock = vi.hoisted(() => vi.fn());
-const invalidateQueriesMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const mockCompaniesApi = vi.hoisted(() => ({
+  update: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  archive: vi.fn(),
+}));
+
+const mockAccessApi = vi.hoisted(() => ({
+  createOpenClawInvitePrompt: vi.fn(),
+  getInviteOnboarding: vi.fn(),
+}));
+
+const mockAssetsApi = vi.hoisted(() => ({
+  uploadCompanyLogo: vi.fn(),
+}));
+
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  capabilities: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  probe: vi.fn(),
+  probeConfig: vi.fn(),
+  archive: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
+const mockPushToast = vi.hoisted(() => vi.fn());
+const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
+const mockInvalidateQueries = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+vi.mock("../api/companies", () => ({
+  companiesApi: mockCompaniesApi,
+}));
+
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/assets", () => ({
+  assetsApi: mockAssetsApi,
+}));
+
+vi.mock("../api/environments", () => ({
+  environmentsApi: mockEnvironmentsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/secrets", () => ({
+  secretsApi: mockSecretsApi,
+}));
+
+vi.mock("../context/BreadcrumbContext", () => ({
+  useBreadcrumbs: () => ({
+    setBreadcrumbs: mockSetBreadcrumbs,
+  }),
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({
+    pushToast: mockPushToast,
+  }),
+  useToastActions: () => ({
+    pushToast: mockPushToast,
+  }),
+}));
 
 const selectedCompany = {
   id: "company-1",
@@ -41,43 +110,13 @@ const selectedCompany = {
   updatedAt: new Date("2026-04-10T00:00:00.000Z"),
 };
 
-vi.mock("../api/companies", () => ({
-  companiesApi: {
-    pause: (companyId: string) => pauseMock(companyId),
-    resume: (companyId: string) => resumeMock(companyId),
-    update: (companyId: string, data: unknown) => updateMock(companyId, data),
-    archive: (companyId: string) => archiveMock(companyId),
-  },
-}));
-
-vi.mock("../api/access", () => ({
-  accessApi: {
-    createOpenClawInvitePrompt: (companyId: string) => createInviteMock(companyId),
-    getInviteOnboarding: (token: string) => getInviteOnboardingMock(token),
-  },
-}));
-
-vi.mock("../api/assets", () => ({
-  assetsApi: {
-    uploadCompanyLogo: (companyId: string, file: File) => uploadLogoMock(companyId, file),
-  },
-}));
-
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     companies: [selectedCompany],
     selectedCompany,
     selectedCompanyId: selectedCompany.id,
-    setSelectedCompanyId: vi.fn(),
+    setSelectedCompanyId: mockSetSelectedCompanyId,
   }),
-}));
-
-vi.mock("../context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
-}));
-
-vi.mock("../context/ToastContext", () => ({
-  useToastActions: () => ({ pushToast: pushToastMock }),
 }));
 
 vi.mock("@tanstack/react-query", async () => {
@@ -85,7 +124,7 @@ vi.mock("@tanstack/react-query", async () => {
   return {
     ...actual,
     useQueryClient: () => ({
-      invalidateQueries: invalidateQueriesMock,
+      invalidateQueries: mockInvalidateQueries,
     }),
   };
 });
@@ -120,15 +159,21 @@ describe("CompanySettings", () => {
       configurable: true,
       value: vi.fn(() => "data:image/png;base64,stub"),
     });
-    pauseMock.mockResolvedValue({ ...selectedCompany, status: "paused", pauseReason: "manual", pausedAt: new Date() });
-    resumeMock.mockResolvedValue({ ...selectedCompany, status: "active", pauseReason: null, pausedAt: null });
-    updateMock.mockResolvedValue(selectedCompany);
-    archiveMock.mockResolvedValue(selectedCompany);
-    createInviteMock.mockReset();
-    getInviteOnboardingMock.mockReset();
-    uploadLogoMock.mockReset();
-    pushToastMock.mockReset();
-    invalidateQueriesMock.mockClear();
+
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+    });
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(AGENT_ADAPTER_TYPES),
+    );
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockCompaniesApi.update.mockResolvedValue(selectedCompany);
+    mockCompaniesApi.pause.mockResolvedValue({ ...selectedCompany, status: "paused", pauseReason: "manual", pausedAt: new Date() });
+    mockCompaniesApi.resume.mockResolvedValue({ ...selectedCompany, status: "active", pauseReason: null, pausedAt: null });
+    mockCompaniesApi.archive.mockResolvedValue(selectedCompany);
+    mockInvalidateQueries.mockClear();
+    mockPushToast.mockReset();
   });
 
   afterEach(() => {
@@ -171,13 +216,125 @@ describe("CompanySettings", () => {
     await flushReact();
     await flushReact();
 
-    expect(pauseMock).toHaveBeenCalledWith("company-1");
-    expect(pushToastMock).toHaveBeenCalledWith(
+    expect(mockCompaniesApi.pause).toHaveBeenCalledWith("company-1");
+    expect(mockPushToast).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Company paused",
         tone: "success",
       }),
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides sandbox creation when no run-capable sandbox provider plugins are installed", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanySettings />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const optionLabels = Array.from(container.querySelectorAll("option")).map((option) => option.textContent?.trim());
+
+    expect(optionLabels).not.toContain("Sandbox");
+    expect(container.textContent).not.toContain("Fake sandbox");
+    expect(container.textContent).not.toContain("Fake is the deterministic test provider");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("preserves sandbox config when re-selecting the same provider while editing", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      {
+        id: "env-1",
+        companyId: "company-1",
+        name: "Secure Sandbox",
+        description: null,
+        driver: "sandbox",
+        status: "active",
+        config: {
+          provider: "secure-plugin",
+          template: "saved-template",
+        },
+        metadata: null,
+        createdAt: new Date("2026-04-25T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-25T00:00:00.000Z"),
+      },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(AGENT_ADAPTER_TYPES, {
+        sandboxProviders: {
+          "secure-plugin": {
+            status: "supported",
+            supportsSavedProbe: true,
+            supportsUnsavedProbe: true,
+            supportsRunExecution: true,
+            supportsReusableLeases: true,
+            displayName: "Secure Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string", title: "Template" },
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanySettings />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const editButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Edit");
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const providerSelect = Array.from(container.querySelectorAll("select"))
+      .find((select) => Array.from(select.options).some((option) => option.value === "secure-plugin")) as HTMLSelectElement | undefined;
+    expect(providerSelect).toBeTruthy();
+
+    await act(async () => {
+      providerSelect!.value = "secure-plugin";
+      providerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    const templateInput = Array.from(container.querySelectorAll("input"))
+      .find((input) => (input as HTMLInputElement).value === "saved-template") as HTMLInputElement | undefined;
+    expect(templateInput?.value).toBe("saved-template");
 
     await act(async () => {
       root.unmount();

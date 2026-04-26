@@ -22,6 +22,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   listLabels: vi.fn(),
 }));
 
+const mockKanbanBoard = vi.hoisted(() => vi.fn());
+
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
 }));
@@ -87,7 +89,16 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: () => null,
+  KanbanBoard: (props: { issues: Issue[] }) => {
+    mockKanbanBoard(props);
+    return (
+      <div data-testid="kanban-board">
+        {props.issues.map((issue) => (
+          <span key={issue.id}>{issue.title}</span>
+        ))}
+      </div>
+    );
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -139,7 +150,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
 
 async function flush() {
   await act(async () => {
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -153,6 +164,24 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
     } catch (error) {
       lastError = error;
       await flush();
+    }
+  }
+
+  throw lastError;
+}
+
+async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await act(async () => {
+        await Promise.resolve();
+      });
     }
   }
 
@@ -189,6 +218,7 @@ describe("IssuesList", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.openNewIssue.mockReset();
+    mockKanbanBoard.mockReset();
     mockIssuesApi.list.mockReset();
     mockIssuesApi.listLabels.mockReset();
     mockAuthApi.getSession.mockReset();
@@ -381,6 +411,10 @@ describe("IssuesList", () => {
       }),
     );
 
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ statuses: ["done"] }),
+    );
     mockIssuesApi.list.mockResolvedValue(serverIssues);
 
     const { root } = renderWithQueryClient(
@@ -395,8 +429,115 @@ describe("IssuesList", () => {
       container,
     );
 
-    await waitForAssertion(() => {
+    await waitForMicrotaskAssertion(() => {
       expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  }, 10_000);
+
+  it("loads board issues with a separate result limit for each status column", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const parentIssue = createIssue({
+      id: "issue-parent-total-limit",
+      title: "Parent total-limited issue",
+      status: "todo",
+    });
+    const backlogIssue = createIssue({
+      id: "issue-backlog",
+      title: "Backlog column issue",
+      status: "backlog",
+    });
+    const doneIssue = createIssue({
+      id: "issue-done",
+      title: "Done column issue",
+      status: "done",
+    });
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve([backlogIssue]);
+      if (filters?.status === "done") return Promise.resolve([doneIssue]);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[parentIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        enableRoutineVisibilityFilter
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        status: "backlog",
+        limit: 200,
+        includeRoutineExecutions: true,
+      }));
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        status: "done",
+        limit: 200,
+        includeRoutineExecutions: true,
+      }));
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({ id: "issue-backlog" }),
+          expect.objectContaining({ id: "issue-done" }),
+        ]),
+      }));
+      expect(container.textContent).toContain("Backlog column issue");
+      expect(container.textContent).toContain("Done column issue");
+      expect(container.textContent).not.toContain("Parent total-limited issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a refinement hint when a board column hits its server cap", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const cappedBacklogIssues = Array.from({ length: 200 }, (_, index) =>
+      createIssue({
+        id: `issue-backlog-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Backlog issue ${index + 1}`,
+        status: "backlog",
+      }),
+    );
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve(cappedBacklogIssues);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Some board columns are showing up to 200 issues. Refine filters or search to reveal the rest.");
     });
 
     act(() => {
@@ -425,8 +566,8 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(150);
-      expect(container.textContent).toContain("Rendering 150 of 220 issues");
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+      expect(container.textContent).toContain("Rendering 100 of 220 issues");
     });
 
     act(() => {

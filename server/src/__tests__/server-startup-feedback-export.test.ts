@@ -104,6 +104,9 @@ vi.mock("../config.js", () => ({
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
+    child: vi.fn(function child() {
+      return this;
+    }),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
