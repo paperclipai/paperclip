@@ -61,7 +61,7 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
-export function deriveAuthTrustedOrigins(config: Config): string[] {
+export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
 
@@ -73,7 +73,7 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     }
   }
   if (config.deploymentMode === "authenticated") {
-    const port = config.port;
+    const port = opts?.listenPort ?? config.port;
     const needsPortVariants = port !== 80 && port !== 443;
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
