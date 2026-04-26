@@ -2,7 +2,10 @@ export { companyService } from "./companies.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
-export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export {
+  agentInstructionsService,
+  syncInstructionsBundleConfigFromFilePath,
+} from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export {
@@ -30,9 +33,22 @@ export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
+export {
+  DEFAULT_QUOTA_INCIDENT_WINDOW_MINUTES,
+  MAX_QUOTA_INCIDENT_WINDOW_MINUTES,
+  clampQuotaIncidentWindowMinutes,
+  quotaIncidentsService,
+  type QuotaIncidentsResult,
+  type QuotaIncidentsService,
+  type QuotaIncidentAgentBreakdown,
+  type QuotaIncidentErrorCode,
+} from "./quota-incidents.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
-export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
+export {
+  classifyIssueGraphLiveness,
+  type IssueLivenessFinding,
+} from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
@@ -46,7 +62,16 @@ export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
-export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
+export {
+  notifyHireApproved,
+  type NotifyHireApprovedInput,
+} from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
-export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
-export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  reconcilePersistedRuntimeServicesOnStartup,
+  restartDesiredRuntimeServicesOnStartup,
+} from "./workspace-runtime.js";
+export {
+  createStorageServiceFromConfig,
+  getStorageService,
+} from "../storage/index.js";

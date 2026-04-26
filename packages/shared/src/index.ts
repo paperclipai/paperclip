@@ -1,4 +1,7 @@
-export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export {
+  agentAdapterTypeSchema,
+  optionalAgentAdapterTypeSchema,
+} from "./adapter-type.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
@@ -9,6 +12,11 @@ export {
   AGENT_ADAPTER_TYPES,
   AGENT_ROLES,
   AGENT_ROLE_LABELS,
+  AGENT_PRIORITY_TIERS,
+  AGENT_PRIORITY_TIER_LABELS,
+  AGENT_PRIORITY_TIER_DEFAULTS_BY_ROLE,
+  AGENT_PRIORITY_TIER_NAME_OVERRIDES,
+  DEFAULT_AGENT_PRIORITY_TIER,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   AGENT_ICON_NAMES,
@@ -113,6 +121,7 @@ export {
   type AgentStatus,
   type AgentAdapterType,
   type AgentRole,
+  type AgentPriorityTier,
   type AgentIconName,
   type IssueStatus,
   type IssuePriority,
@@ -864,8 +873,24 @@ export {
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
-export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
-export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
+export {
+  normalizeAgentUrlKey,
+  deriveAgentUrlKey,
+  isUuidLike,
+} from "./agent-url-key.js";
+export {
+  agentPriorityTierRank,
+  bumpAgentPriorityTier,
+  isAgentPriorityTier,
+  readAgentPriorityTier,
+  resolveDefaultAgentPriorityTier,
+} from "./agent-priority.js";
+export type { ResolveAgentPriorityTierInput } from "./agent-priority.js";
+export {
+  deriveProjectUrlKey,
+  normalizeProjectUrlKey,
+  hasNonAsciiContent,
+} from "./project-url-key.js";
 export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,

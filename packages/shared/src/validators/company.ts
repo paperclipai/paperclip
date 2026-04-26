@@ -25,6 +25,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
+    metadata: z.record(z.unknown()).nullable().optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

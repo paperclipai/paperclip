@@ -35,7 +35,9 @@ export const AGENT_ADAPTER_TYPES = [
   "cursor",
   "openclaw_gateway",
 ] as const;
-export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & {});
+export type AgentAdapterType =
+  | (typeof AGENT_ADAPTER_TYPES)[number]
+  | (string & {});
 
 export const AGENT_ROLES = [
   "ceo",
@@ -70,6 +72,58 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 5;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
+
+// Per-agent priority tiers used by the company-wide Opus concurrency
+// semaphore (PMSA-17 / [PMSA-11] §3.2). Stored on `agents.metadata.priorityTier`
+// and resolved at heartbeat time so high-priority work (CEO decisions, Engineer
+// dialogue runs) is not starved by long-running researcher heartbeats.
+//
+// Ordered most-important to least-important. The semaphore queues waiters by
+// (tier asc, queuedAt asc), and the aging path bumps a starved waiter up one
+// tier every AGENT_PRIORITY_TIER_AGING_INTERVAL_MS so p3 runs cannot wait
+// indefinitely behind an unbroken stream of p0/p1 traffic.
+export const AGENT_PRIORITY_TIERS = ["p0", "p1", "p2", "p3"] as const;
+export type AgentPriorityTier = (typeof AGENT_PRIORITY_TIERS)[number];
+
+export const AGENT_PRIORITY_TIER_LABELS: Record<AgentPriorityTier, string> = {
+  p0: "P0 — Critical",
+  p1: "P1 — High",
+  p2: "P2 — Default",
+  p3: "P3 — Background",
+};
+
+export const DEFAULT_AGENT_PRIORITY_TIER: AgentPriorityTier = "p2";
+
+// Default tier per agent role. Overrides by-name take precedence (e.g. the
+// research role spans both InsightAnalyst (p2) and TechResearcher (p3)).
+export const AGENT_PRIORITY_TIER_DEFAULTS_BY_ROLE: Record<
+  AgentRole,
+  AgentPriorityTier
+> = {
+  ceo: "p0",
+  cto: "p1",
+  cmo: "p1",
+  cfo: "p1",
+  engineer: "p1",
+  pm: "p2",
+  designer: "p2",
+  qa: "p2",
+  devops: "p2",
+  researcher: "p3",
+  general: "p2",
+};
+
+// Specific name overrides applied on top of the role-based default. Compared
+// against the agent's normalized url-key (lowercase, alphanumeric).
+// Keep this small — each entry expresses an intentional override of the role
+// default, not a per-agent personality tweak.
+export const AGENT_PRIORITY_TIER_NAME_OVERRIDES: Record<
+  string,
+  AgentPriorityTier
+> = {
+  insightanalyst: "p2",
+};
+
 export const AGENT_ICON_NAMES = [
   "bot",
   "cpu",
@@ -134,7 +188,8 @@ export const INBOX_MINE_ISSUE_STATUSES = [
   "blocked",
   "done",
 ] as const;
-export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(",");
+export const INBOX_MINE_ISSUE_STATUS_FILTER =
+  INBOX_MINE_ISSUE_STATUSES.join(",");
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
@@ -144,7 +199,8 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "ask_user_questions",
   "request_confirmation",
 ] as const;
-export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+export type IssueThreadInteractionKind =
+  (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
@@ -154,7 +210,8 @@ export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "expired",
   "failed",
 ] as const;
-export type IssueThreadInteractionStatus = (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
+export type IssueThreadInteractionStatus =
+  (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
 
 export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
   "none",
@@ -164,7 +221,11 @@ export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
 export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
 
-export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution", "stale_active_run_evaluation"] as const;
+export const ISSUE_ORIGIN_KINDS = [
+  "manual",
+  "routine_execution",
+  "stale_active_run_evaluation",
+] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
@@ -172,43 +233,83 @@ export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 
-export const ISSUE_TREE_CONTROL_MODES = ["pause", "resume", "cancel", "restore"] as const;
+export const ISSUE_TREE_CONTROL_MODES = [
+  "pause",
+  "resume",
+  "cancel",
+  "restore",
+] as const;
 export type IssueTreeControlMode = (typeof ISSUE_TREE_CONTROL_MODES)[number];
 
 export const ISSUE_TREE_HOLD_STATUSES = ["active", "released"] as const;
 export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
 
-export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
-export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
+export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = [
+  "manual",
+  "after_active_runs_finish",
+] as const;
+export type IssueTreeHoldReleasePolicyStrategy =
+  (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
-export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const SYSTEM_ISSUE_DOCUMENT_KEYS = [ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY] as const;
-export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
+export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY =
+  "continuation-summary" as const;
+export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+] as const;
+export type SystemIssueDocumentKey =
+  (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
-const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS);
+const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(
+  SYSTEM_ISSUE_DOCUMENT_KEYS,
+);
 
-export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumentKey {
+export function isSystemIssueDocumentKey(
+  key: string,
+): key is SystemIssueDocumentKey {
   return SYSTEM_ISSUE_DOCUMENT_KEY_SET.has(key);
 }
-export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
-export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
+export const ISSUE_REFERENCE_SOURCE_KINDS = [
+  "title",
+  "description",
+  "comment",
+  "document",
+] as const;
+export type IssueReferenceSourceKind =
+  (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
-export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
+export type IssueExecutionPolicyMode =
+  (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
-export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
+export type IssueExecutionStageType =
+  (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 
-export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed"] as const;
-export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
+export const ISSUE_EXECUTION_STATE_STATUSES = [
+  "idle",
+  "pending",
+  "changes_requested",
+  "completed",
+] as const;
+export type IssueExecutionStateStatus =
+  (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
 
-export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
-export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
+export const ISSUE_EXECUTION_DECISION_OUTCOMES = [
+  "approved",
+  "changes_requested",
+] as const;
+export type IssueExecutionDecisionOutcome =
+  (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 
-export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
+export const GOAL_STATUSES = [
+  "planned",
+  "active",
+  "achieved",
+  "cancelled",
+] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
 export const PROJECT_STATUSES = [
@@ -220,14 +321,26 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
+export const ENVIRONMENT_DRIVERS = [
+  "local",
+  "ssh",
+  "sandbox",
+  "plugin",
+] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
 export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
 export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
 
-export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained"] as const;
-export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
+export const ENVIRONMENT_LEASE_STATUSES = [
+  "active",
+  "released",
+  "expired",
+  "failed",
+  "retained",
+] as const;
+export type EnvironmentLeaseStatus =
+  (typeof ENVIRONMENT_LEASE_STATUSES)[number];
 
 export const ENVIRONMENT_LEASE_POLICIES = [
   "ephemeral",
@@ -235,27 +348,53 @@ export const ENVIRONMENT_LEASE_POLICIES = [
   "reuse_by_execution_workspace",
   "retain_on_failure",
 ] as const;
-export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
+export type EnvironmentLeasePolicy =
+  (typeof ENVIRONMENT_LEASE_POLICIES)[number];
 
-export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
-export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
+export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = [
+  "pending",
+  "success",
+  "failed",
+] as const;
+export type EnvironmentLeaseCleanupStatus =
+  (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
 
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
 
-export const ROUTINE_CONCURRENCY_POLICIES = ["coalesce_if_active", "always_enqueue", "skip_if_active"] as const;
-export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[number];
+export const ROUTINE_CONCURRENCY_POLICIES = [
+  "coalesce_if_active",
+  "always_enqueue",
+  "skip_if_active",
+] as const;
+export type RoutineConcurrencyPolicy =
+  (typeof ROUTINE_CONCURRENCY_POLICIES)[number];
 
-export const ROUTINE_CATCH_UP_POLICIES = ["skip_missed", "enqueue_missed_with_cap"] as const;
+export const ROUTINE_CATCH_UP_POLICIES = [
+  "skip_missed",
+  "enqueue_missed_with_cap",
+] as const;
 export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
 
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
-export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;
-export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
+export const ROUTINE_TRIGGER_SIGNING_MODES = [
+  "bearer",
+  "hmac_sha256",
+  "github_hmac",
+  "none",
+] as const;
+export type RoutineTriggerSigningMode =
+  (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
 
-export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
+export const ROUTINE_VARIABLE_TYPES = [
+  "text",
+  "textarea",
+  "number",
+  "boolean",
+  "select",
+] as const;
 export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 export const ROUTINE_RUN_STATUSES = [
@@ -265,10 +404,15 @@ export const ROUTINE_RUN_STATUSES = [
   "issue_created",
   "completed",
   "failed",
- ] as const;
+] as const;
 export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 
-export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
+export const ROUTINE_RUN_SOURCES = [
+  "schedule",
+  "manual",
+  "api",
+  "webhook",
+] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
 export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
@@ -373,14 +517,19 @@ export type BudgetWindowKind = (typeof BUDGET_WINDOW_KINDS)[number];
 export const BUDGET_THRESHOLD_TYPES = ["soft", "hard"] as const;
 export type BudgetThresholdType = (typeof BUDGET_THRESHOLD_TYPES)[number];
 
-export const BUDGET_INCIDENT_STATUSES = ["open", "resolved", "dismissed"] as const;
+export const BUDGET_INCIDENT_STATUSES = [
+  "open",
+  "resolved",
+  "dismissed",
+] as const;
 export type BudgetIncidentStatus = (typeof BUDGET_INCIDENT_STATUSES)[number];
 
 export const BUDGET_INCIDENT_RESOLUTION_ACTIONS = [
   "keep_paused",
   "raise_budget_and_resume",
 ] as const;
-export type BudgetIncidentResolutionAction = (typeof BUDGET_INCIDENT_RESOLUTION_ACTIONS)[number];
+export type BudgetIncidentResolutionAction =
+  (typeof BUDGET_INCIDENT_RESOLUTION_ACTIONS)[number];
 
 export const HEARTBEAT_INVOCATION_SOURCES = [
   "timer",
@@ -388,9 +537,15 @@ export const HEARTBEAT_INVOCATION_SOURCES = [
   "on_demand",
   "automation",
 ] as const;
-export type HeartbeatInvocationSource = (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
+export type HeartbeatInvocationSource =
+  (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
 
-export const WAKEUP_TRIGGER_DETAILS = ["manual", "ping", "callback", "system"] as const;
+export const WAKEUP_TRIGGER_DETAILS = [
+  "manual",
+  "ping",
+  "callback",
+  "system",
+] as const;
 export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 
 export const WAKEUP_REQUEST_STATUSES = [
@@ -443,7 +598,12 @@ export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 
-export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended", "archived"] as const;
+export const MEMBERSHIP_STATUSES = [
+  "pending",
+  "active",
+  "suspended",
+  "archived",
+] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
 
 export const COMPANY_MEMBERSHIP_ROLES = [
@@ -461,9 +621,13 @@ export const HUMAN_COMPANY_MEMBERSHIP_ROLES = [
   "operator",
   "viewer",
 ] as const;
-export type HumanCompanyMembershipRole = (typeof HUMAN_COMPANY_MEMBERSHIP_ROLES)[number];
+export type HumanCompanyMembershipRole =
+  (typeof HUMAN_COMPANY_MEMBERSHIP_ROLES)[number];
 
-export const HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS: Record<HumanCompanyMembershipRole, string> = {
+export const HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS: Record<
+  HumanCompanyMembershipRole,
+  string
+> = {
   owner: "Owner",
   admin: "Admin",
   operator: "Operator",
@@ -482,7 +646,11 @@ export type InviteJoinType = (typeof INVITE_JOIN_TYPES)[number];
 export const JOIN_REQUEST_TYPES = ["human", "agent"] as const;
 export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 
-export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
+export const JOIN_REQUEST_STATUSES = [
+  "pending_approval",
+  "approved",
+  "rejected",
+] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
@@ -620,19 +788,22 @@ export const PLUGIN_CAPABILITIES = [
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 
 export const PLUGIN_DATABASE_NAMESPACE_MODES = ["schema"] as const;
-export type PluginDatabaseNamespaceMode = (typeof PLUGIN_DATABASE_NAMESPACE_MODES)[number];
+export type PluginDatabaseNamespaceMode =
+  (typeof PLUGIN_DATABASE_NAMESPACE_MODES)[number];
 
 export const PLUGIN_DATABASE_NAMESPACE_STATUSES = [
   "active",
   "migration_failed",
 ] as const;
-export type PluginDatabaseNamespaceStatus = (typeof PLUGIN_DATABASE_NAMESPACE_STATUSES)[number];
+export type PluginDatabaseNamespaceStatus =
+  (typeof PLUGIN_DATABASE_NAMESPACE_STATUSES)[number];
 
 export const PLUGIN_DATABASE_MIGRATION_STATUSES = [
   "applied",
   "failed",
 ] as const;
-export type PluginDatabaseMigrationStatus = (typeof PLUGIN_DATABASE_MIGRATION_STATUSES)[number];
+export type PluginDatabaseMigrationStatus =
+  (typeof PLUGIN_DATABASE_MIGRATION_STATUSES)[number];
 
 export const PLUGIN_DATABASE_CORE_READ_TABLES = [
   "companies",
@@ -649,20 +820,33 @@ export const PLUGIN_DATABASE_CORE_READ_TABLES = [
   "issue_approvals",
   "budget_incidents",
 ] as const;
-export type PluginDatabaseCoreReadTable = (typeof PLUGIN_DATABASE_CORE_READ_TABLES)[number];
+export type PluginDatabaseCoreReadTable =
+  (typeof PLUGIN_DATABASE_CORE_READ_TABLES)[number];
 
-export const PLUGIN_API_ROUTE_METHODS = ["GET", "POST", "PATCH", "DELETE"] as const;
+export const PLUGIN_API_ROUTE_METHODS = [
+  "GET",
+  "POST",
+  "PATCH",
+  "DELETE",
+] as const;
 export type PluginApiRouteMethod = (typeof PLUGIN_API_ROUTE_METHODS)[number];
 
-export const PLUGIN_API_ROUTE_AUTH_MODES = ["board", "agent", "board-or-agent", "webhook"] as const;
-export type PluginApiRouteAuthMode = (typeof PLUGIN_API_ROUTE_AUTH_MODES)[number];
+export const PLUGIN_API_ROUTE_AUTH_MODES = [
+  "board",
+  "agent",
+  "board-or-agent",
+  "webhook",
+] as const;
+export type PluginApiRouteAuthMode =
+  (typeof PLUGIN_API_ROUTE_AUTH_MODES)[number];
 
 export const PLUGIN_API_ROUTE_CHECKOUT_POLICIES = [
   "none",
   "required-for-agent-in-progress",
   "always-for-agent",
 ] as const;
-export type PluginApiRouteCheckoutPolicy = (typeof PLUGIN_API_ROUTE_CHECKOUT_POLICIES)[number];
+export type PluginApiRouteCheckoutPolicy =
+  (typeof PLUGIN_API_ROUTE_CHECKOUT_POLICIES)[number];
 
 /**
  * UI extension slot types. Each slot type corresponds to a mount point in the
@@ -735,7 +919,8 @@ export const PLUGIN_LAUNCHER_PLACEMENT_ZONES = [
   "commentContextMenuItem",
   "settingsPage",
 ] as const;
-export type PluginLauncherPlacementZone = (typeof PLUGIN_LAUNCHER_PLACEMENT_ZONES)[number];
+export type PluginLauncherPlacementZone =
+  (typeof PLUGIN_LAUNCHER_PLACEMENT_ZONES)[number];
 
 /**
  * Launcher action kinds describe what the launcher does when activated.
@@ -790,7 +975,8 @@ export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
   "run",
   "comment",
 ] as const;
-export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
+export type PluginUiSlotEntityType =
+  (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
 
 /**
  * Scope kinds for plugin state storage. Determines the granularity at which
@@ -811,11 +997,7 @@ export const PLUGIN_STATE_SCOPE_KINDS = [
 export type PluginStateScopeKind = (typeof PLUGIN_STATE_SCOPE_KINDS)[number];
 
 /** Statuses for a plugin's scheduled job definition. */
-export const PLUGIN_JOB_STATUSES = [
-  "active",
-  "paused",
-  "failed",
-] as const;
+export const PLUGIN_JOB_STATUSES = ["active", "paused", "failed"] as const;
 export type PluginJobStatus = (typeof PLUGIN_JOB_STATUSES)[number];
 
 /** Statuses for individual job run executions. */
@@ -830,11 +1012,7 @@ export const PLUGIN_JOB_RUN_STATUSES = [
 export type PluginJobRunStatus = (typeof PLUGIN_JOB_RUN_STATUSES)[number];
 
 /** What triggered a particular job run. */
-export const PLUGIN_JOB_RUN_TRIGGERS = [
-  "schedule",
-  "manual",
-  "retry",
-] as const;
+export const PLUGIN_JOB_RUN_TRIGGERS = ["schedule", "manual", "retry"] as const;
 export type PluginJobRunTrigger = (typeof PLUGIN_JOB_RUN_TRIGGERS)[number];
 
 /** Statuses for inbound webhook deliveries. */
@@ -843,7 +1021,8 @@ export const PLUGIN_WEBHOOK_DELIVERY_STATUSES = [
   "success",
   "failed",
 ] as const;
-export type PluginWebhookDeliveryStatus = (typeof PLUGIN_WEBHOOK_DELIVERY_STATUSES)[number];
+export type PluginWebhookDeliveryStatus =
+  (typeof PLUGIN_WEBHOOK_DELIVERY_STATUSES)[number];
 
 /**
  * Core domain event types that plugins can subscribe to via the

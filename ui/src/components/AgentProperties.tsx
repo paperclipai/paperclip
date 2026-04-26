@@ -1,6 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
+import {
+  AGENT_PRIORITY_TIER_LABELS,
+  AGENT_ROLE_LABELS,
+  readAgentPriorityTier,
+  type Agent,
+  type AgentPriorityTier,
+  type AgentRuntimeState,
+} from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -9,6 +16,7 @@ import { StatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 
 interface AgentPropertiesProps {
   agent: Agent;
@@ -17,11 +25,31 @@ interface AgentPropertiesProps {
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+const PRIORITY_TIER_BADGE_VARIANT: Record<
+  AgentPriorityTier,
+  "default" | "secondary" | "outline"
+> = {
+  p0: "default",
+  p1: "default",
+  p2: "secondary",
+  p3: "outline",
+};
+
+function PropertyRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex items-start gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
-      <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
+      <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">
+        {label}
+      </span>
+      <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
+        {children}
+      </div>
     </div>
   );
 }
@@ -35,7 +63,14 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
     enabled: !!selectedCompanyId && !!agent.reportsTo,
   });
 
-  const reportsToAgent = agent.reportsTo ? agents?.find((a) => a.id === agent.reportsTo) : null;
+  const reportsToAgent = agent.reportsTo
+    ? agents?.find((a) => a.id === agent.reportsTo)
+    : null;
+
+  const priorityTier = readAgentPriorityTier(agent.metadata, {
+    role: agent.role,
+    name: agent.name,
+  });
 
   return (
     <div className="space-y-4">
@@ -44,7 +79,22 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           <StatusBadge status={agent.status} />
         </PropertyRow>
         <PropertyRow label="Role">
-          <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
+          <span className="text-sm">
+            {roleLabels[agent.role] ?? agent.role}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Priority">
+          <Badge
+            variant={PRIORITY_TIER_BADGE_VARIANT[priorityTier]}
+            className="text-xs font-mono uppercase tracking-wide"
+            aria-label={`Opus quota priority tier ${priorityTier}`}
+            title={AGENT_PRIORITY_TIER_LABELS[priorityTier]}
+          >
+            {priorityTier}
+          </Badge>
+          <span className="text-xs text-muted-foreground">
+            {AGENT_PRIORITY_TIER_LABELS[priorityTier].replace(/^p\d\s—\s/i, "")}
+          </span>
         </PropertyRow>
         {agent.title && (
           <PropertyRow label="Title">
@@ -52,7 +102,9 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           </PropertyRow>
         )}
         <PropertyRow label="Adapter">
-          <span className="text-sm font-mono">{getAdapterLabel(agent.adapterType)}</span>
+          <span className="text-sm font-mono">
+            {getAdapterLabel(agent.adapterType)}
+          </span>
         </PropertyRow>
       </div>
 
@@ -62,13 +114,18 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
         {(runtimeState?.sessionDisplayId ?? runtimeState?.sessionId) && (
           <PropertyRow label="Session">
             <span className="text-xs font-mono">
-              {String(runtimeState.sessionDisplayId ?? runtimeState.sessionId).slice(0, 12)}...
+              {String(
+                runtimeState.sessionDisplayId ?? runtimeState.sessionId,
+              ).slice(0, 12)}
+              ...
             </span>
           </PropertyRow>
         )}
         {runtimeState?.lastError && (
           <PropertyRow label="Last error">
-            <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">{runtimeState.lastError}</span>
+            <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">
+              {runtimeState.lastError}
+            </span>
           </PropertyRow>
         )}
         {agent.lastHeartbeatAt && (
@@ -83,7 +140,9 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
                 <Identity name={reportsToAgent.name} size="sm" />
               </Link>
             ) : (
-              <span className="text-sm font-mono">{agent.reportsTo.slice(0, 8)}</span>
+              <span className="text-sm font-mono">
+                {agent.reportsTo.slice(0, 8)}
+              </span>
             )}
           </PropertyRow>
         )}
