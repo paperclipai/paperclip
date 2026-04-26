@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type DragEvent as ReactDragEvent,
   type ErrorInfo,
   type Ref,
   type ReactNode,
@@ -30,6 +31,7 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueAttachment,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -52,10 +54,11 @@ import type {
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
-import { isIssueThreadInteraction } from "../lib/issue-thread-interactions";
+import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
@@ -218,7 +221,7 @@ export interface IssueChatComposerHandle {
 
 interface IssueChatComposerProps {
   onImageUpload?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
@@ -258,7 +261,7 @@ interface IssueChatThreadProps {
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
   imageUploadHandler?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
@@ -351,6 +354,26 @@ function IssueBlockedNotice({
   if (blockers.length === 0 && issueStatus !== "blocked") return null;
 
   const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+  const terminalBlockers = blockers
+    .flatMap((blocker) => blocker.terminalBlockers ?? [])
+    .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
+
+  const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
+    const issuePathId = blocker.identifier ?? blocker.id;
+    return (
+      <IssueLinkQuicklook
+        key={blocker.id}
+        issuePathId={issuePathId}
+        to={createIssueDetailPath(issuePathId)}
+        className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+      >
+        <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+        <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+          {blocker.title}
+        </span>
+      </IssueLinkQuicklook>
+    );
+  };
 
   return (
     <div className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
@@ -364,22 +387,15 @@ function IssueBlockedNotice({
           </p>
           {blockers.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
-              {blockers.map((blocker) => {
-                const issuePathId = blocker.identifier ?? blocker.id;
-                return (
-                  <IssueLinkQuicklook
-                    key={blocker.id}
-                    issuePathId={issuePathId}
-                    to={createIssueDetailPath(issuePathId)}
-                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
-                  >
-                    <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-                    <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
-                      {blocker.title}
-                    </span>
-                  </IssueLinkQuicklook>
-                );
-              })}
+              {blockers.map(renderBlockerChip)}
+            </div>
+          ) : null}
+          {terminalBlockers.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                Ultimately waiting on
+              </span>
+              {terminalBlockers.map(renderBlockerChip)}
             </div>
           ) : null}
         </div>
@@ -505,6 +521,28 @@ function IssueChatFallbackThread({
 
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
+const SUBMIT_SCROLL_RESERVE_VH = 0.4;
+
+type ComposerAttachmentItem = {
+  id: string;
+  name: string;
+  size: number;
+  status: "uploading" | "attached" | "error";
+  inline: boolean;
+  contentPath?: string;
+  error?: string;
+};
+
+function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
+  return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
+}
+
+function formatAttachmentSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
@@ -610,6 +648,23 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+function formatInteractionActorLabel(args: {
+  agentId?: string | null;
+  userId?: string | null;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+}) {
+  const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
+  if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
+  if (userId) {
+    return userLabelMap?.get(userId)
+      ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
+      ?? "Board";
+  }
+  return "System";
+}
+
 export function resolveIssueChatHumanAuthor(args: {
   authorName?: string | null;
   authorUserId?: string | null;
@@ -713,8 +768,7 @@ function IssueChatChainOfThought({
     (p): p is ToolCallMessagePart => p.type === "tool-call",
   );
 
-  const hasActiveTool = toolParts.some((t) => t.result === undefined);
-  const isActive = isMessageRunning && hasActiveTool;
+  const isActive = isMessageRunning;
   const [expanded, setExpanded] = useState(isActive);
 
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
@@ -1155,6 +1209,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
@@ -1180,6 +1235,11 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+        {followUpRequested ? (
+          <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+            Follow-up
+          </Badge>
+        ) : null}
       </div>
       <div
         className={cn(
@@ -1355,6 +1415,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
   };
 
   const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+  const followUpRequested = custom.followUpRequested === true;
 
   return (
     <div id={anchorId}>
@@ -1388,6 +1449,11 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              {followUpRequested ? (
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                  Follow-up
+                </Badge>
+              ) : null}
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -1735,6 +1801,106 @@ function IssueChatFeedbackButtons({
   );
 }
 
+function ExpiredRequestConfirmationActivity({
+  message,
+  anchorId,
+  interaction,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+  interaction: RequestConfirmationInteraction;
+}) {
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+  } = useContext(IssueChatCtx);
+  const [expanded, setExpanded] = useState(false);
+  const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
+  const actorAgentId = hasResolvedActor
+    ? interaction.resolvedByAgentId ?? null
+    : interaction.createdByAgentId ?? null;
+  const actorUserId = hasResolvedActor
+    ? interaction.resolvedByUserId ?? null
+    : interaction.createdByUserId ?? null;
+  const actorName = formatInteractionActorLabel({
+    agentId: actorAgentId,
+    userId: actorUserId,
+    agentMap,
+    currentUserId,
+    userLabelMap,
+  });
+  const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
+  const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
+  const detailsId = anchorId ? `${anchorId}-details` : `${interaction.id}-details`;
+  const summary = buildIssueThreadInteractionSummary(interaction);
+
+  const rowContent = (
+    <div className="min-w-0 flex-1">
+      <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
+        <span className="font-medium text-foreground">{actorName}</span>
+        <span className="text-muted-foreground">updated this task</span>
+        <a
+          href={anchorId ? `#${anchorId}` : undefined}
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+        >
+          {timeAgo(message.createdAt)}
+        </a>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+          {expanded ? "Hide confirmation" : "Expired confirmation"}
+        </button>
+      </div>
+      {expanded ? (
+        <p className={cn("mt-1 text-xs text-muted-foreground", isCurrentUser && "text-right")}>
+          {summary}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <div id={anchorId}>
+      {isCurrentUser ? (
+        <div className="flex items-start justify-end gap-2 py-1">
+          {rowContent}
+        </div>
+      ) : (
+        <div className="flex items-start gap-2.5 py-1">
+          <Avatar size="sm" className="mt-0.5">
+            {actorIcon ? (
+              <AvatarFallback><AgentIcon icon={actorIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            )}
+          </Avatar>
+          {rowContent}
+        </div>
+      )}
+      {expanded ? (
+        <div id={detailsId} className="mt-2">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const {
     agentMap,
@@ -1767,6 +1933,16 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     : null;
 
   if (custom.kind === "interaction" && interaction) {
+    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+      return (
+        <ExpiredRequestConfirmationActivity
+          message={message}
+          anchorId={anchorId}
+          interaction={interaction}
+        />
+      );
+    }
+
     return (
       <div id={anchorId}>
         <div className="py-1.5">
@@ -1793,7 +1969,9 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
       <div className="min-w-0 space-y-1">
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">
+            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+          </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -1921,12 +2099,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentItem[]>([]);
+  const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canAcceptFiles = Boolean(onImageUpload || onAttachImage);
 
   function queueViewportRestore(snapshot: ReturnType<typeof captureComposerViewportSnapshot>) {
     if (!snapshot) return;
@@ -2012,6 +2194,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       queueViewportRestore(viewportSnapshot);
       await appendPromise;
       if (draftKey) clearDraft(draftKey);
+      setComposerAttachments([]);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -2026,23 +2209,121 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     }
   }
 
+  async function attachFile(file: File) {
+    const attachmentId = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
+    const inline = Boolean(onImageUpload && file.type.startsWith("image/"));
+    setComposerAttachments((prev) => [
+      ...prev,
+      {
+        id: attachmentId,
+        name: file.name,
+        size: file.size,
+        status: "uploading",
+        inline,
+      },
+    ]);
+
+    try {
+      if (onImageUpload && file.type.startsWith("image/")) {
+        const url = await onImageUpload(file);
+        const safeName = file.name.replace(/[[\]]/g, "\\$&");
+        const markdown = `![${safeName}](${url})`;
+        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? { ...item, status: "attached", contentPath: url }
+            : item,
+        ));
+      } else if (onAttachImage) {
+        const attachment = await onAttachImage(file);
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? {
+                ...item,
+                status: "attached",
+                contentPath: attachment?.contentPath,
+                name: attachment?.originalFilename ?? item.name,
+              }
+            : item,
+        ));
+      } else {
+        setComposerAttachments((prev) => prev.map((item) =>
+          item.id === attachmentId
+            ? { ...item, status: "error", error: "This file type cannot be attached here" }
+            : item,
+        ));
+      }
+    } catch (err) {
+      setComposerAttachments((prev) => prev.map((item) =>
+        item.id === attachmentId
+          ? {
+              ...item,
+              status: "error",
+              error: err instanceof Error ? err.message : "Upload failed",
+            }
+          : item,
+      ));
+    }
+  }
+
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
     const file = evt.target.files?.[0];
     if (!file) return;
     setAttaching(true);
     try {
-      if (onImageUpload) {
-        const url = await onImageUpload(file);
-        const safeName = file.name.replace(/[[\]]/g, "\\$&");
-        const markdown = `![${safeName}](${url})`;
-        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
-      } else if (onAttachImage) {
-        await onAttachImage(file);
-      }
+      await attachFile(file);
     } finally {
       setAttaching(false);
       if (attachInputRef.current) attachInputRef.current.value = "";
     }
+  }
+
+  async function handleDroppedFiles(files: FileList | null | undefined) {
+    if (!files || files.length === 0) return;
+    setAttaching(true);
+    try {
+      for (const file of Array.from(files)) {
+        await attachFile(file);
+      }
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  function resetDragState() {
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+  }
+
+  function handleFileDragEnter(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  }
+
+  function handleFileDragOver(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    evt.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleFileDragLeave(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragOver(false);
+  }
+
+  function handleFileDrop(evt: ReactDragEvent<HTMLDivElement>) {
+    if (!canAcceptFiles || !hasFilePayload(evt)) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    resetDragState();
+    void handleDroppedFiles(evt.dataTransfer?.files);
   }
 
   const canSubmit = !submitting && !!body.trim();
@@ -2059,8 +2340,34 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
-      className="space-y-3 pt-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)]"
+      className={cn(
+        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
+      )}
+      onDragEnterCapture={handleFileDragEnter}
+      onDragOverCapture={handleFileDragOver}
+      onDragLeaveCapture={handleFileDragLeave}
+      onDropCapture={handleFileDrop}
     >
+      {isDragOver && canAcceptFiles ? (
+        <div
+          data-testid="issue-chat-composer-drop-overlay"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+        >
+          <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Paperclip className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Images insert into the reply. Other files are added to this issue.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <MarkdownEditor
         ref={editorRef}
         value={body}
@@ -2069,13 +2376,59 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
-        bordered
-        contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
+        fileDropTarget="parent"
+        bordered={false}
+        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
 
       {composerHint ? (
         <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
           {composerHint}
+        </div>
+      ) : null}
+
+      {composerAttachments.length > 0 ? (
+        <div
+          data-testid="issue-chat-composer-attachments"
+          className="mb-3 mt-2 space-y-1.5 rounded-md border border-dashed border-border/80 bg-muted/20 p-2"
+        >
+          {composerAttachments.map((attachment) => {
+            const sizeLabel = formatAttachmentSize(attachment.size);
+            const statusLabel =
+              attachment.status === "uploading"
+                ? "Uploading to issue"
+                : attachment.status === "error"
+                  ? attachment.error ?? "Upload failed"
+                  : attachment.inline
+                    ? "Inserted inline"
+                    : "Attached to issue";
+            return (
+              <div
+                key={attachment.id}
+                className={cn(
+                  "flex min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-xs",
+                  attachment.status === "error"
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-background/70 text-muted-foreground",
+                )}
+              >
+                {attachment.status === "uploading" ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                ) : attachment.status === "attached" ? (
+                  <Check className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                ) : (
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                  {attachment.name}
+                </span>
+                {sizeLabel ? (
+                  <span className="shrink-0 text-muted-foreground">{sizeLabel}</span>
+                ) : null}
+                <span className="shrink-0 text-muted-foreground">{statusLabel}</span>
+              </div>
+            );
+          })}
         </div>
       ) : null}
 
@@ -2085,7 +2438,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             <input
               ref={attachInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
               className="hidden"
               onChange={handleAttachFile}
             />
@@ -2094,7 +2446,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               size="icon-sm"
               onClick={() => attachInputRef.current?.click()}
               disabled={attaching}
-              title="Attach image"
+              title="Attach file"
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -2204,6 +2556,11 @@ export function IssueChatThread({
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
+  const pendingSubmitScrollRef = useRef(false);
+  const lastUserMessageIdRef = useRef<string | null>(null);
+  const spacerBaselineAnchorRef = useRef<string | null>(null);
+  const spacerInitialReserveRef = useRef(0);
+  const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -2221,6 +2578,8 @@ export function IssueChatThread({
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        logBytes: activeRun.logBytes,
+        lastOutputBytes: activeRun.lastOutputBytes,
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -2317,10 +2676,57 @@ export function IssueChatThread({
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment }) => onAdd(body, reopen, reassignment),
+    onSend: ({ body, reopen, reassignment }) => {
+      pendingSubmitScrollRef.current = true;
+      return onAdd(body, reopen, reassignment);
+    },
     onCancel: onCancelRun,
   });
 
+  useEffect(() => {
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    const lastUserId = lastUserMessage?.id ?? null;
+
+    if (
+      pendingSubmitScrollRef.current
+      && lastUserId
+      && lastUserId !== lastUserMessageIdRef.current
+    ) {
+      pendingSubmitScrollRef.current = false;
+      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+      const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
+      if (anchorId) {
+        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
+        spacerBaselineAnchorRef.current = anchorId;
+        spacerInitialReserveRef.current = reserve;
+        setBottomSpacerHeight(reserve);
+        requestAnimationFrame(() => {
+          const el = document.getElementById(anchorId);
+          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    }
+
+    lastUserMessageIdRef.current = lastUserId;
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const anchorId = spacerBaselineAnchorRef.current;
+    if (!anchorId || spacerInitialReserveRef.current <= 0) return;
+    const userEl = document.getElementById(anchorId);
+    const bottomEl = bottomAnchorRef.current;
+    if (!userEl || !bottomEl) return;
+    const contentBelow = Math.max(
+      0,
+      bottomEl.getBoundingClientRect().top - userEl.getBoundingClientRect().bottom,
+    );
+    const next = Math.max(0, spacerInitialReserveRef.current - contentBelow);
+    setBottomSpacerHeight((prev) => (prev === next ? prev : next));
+    if (next === 0) {
+      spacerBaselineAnchorRef.current = null;
+      spacerInitialReserveRef.current = 0;
+    }
+  }, [messages]);
   useLayoutEffect(() => {
     const composerElement = composerViewportAnchorRef.current;
     if (preserveComposerViewportRef.current) {
@@ -2459,15 +2865,30 @@ export function IssueChatThread({
                   return <IssueChatSystemMessage key={message.id} message={message} />;
                 })
               )}
+              {showComposer ? (
+                <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
+                  <IssueAssigneePausedNotice agent={assignedAgent} />
+                </div>
+              ) : null}
               <div ref={bottomAnchorRef} />
+              {showComposer ? (
+                <div
+                  aria-hidden
+                  data-testid="issue-chat-bottom-spacer"
+                  style={{ height: bottomSpacerHeight }}
+                />
+              ) : null}
             </div>
           </div>
         </IssueChatErrorBoundary>
 
         {showComposer ? (
-          <div ref={composerViewportAnchorRef}>
-            <IssueBlockedNotice issueStatus={issueStatus} blockers={unresolvedBlockers} />
-            <IssueAssigneePausedNotice agent={assignedAgent} />
+          <div
+            ref={composerViewportAnchorRef}
+            data-testid="issue-chat-composer-dock"
+            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+          >
             <IssueChatComposer
               ref={composerRef}
               onImageUpload={imageUploadHandler}

@@ -103,6 +103,33 @@ async function createApp() {
   return app;
 }
 
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
+}
+
 function makeAgent() {
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -129,7 +156,7 @@ describe("agent instructions bundle routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
     mockAgentService.getById.mockResolvedValue(makeAgent());
@@ -194,8 +221,11 @@ describe("agent instructions bundle routes", () => {
   });
 
   it("returns bundle metadata", async () => {
-    const res = await request(await createApp())
-      .get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
@@ -208,13 +238,13 @@ describe("agent instructions bundle routes", () => {
   });
 
   it("writes a bundle file and persists compatibility config", async () => {
-    const res = await request(await createApp())
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
       .send({
         path: "AGENTS.md",
         content: "# Updated Agent\n",
         clearLegacyPromptTemplate: true,
-      });
+      }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledWith(
@@ -250,14 +280,14 @@ describe("agent instructions bundle routes", () => {
       },
     });
 
-    const res = await request(await createApp())
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
       .send({
         adapterType: "claude_local",
         adapterConfig: {
           model: "claude-sonnet-4",
         },
-      });
+      }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -289,13 +319,13 @@ describe("agent instructions bundle routes", () => {
       },
     });
 
-    const res = await request(await createApp())
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
       .send({
         adapterConfig: {
           command: "codex --profile engineer",
         },
-      });
+      }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -327,14 +357,14 @@ describe("agent instructions bundle routes", () => {
       },
     });
 
-    const res = await request(await createApp())
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
       .send({
         replaceAdapterConfig: true,
         adapterConfig: {
           command: "codex --profile engineer",
         },
-      });
+      }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({

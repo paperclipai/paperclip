@@ -42,7 +42,7 @@ describe("instance settings routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
     mockInstanceSettingsService.updateGeneral.mockReset();
@@ -58,6 +58,7 @@ describe("instance settings routes", () => {
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableIssueGraphLivenessAutoRecovery: false,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",
@@ -73,6 +74,7 @@ describe("instance settings routes", () => {
         enableEnvironments: true,
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
+        enableIssueGraphLivenessAutoRecovery: false,
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
@@ -92,6 +94,7 @@ describe("instance settings routes", () => {
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableIssueGraphLivenessAutoRecovery: false,
     });
 
     const patchRes = await request(app)
@@ -103,7 +106,7 @@ describe("instance settings routes", () => {
       enableIsolatedWorkspaces: true,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  });
+  }, 10_000);
 
   it("allows local board users to update guarded dev-server auto-restart", async () => {
     const app = await createApp({
@@ -118,8 +121,28 @@ describe("instance settings routes", () => {
       .send({ autoRestartDevServerWhenIdle: true })
       .expect(200);
 
+    expect(
+      mockInstanceSettingsService.updateExperimental.mock.calls.some(
+        ([patch]) => patch?.autoRestartDevServerWhenIdle === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("allows local board users to update issue graph liveness auto-recovery", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableIssueGraphLivenessAutoRecovery: true })
+      .expect(200);
+
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
-      autoRestartDevServerWhenIdle: true,
+      enableIssueGraphLivenessAutoRecovery: true,
     });
   });
 

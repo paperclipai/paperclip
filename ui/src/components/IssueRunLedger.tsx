@@ -1,9 +1,17 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Issue, Agent } from "@paperclipai/shared";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
+import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { activityApi, type RunForIssue, type RunLivenessState } from "../api/activity";
-import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
+import { ApiError } from "../api/client";
+import {
+  heartbeatsApi,
+  type ActiveRunForIssue,
+  type LiveRunForIssue,
+  type WatchdogDecisionInput,
+} from "../api/heartbeats";
+import { useToastActions } from "../context/ToastContext";
 import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
@@ -11,6 +19,7 @@ import { describeRunRetryState } from "../lib/runRetryState";
 
 type IssueRunLedgerProps = {
   issueId: string;
+  companyId: string;
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Agent>;
@@ -24,11 +33,16 @@ type IssueRunLedgerContentProps = {
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
+  pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
+  canRecordWatchdogDecisions?: boolean;
+  watchdogDecisionError?: string | null;
+  onWatchdogDecision?: (input: WatchdogDecisionInput) => void;
 };
 
 type LedgerRun = RunForIssue & {
   isLive?: boolean;
   agentName?: string;
+  outputSilence?: ActiveRunForIssue["outputSilence"];
 };
 
 type LivenessCopy = {
@@ -96,6 +110,28 @@ const MISSING_LIVENESS_COPY: LivenessCopy = {
 const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
 
+type RunOutputSilenceLevel = NonNullable<ActiveRunForIssue["outputSilence"]>["level"];
+
+type RunOutputSilenceCopy = {
+  label: string;
+  tone: string;
+};
+
+const RUN_OUTPUT_SILENCE_COPY: Partial<Record<RunOutputSilenceLevel, RunOutputSilenceCopy>> = {
+  suspicious: {
+    label: "Silence watch",
+    tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  },
+  critical: {
+    label: "Stale run",
+    tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
+  },
+  snoozed: {
+    label: "Silence snoozed",
+    tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+  },
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -143,6 +179,7 @@ function liveRunToLedgerRun(run: LiveRunForIssue | ActiveRunForIssue): LedgerRun
     usageJson: null,
     resultJson: null,
     isLive: run.status === "queued" || run.status === "running",
+    outputSilence: run.outputSilence,
   };
 }
 
@@ -155,10 +192,25 @@ function mergeRuns(
   for (const run of runs) byId.set(run.runId, run);
   for (const run of liveRuns ?? []) {
     const existing = byId.get(run.id);
-    byId.set(run.id, existing ? { ...existing, isLive: true, agentName: run.agentName } : liveRunToLedgerRun(run));
+    byId.set(
+      run.id,
+      existing
+        ? { ...existing, isLive: true, agentName: run.agentName, outputSilence: run.outputSilence }
+        : liveRunToLedgerRun(run),
+    );
   }
-  if (activeRun && !byId.has(activeRun.id)) {
-    byId.set(activeRun.id, liveRunToLedgerRun(activeRun));
+  if (activeRun) {
+    const existing = byId.get(activeRun.id);
+    if (existing) {
+      byId.set(activeRun.id, {
+        ...existing,
+        isLive: isActiveRun(existing) || isActiveRun(activeRun),
+        agentName: activeRun.agentName,
+        outputSilence: activeRun.outputSilence,
+      });
+    } else {
+      byId.set(activeRun.id, liveRunToLedgerRun(activeRun));
+    }
   }
 
   return [...byId.values()].sort((a, b) => {
@@ -252,13 +304,56 @@ function compactAgentName(run: LedgerRun, agentMap: ReadonlyMap<string, Pick<Age
   return run.agentName ?? agentMap.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
 }
 
+function formatSilenceAge(ms: number | null | undefined) {
+  if (!ms || ms <= 0) return null;
+  const totalMinutes = Math.floor(ms / 60_000);
+  if (totalMinutes < 1) return "under 1 minute";
+  if (totalMinutes < 60) return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (minutes === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${hours}h ${minutes}m`;
+}
+
+function canBoardRecordWatchdogDecision(
+  companyId: string,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!boardAccess) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+
+  const membership = boardAccess.memberships?.find(
+    (item) => item.companyId === companyId && item.status === "active",
+  );
+  if (!membership) return boardAccess.companyIds.includes(companyId) && !boardAccess.memberships;
+  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+function watchdogDecisionErrorMessage(error: unknown) {
+  if (error instanceof ApiError && error.status === 403) {
+    return "Only the board or the assigned recovery owner can record watchdog decisions";
+  }
+  return error instanceof Error && error.message.trim().length > 0
+    ? error.message
+    : "Paperclip could not record the watchdog decision.";
+}
+
 export function IssueRunLedger({
   issueId,
+  companyId,
   issueStatus,
   childIssues,
   agentMap,
   hasLiveRuns,
 }: IssueRunLedgerProps) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [watchdogDecisionError, setWatchdogDecisionError] = useState<string | null>(null);
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
@@ -279,6 +374,28 @@ export function IssueRunLedger({
     refetchInterval: hasLiveRuns ? false : 3000,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
+  const watchdogDecision = useMutation({
+    mutationFn: (input: WatchdogDecisionInput) => heartbeatsApi.recordWatchdogDecision(input),
+    onMutate: () => {
+      setWatchdogDecisionError(null);
+    },
+    onSuccess: () => {
+      setWatchdogDecisionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
+    },
+    onError: (error) => {
+      const message = watchdogDecisionErrorMessage(error);
+      const dedupeSuffix = error instanceof ApiError ? String(error.status) : "error";
+      setWatchdogDecisionError(message);
+      pushToast({
+        title: "Watchdog decision not recorded",
+        body: message,
+        tone: "error",
+        dedupeKey: `watchdog-decision:${issueId}:${dedupeSuffix}`,
+      });
+    },
+  });
 
   return (
     <IssueRunLedgerContent
@@ -288,6 +405,10 @@ export function IssueRunLedger({
       issueStatus={issueStatus}
       childIssues={childIssues}
       agentMap={agentMap}
+      pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
+      canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
+      watchdogDecisionError={watchdogDecisionError}
+      onWatchdogDecision={(input) => watchdogDecision.mutate(input)}
     />
   );
 }
@@ -299,9 +420,21 @@ export function IssueRunLedgerContent({
   issueStatus,
   childIssues,
   agentMap,
+  pendingWatchdogDecision,
+  canRecordWatchdogDecisions = true,
+  watchdogDecisionError,
+  onWatchdogDecision,
 }: IssueRunLedgerContentProps) {
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
   const latestRun = ledgerRuns[0] ?? null;
+  const latestSilentRun = useMemo(
+    () =>
+      ledgerRuns.find((run) =>
+        isActiveRun(run)
+        && (run.outputSilence?.level === "critical" || run.outputSilence?.level === "suspicious"),
+      ) ?? null,
+    [ledgerRuns],
+  );
   const children = childIssueSummary(childIssues);
 
   return (
@@ -356,6 +489,91 @@ export function IssueRunLedgerContent({
                 </span>
               ) : null}
             </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {latestSilentRun?.outputSilence ? (
+        <div
+          className={cn(
+            "rounded-md border px-3 py-2 text-xs",
+            latestSilentRun.outputSilence.level === "critical"
+              ? "border-red-500/30 bg-red-500/10 text-red-900 dark:text-red-200"
+              : "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200",
+          )}
+        >
+          <p className="font-medium">
+            {latestSilentRun.outputSilence.level === "critical"
+              ? "Stale-run watchdog alert"
+              : "Output silence watchdog warning"}
+          </p>
+          <p className="mt-1">
+            Latest active run has been silent for{" "}
+            {formatSilenceAge(latestSilentRun.outputSilence.silenceAgeMs) ?? "an extended period"}.
+            {latestSilentRun.outputSilence.evaluationIssueIdentifier ? (
+              <>
+                {" "}
+                Review{" "}
+                <Link
+                  to={`/issues/${latestSilentRun.outputSilence.evaluationIssueIdentifier}`}
+                  className="font-medium underline underline-offset-2"
+                >
+                  {latestSilentRun.outputSilence.evaluationIssueIdentifier}
+                </Link>
+                {" "}for recovery context.
+              </>
+            ) : null}
+          </p>
+          {onWatchdogDecision && canRecordWatchdogDecisions ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                onClick={() =>
+                  onWatchdogDecision({
+                    runId: latestSilentRun.runId,
+                    decision: "continue",
+                    evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
+                  })}
+                disabled={pendingWatchdogDecision != null}
+              >
+                Continue monitoring
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                onClick={() =>
+                  onWatchdogDecision({
+                    runId: latestSilentRun.runId,
+                    decision: "snooze",
+                    evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
+                    snoozedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                    reason: "Snoozed from issue run ledger",
+                  })}
+                disabled={pendingWatchdogDecision != null}
+              >
+                Snooze 1h
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                onClick={() =>
+                  onWatchdogDecision({
+                    runId: latestSilentRun.runId,
+                    decision: "dismissed_false_positive",
+                    evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
+                    reason: "Dismissed from issue run ledger",
+                  })}
+                disabled={pendingWatchdogDecision != null}
+              >
+                Mark false positive
+              </button>
+            </div>
+          ) : null}
+          {watchdogDecisionError ? (
+            <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-900 dark:text-red-200">
+              {watchdogDecisionError}
+            </p>
           ) : null}
         </div>
       ) : null}
@@ -416,6 +634,16 @@ export function IssueRunLedgerContent({
                       )}
                     >
                       {retryState.badgeLabel}
+                    </span>
+                  ) : null}
+                  {run.outputSilence && RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
+                    <span
+                      className={cn(
+                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                        RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.tone,
+                      )}
+                    >
+                      {RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.label}
                     </span>
                   ) : null}
                 </div>

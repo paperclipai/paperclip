@@ -67,6 +67,7 @@ describe("issue graph liveness classifier", () => {
       issueId: blockedId,
       identifier: "PAP-1703",
       state: "blocked_by_unassigned_issue",
+      recoveryIssueId: blockerId,
       recommendedOwnerAgentId: managerId,
       dependencyPath: [
         expect.objectContaining({ issueId: blockedId }),
@@ -74,6 +75,57 @@ describe("issue graph liveness classifier", () => {
       ],
       incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_by_unassigned_issue:${blockerId}`,
     });
+  });
+
+  it("does not use free-form executive role or name matching for recovery ownership", () => {
+    const rootAgentId = "root-agent";
+    const spoofedExecutiveId = "spoofed-executive";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Missing unblock work",
+          status: "todo",
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent({
+          id: spoofedExecutiveId,
+          name: "Chief Executive Recovery",
+          role: "cto",
+          title: "CEO",
+          reportsTo: rootAgentId,
+        }),
+        agent({
+          id: rootAgentId,
+          name: "Root Operator",
+          role: "operator",
+          title: null,
+          reportsTo: null,
+        }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.recommendedOwnerAgentId).toBe(rootAgentId);
+    expect(findings[0]?.recommendedOwnerCandidates[0]).toMatchObject({
+      agentId: rootAgentId,
+      reason: "root_agent",
+      sourceIssueId: blockerId,
+    });
+    expect(findings[0]?.recommendedOwnerCandidateAgentIds).toEqual([
+      rootAgentId,
+      spoofedExecutiveId,
+    ]);
   });
 
   it("does not flag a live blocked chain with an active assignee and wake path", () => {

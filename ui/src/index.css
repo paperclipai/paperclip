@@ -448,9 +448,21 @@
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: middle;
+  vertical-align: baseline;
   white-space: nowrap;
   user-select: none;
+}
+
+/* Strip the MDXEditor's default inline-code styling from the text inside chips
+   (the link label otherwise picks up a monospace font + gray tint). */
+.paperclip-mdxeditor-content a.paperclip-mention-chip,
+.paperclip-mdxeditor-content a.paperclip-mention-chip code,
+.paperclip-mdxeditor-content a.paperclip-project-mention-chip,
+.paperclip-mdxeditor-content a.paperclip-project-mention-chip code {
+  font-family: inherit;
+  background: none;
+  color: inherit;
+  padding: 0;
 }
 
 .paperclip-mdxeditor-content a.paperclip-mention-chip::before,
@@ -768,6 +780,13 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: color-mix(in oklab, var(--accent) 42%, transparent);
 }
 
+/* Inline issue references in markdown: no pill chrome, just a status icon
+   beside the link label — keeps the pair from splitting across lines. */
+.paperclip-markdown-issue-ref {
+  display: inline;
+  white-space: nowrap;
+}
+
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
@@ -832,9 +851,11 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: transparent;
 }
 
-/* Project mention chips rendered inside MarkdownBody */
+/* Mention chips rendered inline in prose (MarkdownBody or inline anchors) */
 a.paperclip-mention-chip,
-a.paperclip-project-mention-chip {
+a.paperclip-project-mention-chip,
+span.paperclip-mention-chip,
+span.paperclip-project-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -845,8 +866,23 @@ a.paperclip-project-mention-chip {
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: middle;
+  /* Align the pill relative to the surrounding text baseline instead of its
+     x-height midpoint so it sits on the text line rather than floating above. */
+  vertical-align: baseline;
   white-space: nowrap;
+}
+
+/* When the identifier inside a chip is backtick-wrapped in markdown, strip the
+   inline-code monospace/gray styling so the pill label reads cleanly. */
+.paperclip-markdown a.paperclip-mention-chip code,
+.paperclip-markdown a.paperclip-project-mention-chip code,
+.paperclip-markdown span.paperclip-mention-chip code,
+.paperclip-markdown span.paperclip-project-mention-chip code {
+  font-family: inherit;
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
 }
 
 /* Keep MDXEditor popups above app dialogs, even when they portal to <body>. */

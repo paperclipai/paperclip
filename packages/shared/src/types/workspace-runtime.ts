@@ -231,11 +231,13 @@ export interface WorkspaceRuntimeService {
   updatedAt: Date;
 }
 
-export type WorkspaceRealizationTransport = "local" | "ssh";
+export type WorkspaceRealizationTransport = "local" | "ssh" | "sandbox" | "plugin";
 
 export type WorkspaceRealizationSyncStrategy =
   | "none"
-  | "ssh_git_import_export";
+  | "ssh_git_import_export"
+  | "sandbox_archive_upload_download"
+  | "provider_defined";
 
 export interface WorkspaceRealizationRequest {
   version: 1;
@@ -288,6 +290,7 @@ export interface WorkspaceRealizationRecord {
     host?: string | null;
     port?: number | null;
     username?: string | null;
+    sandboxId?: string | null;
   };
   sync: {
     strategy: WorkspaceRealizationSyncStrategy;
