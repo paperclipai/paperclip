@@ -146,7 +146,7 @@ function fetchCursorModelsFromCli(): AdapterModel[] {
   if (result.hasError && stdout.trim().length === 0 && stderr.trim().length === 0) {
     return [];
   }
-  if ((result.status ?? 1) !== 0 && !/available models?:/i.test(`${stdout}\n${stderr}`)) {
+  if ((result.status ?? 1) !== 0 && !/available models?:?/i.test(`${stdout}\n${stderr}`)) {
     return [];
   }
 

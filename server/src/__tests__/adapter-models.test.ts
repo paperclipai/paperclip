@@ -104,6 +104,25 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "composer-2-fast")).toBe(true);
   });
 
+  it("parses cursor models when CLI exits non-zero but emits colonless header", async () => {
+    const runner = vi.fn(() => ({
+      status: 1,
+      stdout: [
+        "Available models",
+        "",
+        "auto - Auto",
+        "claude-4.6-opus-high-thinking - Opus 4.6 1M Thinking",
+      ].join("\n"),
+      stderr: "",
+      hasError: false,
+    }));
+    setCursorModelsRunnerForTests(runner);
+
+    const models = await listAdapterModels("cursor");
+    expect(models.some((m) => m.id === "auto" && m.label === "Auto")).toBe(true);
+    expect(models.some((m) => m.id === "claude-4.6-opus-high-thinking")).toBe(true);
+  });
+
   it("parses cursor id-dash-label format from agent models output", async () => {
     const runner = vi.fn(() => ({
       status: 0,
