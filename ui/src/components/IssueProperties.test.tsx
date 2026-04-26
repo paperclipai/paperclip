@@ -123,6 +123,23 @@ async function flush() {
   });
 }
 
+async function findButtonByText(
+  container: HTMLElement,
+  label: string,
+  attempts = 10,
+): Promise<HTMLButtonElement> {
+  for (let i = 0; i < attempts; i++) {
+    const found = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === label,
+    ) as HTMLButtonElement | undefined;
+    if (found) return found;
+    await flush();
+  }
+  throw new Error(
+    `Button with text "${label}" was not rendered within ${attempts} flush cycles`,
+  );
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -993,11 +1010,9 @@ describe("IssueProperties", () => {
       childIssues: [],
       onUpdate: vi.fn(),
     });
-    await flush();
 
-    const buttonLabels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent);
-    expect(buttonLabels).toContain("Approve");
-    expect(buttonLabels).toContain("Request changes");
+    await findButtonByText(container, "Approve");
+    await findButtonByText(container, "Request changes");
 
     act(() => root.unmount());
   });
@@ -1099,13 +1114,9 @@ describe("IssueProperties", () => {
       childIssues: [],
       onUpdate,
     });
-    await flush();
 
-    const approveButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "Approve",
-    );
-    expect(approveButton).toBeDefined();
-    act(() => approveButton!.click());
+    const approveButton = await findButtonByText(container, "Approve");
+    act(() => approveButton.click());
 
     expect(onUpdate).toHaveBeenCalledWith({ status: "done", comment: "LGTM — ship it" });
     promptSpy.mockRestore();
@@ -1139,13 +1150,9 @@ describe("IssueProperties", () => {
       childIssues: [],
       onUpdate,
     });
-    await flush();
 
-    const rejectButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "Request changes",
-    );
-    expect(rejectButton).toBeDefined();
-    act(() => rejectButton!.click());
+    const rejectButton = await findButtonByText(container, "Request changes");
+    act(() => rejectButton.click());
 
     expect(onUpdate).toHaveBeenCalledWith({ status: "in_progress", comment: "please add tests" });
     promptSpy.mockRestore();
@@ -1179,12 +1186,9 @@ describe("IssueProperties", () => {
       childIssues: [],
       onUpdate,
     });
-    await flush();
 
-    const approveButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "Approve",
-    );
-    act(() => approveButton!.click());
+    const approveButton = await findButtonByText(container, "Approve");
+    act(() => approveButton.click());
 
     expect(onUpdate).not.toHaveBeenCalled();
     promptSpy.mockRestore();
@@ -1219,12 +1223,9 @@ describe("IssueProperties", () => {
       childIssues: [],
       onUpdate,
     });
-    await flush();
 
-    const approveButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "Approve",
-    );
-    act(() => approveButton!.click());
+    const approveButton = await findButtonByText(container, "Approve");
+    act(() => approveButton.click());
 
     expect(onUpdate).not.toHaveBeenCalled();
     expect(alertSpy).toHaveBeenCalled();
