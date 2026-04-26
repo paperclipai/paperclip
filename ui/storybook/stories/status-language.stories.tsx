@@ -1,15 +1,19 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AGENT_STATUSES, ISSUE_PRIORITIES, ISSUE_STATUSES } from "@paperclipai/shared";
+import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { Bot, CheckCircle2, Clock3, DollarSign, FolderKanban, Inbox, MessageSquare, Users } from "lucide-react";
 import { CopyText } from "@/components/CopyText";
 import { EmptyState } from "@/components/EmptyState";
 import { Identity } from "@/components/Identity";
+import { IssueRow } from "@/components/IssueRow";
 import { MetricCard } from "@/components/MetricCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { QuotaBar } from "@/components/QuotaBar";
 import { StatusBadge } from "@/components/StatusBadge";
+import { StatusIcon } from "@/components/StatusIcon";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { createIssue } from "../fixtures/paperclipData";
 
 function Section({
   eyebrow,
@@ -28,6 +32,156 @@ function Section({
       </div>
       <div className="p-5">{children}</div>
     </section>
+  );
+}
+
+type CoveredBlockedCell = {
+  label: string;
+  status: string;
+  blockerAttention: IssueBlockerAttention | null;
+  expectedVisual: string;
+  expectedCopy: string;
+};
+
+const coveredBlockedMatrix: CoveredBlockedCell[] = [
+  {
+    label: "Normal blocked",
+    status: "blocked",
+    blockerAttention: null,
+    expectedVisual: "solid red ring",
+    expectedCopy: "Blocked",
+  },
+  {
+    label: "Covered by 1 active child",
+    status: "blocked",
+    blockerAttention: {
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PAP-2175",
+    },
+    expectedVisual: "cyan ring",
+    expectedCopy: "Blocked · waiting on active sub-issue PAP-2175",
+  },
+  {
+    label: "Covered by N active children",
+    status: "blocked",
+    blockerAttention: {
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 3,
+      coveredBlockerCount: 3,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: null,
+    },
+    expectedVisual: "cyan ring",
+    expectedCopy: "Blocked · waiting on 3 active sub-issues",
+  },
+  {
+    label: "Covered by active dependency",
+    status: "blocked",
+    blockerAttention: {
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PAP-1918",
+    },
+    expectedVisual: "cyan ring",
+    expectedCopy: "Blocked · covered by active dependency PAP-1918",
+  },
+  {
+    label: "Covered by N active dependencies",
+    status: "blocked",
+    blockerAttention: {
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 2,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: null,
+    },
+    expectedVisual: "cyan ring",
+    expectedCopy: "Blocked · covered by 2 active dependencies",
+  },
+  {
+    label: "Mixed: 1 covered, 1 needs attention",
+    status: "blocked",
+    blockerAttention: {
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: null,
+    },
+    expectedVisual: "solid red ring",
+    expectedCopy: "Blocked · 2 unresolved blockers need attention",
+  },
+  {
+    label: "Needs attention (single blocker)",
+    status: "blocked",
+    blockerAttention: {
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PAP-1042",
+    },
+    expectedVisual: "solid red ring",
+    expectedCopy: "Blocked · 1 unresolved blocker needs attention",
+  },
+  {
+    label: "Non-blocked with prop ignored",
+    status: "in_progress",
+    blockerAttention: {
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PAP-2175",
+    },
+    expectedVisual: "yellow ring",
+    expectedCopy: "In Progress",
+  },
+];
+
+const coveredBlockedIssue = createIssue({
+  id: "issue-covered-blocked-story",
+  identifier: "PAP-2178",
+  issueNumber: 2178,
+  title: "Covered blocked visual state: final acceptance",
+  status: "blocked",
+  priority: "medium",
+  blockerAttention: coveredBlockedMatrix[1]!.blockerAttention ?? undefined,
+  lastActivityAt: new Date("2026-04-24T13:40:00.000Z"),
+  updatedAt: new Date("2026-04-24T13:40:00.000Z"),
+});
+
+function CoveredBlockedSurface({ mode, size }: { mode: "light" | "dark"; size: "desktop" | "mobile" }) {
+  const isDark = mode === "dark";
+  const isMobile = size === "mobile";
+
+  return (
+    <div className={isDark ? "dark" : undefined}>
+      <div className="rounded-lg border border-border bg-background text-foreground">
+        <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+          {size} · {mode}
+        </div>
+        <div className={isMobile ? "max-w-[340px]" : "min-w-[620px]"}>
+          <IssueRow
+            issue={coveredBlockedIssue}
+            mobileMeta={<StatusBadge status={coveredBlockedIssue.status} />}
+            trailingMeta="waiting on PAP-2175"
+          />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -70,6 +224,41 @@ function StatusLanguage() {
                 ))}
               </CardContent>
             </Card>
+          </div>
+        </Section>
+
+        <Section eyebrow="Covered blocked" title="Blocked attention state matrix">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {coveredBlockedMatrix.map((item) => (
+              <div
+                key={item.label}
+                className="flex min-h-[136px] flex-col justify-between rounded-lg border border-border bg-background/70 p-4"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.expectedVisual}</div>
+                  </div>
+                  <StatusIcon status={item.status} blockerAttention={item.blockerAttention} />
+                </div>
+                <div className="mt-4 rounded-md bg-muted/45 px-2.5 py-2 font-mono text-[11px] leading-5 text-muted-foreground">
+                  {item.expectedCopy}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Tooltip and aria-label copy begin with "Blocked · " for cells 2-7; cells 6 and 7 retain the solid red ring
+            and mention blockers that need attention.
+          </p>
+        </Section>
+
+        <Section eyebrow="Covered blocked" title="IssueRow desktop and mobile surfaces">
+          <div className="grid gap-4 xl:grid-cols-2">
+            <CoveredBlockedSurface mode="light" size="desktop" />
+            <CoveredBlockedSurface mode="dark" size="desktop" />
+            <CoveredBlockedSurface mode="light" size="mobile" />
+            <CoveredBlockedSurface mode="dark" size="mobile" />
           </div>
         </Section>
 

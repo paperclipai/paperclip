@@ -175,7 +175,7 @@ describe("issue workspace command authorization", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.addComment.mockResolvedValue(null);
     mockIssueService.create.mockResolvedValue(makeIssue());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);

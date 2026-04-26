@@ -41,6 +41,7 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
   PluginUiSlotDeclaration,
   PluginUiDeclaration,
   PluginLauncherActionDeclaration,

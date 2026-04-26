@@ -178,7 +178,7 @@ describe("issue attachment routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockLogActivity.mockResolvedValue(undefined);
   });
 

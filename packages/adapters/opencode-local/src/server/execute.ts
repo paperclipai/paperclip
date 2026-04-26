@@ -4,6 +4,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetPaperclipApiUrl,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  prepareAdapterExecutionTargetRuntime,
+  readAdapterExecutionTarget,
+  readAdapterExecutionTargetHomeDir,
+  resolveAdapterExecutionTargetCommandForLogs,
+  runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
+} from "@paperclipai/adapter-utils/execution-target";
+import {
   asString,
   asNumber,
   asStringArray,
@@ -12,10 +28,8 @@ import {
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
-  resolveCommandForLogs,
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
@@ -93,8 +107,26 @@ async function ensureOpenCodeSkillsInjected(
   }
 }
 
+async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<string> {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skills-"));
+  const target = path.join(tmp, "skills");
+  await fs.mkdir(target, { recursive: true });
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  for (const entry of availableEntries) {
+    if (!desiredNames.has(entry.key)) continue;
+    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+  }
+  return target;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -123,11 +155,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
-  await ensureOpenCodeSkillsInjected(
-    onLog,
-    openCodeSkillEntries,
-    desiredOpenCodeSkillNames,
-  );
+  if (!executionTargetIsRemote) {
+    await ensureOpenCodeSkillsInjected(
+      onLog,
+      openCodeSkillEntries,
+      desiredOpenCodeSkillNames,
+    );
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -172,6 +206,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
   if (agentHome) env.AGENT_HOME = agentHome;
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
+  if (targetPaperclipApiUrl) env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -185,26 +221,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const localRuntimeConfigHome =
+    preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
-    const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+    const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
 
-    await ensureOpenCodeModelConfiguredAndAvailable({
-      model,
-      command,
-      cwd,
-      env: runtimeEnv,
-    });
+    if (!executionTargetIsRemote) {
+      await ensureOpenCodeModelConfiguredAndAvailable({
+        model,
+        command,
+        cwd,
+        env: runtimeEnv,
+      });
+    }
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
@@ -213,18 +253,80 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (fromExtraArgs.length > 0) return fromExtraArgs;
       return asStringArray(config.args);
     })();
+    const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+    let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+    let localSkillsDir: string | null = null;
+
+    if (executionTargetIsRemote) {
+      localSkillsDir = await buildOpenCodeSkillsDir(config);
+      await onLog(
+        "stdout",
+        `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+      );
+      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        target: executionTarget,
+        adapterKey: "opencode",
+        workspaceLocalDir: cwd,
+        assets: [
+          {
+            key: "skills",
+            localDir: localSkillsDir,
+            followSymlinks: true,
+          },
+          ...(localRuntimeConfigHome
+            ? [{
+              key: "xdgConfig",
+              localDir: localRuntimeConfigHome,
+            }]
+            : []),
+        ],
+      });
+      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
+      if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
+        preparedRuntimeConfig.env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+      }
+      if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
+        preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
+      }
+      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+        ? preparedExecutionTargetRuntime.runtimeRootDir
+        : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+            cwd,
+            env: preparedRuntimeConfig.env,
+            timeoutSec,
+            graceSec,
+            onLog,
+          });
+      if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
+        const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+          { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
+        );
+      }
+    }
 
     const runtimeSessionParams = parseObject(runtime.sessionParams);
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+    const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
     const canResumeSession =
       runtimeSessionId.length > 0 &&
-      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (runtimeSessionId && !canResumeSession) {
+    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
-        `[paperclip] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+        `[paperclip] OpenCode session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+      );
+    } else if (runtimeSessionId && !canResumeSession) {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -314,7 +416,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await onMeta({
           adapterType: "opencode_local",
           command: resolvedCommand,
-          cwd,
+          cwd: effectiveExecutionCwd,
           commandNotes,
           commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
           env: loggedEnv,
@@ -324,9 +426,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runChildProcess(runId, command, args, {
+      const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
         cwd,
-        env: runtimeEnv,
+        env: preparedRuntimeConfig.env,
         stdin: prompt,
         timeoutSec,
         graceSec,
@@ -364,10 +466,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const resolvedSessionParams = resolvedSessionId
         ? ({
             sessionId: resolvedSessionId,
-            cwd,
+            cwd: effectiveExecutionCwd,
             ...(workspaceId ? { workspaceId } : {}),
             ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
             ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+            ...(executionTargetIsRemote
+              ? {
+                  remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget),
+                }
+              : {}),
           } as Record<string, unknown>)
         : null;
 
@@ -408,23 +515,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
-    const initial = await runAttempt(sessionId);
-    const initialFailed =
-      !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-    if (
-      sessionId &&
-      initialFailed &&
-      isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-    ) {
-      await onLog(
-        "stdout",
-        `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
-      const retry = await runAttempt(null);
-      return toResult(retry, true);
-    }
+    try {
+      const initial = await runAttempt(sessionId);
+      const initialFailed =
+        !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+      if (
+        sessionId &&
+        initialFailed &&
+        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+      ) {
+        await onLog(
+          "stdout",
+          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        );
+        const retry = await runAttempt(null);
+        return toResult(retry, true);
+      }
 
-    return toResult(initial);
+      return toResult(initial);
+    } finally {
+      await Promise.all([
+        restoreRemoteWorkspace?.(),
+        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+      ]);
+    }
   } finally {
     await preparedRuntimeConfig.cleanup();
   }

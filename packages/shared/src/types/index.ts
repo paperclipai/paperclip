@@ -1,5 +1,17 @@
 export type { Company } from "./company.js";
 export type {
+  Environment,
+  EnvironmentLease,
+  EnvironmentProbeResult,
+  FakeSandboxEnvironmentConfig,
+  LocalEnvironmentConfig,
+  PluginSandboxEnvironmentConfig,
+  PluginEnvironmentConfig,
+  SandboxEnvironmentConfig,
+  SandboxEnvironmentProvider,
+  SshEnvironmentConfig,
+} from "./environment.js";
+export type {
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,
@@ -78,6 +90,10 @@ export type {
   WorkspaceRuntimeService,
   WorkspaceRuntimeServiceStateMap,
   WorkspaceRuntimeDesiredState,
+  WorkspaceRealizationRecord,
+  WorkspaceRealizationRequest,
+  WorkspaceRealizationSyncStrategy,
+  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceProviderType,
@@ -102,6 +118,9 @@ export type {
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueBlockerAttention,
+  IssueBlockerAttentionReason,
+  IssueBlockerAttentionState,
   IssueReferenceSource,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
@@ -112,6 +131,7 @@ export type {
   IssueExecutionStage,
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
+  IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
   IssueThreadInteractionActorFields,
@@ -147,6 +167,17 @@ export type {
   IssueAttachment,
   IssueLabel,
 } from "./issue.js";
+export type {
+  IssueTreeControlPreview,
+  IssueTreeHold,
+  IssueTreeHoldMember,
+  IssueTreeHoldReleasePolicy,
+  IssueTreePreviewAgent,
+  IssueTreePreviewIssue,
+  IssueTreePreviewRun,
+  IssueTreePreviewTotals,
+  IssueTreePreviewWarning,
+} from "./issue-tree-control.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
@@ -262,6 +293,7 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
   PluginUiSlotDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,

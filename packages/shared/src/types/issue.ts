@@ -116,6 +116,24 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  terminalBlockers?: IssueRelationIssueSummary[];
+}
+
+export type IssueBlockerAttentionState = "none" | "covered" | "needs_attention";
+
+export type IssueBlockerAttentionReason =
+  | "active_child"
+  | "active_dependency"
+  | "attention_required"
+  | null;
+
+export interface IssueBlockerAttention {
+  state: IssueBlockerAttentionState;
+  reason: IssueBlockerAttentionReason;
+  unresolvedBlockerCount: number;
+  coveredBlockerCount: number;
+  attentionBlockerCount: number;
+  sampleBlockerIdentifier: string | null;
 }
 
 export interface IssueRelation {
@@ -168,6 +186,10 @@ export interface IssueExecutionPolicy {
   stages: IssueExecutionStage[];
 }
 
+export interface IssueReviewRequest {
+  instructions: string;
+}
+
 export interface IssueExecutionState {
   status: IssueExecutionStateStatus;
   currentStageId: string | null;
@@ -175,6 +197,7 @@ export interface IssueExecutionState {
   currentStageType: IssueExecutionStageType | null;
   currentParticipant: IssueExecutionStagePrincipal | null;
   returnAssignee: IssueExecutionStagePrincipal | null;
+  reviewRequest: IssueReviewRequest | null;
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
@@ -237,6 +260,7 @@ export interface Issue {
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -262,6 +286,7 @@ export interface IssueComment {
   authorAgentId: string | null;
   authorUserId: string | null;
   body: string;
+  followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

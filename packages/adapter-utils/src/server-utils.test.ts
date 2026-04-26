@@ -254,6 +254,7 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
@@ -324,6 +325,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("dependency-blocked interaction: yes");
     expect(prompt).toContain("respond or triage the human comment");
     expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
+  });
+
+  it("renders loose review request instructions for execution handoffs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2011",
+        title: "Review request handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        reviewRequest: {
+          instructions: "Please focus on edge cases and leave a short risk summary.",
+        },
+        allowedActions: ["approve", "request_changes"],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Review request instructions:");
+    expect(prompt).toContain("Please focus on edge cases and leave a short risk summary.");
+    expect(prompt).toContain("You are waking as the active reviewer for this issue.");
   });
 
   it("includes continuation and child issue summaries in structured wake context", () => {
