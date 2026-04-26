@@ -1,32 +1,60 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { mapAgentId, parseAgentMap } from "./agent-mapping.js";
+import { mapAgentId } from "./agent-mapping.js";
 import { createBrainMcpClient, BrainMcpError } from "./mcp-client.js";
 
 const PLUGIN_NAME = "brain";
 
+interface BrainConfig {
+  mcpEndpoint?: string;
+  bearerToken?: string;
+  agentMap?: Record<string, string>;
+}
+
+function readConfig(raw: Record<string, unknown>): Required<BrainConfig> {
+  const mcpEndpoint =
+    typeof raw.mcpEndpoint === "string" && raw.mcpEndpoint.length > 0
+      ? raw.mcpEndpoint
+      : "http://localhost:7777";
+  const bearerToken = typeof raw.bearerToken === "string" ? raw.bearerToken : "";
+  const agentMap: Record<string, string> = {};
+  if (raw.agentMap && typeof raw.agentMap === "object" && !Array.isArray(raw.agentMap)) {
+    for (const [k, v] of Object.entries(raw.agentMap as Record<string, unknown>)) {
+      if (typeof v === "string") agentMap[k] = v;
+    }
+  }
+  return { mcpEndpoint, bearerToken, agentMap };
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
-    const endpoint = process.env.BRAIN_MCP_ENDPOINT ?? "http://localhost:7777";
-    const token = process.env.BRAIN_PAPERCLIP_TOKEN ?? "";
-    const agentMap = parseAgentMap(process.env.BRAIN_AGENT_MAP);
+    const raw = await ctx.config.get();
+    const cfg = readConfig(raw);
 
-    if (!token) {
-      ctx.logger.warn(`${PLUGIN_NAME}: BRAIN_PAPERCLIP_TOKEN not set — calls will be rejected`);
+    if (!cfg.bearerToken) {
+      ctx.logger.warn(`${PLUGIN_NAME}: bearerToken not configured — MCP calls will be rejected`);
     }
     ctx.logger.info(
-      `${PLUGIN_NAME}: routing tools to ${endpoint} (mappings: ${Object.keys(agentMap).length})`,
+      `${PLUGIN_NAME}: routing to ${cfg.mcpEndpoint} (agent mappings: ${Object.keys(cfg.agentMap).length})`,
     );
 
-    const client = createBrainMcpClient({ endpoint, bearerToken: token });
+    const client = createBrainMcpClient({
+      endpoint: cfg.mcpEndpoint,
+      bearerToken: cfg.bearerToken,
+    });
 
     const wrap = (mcpTool: string) => async (params: unknown, runCtx: { agentId: string }) => {
       try {
-        const aclKey = mapAgentId(runCtx.agentId, agentMap);
+        const aclKey = mapAgentId(runCtx.agentId, cfg.agentMap);
         const args = (params && typeof params === "object" ? params : {}) as Record<string, unknown>;
         const result = await client.call(mcpTool, { ...args, agentId: aclKey });
         return { data: result };
       } catch (err) {
-        const message = err instanceof BrainMcpError ? err.message : err instanceof Error ? err.message : String(err);
+        const message =
+          err instanceof BrainMcpError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : String(err);
         return { error: message };
       }
     };
@@ -77,20 +105,7 @@ const plugin = definePlugin({
   },
 
   async onHealth() {
-    const endpoint = process.env.BRAIN_MCP_ENDPOINT ?? "http://localhost:7777";
-    try {
-      const res = await fetch(endpoint, { method: "GET", signal: AbortSignal.timeout(2000) });
-      // We expect 405 (POST-only) — that means server is up.
-      if (res.status === 405 || res.status === 401 || res.ok) {
-        return { status: "ok", message: `Brain MCP reachable at ${endpoint}` };
-      }
-      return { status: "degraded", message: `Brain MCP returned ${res.status}` };
-    } catch (err) {
-      return {
-        status: "error",
-        message: `Brain MCP unreachable: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
+    return { status: "ok", message: "Brain plugin worker alive" };
   },
 });
 

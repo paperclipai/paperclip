@@ -13,6 +13,32 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "WHITESTAG",
   categories: ["connector"],
   capabilities: ["agent.tools.register"],
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      mcpEndpoint: {
+        type: "string",
+        title: "Brain MCP endpoint",
+        description: "URL of the Brain MCP server (default http://localhost:7777)",
+        default: "http://localhost:7777",
+      },
+      bearerToken: {
+        type: "string",
+        title: "Bearer token (paperclip)",
+        description:
+          "Token configured as BRAIN_PAPERCLIP_TOKEN in the Brain MCP launchd plist. Required.",
+      },
+      agentMap: {
+        type: "object",
+        title: "Agent UUID → ACL key",
+        description:
+          "Map Paperclip agent UUIDs to Brain ACL keys (e.g. 'CEO'). Unmapped agents fall back to their UUID.",
+        additionalProperties: { type: "string" },
+        default: {},
+      },
+    },
+    required: ["bearerToken"],
+  },
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
