@@ -10,7 +10,16 @@ live trader's existing executor classes.
 """
 from __future__ import annotations
 
-from typing import Any, Protocol
+import asyncio
+import sqlite3
+import time
+from typing import Any, Optional, Protocol
+
+from state_store import (
+    list_open_positions, list_recent_fills,
+    snapshot_balance, write_recon_event,
+    upsert_exchange_health, get_exchange_health,
+)
 
 
 class ExchangeFetcher(Protocol):
@@ -80,18 +89,6 @@ class FakeExchange:
     def get_balance(self, exchange: str) -> dict[str, Any]:
         self._check_reachable(exchange)
         return dict(self._balances.get(exchange, {"available_usd": 0.0, "locked_usd": 0.0}))
-
-
-import asyncio
-import sqlite3
-import time
-from typing import Optional
-
-from state_store import (
-    list_open_positions, list_recent_fills, latest_balance,
-    snapshot_balance, write_recon_event,
-    upsert_exchange_health, get_exchange_health,
-)
 
 
 _BALANCE_DRIFT_USD_THRESHOLD = 1.0  # within ±$1 = info

@@ -5,7 +5,9 @@ Plan 3 wires TelegramSink with the live trader's existing bot token.
 """
 from __future__ import annotations
 
-from typing import Protocol
+import logging
+import time
+from typing import Any, Optional, Protocol
 
 from schemas import ReconciliationEvent
 
@@ -37,9 +39,6 @@ class ConsoleSink:
             f"(source={event.source}, ts={event.timestamp_ms})"
         )
 
-
-import logging
-from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
@@ -92,8 +91,6 @@ class TelegramSink:
         except Exception as e:  # noqa: BLE001
             log.warning("TelegramSink.send failed: %s", e)
 
-
-import time
 
 _SEVERITY_LEVELS = {"info": 0, "warn": 1, "error": 2, "critical": 3}
 
