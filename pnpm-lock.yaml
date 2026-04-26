@@ -378,6 +378,9 @@ importers:
 
   packages/plugins/examples/plugin-heb-grocery:
     dependencies:
+      heb-auth-unofficial:
+        specifier: ^0.1.1
+        version: 0.1.1
       heb-sdk-unofficial:
         specifier: ^1.0.1
         version: 1.0.1
@@ -4658,6 +4661,10 @@ packages:
 
   hast-util-whitespace@3.0.0:
     resolution: {integrity: sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==}
+
+  heb-auth-unofficial@0.1.1:
+    resolution: {integrity: sha512-s/zyF9tsCEe642nes4vPsv+oRTPGhnKiEzDUZCLSqBtQJQl28XFJWa877pkli3au1oGtu/Xp5XH/zQR7tfAS2w==}
+    engines: {node: '>=18'}
 
   heb-sdk-unofficial@1.0.1:
     resolution: {integrity: sha512-s6Hpgub/TMBegGs9E6WKP9mbGBKtTxGHi2eeu/SYRh7ay615YXoVHeaAPBZD2HSuMrQC/m52PKEAp41h9FxcCw==}
@@ -9612,6 +9619,14 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
+  '@vitest/mocker@3.2.4(vite@7.3.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))':
+    dependencies:
+      '@vitest/spy': 3.2.4
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      vite: 7.3.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)
+
   '@vitest/mocker@3.2.4(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))':
     dependencies:
       '@vitest/spy': 3.2.4
@@ -10611,6 +10626,8 @@ snapshots:
   hast-util-whitespace@3.0.0:
     dependencies:
       '@types/hast': 3.0.4
+
+  heb-auth-unofficial@0.1.1: {}
 
   heb-sdk-unofficial@1.0.1: {}
 
@@ -12482,7 +12499,7 @@ snapshots:
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
-      '@vitest/mocker': 3.2.4(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))
+      '@vitest/mocker': 3.2.4(vite@7.3.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))
       '@vitest/pretty-format': 3.2.4
       '@vitest/runner': 3.2.4
       '@vitest/snapshot': 3.2.4

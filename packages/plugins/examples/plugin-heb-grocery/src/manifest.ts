@@ -60,18 +60,11 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "JWT ID token from HEB's OIDC server containing your profile.",
         default: "",
       },
-      hebSatCookie: {
+      hebCookies: {
         type: "string",
-        title: "HEB SAT Cookie",
+        title: "HEB Cookies (full cookie string)",
         description:
-          "Session Authentication Token cookie from heb.com. Required for cart and shopping list operations.",
-        default: "",
-      },
-      hebReese84Cookie: {
-        type: "string",
-        title: "HEB Reese84 Cookie",
-        description:
-          "Imperva bot-mitigation fingerprint cookie from heb.com. Must be kept fresh via a browser session.",
+          "Raw cookie header string for heb.com — required for cart and shopping list operations. Copy from Chrome DevTools: Application → Cookies → heb.com, then build: 'sat=VALUE; reese84=VALUE; incap_ses=VALUE'.",
         default: "",
       },
     },

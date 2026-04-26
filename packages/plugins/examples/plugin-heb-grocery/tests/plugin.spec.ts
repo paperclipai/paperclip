@@ -43,7 +43,7 @@ describe("HEB Grocery plugin", () => {
     // Should fail gracefully with an error field, not throw
     expect(result).toBeDefined();
     expect(typeof (result as { error?: string }).error).toBe("string");
-    expect((result as { error?: string }).error).toContain("bearer token not configured");
+    expect((result as { error?: string }).error).toContain("bearer token not configured" );
   });
 
   it("health check passes", async () => {

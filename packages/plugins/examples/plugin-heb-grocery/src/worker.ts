@@ -35,8 +35,8 @@ type HEBConfig = {
   hebAccessToken?: string;
   hebRefreshToken?: string;
   hebIdToken?: string;
-  hebSatCookie?: string;
-  hebReese84Cookie?: string;
+  /** Full raw cookie header string: "sat=X; reese84=Y; incap_ses=Z" */
+  hebCookies?: string;
 };
 
 type CachedDeals = {
@@ -71,18 +71,17 @@ function buildBearerSession(cfg: HEBConfig): HEBSession {
 }
 
 /**
- * Build a cookie (web) session. Throws if SAT cookie is missing.
+ * Build a cookie (web) session from the raw HEB_COOKIES string.
+ * Throws if not configured.
  */
 function buildCookieSession(cfg: HEBConfig): HEBSession {
-  if (!cfg.hebSatCookie) {
+  if (!cfg.hebCookies) {
     throw new Error(
-      "HEB SAT cookie not configured. Set 'hebSatCookie' in the HEB Grocery plugin settings."
+      "HEB cookies not configured. Set 'hebCookies' in the HEB Grocery plugin settings " +
+      "(format: 'sat=VALUE; reese84=VALUE; incap_ses=VALUE')."
     );
   }
-  const parts = [`sat=${cfg.hebSatCookie}`];
-  if (cfg.hebReese84Cookie) parts.push(`reese84=${cfg.hebReese84Cookie}`);
-  if (cfg.storeNumber) parts.push(`CURR_SESSION_STORE=${cfg.storeNumber}`);
-  return createSessionFromCookies(parts.join("; "));
+  return createSessionFromCookies(cfg.hebCookies);
 }
 
 function summarizeError(err: unknown): string {
@@ -384,7 +383,7 @@ const plugin = definePlugin({
       const cfg = await getConfig(ctx);
       return {
         hasBearerToken: Boolean(cfg.hebAccessToken),
-        hasCookieAuth: Boolean(cfg.hebSatCookie),
+        hasCookieAuth: Boolean(cfg.hebCookies),
         storeNumber: cfg.storeNumber ?? null,
         shoppingContext: cfg.shoppingContext ?? "EXPLORE_MY_STORE",
       };

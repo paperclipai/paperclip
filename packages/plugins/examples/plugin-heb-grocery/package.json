@@ -40,6 +40,7 @@
     "react": ">=18"
   },
   "dependencies": {
+    "heb-auth-unofficial": "^0.1.1",
     "heb-sdk-unofficial": "^1.0.1"
   }
 }
