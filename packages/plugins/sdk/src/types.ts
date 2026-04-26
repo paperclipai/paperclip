@@ -22,6 +22,11 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
+  IssueThreadInteraction,
+  SuggestTasksInteraction,
+  AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
+  CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   Agent,
   Goal,
@@ -36,6 +41,7 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
   PluginUiSlotDeclaration,
   PluginUiDeclaration,
   PluginLauncherActionDeclaration,
@@ -80,6 +86,11 @@ export type {
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
+  IssueThreadInteraction,
+  SuggestTasksInteraction,
+  AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
+  CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   Agent,
   Goal,
@@ -1078,6 +1089,7 @@ export interface PluginIssueSummariesClient {
  * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
+ * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, and `requestConfirmation`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1182,6 +1194,30 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueComment>;
+  createInteraction(
+    issueId: string,
+    interaction: CreateIssueThreadInteraction,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<IssueThreadInteraction>;
+  suggestTasks(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "suggest_tasks" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<SuggestTasksInteraction>;
+  askUserQuestions(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<AskUserQuestionsInteraction>;
+  requestConfirmation(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_confirmation" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RequestConfirmationInteraction>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

@@ -58,7 +58,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
             name={actorName}
             avatarUrl={actorAvatarUrl}
             size="xs"
-            className="align-baseline"
+            className="align-middle"
           />
           <span className="text-muted-foreground ml-1">{verb} </span>
           {name && <span className="font-medium">{name}</span>}

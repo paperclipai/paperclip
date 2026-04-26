@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-04-13
+Date: 2026-04-23
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -146,6 +146,8 @@ Use it for:
 - explicit waiting relationships
 - automatic wakeups when all blockers resolve
 
+Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
+
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
 ## 7. Consistent Execution Path Rules
@@ -216,15 +218,81 @@ This is an active-work continuity recovery.
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
-On startup and on the periodic recovery loop, Paperclip now does three things in sequence:
+On startup and on the periodic recovery loop, Paperclip now does four things in sequence:
 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
 3. reconcile stranded assigned work
+4. scan silent active runs and create or update explicit watchdog review issues
 
-That last step is what closes the gap where issue state survives a crash but the wake/run path does not.
+The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
-## 10. What This Does Not Mean
+## 10. Silent Active-Run Watchdog
+
+An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
+
+The recovery service owns this contract:
+
+- classify active-run output silence as `ok`, `suspicious`, `critical`, `snoozed`, or `not_applicable`
+- collect bounded evidence from run logs, recent run events, child issues, and blockers
+- preserve redaction and truncation before evidence is written to issue descriptions
+- create at most one open `stale_active_run_evaluation` issue per run
+- honor active snooze decisions before creating more review work
+- build the `outputSilence` summary shown by live-run and active-run API responses
+
+Suspicious silence creates a medium-priority review issue for the selected recovery owner. Critical silence raises that review issue to high priority and blocks the source issue on the explicit evaluation task without cancelling the active process.
+
+Watchdog decisions are explicit operator/recovery-owner decisions:
+
+- `snooze` records an operator-chosen future quiet-until time and suppresses scan-created review work during that window
+- `continue` records that the current evidence is acceptable, does not cancel or mutate the active run, and sets a 30-minute default re-arm window before the watchdog evaluates the still-silent run again
+- `dismissed_false_positive` records why the review was not actionable
+
+Operators should prefer `snooze` for known time-bounded quiet periods. `continue` is only a short acknowledgement of the current evidence; if the run remains silent after the re-arm window, the periodic watchdog scan can create or update review work again.
+
+The board can record watchdog decisions. The assigned owner of the watchdog evaluation issue can also record them. Other agents cannot.
+
+## 11. Auto-Recover vs Explicit Recovery vs Human Escalation
+
+Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
+
+### Auto-Recover
+
+Auto-recovery is allowed when ownership is clear and the control plane only lost execution continuity.
+
+Examples:
+
+- requeue one dispatch wake for an assigned `todo` issue whose latest run failed, timed out, or was cancelled
+- requeue one continuation wake for an assigned `in_progress` issue whose live execution path disappeared
+- assign an orphan blocker back to its creator when that blocker is already preventing other work
+
+Auto-recovery preserves the existing owner. It does not choose a replacement agent.
+
+### Explicit Recovery Issue
+
+Paperclip creates an explicit recovery issue when the system can identify a problem but cannot safely complete the work itself.
+
+Examples:
+
+- automatic stranded-work retry was already exhausted
+- a dependency graph has an invalid/uninvokable owner, unassigned blocker, or invalid review participant
+- an active run is silent past the watchdog threshold
+
+The source issue remains visible and blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, or record the reason it is a false positive.
+
+### Human Escalation
+
+Human escalation is required when the next safe action depends on board judgment, budget/approval policy, or information unavailable to the control plane.
+
+Examples:
+
+- all candidate recovery owners are paused, terminated, pending approval, or budget-blocked
+- the issue is human-owned rather than agent-owned
+- the run is intentionally quiet but needs an operator decision before cancellation or continuation
+
+In these cases Paperclip should leave a visible issue/comment trail instead of silently retrying.
+
+## 12. What This Does Not Mean
 
 These semantics do not change V1 into an auto-reassignment system.
 
@@ -238,9 +306,10 @@ The recovery model is intentionally conservative:
 
 - preserve ownership
 - retry once when the control plane lost execution continuity
+- create explicit recovery work when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 11. Practical Interpretation
+## 13. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

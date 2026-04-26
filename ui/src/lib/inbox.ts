@@ -100,11 +100,18 @@ export interface InboxGroupedSection {
 
 export interface InboxKeyboardGroupSection {
   key: string;
+  label?: string | null;
   displayItems: InboxWorkItem[];
   childrenByIssueId: ReadonlyMap<string, Issue[]>;
 }
 
 export type InboxKeyboardNavEntry =
+  | {
+      type: "group";
+      groupKey: string;
+      label: string;
+      collapsed: boolean;
+    }
   | {
       type: "top";
       itemKey: string;
@@ -438,6 +445,7 @@ export function getInboxSearchSupplementIssues({
   issueFilters,
   currentUserId,
   enableRoutineVisibilityFilter = false,
+  liveIssueIds,
 }: {
   query: string;
   filteredWorkItems: InboxWorkItem[];
@@ -446,6 +454,7 @@ export function getInboxSearchSupplementIssues({
   issueFilters: IssueFilterState;
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
+  liveIssueIds?: ReadonlySet<string>;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -455,7 +464,7 @@ export function getInboxSearchSupplementIssues({
       .map((item) => item.issue.id),
     ...archivedSearchIssues.map((issue) => issue.id),
   ]);
-  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter)
+  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter, liveIssueIds)
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
@@ -965,7 +974,16 @@ export function buildInboxKeyboardNavEntries(
   const entries: InboxKeyboardNavEntry[] = [];
 
   for (const group of groupedSections) {
-    if (collapsedGroupKeys.has(group.key)) continue;
+    const isCollapsed = collapsedGroupKeys.has(group.key);
+    if (group.label) {
+      entries.push({
+        type: "group",
+        groupKey: group.key,
+        label: group.label,
+        collapsed: isCollapsed,
+      });
+    }
+    if (isCollapsed) continue;
 
     for (const item of group.displayItems) {
       entries.push({

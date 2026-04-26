@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { Issue, RunLivenessState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
+import type { ActiveRunForIssue } from "../api/heartbeats";
 import { IssueRunLedgerContent } from "./IssueRunLedger";
 
 vi.mock("@/lib/router", () => ({
@@ -99,6 +100,36 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+function createActiveRun(overrides: Partial<ActiveRunForIssue> = {}): ActiveRunForIssue {
+  return {
+    id: "run-live-1",
+    status: "running",
+    invocationSource: "assignment",
+    triggerDetail: null,
+    startedAt: "2026-04-18T19:58:00.000Z",
+    finishedAt: null,
+    createdAt: "2026-04-18T19:58:00.000Z",
+    agentId: "agent-1",
+    agentName: "CodexCoder",
+    adapterType: "codex_local",
+    outputSilence: {
+      lastOutputAt: "2026-04-18T19:00:00.000Z",
+      lastOutputSeq: 4,
+      lastOutputStream: "stdout",
+      silenceStartedAt: "2026-04-18T19:30:00.000Z",
+      silenceAgeMs: 45 * 60 * 1000,
+      level: "critical",
+      suspicionThresholdMs: 10 * 60 * 1000,
+      criticalThresholdMs: 30 * 60 * 1000,
+      snoozedUntil: null,
+      evaluationIssueId: "issue-eval-1",
+      evaluationIssueIdentifier: "PAP-404",
+      evaluationIssueAssigneeAgentId: "agent-owner",
+    },
+    ...overrides,
+  };
+}
+
 function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent>> = {}) {
   render(
     <IssueRunLedgerContent
@@ -108,6 +139,10 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       issueStatus={props.issueStatus ?? "in_progress"}
       childIssues={props.childIssues ?? []}
       agentMap={props.agentMap ?? new Map([["agent-1", { name: "CodexCoder" }]])}
+      pendingWatchdogDecision={props.pendingWatchdogDecision}
+      canRecordWatchdogDecisions={props.canRecordWatchdogDecisions}
+      watchdogDecisionError={props.watchdogDecisionError}
+      onWatchdogDecision={props.onWatchdogDecision}
     />,
   );
 }
@@ -192,6 +227,41 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).not.toContain("initial attempt");
   });
 
+  it("surfaces scheduled retry timing and exhaustion state without opening logs", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-scheduled",
+          status: "scheduled_retry",
+          finishedAt: null,
+          livenessState: null,
+          livenessReason: null,
+          retryOfRunId: "run-root",
+          scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+          scheduledRetryAttempt: 2,
+          scheduledRetryReason: "transient_failure",
+        }),
+        createRun({
+          runId: "run-exhausted",
+          status: "failed",
+          createdAt: "2026-04-18T19:57:00.000Z",
+          retryOfRunId: "run-root",
+          scheduledRetryAttempt: 4,
+          scheduledRetryReason: "transient_failure",
+          retryExhaustedReason: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Retry scheduled");
+    expect(container.textContent).toContain("Attempt 2");
+    expect(container.textContent).toContain("Transient failure");
+    expect(container.textContent).toContain("Next retry");
+    expect(container.textContent).toContain("Retry exhausted");
+    expect(container.textContent).toContain("no further automatic retry will be queued");
+    expect(container.textContent).toContain("Manual intervention required");
+  });
+
   it("shows timeout, cancel, and budget stop reasons without raw logs", () => {
     renderLedger({
       runs: [
@@ -267,5 +337,54 @@ describe("IssueRunLedger", () => {
     });
 
     expect(container.textContent).toContain("2 older runs not shown");
+  });
+
+  it("renders stale-run banner, watchdog actions, and silence badge for live runs", () => {
+    const onWatchdogDecision = vi.fn();
+    renderLedger({
+      runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
+      activeRun: createActiveRun(),
+      onWatchdogDecision,
+    });
+
+    expect(container.textContent).toContain("Stale-run watchdog alert");
+    expect(container.textContent).toContain("PAP-404");
+    expect(container.textContent).toContain("Stale run");
+    const watchdogBanner = Array.from(container.querySelectorAll("p"))
+      .find((node) => node.textContent?.includes("Stale-run watchdog alert"))
+      ?.closest("div");
+    expect(watchdogBanner?.className).toContain("border-red-500/30");
+    expect(watchdogBanner?.className).toContain("bg-red-500/10");
+
+    const continueButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Continue monitoring"),
+    );
+    expect(continueButton).not.toBeUndefined();
+    act(() => {
+      continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onWatchdogDecision).toHaveBeenCalledWith({
+      runId: "run-live-1",
+      decision: "continue",
+      evaluationIssueId: "issue-eval-1",
+    });
+  });
+
+  it("hides watchdog decision actions for known non-owner viewers", () => {
+    const onWatchdogDecision = vi.fn();
+    renderLedger({
+      runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
+      activeRun: createActiveRun(),
+      canRecordWatchdogDecisions: false,
+      onWatchdogDecision,
+    });
+
+    expect(container.textContent).toContain("Stale-run watchdog alert");
+    expect(container.textContent).toContain("PAP-404");
+    expect(container.textContent).not.toContain("Continue monitoring");
+    expect(container.textContent).not.toContain("Snooze 1h");
+    expect(container.textContent).not.toContain("Mark false positive");
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+    expect(onWatchdogDecision).not.toHaveBeenCalled();
   });
 });
