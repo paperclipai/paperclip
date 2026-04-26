@@ -1,8 +1,10 @@
 import { Navigate, Outlet, useLocation } from "@/lib/router";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
+import { buildAuthRedirectPath } from "@/lib/auth-redirect";
 import { queryKeys } from "@/lib/queryKeys";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
@@ -72,6 +74,17 @@ export function CloudAccessGate() {
     retry: false,
   });
 
+  const authRedirectPath = isAuthenticatedMode && !sessionQuery.isLoading && !sessionQuery.data
+    ? buildAuthRedirectPath(location.pathname, location.search)
+    : null;
+
+  useEffect(() => {
+    if (!authRedirectPath) return;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current === authRedirectPath) return;
+    window.location.replace(authRedirectPath);
+  }, [authRedirectPath]);
+
   if (
     healthQuery.isLoading ||
     (isAuthenticatedMode && sessionQuery.isLoading) ||
@@ -96,9 +109,8 @@ export function CloudAccessGate() {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
   }
 
-  if (isAuthenticatedMode && !sessionQuery.data) {
-    const next = encodeURIComponent(`${location.pathname}${location.search}`);
-    return <Navigate to={`/auth?next=${next}`} replace />;
+  if (authRedirectPath) {
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Redirecting to sign in...</div>;
   }
 
   if (
