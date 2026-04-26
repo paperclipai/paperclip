@@ -252,3 +252,5 @@ export { TextChunker } from "./chunker.js";
 export { LocalEmbedder } from "./embedder.js";
 export { KnowledgeDb } from "./db.js";
 export { extractUniqueTopicSlugs, parseStaleTriggers, hasStaleTrigger } from "./stale-detector.js";
+export { RssWatcher, type RssWatcherOptions, type RssFeedItem, type FeedChange, type WatchState } from "./rss-watcher.js";
+export { ChangeDetectionWatcher, type ChangeDetectionWatcherOptions } from "./change-detection-watcher.js";
