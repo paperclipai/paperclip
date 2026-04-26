@@ -5770,6 +5770,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       identifier: string | null;
       agentId: string;
       runId: string;
+      source:
+        | "deferred_comment_wake_terminal_skipped"
+        | "deferred_comment_wake_all_comments_deleted";
     };
     type PromotionResult =
       | null
@@ -5909,13 +5912,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const issueIsTerminal = issue.status === "done" || issue.status === "cancelled";
+        // The freshness/reopen branches below defend the assignee's terminal
+        // decision. Cross-agent wakes (e.g. an @-mention waking a non-assignee)
+        // shouldn't reopen the issue or be dropped on staleness — the mentioned
+        // agent should still be informed of the comment, with the issue's
+        // current status carried through.
+        const isAssigneeWake = issue.assigneeAgentId === deferredAgent.id;
 
         // POI-237 Option 1 — deferred-wake freshness guard. When a comment-bearing
-        // deferred wake targets a terminal issue, only allow promotion if at least one
-        // deferred comment was created AFTER the last terminal transition. Stale wakes
-        // (enqueued before the issue closed) are dropped. Fresh wakes fall through to
-        // the normal promotion path below.
-        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+        // deferred wake targets a terminal issue *that the deferred agent owns*,
+        // only allow promotion if at least one deferred comment was created
+        // AFTER the last terminal transition. Stale wakes (enqueued before the
+        // issue closed) are dropped. Fresh wakes fall through to the normal
+        // promotion path below.
+        if (deferredCommentIds.length > 0 && issueIsTerminal && isAssigneeWake) {
           const closureRow = await tx
             .select({ createdAt: activityLog.createdAt })
             .from(activityLog)
@@ -5932,7 +5942,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .limit(1)
             .then((rows) => rows[0] ?? null);
 
-          const closedAt = closureRow?.createdAt ?? null;
+          // Fall back to issue.completedAt / issue.cancelledAt when the activity
+          // log entry is missing — closure paths that don't go through
+          // issuesSvc.update() (recovery code, direct DB updates) leave the log
+          // empty, which would silently no-op the freshness guard and let the
+          // wake reopen the issue on unverifiable evidence. Both columns are
+          // reset to null on reopen, so they reliably reflect the *current*
+          // terminal transition.
+          const issueClosedAt =
+            issue.status === "done"
+              ? issue.completedAt
+              : issue.status === "cancelled"
+                ? issue.cancelledAt
+                : null;
+          const closedAt = closureRow?.createdAt ?? issueClosedAt ?? null;
           if (closedAt) {
             const commentRows = await tx
               .select({ id: issueComments.id, createdAt: issueComments.createdAt })
@@ -5977,6 +6000,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 identifier: issue.identifier,
                 agentId: deferred.agentId,
                 runId: run.id,
+                source: allDeleted
+                  ? "deferred_comment_wake_all_comments_deleted"
+                  : "deferred_comment_wake_terminal_skipped",
               });
               continue;
             }
@@ -5984,11 +6010,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // No audit entry — lenient fallback: treat as fresh and proceed with promotion.
         }
 
-        // Fresh comment on a terminal issue: reopen to "todo" so the agent
-        // receives it in an actionable state. Activity log entry is emitted
-        // after the transaction so it uses the outer db (not the tx snapshot).
+        // Fresh comment on a terminal issue: reopen to "todo" so the assignee
+        // receives it in an actionable state. Cross-agent (mention) wakes are
+        // excluded — they're notifications, not ownership transfers, so we
+        // promote the wake without disturbing the assignee's terminal state.
+        // Activity log entry is emitted after the transaction so it uses the
+        // outer db (not the tx snapshot).
         let reopenedActivity: LogActivityInput | null = null;
-        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+        if (deferredCommentIds.length > 0 && issueIsTerminal && isAssigneeWake) {
           const reopenedFromStatus = issue.status;
           const reopenedIssue = await issuesSvc.update(
             issue.id,
@@ -6229,12 +6258,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await logActivity(db, promotionResult.reopenedActivity);
     }
 
+    // Emit one audit log entry per skipped terminal wake. Skips are a normal
+    // outcome of the freshness guard (POI-237/POI-247) — they need to be
+    // observable independently of whether a downstream wake was promoted in
+    // the same iteration. The mixed-cycle test (POI-165) asserts this entry
+    // exists alongside a successful promotion in the same tick.
+    if (promotionResult && "skippedTerminalWakes" in promotionResult) {
+      for (const skip of promotionResult.skippedTerminalWakes ?? []) {
+        await logActivity(db, {
+          companyId: skip.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: skip.agentId,
+          runId: skip.runId,
+          action: "issue.wake_ignored_terminal",
+          entityType: "issue",
+          entityId: skip.issueId,
+          details: {
+            source: skip.source,
+            identifier: skip.identifier,
+            issueStatus: skip.issueStatus,
+          },
+        });
+      }
+    }
+
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
-
-    if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
-    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
