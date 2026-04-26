@@ -14,6 +14,7 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
+import { repairCollapsedMarkdown } from "../lib/repair-collapsed-markdown";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { FoldCurtain } from "./FoldCurtain";
@@ -74,7 +75,7 @@ function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
 function renderFoldableBody(body: string, className?: string) {
   return (
     <FoldCurtain>
-      <MarkdownBody className={className} softBreaks={false}>{body}</MarkdownBody>
+      <MarkdownBody className={className} softBreaks={false}>{repairCollapsedMarkdown(body)}</MarkdownBody>
     </FoldCurtain>
   );
 }
