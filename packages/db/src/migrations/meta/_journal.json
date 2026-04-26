@@ -533,6 +533,13 @@
       "when": 1777555200000,
       "tag": "0081_knowledge_stale_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1777600000000,
+      "tag": "0083_knowledge_rss_watch_state",
+      "breakpoints": true
     }
   ]
 }
