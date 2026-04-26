@@ -107,7 +107,7 @@ class AlertDispatcher:
     stop other sinks from receiving.
     """
 
-    def __init__(self, *, dedup_window_s: float = 0.0) -> None:
+    def __init__(self, *, dedup_window_s: float = 60.0) -> None:
         self._dedup_window_s = dedup_window_s
         self._sinks: list[tuple[AlertSink, int]] = []  # (sink, min_severity_level)
         self._last_seen: dict[tuple, float] = {}

@@ -106,7 +106,8 @@ def test_dispatcher_routes_by_min_severity():
     async def _go():
         warn_sink = MemorySink()
         error_sink = MemorySink()
-        d = AlertDispatcher()
+        # dedup disabled so routing-only test isn't affected by 60s default
+        d = AlertDispatcher(dedup_window_s=0.0)
         d.add_sink(warn_sink, min_severity="warn")
         d.add_sink(error_sink, min_severity="error")
 
