@@ -1,0 +1,2 @@
+{"exchange":"MEXC","open_positions":[{"symbol":"ORDIUSDT","side":"buy","size_usd":18.50}],"recent_fills":[],"balance":{"available_usd":175.00,"locked_usd":18.50}}
+{"exchange":"BLOFIN","open_positions":[{"symbol":"ORDIUSDT","side":"sell","size_usd":25.00}],"recent_fills":[],"balance":{"available_usd":175.00,"locked_usd":25.00}}

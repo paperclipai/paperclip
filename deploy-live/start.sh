@@ -6,6 +6,17 @@ echo "Starting Real Trading Bot + Dashboard..."
 
 mkdir -p data
 
+# Plan 3 cutover guard: refuse to start if USE_SQLITE_STATE=true is requested
+# but the SQLite state file is missing (would silently start without persisted
+# positions). Force operator to either run migrate_to_sqlite.py first, or set
+# USE_SQLITE_STATE=false explicitly.
+DATA_DIR="${DATA_DIR:-./data}"
+if [ "${USE_SQLITE_STATE:-false}" = "true" ] && [ ! -f "${DATA_DIR}/state.db" ]; then
+    echo "FATAL: USE_SQLITE_STATE=true but ${DATA_DIR}/state.db is missing." >&2
+    echo "Run 'python migrate_to_sqlite.py' first, or unset USE_SQLITE_STATE." >&2
+    exit 1
+fi
+
 # Start dashboard
 python -u dashboard.py &
 DASH_PID=$!
