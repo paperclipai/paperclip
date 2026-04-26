@@ -81,11 +81,15 @@ jobs:
           new_pkgs=""
           while IFS= read -r f; do
             [ -z "$f" ] && continue
+            # bash `case` `*` matches `/`, so `packages/*/package.json`
+            # covers nested workspace packages at any depth. Exclusions
+            # mirror the negations in pnpm-workspace.yaml.
             case "$f" in
-              packages/plugins/examples/plugin-orchestration-smoke-example/package.json)
+              packages/plugins/examples/plugin-orchestration-smoke-example/package.json|\
+              packages/plugins/sandbox-providers/*)
                 continue
                 ;;
-              packages/*/package.json|packages/*/*/package.json|packages/*/*/*/package.json)
+              packages/*/package.json)
                 new_pkgs="${new_pkgs}${new_pkgs:+ }${f}"
                 ;;
             esac
@@ -145,11 +149,15 @@ jobs:
           new_pkgs=""
           while IFS= read -r f; do
             [ -z "$f" ] && continue
+            # bash `case` `*` matches `/`, so `packages/*/package.json`
+            # covers nested workspace packages at any depth. Exclusions
+            # mirror the negations in pnpm-workspace.yaml.
             case "$f" in
-              packages/plugins/examples/plugin-orchestration-smoke-example/package.json)
+              packages/plugins/examples/plugin-orchestration-smoke-example/package.json|\
+              packages/plugins/sandbox-providers/*)
                 continue
                 ;;
-              packages/*/package.json|packages/*/*/package.json|packages/*/*/*/package.json)
+              packages/*/package.json)
                 new_pkgs="${new_pkgs}${new_pkgs:+ }${f}"
                 ;;
             esac
