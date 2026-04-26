@@ -1,3 +1,4 @@
+  try {
     return JSON.parse(text);
   } catch {
     return null;
@@ -52,8 +53,8 @@ function parseAssistantMessage(messageRaw: unknown, ts: string): TranscriptEntry
     const part = asRecord(partRaw);
     if (!part) continue;
     const type = asString(part.type);
-    if (type === "output_text" || type === "text") {
-      const text = asString(part.text).trim();
+    if (type === "output_text" || type === "text" || type === "content") {
+      const text = (asString(part.text) || asString(part.content)).trim();
       if (text) entries.push({ kind: "assistant", ts, text });
     } else if (type === "thought" || type === "thinking") {
       const text = asString(part.text).trim();
@@ -107,7 +108,7 @@ function collectTextEntries(messageRaw: unknown, ts: string, kind: "user" | "ass
       : [];
   for (const partRaw of content) {
     const part = asRecord(partRaw);
-    const text = asString(part?.text).trim();
+    const text = (asString(part?.text) || asString(part?.content)).trim();
     if (text) entries.push({ kind, ts, text });
   }
   return entries;
