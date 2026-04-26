@@ -499,16 +499,25 @@ def upsert_recon_event(
             # Race lost between INSERT failure and the lookup — re-raise.
             raise
         existing_id = row["id"]
+        # Escalate severity only if the new occurrence is strictly worse
+        # than the existing one. Order: info < warn < error < critical.
+        # This NEVER downgrades — a 'critical' row stays 'critical' even
+        # if subsequent occurrences arrive at 'error'.
+        # _SEVERITY_ORDER is defined above.
+        new_rank = _SEVERITY_ORDER[severity]
+        existing_severity = conn.execute(
+            "SELECT severity FROM reconciliation_events WHERE id=?",
+            (existing_id,),
+        ).fetchone()["severity"]
+        existing_rank = _SEVERITY_ORDER[existing_severity]
+        final_severity = severity if new_rank > existing_rank else existing_severity
         conn.execute(
             """UPDATE reconciliation_events
                SET repeat_count = repeat_count + 1,
                    last_seen_ms = ?,
-                   severity = CASE
-                     WHEN ? IN ('critical','error') THEN ?
-                     ELSE severity
-                   END
+                   severity = ?
                WHERE id=?""",
-            (timestamp_ms, severity, severity, existing_id),
+            (timestamp_ms, final_severity, existing_id),
         )
         return existing_id, False
 

@@ -403,6 +403,68 @@ def test_upsert_recon_event_escalates_severity(fresh_db):
     conn.close()
 
 
+def test_upsert_recon_event_never_downgrades_severity(fresh_db):
+    """Regression: prior implementation used a CASE WHEN that overwrote
+    severity whenever the new severity was 'error' or 'critical', which
+    silently downgraded existing 'critical' rows to 'error' on a less
+    severe repeat. Verify each direction stays at the maximum severity
+    seen for that key."""
+    conn = open_db(fresh_db)
+    eid, _ = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="exchange_unreachable", severity="critical", exchange="BLOFIN",
+    )
+    # Lower-severity repeats must NOT downgrade.
+    for low_sev in ("error", "warn", "info"):
+        upsert_recon_event(
+            conn, timestamp_ms=2000, source="reconciler",
+            category="exchange_unreachable", severity=low_sev, exchange="BLOFIN",
+        )
+        row = conn.execute(
+            "SELECT severity FROM reconciliation_events WHERE id=?", (eid,)
+        ).fetchone()
+        assert row["severity"] == "critical", (
+            f"downgraded by {low_sev}: severity={row['severity']}"
+        )
+    conn.close()
+
+
+def test_upsert_recon_event_escalates_warn_to_error(fresh_db):
+    conn = open_db(fresh_db)
+    eid, _ = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="balance_drift", severity="warn", exchange="MEXC",
+    )
+    upsert_recon_event(
+        conn, timestamp_ms=2000, source="reconciler",
+        category="balance_drift", severity="error", exchange="MEXC",
+    )
+    row = conn.execute(
+        "SELECT severity FROM reconciliation_events WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["severity"] == "error"
+    conn.close()
+
+
+def test_upsert_recon_event_escalates_info_to_warn(fresh_db):
+    """Asymmetry fix: info should escalate to warn (prior CASE statement
+    silently kept info because 'warn' was not in the escalation set)."""
+    conn = open_db(fresh_db)
+    eid, _ = upsert_recon_event(
+        conn, timestamp_ms=1000, source="reconciler",
+        category="balance_drift", severity="info", exchange="MEXC",
+    )
+    upsert_recon_event(
+        conn, timestamp_ms=2000, source="reconciler",
+        category="balance_drift", severity="warn", exchange="MEXC",
+    )
+    row = conn.execute(
+        "SELECT severity FROM reconciliation_events WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["severity"] == "warn"
+    conn.close()
+
+
 def test_upsert_recon_event_distinct_keys_inserts_separately(fresh_db):
     """orphan_leg on MEXC vs orphan_leg on BLOFIN are different conditions."""
     conn = open_db(fresh_db)
