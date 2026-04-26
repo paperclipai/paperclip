@@ -127,6 +127,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         next();
         return;
       }
+      req.actor = unauthenticatedActor();
+      next();
+      return;
     }
 
     const tokenHash = hashToken(token);
