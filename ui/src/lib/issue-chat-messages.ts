@@ -10,6 +10,7 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import { resolveCommentAuthorIdentity } from "./comment-authors";
 import {
   buildIssueThreadInteractionSummary,
   type IssueThreadInteraction,
@@ -279,14 +280,13 @@ function authorNameForComment(
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
 ) {
-  if (comment.authorAgentId) {
-    return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
+  const identity = resolveCommentAuthorIdentity(comment, currentUserId);
+  if (identity.kind === "agent") {
+    return agentMap?.get(identity.agentId)?.name ?? identity.agentId.slice(0, 8);
   }
   const authorUserId = comment.authorUserId ?? null;
-  if (!authorUserId) return "You";
-  const userLabel = userLabelMap?.get(authorUserId)?.trim();
-  if (userLabel) return userLabel;
-  return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";
+  const userLabel = authorUserId ? userLabelMap?.get(authorUserId)?.trim() : "";
+  return userLabel || identity.label;
 }
 
 function formatStatusLabel(status: string) {

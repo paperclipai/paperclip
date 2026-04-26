@@ -24,6 +24,7 @@ import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-tim
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
+import { resolveCommentAuthorIdentity } from "../lib/comment-authors";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -317,6 +318,7 @@ function CommentCard({
   agentMap,
   companyId,
   projectId,
+  currentUserId,
   feedbackVote = null,
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -329,6 +331,7 @@ function CommentCard({
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   feedbackVote?: FeedbackVoteValue | null;
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -344,6 +347,7 @@ function CommentCard({
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
   const followUpRequested = comment.followUpRequested === true;
+  const authorIdentity = resolveCommentAuthorIdentity(comment, currentUserId);
 
   return (
     <div
@@ -358,15 +362,15 @@ function CommentCard({
       } ${isPending ? "opacity-80" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
-        {comment.authorAgentId ? (
-          <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
+        {authorIdentity.kind === "agent" ? (
+          <Link to={`/agents/${authorIdentity.agentId}`} className="hover:underline">
             <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+              name={agentMap?.get(authorIdentity.agentId)?.name ?? authorIdentity.agentId.slice(0, 8)}
               size="sm"
             />
           </Link>
         ) : (
-          <Identity name="You" size="sm" />
+          <Identity name={authorIdentity.label} size="sm" />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -427,7 +431,7 @@ function CommentCard({
           />
         </div>
       ) : null}
-      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+      {authorIdentity.kind === "agent" && onVote && !isQueued && !isPending ? (
         <OutputFeedbackButtons
           activeVote={feedbackVote}
           disabled={voting}
@@ -692,6 +696,7 @@ const TimelineList = memo(function TimelineList({
             agentMap={agentMap}
             companyId={companyId}
             projectId={projectId}
+            currentUserId={currentUserId}
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={feedbackTermsUrl}
@@ -975,6 +980,7 @@ export function CommentThread({
                 agentMap={agentMap}
                 companyId={companyId}
                 projectId={projectId}
+                currentUserId={currentUserId}
                 highlightCommentId={highlightCommentId}
                 queued
               />
