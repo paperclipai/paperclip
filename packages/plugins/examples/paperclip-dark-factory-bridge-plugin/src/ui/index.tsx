@@ -10,8 +10,8 @@ import type React from "react";
 const DISCLAIMER = "Projection only — Dark Factory Journal remains truth source";
 
 type ProjectionSummary = {
-  source: "projection";
-  truthSource: "dark_factory_journal";
+  source: "dark-factory-projection";
+  truthSource: "dark-factory-journal";
   authoritative: false;
   disclaimer: string;
   projection: {

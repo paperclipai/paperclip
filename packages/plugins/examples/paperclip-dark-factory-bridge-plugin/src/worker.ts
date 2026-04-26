@@ -7,8 +7,8 @@ type ProjectionStatus = "current" | "degraded" | "blocked" | "needs_approval";
 type BreakerState = "closed" | "open" | "half_open";
 
 type ProjectionEnvelope = {
-  source: "projection";
-  truthSource: "dark_factory_journal";
+  source: "dark-factory-projection";
+  truthSource: "dark-factory-journal";
   authoritative: false;
   disclaimer: string;
   issueId: string;
@@ -52,8 +52,8 @@ type ProviderHealth = {
 };
 
 type ProjectionSummary = {
-  source: "projection";
-  truthSource: "dark_factory_journal";
+  source: "dark-factory-projection";
+  truthSource: "dark-factory-journal";
   authoritative: false;
   disclaimer: string;
   projection: ProjectionEnvelope;
@@ -101,8 +101,8 @@ function buildProjection(issueId: string): ProjectionEnvelope {
   const linkedRunId = runId(issueId);
   const cursor = buildCursor(issueId);
   return {
-    source: "projection",
-    truthSource: "dark_factory_journal",
+    source: "dark-factory-projection",
+    truthSource: "dark-factory-journal",
     authoritative: false,
     disclaimer: PROJECTION_DISCLAIMER,
     issueId,
@@ -140,8 +140,8 @@ function buildProviderHealth(issueId: string): ProviderHealth {
 
 function buildSummary(issueId: string): ProjectionSummary {
   return {
-    source: "projection",
-    truthSource: "dark_factory_journal",
+    source: "dark-factory-projection",
+    truthSource: "dark-factory-journal",
     authoritative: false,
     disclaimer: PROJECTION_DISCLAIMER,
     projection: buildProjection(issueId),
@@ -152,8 +152,8 @@ function buildSummary(issueId: string): ProjectionSummary {
 function buildRehydrateReceipt(issueId: string, reason?: string | null) {
   const linkedRunId = runId(issueId);
   return {
-    source: "projection" as const,
-    truthSource: "dark_factory_journal" as const,
+    source: "dark-factory-projection" as const,
+    truthSource: "dark-factory-journal" as const,
     authoritative: false as const,
     disclaimer: PROJECTION_DISCLAIMER,
     issueId,
@@ -198,8 +198,8 @@ const plugin = definePlugin({
       return {
         status: 200,
         body: {
-          source: "projection",
-          truthSource: "dark_factory_journal",
+          source: "dark-factory-projection",
+          truthSource: "dark-factory-journal",
           authoritative: false,
           disclaimer: PROJECTION_DISCLAIMER,
           issueId,
@@ -212,8 +212,8 @@ const plugin = definePlugin({
       return {
         status: 200,
         body: {
-          source: "projection",
-          truthSource: "dark_factory_journal",
+          source: "dark-factory-projection",
+          truthSource: "dark-factory-journal",
           authoritative: false,
           disclaimer: PROJECTION_DISCLAIMER,
           issueId,
@@ -242,8 +242,8 @@ const plugin = definePlugin({
       status: "ok",
       message: "Dark Factory bridge projection mock worker is running",
       details: {
-        source: "projection",
-        truthSource: "dark_factory_journal",
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
         authoritative: false,
       },
     };

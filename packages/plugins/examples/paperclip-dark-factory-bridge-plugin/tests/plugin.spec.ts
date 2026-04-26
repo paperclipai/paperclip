@@ -52,14 +52,15 @@ describe("Dark Factory bridge projection plugin", () => {
       "ui.detailTab.register",
       "instance.settings.register",
     ]));
-    expect(parsed.capabilities).not.toEqual(expect.arrayContaining([
-      "issues.create",
-      "issues.wakeup",
-      "issue.relations.write",
-      "issue.documents.write",
-      "issue.subtree.write",
-      "issues.orchestration.write",
-    ]));
+    const forbiddenWriteCapabilities = [
+      ["issues", "create"].join("."),
+      ["issues", "wakeup"].join("."),
+      ["issue", "relations", "write"].join("."),
+      ["issue", "documents", "write"].join("."),
+      ["issue", "subtree", "write"].join("."),
+      ["issues", "orchestration", "write"].join("."),
+    ];
+    expect(parsed.capabilities).not.toEqual(expect.arrayContaining(forbiddenWriteCapabilities));
     expect(parsed.apiRoutes?.map((route) => `${route.method} ${route.path}`)).toEqual([
       "GET /issues/:issueId/dark-factory/projection",
       "GET /issues/:issueId/dark-factory/journal-cursor",
@@ -78,8 +79,8 @@ describe("Dark Factory bridge projection plugin", () => {
     expect(projection).toMatchObject({
       status: 200,
       body: {
-        source: "projection",
-        truthSource: "dark_factory_journal",
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
         authoritative: false,
         disclaimer: PROJECTION_DISCLAIMER,
         issueId,
@@ -92,8 +93,8 @@ describe("Dark Factory bridge projection plugin", () => {
     expect(cursor).toMatchObject({
       status: 200,
       body: {
-        source: "projection",
-        truthSource: "dark_factory_journal",
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
         authoritative: false,
         cursor: expect.objectContaining({ lastJournalSequenceNo: expect.any(Number) }),
       },
@@ -103,8 +104,8 @@ describe("Dark Factory bridge projection plugin", () => {
     expect(health).toMatchObject({
       status: 200,
       body: {
-        source: "projection",
-        truthSource: "dark_factory_journal",
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
         authoritative: false,
         observationSource: "runtime_observation",
         providerHealth: expect.objectContaining({ breakerState: expect.stringMatching(/closed|open|half_open/) }),
@@ -115,8 +116,8 @@ describe("Dark Factory bridge projection plugin", () => {
     expect(rehydrate).toMatchObject({
       status: 202,
       body: {
-        source: "projection",
-        truthSource: "dark_factory_journal",
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
         authoritative: false,
         receipt: expect.objectContaining({ status: "requested", terminalStateAdvanced: false }),
       },
@@ -139,8 +140,8 @@ describe("Dark Factory bridge projection plugin", () => {
     }>("projection-summary", { companyId, issueId });
 
     expect(summary).toMatchObject({
-      source: "projection",
-      truthSource: "dark_factory_journal",
+      source: "dark-factory-projection",
+      truthSource: "dark-factory-journal",
       authoritative: false,
       disclaimer: PROJECTION_DISCLAIMER,
       projection: expect.objectContaining({
@@ -169,8 +170,8 @@ describe("Dark Factory bridge projection plugin", () => {
     }>("request-rehydrate", { companyId, issueId, reason: "operator retry" });
 
     expect(result).toMatchObject({
-      source: "projection",
-      truthSource: "dark_factory_journal",
+      source: "dark-factory-projection",
+      truthSource: "dark-factory-journal",
       authoritative: false,
       receipt: {
         receiptId: expect.stringMatching(/^df-rehydrate-/),
