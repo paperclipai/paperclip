@@ -6,6 +6,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  updateApprovalContentSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
@@ -57,10 +58,17 @@ export function approvalRoutes(db: Db) {
     const eligibleIssues = linkedIssues.filter((issue) => issue.status !== "done" && issue.status !== "cancelled");
 
     for (const issue of eligibleIssues) {
-      await issuesSvc.update(issue.id, { status: nextStatus });
-      await issuesSvc.addComment(issue.id, `[workflow] ${reason}`, {
-        userId: actorUserId,
-      });
+      try {
+        await issuesSvc.update(issue.id, { status: nextStatus });
+        await issuesSvc.addComment(issue.id, `[workflow] ${reason}`, {
+          userId: actorUserId,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, nextStatus },
+          "transitionLinkedIssues: skipped issue that could not transition",
+        );
+      }
     }
 
     return linkedIssues;
@@ -374,6 +382,28 @@ export function approvalRoutes(db: Db) {
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "approval.schedule_override_updated",
+      entityType: "approval",
+      entityId: approval.id,
+      details: { type: approval.type },
+    });
+    res.json(redactApprovalPayload(approval));
+  });
+
+  router.patch("/approvals/:id/content", validate(updateApprovalContentSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const approval = await svc.updateContent(id, req.body.payload);
+    await logActivity(db, {
+      companyId: approval.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "approval.content_updated",
       entityType: "approval",
       entityId: approval.id,
       details: { type: approval.type },

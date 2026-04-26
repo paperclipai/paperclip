@@ -1,5 +1,18 @@
-import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
+
+function ActionButton(
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "default" | "outline" | "destructive"; size?: "sm" },
+) {
+  const { className, variant = "default", size = "sm", ...buttonProps } = props;
+  const variantClass =
+    variant === "destructive"
+      ? "bg-destructive text-white hover:bg-destructive/90"
+      : variant === "outline"
+        ? "border border-border bg-background hover:bg-accent hover:text-accent-foreground"
+        : "bg-green-700 text-white hover:bg-green-600";
+  const sizeClass = size === "sm" ? "h-9 px-3 text-sm" : "";
+  return <button className={["inline-flex items-center justify-center rounded-md font-medium", variantClass, sizeClass, className].filter(Boolean).join(" ")} {...buttonProps} />;
+}
 
 function stringValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -72,30 +85,30 @@ export function ApprovalDraftReviewPanel({
 
       {isActionable ? (
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          <Button
+          <ActionButton
             size="sm"
             className="bg-green-700 hover:bg-green-600 text-white"
             onClick={onApprove}
             disabled={approvePending}
           >
             Approve
-          </Button>
-          <Button
+          </ActionButton>
+          <ActionButton
             variant="outline"
             size="sm"
             onClick={onNeedsEdits}
             disabled={needsEditsPending}
           >
             Needs edits
-          </Button>
-          <Button
+          </ActionButton>
+          <ActionButton
             variant="destructive"
             size="sm"
             onClick={onReject}
             disabled={rejectPending}
           >
             Reject
-          </Button>
+          </ActionButton>
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">

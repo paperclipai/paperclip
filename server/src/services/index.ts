@@ -27,6 +27,7 @@ export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { notifyKatyaPublishApproved, type NotifyKatyaPublishApprovedInput } from "./katya-publish-hook.js";
+export { tickKatyaPublishExecutor, type KatyaPublishExecutorTickResult } from "./katya-publish-executor.js";
 export {
   buildKatyaBlockerEscalationTemplate,
   buildKatyaMetadataTemplate,

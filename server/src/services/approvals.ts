@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals, budgetIncidents } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -84,29 +84,50 @@ export function approvalService(db: Db) {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
       const rows = await db.select().from(approvals).where(and(...conditions));
-      return rows.sort((a, b) => {
-        const statusDelta = compareKatyaApprovalStatus(
-          a.status as KatyaApprovalStatus,
-          b.status as KatyaApprovalStatus,
-        );
-        if (statusDelta !== 0) return statusDelta;
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
+      if (rows.length === 0) return [];
+
+      const commentCounts = await db
+        .select({ approvalId: approvalComments.approvalId, n: count() })
+        .from(approvalComments)
+        .where(inArray(approvalComments.approvalId, rows.map((r) => r.id)))
+        .groupBy(approvalComments.approvalId);
+      const countMap = new Map(commentCounts.map((c) => [c.approvalId, Number(c.n)]));
+
+      return rows
+        .map((r) => ({ ...r, commentCount: countMap.get(r.id) ?? 0 }))
+        .sort((a, b) => {
+          const statusDelta = compareKatyaApprovalStatus(
+            a.status as KatyaApprovalStatus,
+            b.status as KatyaApprovalStatus,
+          );
+          if (statusDelta !== 0) return statusDelta;
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
     },
 
-    getById: (id: string) =>
-      db
+    getById: async (id: string) => {
+      const row = await db
         .select()
         .from(approvals)
         .where(eq(approvals.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const countResult = await db
+        .select({ n: count() })
+        .from(approvalComments)
+        .where(eq(approvalComments.approvalId, id))
+        .then((rows) => rows[0]);
+      return { ...row, commentCount: Number(countResult?.n ?? 0) };
+    },
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
+    create: async (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) => {
+      const row = await db
         .insert(approvals)
         .values({ ...data, companyId })
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => rows[0]);
+      return { ...row, commentCount: 0 };
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
@@ -115,6 +136,20 @@ export function approvalService(db: Db) {
         decidedByUserId,
         decisionNote,
       );
+
+      if (applied) {
+        const latestPayload = updated.payload as Record<string, unknown>;
+        await db
+          .update(approvals)
+          .set({
+            payload: {
+              ...latestPayload,
+              approvedAt: new Date().toISOString(),
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(approvals.id, id));
+      }
 
       let hireApprovedAgentId: string | null = null;
       const now = new Date();
@@ -198,8 +233,11 @@ export function approvalService(db: Db) {
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
-      if (existing.status !== "pending") {
-        throw unprocessable("Only pending approvals can request revision");
+      if (existing.status === "revision_requested") {
+        return existing;
+      }
+      if (existing.status !== "pending" && existing.status !== "approved") {
+        throw unprocessable("Only pending or approved approvals can request revision");
       }
 
       const now = new Date();
@@ -224,11 +262,15 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
+      const nextPayload = payload ?? existing.payload;
       return db
         .update(approvals)
         .set({
           status: "pending",
-          payload: payload ?? existing.payload,
+          payload: {
+            ...nextPayload,
+            revisionResubmittedAt: now.toISOString(),
+          },
           decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,
@@ -314,9 +356,9 @@ export function approvalService(db: Db) {
 
     updateContent: async (id: string, payload: Record<string, unknown>) => {
       const existing = await getExistingApproval(id);
-      const editableStatuses = new Set(["approved", "paused", "scheduled"]);
+      const editableStatuses = new Set(["pending", "approved", "paused", "scheduled", "revision_requested"]);
       if (!editableStatuses.has(existing.status)) {
-        throw unprocessable("Only approved, paused, or scheduled approvals can have their content edited");
+        throw unprocessable("Only pending, approved, paused, scheduled, or revision requested approvals can have their content edited");
       }
       const now = new Date();
       const mergedPayload = { ...(existing.payload as Record<string, unknown>), ...payload };

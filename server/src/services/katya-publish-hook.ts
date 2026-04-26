@@ -3,6 +3,8 @@ import { approvals, issues } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { workProductService } from "./work-products.js";
 
+const PUBLISH_READY_MARKER = "ready";
+
 export interface NotifyKatyaPublishApprovedInput {
   companyId: string;
   approvalId: string;
@@ -104,6 +106,8 @@ export async function notifyKatyaPublishApproved(
       approvalType: input.approvalType,
       requestedByAgentId: input.requestedByAgentId,
       scheduledTime: scheduledTime ?? null,
+      publishRequested: true,
+      publishState: PUBLISH_READY_MARKER,
     };
 
     if (publishExecutor) {

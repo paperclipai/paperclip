@@ -26,7 +26,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService } from "./services/index.js";
+import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService, tickKatyaPublishExecutor } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -566,6 +566,16 @@ export async function startServer(): Promise<StartedServer> {
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
+        });
+
+      void tickKatyaPublishExecutor(db as any, new Date())
+        .then((result) => {
+          if (result.socialsSubstituted > 0 || result.socialsDeferred > 0 || result.blogsDiscovered > 0) {
+            logger.info({ ...result }, "katya publish executor tick");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "katya publish executor tick failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
   }

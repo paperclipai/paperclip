@@ -110,7 +110,12 @@ function InlineEditCard({
         </button>
         <button
           type="button"
-          onClick={() => onSave({ ...payload, [field]: text })}
+          onClick={() => onSave({
+            ...payload,
+            [field]: text,
+            ...(typeof payload.mediaUrl === "string" ? { mediaUrl: payload.mediaUrl } : {}),
+            ...(typeof payload.mediaPath === "string" ? { mediaPath: payload.mediaPath } : {}),
+          })}
           className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
           disabled={isSaving || text === initialText}
         >
@@ -386,7 +391,11 @@ export function Approvals() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.approve(id),
+    mutationFn: async (id: string) => {
+      // Always set publish_requested=true so Katya picks up and publishes on approve
+      await approvalsApi.updateContent(id, { publish_requested: true });
+      return approvalsApi.approve(id);
+    },
     onSuccess: (_, id) => { setActionError(null); dismissThenRefresh(id); },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to approve"),
   });
@@ -398,7 +407,12 @@ export function Approvals() {
   });
 
   const requestRevisionMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note?: string }) => approvalsApi.requestRevision(id, note),
+    mutationFn: async ({ id, note }: { id: string; note?: string }) => {
+      if (note?.trim()) {
+        await approvalsApi.addComment(id, note.trim());
+      }
+      return approvalsApi.requestRevision(id);
+    },
     onSuccess: (_, vars) => { setActionError(null); dismissThenRefresh(vars.id); },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to request edits"),
   });
@@ -427,6 +441,15 @@ export function Approvals() {
       approvalsApi.updateContent(id, payload),
     onSuccess: () => { setActionError(null); invalidate(); },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to save content"),
+  });
+
+  const submitRevisionMutation = useMutation({
+    mutationFn: async ({ id, contentPayload }: { id: string; contentPayload: Record<string, unknown> }) => {
+      await approvalsApi.updateContent(id, contentPayload);
+      return approvalsApi.requestRevision(id);
+    },
+    onSuccess: (_, vars) => { setActionError(null); dismissThenRefresh(vars.id); },
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to submit revision"),
   });
 
   const deleteMutation = useMutation({
@@ -465,7 +488,7 @@ export function Approvals() {
   };
 
   const actionIsPending = approveMutation.isPending || rejectMutation.isPending ||
-    requestRevisionMutation.isPending || pauseMutation.isPending ||
+    requestRevisionMutation.isPending || submitRevisionMutation.isPending || pauseMutation.isPending ||
     scheduleMutation.isPending || recallMutation.isPending || updateContentMutation.isPending;
 
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Select a company first.</p>;
@@ -584,6 +607,7 @@ export function Approvals() {
                       onApprove={() => approveMutation.mutate(approval.id)}
                       onReject={() => rejectMutation.mutate(approval.id)}
                       onRequestRevision={(note) => requestRevisionMutation.mutate({ id: approval.id, note })}
+                      onSubmitRevision={(contentPayload) => submitRevisionMutation.mutate({ id: approval.id, contentPayload })}
                       isPending={actionIsPending}
                       needsReminder={approvalNeedsReminder(approval)}
                       ageHours={approvalAgeHours(approval)}
@@ -621,6 +645,7 @@ export function Approvals() {
                       onApprove={() => approveMutation.mutate(approval.id)}
                       onReject={() => rejectMutation.mutate(approval.id)}
                       onRequestRevision={(note) => requestRevisionMutation.mutate({ id: approval.id, note })}
+                      onSubmitRevision={(contentPayload) => submitRevisionMutation.mutate({ id: approval.id, contentPayload })}
                       isPending={actionIsPending}
                       needsReminder={approvalNeedsReminder(approval)}
                       ageHours={approvalAgeHours(approval)}
@@ -674,6 +699,7 @@ export function Approvals() {
                           onApprove={() => approveMutation.mutate(approval.id)}
                           onReject={() => rejectMutation.mutate(approval.id)}
                           onRequestRevision={(note) => requestRevisionMutation.mutate({ id: approval.id, note })}
+                      onSubmitRevision={(contentPayload) => submitRevisionMutation.mutate({ id: approval.id, contentPayload })}
                           isPending={actionIsPending}
                           needsReminder={approvalNeedsReminder(approval)}
                           ageHours={approvalAgeHours(approval)}

@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { Agent, Approval } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { MessageSquare } from "lucide-react";
 import { assetsApi } from "../api/assets";
 import { useCompany } from "../context/CompanyContext";
 import { Identity } from "./Identity";
@@ -17,6 +18,7 @@ interface ExpandableApprovalCardProps {
   onApprove: () => void;
   onReject: () => void;
   onRequestRevision: (note?: string) => void;
+  onSubmitRevision: (contentPayload: Record<string, unknown>) => void;
   isPending: boolean;
   needsReminder?: boolean;
   ageHours?: number | null;
@@ -65,6 +67,7 @@ export function ExpandableApprovalCard({
   onApprove,
   onReject,
   onRequestRevision,
+  onSubmitRevision,
   isPending,
   needsReminder = false,
   ageHours = null,
@@ -80,6 +83,19 @@ export function ExpandableApprovalCard({
   const scheduledFor = payloadDate(payload, ["targetPublishAt", "scheduledAt", "scheduledFor", "publishAt"]);
   const publishedAt = payloadDate(payload, ["publishedAt", "postedAt"]);
   const proofUrl = payloadText(payload, ["proofUrl", "publishedUrl", "postUrl", "url"]);
+  const liveState = approval.status === "published"
+    ? "Published"
+    : pickedUpAt
+      ? "Picked up by Katya"
+      : approval.status === "scheduled"
+        ? "Queued for publish"
+        : approval.status === "approved"
+          ? "Approved, awaiting pickup"
+          : approval.status === "revision_requested"
+            ? "Needs edits"
+            : approval.status === "rejected"
+              ? "Rejected"
+              : "Pending review";
 
   const label = useMemo(() => approvalLabel(approval.type, payload), [approval.type, payload]);
   const title = useMemo(() => {
@@ -139,6 +155,12 @@ export function ExpandableApprovalCard({
             <div className="flex items-center gap-2">
               <span className={cn("inline-flex h-2 w-2 rounded-full", statusDot(approval, needsReminder))} />
               <p className="text-sm font-medium truncate">{title}</p>
+              {(approval.commentCount ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground shrink-0">
+                  <MessageSquare className="h-2.5 w-2.5" />
+                  {approval.commentCount}
+                </span>
+              )}
             </div>
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
               <span className="truncate">{channelLabel(payload)}</span>
@@ -163,6 +185,7 @@ export function ExpandableApprovalCard({
           <div className="rounded-md border border-border bg-muted/20 px-2 py-2">
             <p className="text-[11px] font-medium text-muted-foreground mb-1">Execution status</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-[11px]">
+              <div><span className="text-muted-foreground">Live state:</span> <span>{liveState}</span></div>
               <div><span className="text-muted-foreground">Approved at:</span> <span>{approvedAt ?? "—"}</span></div>
               <div><span className="text-muted-foreground">Picked up by Katya:</span> <span>{pickedUpAt ?? "—"}</span></div>
               <div><span className="text-muted-foreground">Scheduled for:</span> <span>{scheduledFor ?? "—"}</span></div>
@@ -252,11 +275,10 @@ export function ExpandableApprovalCard({
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  const mediaNoteParts: string[] = [];
-                  if (imageUrl.trim()) mediaNoteParts.push(`media_url: ${imageUrl.trim()}`);
-                  if (imagePath.trim()) mediaNoteParts.push(`media_path: ${imagePath.trim()}`);
-                  const combined = [editorText.trim(), mediaNoteParts.length ? `\n\n${mediaNoteParts.join("\n")}` : ""].join("").trim();
-                  onRequestRevision(combined || undefined);
+                  const contentPayload: Record<string, unknown> = { draft: editorText.trim() };
+                  if (imageUrl.trim()) contentPayload.mediaUrl = imageUrl.trim();
+                  if (imagePath.trim()) contentPayload.mediaPath = imagePath.trim();
+                  onSubmitRevision(contentPayload);
                 }}
                 disabled={isPending || !isActionable}
               >

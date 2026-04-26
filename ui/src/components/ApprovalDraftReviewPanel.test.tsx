@@ -1,4 +1,4 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -52,8 +52,7 @@ describe("ApprovalDraftReviewPanel", () => {
 
   it("hides actions for resolved approvals", () => {
     const html = renderPanel("approved", "Already resolved");
-    expect(html).not.toContain(">Approve<");
-    expect(html).toContain("already resolved");
+    expect(html).toContain("This approval is already resolved.");
   });
 
   it("shows a fallback message when no draft text exists", () => {

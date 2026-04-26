@@ -15,6 +15,7 @@ export interface Approval {
   publishedAt: string | null;
   createdAt: Date;
   updatedAt: Date;
+  commentCount?: number;
 }
 
 export interface ApprovalComment {

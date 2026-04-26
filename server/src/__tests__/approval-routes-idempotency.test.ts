@@ -12,6 +12,7 @@ const mockApprovalService = vi.hoisted(() => ({
   reject: vi.fn(),
   requestRevision: vi.fn(),
   resubmit: vi.fn(),
+  updateContent: vi.fn(),
   listComments: vi.fn(),
   addComment: vi.fn(),
 }));
@@ -25,6 +26,11 @@ const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  update: vi.fn(),
+  addComment: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
@@ -36,6 +42,7 @@ vi.mock("../services/index.js", () => ({
   approvalService: () => mockApprovalService,
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
+  issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   notifyKatyaPublishApproved: mockNotifyKatyaPublishApproved,
   secretService: () => mockSecretService,
@@ -122,23 +129,32 @@ describe("approval routes idempotent retries", () => {
     expect(mockNotifyKatyaPublishApproved).not.toHaveBeenCalled();
   });
 
-  it("does not emit duplicate rejection logs when reject is already resolved", async () => {
-    mockApprovalService.reject.mockResolvedValue({
-      approval: {
-        id: "approval-1",
-        companyId: "company-1",
-        type: "hire_agent",
-        status: "rejected",
-        payload: {},
-      },
-      applied: false,
+  it("PATCH /approvals/:id/content writes edited payload back to the canonical approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      status: "pending",
+      payload: { draft: "original draft", plan: "keep plan" },
+      requestedByAgentId: null,
+    });
+    mockApprovalService.updateContent.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      status: "revision_requested",
+      payload: { draft: "edited draft", plan: "keep plan", humanEdited: true, lastEditedAt: "2026-04-22T09:30:00.000Z" },
     });
 
     const res = await request(createApp())
-      .post("/api/approvals/approval-1/reject")
-      .send({});
+      .patch("/api/approvals/approval-1/content")
+      .send({ payload: { draft: "edited draft" } });
 
     expect(res.status).toBe(200);
-    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockApprovalService.updateContent).toHaveBeenCalledWith("approval-1", { draft: "edited draft" });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.content_updated" }),
+    );
   });
 });

@@ -93,7 +93,11 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: async () => {
+      // Always set publish_requested=true so Katya picks up and publishes on approve
+      await approvalsApi.updateContent(approvalId!, { publish_requested: true });
+      return approvalsApi.approve(approvalId!);
+    },
     onSuccess: () => {
       setError(null);
       refresh();
@@ -121,7 +125,18 @@ export function ApprovalDetail() {
   });
 
   const resubmitMutation = useMutation({
-    mutationFn: () => approvalsApi.resubmit(approvalId!),
+    mutationFn: () => {
+      if (!approvalId || !approval) throw new Error("Approval not loaded");
+      const payload = approval.payload as Record<string, unknown>;
+      const nextPayload: Record<string, unknown> = { ...payload };
+      const draftText = getApprovalDraftText(payload);
+
+      if (typeof draftText === "string" && draftText.trim().length > 0) {
+        nextPayload.draft = draftText.trim();
+      }
+
+      return approvalsApi.resubmit(approvalId!, nextPayload);
+    },
     onSuccess: () => {
       setError(null);
       refresh();
@@ -170,7 +185,31 @@ export function ApprovalDetail() {
       const payload = approval.payload as Record<string, unknown>;
       const fallbackDraft = getApprovalDraftText(payload) ?? "";
       const chosenDraft = editorOverride.trim() || fallbackDraft;
-      if (approval.status === "pending") {
+      const draftKey = ["draft", "fullDraft", "plan", "description", "strategy", "text"].find(
+        (key) => typeof payload[key] === "string" && String(payload[key]).trim().length > 0,
+      ) ?? (typeof payload.draftContent === "object" && payload.draftContent !== null ? "draftContent.body" : "draft");
+
+      if (editorOverride.trim()) {
+        const nextPayload =
+          draftKey === "draftContent.body"
+            ? {
+                ...payload,
+                draftContent: {
+                  ...(payload.draftContent as Record<string, unknown> | undefined),
+                  body: editorOverride.trim(),
+                },
+                humanEdited: true,
+                lastEditedAt: new Date().toISOString(),
+              }
+            : {
+                ...payload,
+                [draftKey]: editorOverride.trim(),
+                humanEdited: true,
+                lastEditedAt: new Date().toISOString(),
+              };
+        await approvalsApi.updateContent(approvalId, nextPayload);
+      }
+      if (["pending", "approved", "revision_requested"].includes(approval.status)) {
         await approvalsApi.requestRevision(approvalId, "Revision requested and pushed to Katya");
       }
       const pushComment = [
@@ -203,9 +242,8 @@ export function ApprovalDetail() {
   const draftText = isStrategyApproval ? getApprovalDraftText(payload) : null;
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
-  const overrideComment = (comments ?? []).find((comment) => comment.body.includes("[PUSH_TO_KATYA]")) ?? null;
   const showOverrideAppliedBadge = Boolean(
-    isStrategyApproval && overrideComment && ["revision_requested", "approved", "pending"].includes(approval.status),
+    isStrategyApproval && (payload.humanEdited || payload.lastEditedAt) && ["revision_requested", "approved", "pending"].includes(approval.status),
   );
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
   const resolvedCta =
@@ -361,14 +399,14 @@ export function ApprovalDetail() {
               Resolve this budget stop from the budget controls on <Link to="/costs" className="underline underline-offset-2">/costs</Link>.
             </p>
           )}
-          {approval.status === "pending" && (
+          {(approval.status === "pending" || approval.status === "approved") && (
             <Button
               size="sm"
               variant="outline"
               onClick={() => revisionMutation.mutate()}
               disabled={revisionMutation.isPending}
             >
-              Needs edits
+              Request edits
             </Button>
           )}
           {approval.status === "revision_requested" && (
@@ -378,7 +416,7 @@ export function ApprovalDetail() {
               onClick={() => resubmitMutation.mutate()}
               disabled={resubmitMutation.isPending}
             >
-              Mark resubmitted
+              Submit revision
             </Button>
           )}
           {approval.status === "rejected" && approval.type === "hire_agent" && linkedAgentId && (
@@ -500,7 +538,7 @@ export function ApprovalDetail() {
             <div>
               <h3 className="text-sm font-semibold">Editor override (optional)</h3>
               <p className="text-xs text-muted-foreground">
-                Paste your edited version, then click <strong>Push to Katya</strong>. Katya will revise from this text and comments.
+                Paste your edited version, then click <strong>Push to Katya</strong>. Katya will revise from this text, and the payload is updated in place.
               </p>
             </div>
             <Textarea
@@ -519,7 +557,7 @@ export function ApprovalDetail() {
                 {pushToKatyaMutation.isPending ? "Pushing…" : "Push to Katya"}
               </Button>
               <p className="text-xs text-muted-foreground">
-                This records a structured comment and keeps the approval in revision flow until resubmitted.
+                This updates the canonical approval payload and keeps the approval in revision flow until resubmitted.
               </p>
             </div>
           </section>
