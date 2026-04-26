@@ -97,3 +97,61 @@ def test_telegram_sink_does_not_raise_on_http_error():
         await sink.send(_sample_event())
 
     asyncio.run(_go())
+
+
+from alerts import AlertDispatcher
+
+
+def test_dispatcher_routes_by_min_severity():
+    async def _go():
+        warn_sink = MemorySink()
+        error_sink = MemorySink()
+        d = AlertDispatcher()
+        d.add_sink(warn_sink, min_severity="warn")
+        d.add_sink(error_sink, min_severity="error")
+
+        await d.dispatch(_sample_event(severity="info"))
+        await d.dispatch(_sample_event(severity="warn"))
+        await d.dispatch(_sample_event(severity="error"))
+        await d.dispatch(_sample_event(severity="critical"))
+
+        assert len(warn_sink.events) == 3
+        assert len(error_sink.events) == 2
+
+    asyncio.run(_go())
+
+
+def test_dispatcher_dedups_within_window():
+    async def _go():
+        sink = MemorySink()
+        d = AlertDispatcher(dedup_window_s=60.0)
+        d.add_sink(sink, min_severity="info")
+
+        e1 = _sample_event(severity="error", category="orphan_leg")
+        e2 = _sample_event(severity="error", category="orphan_leg")
+        await d.dispatch(e1, _now_s=1000.0)
+        await d.dispatch(e2, _now_s=1030.0)
+        assert len(sink.events) == 1
+
+        e3 = _sample_event(severity="error", category="orphan_leg")
+        await d.dispatch(e3, _now_s=1061.0)
+        assert len(sink.events) == 2
+
+    asyncio.run(_go())
+
+
+def test_dispatcher_continues_on_sink_failure():
+    """A sink that raises should not stop other sinks from receiving."""
+    class BrokenSink:
+        async def send(self, event):
+            raise RuntimeError("boom")
+
+    async def _go():
+        good = MemorySink()
+        d = AlertDispatcher()
+        d.add_sink(BrokenSink(), min_severity="info")
+        d.add_sink(good, min_severity="info")
+        await d.dispatch(_sample_event())
+        assert len(good.events) == 1
+
+    asyncio.run(_go())

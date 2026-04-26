@@ -91,3 +91,46 @@ class TelegramSink:
             r.raise_for_status()
         except Exception as e:  # noqa: BLE001
             log.warning("TelegramSink.send failed: %s", e)
+
+
+import time
+
+_SEVERITY_LEVELS = {"info": 0, "warn": 1, "error": 2, "critical": 3}
+
+
+class AlertDispatcher:
+    """Routes ReconciliationEvents to registered sinks with severity routing
+    and per-key deduplication.
+
+    Dedup key: (category, exchange, symbol, position_id). Within `dedup_window_s`,
+    a duplicate-key event is dropped. Sink failures are logged and don't
+    stop other sinks from receiving.
+    """
+
+    def __init__(self, *, dedup_window_s: float = 0.0) -> None:
+        self._dedup_window_s = dedup_window_s
+        self._sinks: list[tuple[AlertSink, int]] = []  # (sink, min_severity_level)
+        self._last_seen: dict[tuple, float] = {}
+
+    def add_sink(self, sink: AlertSink, *, min_severity: str = "info") -> None:
+        level = _SEVERITY_LEVELS[min_severity]
+        self._sinks.append((sink, level))
+
+    async def dispatch(
+        self, event: ReconciliationEvent, *, _now_s: Optional[float] = None
+    ) -> None:
+        now_s = _now_s if _now_s is not None else time.time()
+        key = (event.category, event.exchange, event.symbol, event.position_id)
+        prev = self._last_seen.get(key)
+        if prev is not None and (now_s - prev) < self._dedup_window_s:
+            return
+        self._last_seen[key] = now_s
+
+        ev_level = _SEVERITY_LEVELS[event.severity]
+        for sink, min_level in self._sinks:
+            if ev_level < min_level:
+                continue
+            try:
+                await sink.send(event)
+            except Exception as e:  # noqa: BLE001
+                log.warning("sink %r failed: %s", sink, e)
