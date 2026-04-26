@@ -6144,8 +6144,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
-    const promotedRun = promotionResult?.run ?? null;
-    if (!promotedRun) return;
+    if (!promotionResult || promotionResult.kind === "released") return;
+    const promotedRun = promotionResult.run;
 
     if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
       await logActivity(db, promotionResult.reopenedActivity);
