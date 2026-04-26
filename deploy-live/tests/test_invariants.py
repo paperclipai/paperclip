@@ -256,30 +256,80 @@ def test_invariant_unresolved_recon_event_too_old(fresh_db):
 
 
 def test_invariant_exchange_health_stale_ok_status(fresh_db):
-    """Invariant 12: exchange marked 'ok' but no last_ok_at_ms in last 5 min."""
-    conn = open_db(fresh_db)
-    stale_ms = int(time.time() * 1000) - 6 * 60 * 1000
-    upsert_exchange_health(
-        conn, exchange="OKX", status="ok",
-        last_ok_at_ms=stale_ms, consecutive_errors=0,
-    )
-    violations = check_all(conn)
-    cats = [v.category for v in violations]
-    assert "stale_ok_exchange_health" in cats
-    conn.close()
+    """Invariant 12: exchange marked 'ok' but no last_ok_at_ms in last 5 min.
+
+    Gated on the periodic sweep having started; tests must mark it.
+    """
+    import invariants
+    invariants.reset_runtime_for_tests()
+    invariants.mark_sweep_started()
+    try:
+        conn = open_db(fresh_db)
+        stale_ms = int(time.time() * 1000) - 6 * 60 * 1000
+        upsert_exchange_health(
+            conn, exchange="OKX", status="ok",
+            last_ok_at_ms=stale_ms, consecutive_errors=0,
+        )
+        violations = check_all(conn)
+        cats = [v.category for v in violations]
+        assert "stale_ok_exchange_health" in cats
+        conn.close()
+    finally:
+        invariants.reset_runtime_for_tests()
 
 
 def test_invariant_exchange_health_stale_ok_status_passes_when_fresh(fresh_db):
-    conn = open_db(fresh_db)
-    fresh_ms = int(time.time() * 1000) - 60 * 1000  # 1 min ago
-    upsert_exchange_health(
-        conn, exchange="OKX", status="ok",
-        last_ok_at_ms=fresh_ms, consecutive_errors=0,
-    )
-    violations = check_all(conn)
-    cats = [v.category for v in violations]
-    assert "stale_ok_exchange_health" not in cats
-    conn.close()
+    import invariants
+    invariants.reset_runtime_for_tests()
+    invariants.mark_sweep_started()
+    try:
+        conn = open_db(fresh_db)
+        fresh_ms = int(time.time() * 1000) - 60 * 1000  # 1 min ago
+        upsert_exchange_health(
+            conn, exchange="OKX", status="ok",
+            last_ok_at_ms=fresh_ms, consecutive_errors=0,
+        )
+        violations = check_all(conn)
+        cats = [v.category for v in violations]
+        assert "stale_ok_exchange_health" not in cats
+        conn.close()
+    finally:
+        invariants.reset_runtime_for_tests()
+
+
+def test_stale_ok_invariant_suppressed_until_sweep_starts(fresh_db):
+    """Without mark_sweep_started, the stale-OK check returns no violations
+    even when conditions would otherwise trigger it."""
+    import invariants
+    invariants.reset_runtime_for_tests()
+    try:
+        conn = open_db(fresh_db)
+        stale_ms = int(time.time() * 1000) - 10 * 60 * 1000  # 10 min ago
+        upsert_exchange_health(
+            conn, exchange="MEXC", status="ok",
+            last_ok_at_ms=stale_ms, consecutive_errors=0,
+        )
+        violations = check_all(conn)
+        cats = [v.category for v in violations]
+        assert "stale_ok_exchange_health" not in cats
+        # Now flip the gate and re-check; same data should now violate.
+        invariants.mark_sweep_started()
+        violations2 = check_all(conn)
+        cats2 = [v.category for v in violations2]
+        assert "stale_ok_exchange_health" in cats2
+        conn.close()
+    finally:
+        invariants.reset_runtime_for_tests()
+
+
+def test_mark_sweep_started_is_idempotent():
+    import invariants
+    invariants.reset_runtime_for_tests()
+    invariants.mark_sweep_started()
+    invariants.mark_sweep_started()
+    assert invariants.is_sweep_started() is True
+    invariants.reset_runtime_for_tests()
+    assert invariants.is_sweep_started() is False
 
 
 from invariants import RateLimiter

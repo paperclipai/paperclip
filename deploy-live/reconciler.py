@@ -258,7 +258,11 @@ def start_periodic_sweep(
     The task runs forever until cancelled. Callers should `task.cancel()` and
     `await task` at shutdown. A single exchange failure does not stop the loop.
     """
+    # Lazy import to avoid a circular dependency at module load.
+    import invariants
+
     async def _loop() -> None:
+        invariants.mark_sweep_started()
         while True:
             for exchange in exchanges:
                 try:

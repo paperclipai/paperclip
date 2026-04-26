@@ -36,6 +36,28 @@ _TRANSITION_TIMEOUT_S = 60  # opening/closing should not exceed this
 _UNRESOLVED_AGE_LIMIT_MIN = 30
 _OK_HEALTH_FRESHNESS_LIMIT_MIN = 5
 
+# Runtime flag set by reconciler.start_periodic_sweep before its first
+# iteration. The stale-OK invariant is only meaningful once the sweep
+# is actually refreshing exchange_health.last_ok_at; otherwise it
+# fires for every exchange every cycle during local dev / startup,
+# producing noise. Mutable dict (not a bare bool) so test fixtures
+# can reset between cases.
+_runtime: dict[str, bool] = {"sweep_loop_started": False}
+
+
+def mark_sweep_started() -> None:
+    """Called by reconciler.start_periodic_sweep before its first iteration."""
+    _runtime["sweep_loop_started"] = True
+
+
+def reset_runtime_for_tests() -> None:
+    """Test-only helper: clear the sweep_loop_started flag."""
+    _runtime["sweep_loop_started"] = False
+
+
+def is_sweep_started() -> bool:
+    return _runtime["sweep_loop_started"]
+
 
 def check_all(conn: sqlite3.Connection) -> list[Violation]:
     """Run every invariant. Returns the union of all Violations found."""
@@ -284,7 +306,13 @@ def _check_stale_unresolved_recon_events(conn: sqlite3.Connection) -> list[Viola
 
 
 def _check_stale_ok_exchange_health(conn: sqlite3.Connection) -> list[Violation]:
-    """Invariant 12: exchange marked 'ok' but last_ok_at is too old."""
+    """Invariant 12: exchange marked 'ok' but last_ok_at is too old.
+
+    Suppressed until the periodic sweep has started — without the sweep
+    refreshing last_ok_at, every exchange would always look stale.
+    """
+    if not is_sweep_started():
+        return []
     cutoff_ms = int(time.time() * 1000) - _OK_HEALTH_FRESHNESS_LIMIT_MIN * 60_000
     rows = conn.execute(
         "SELECT exchange, last_ok_at FROM exchange_health "
