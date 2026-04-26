@@ -29,11 +29,33 @@ Review tasks live in `in_review` status (not `todo`). Coordinator creates them w
 
 ## Comments
 
-Doc comments and WHY-comments are load-bearing documentation in this codebase — treat them the same as code.
+**Default: keep.** Doc comments and inline comments are load-bearing documentation. Treat them the same as code: never delete on a hunch, never delete in bulk.
 
-- **Preserve**: `//!` module docs, `///` item docs (struct/enum/fn/field), inline WHY-comments (invariants, ordering constraints, PF2e rule citations, bug workarounds), section headers.
-- **Remove only**: `// does X` narration that restates the code, stale ticket refs (`// added for #123`), commented-out code blocks.
-- Stripping comments is never an "improvement". If a comment is wrong, fix it; don't delete it.
+### Preserve (always)
+- `//!` module docs, `///` item docs on struct/enum/fn/field
+- Section header comments inside long functions (e.g. `// --- Phase 1: collect ---`)
+- **WHY comments** — anything that would force a future reader to re-derive the reasoning if removed:
+  - Invariants and ordering constraints (`// must run after wall spawn`)
+  - PF2e rule citations (`// PF2e: Acrobatics DC 15 to balance on narrow surface`)
+  - Bug workarounds (`// AA-595: stop ray at concealment blocker`)
+  - Non-obvious choices that look arbitrary without context (`// .iter().next() is fine — all party members share a position`, `// early-return: wait for smooth movement to finish before next step`, `// distinguishes off-map (None) vs unwalkable terrain`)
+  - Load-bearing parentheticals — even a 3-word "(all party members share a position)" can be the only reason a line makes sense
+
+### Remove only
+- Pure echo: `// foo bar` immediately above `let foo = bar()` where the comment adds zero information
+- Stale task refs: `// added for #123`, `// fix from PR-456`, `// tmp: from sprint planning`
+- Commented-out code blocks
+- Comments that contradict the current code (these get *fixed*, not deleted — only delete if the comment is fundamentally about an old design)
+
+### The test
+Before deleting a comment, ask: **"If I removed this and a colleague encountered the line cold tomorrow, would they have to stop and figure something out?"** If yes → keep. The cost of a slightly redundant comment is near zero; the cost of a missing WHY is hours of re-derivation.
+
+### During refactors (extra caution)
+SystemParam extraction, function extraction, struct splits — these are the highest risk for comment loss because the agent sees a "fresh" post-refactor view and treats the comments as new clutter.
+
+- **Carry comments verbatim** through the refactor. If a comment was above a parameter, it stays above the same parameter in the new SystemParam struct. If it was above a block, it stays above that block.
+- **Stripping comments is not part of "improvement"**. A SystemParam refactor that also deletes inline reasoning is a worse review than one that preserves it.
+- If you're unsure whether a comment is WHY or echo, **keep it** and move on. False positives (kept echo comments) cost nothing; false negatives (deleted WHYs) cost real review time and re-introduce bugs.
 
 ## Restrictions
 
