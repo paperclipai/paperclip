@@ -77,6 +77,13 @@ const manifest: PaperclipPluginManifestV1 = {
         "Fetches the current weekly ad and caches it each morning so agents have fresh deal data without hitting the API on every question.",
       schedule: "0 7 * * *",
     },
+    {
+      jobKey: "sync-order-history",
+      displayName: "Sync Order History",
+      description:
+        "Pulls full order history from HEB and caches it locally so taste-profile and restock tools work without live API calls.",
+      schedule: "0 6 * * *",
+    },
   ],
   tools: [
     {
@@ -118,10 +125,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     },
     {
-      name: "heb_get_coupons",
-      displayName: "HEB: Get Available Coupons",
+      name: "heb_get_coupon_report",
+      displayName: "HEB: Get Coupon Report",
       description:
-        "Returns the cached list of available HEB digital coupons fetched during the last daily refresh.",
+        "Returns the cached list of available HEB digital coupons fetched during the last daily refresh. Note: auto-clipping is not yet supported — this reports available coupons only.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -185,6 +192,71 @@ const manifest: PaperclipPluginManifestV1 = {
           productId: { type: "string", description: "HEB product ID" },
         },
         required: ["productId"],
+      },
+    },
+    {
+      name: "heb_sync_orders",
+      displayName: "HEB: Sync Order History",
+      description: "Pulls your full HEB order history and caches it locally. Run this once before using profile or restock tools.",
+      parametersSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "heb_get_order_profile",
+      displayName: "HEB: Get Order Profile",
+      description: "Returns your taste profile built from order history: staples, occasionally-ordered items, shopping cadence, and top items by frequency.",
+      parametersSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "heb_scout_deals",
+      displayName: "HEB: Scout Deals",
+      description: "Cross-references the current weekly ad against your staples and frequently-ordered items and highlights the best matches.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Max deals to return (default 20)", default: 20 },
+        },
+      },
+    },
+    {
+      name: "heb_restock_check",
+      displayName: "HEB: Restock Check",
+      description: "Based on your order history cadence, identifies items that are likely due for restock soon.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          daysAhead: { type: "number", description: "Look ahead window in days (default 7)", default: 7 },
+        },
+      },
+    },
+    {
+      name: "heb_get_shopping_lists",
+      displayName: "HEB: Get Shopping Lists",
+      description: "Returns your saved HEB shopping lists.",
+      parametersSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "heb_create_shopping_list",
+      displayName: "HEB: Create Shopping List",
+      description: "Creates a new named HEB shopping list.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Name for the new shopping list" },
+        },
+        required: ["name"],
+      },
+    },
+    {
+      name: "heb_add_to_shopping_list",
+      displayName: "HEB: Add to Shopping List",
+      description: "Adds products to an existing HEB shopping list by list ID.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          listId: { type: "string", description: "Shopping list ID" },
+          productIds: { type: "array", items: { type: "string" }, description: "Array of HEB product IDs to add" },
+        },
+        required: ["listId", "productIds"],
       },
     },
   ],
