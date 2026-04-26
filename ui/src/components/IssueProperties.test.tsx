@@ -1194,10 +1194,12 @@ describe("IssueProperties", () => {
       onUpdate,
     });
     await flush();
+    await flush();
 
     const approveButton = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent === "Approve",
     );
+    expect(approveButton).toBeDefined();
     act(() => approveButton!.click());
 
     expect(onUpdate).not.toHaveBeenCalled();
