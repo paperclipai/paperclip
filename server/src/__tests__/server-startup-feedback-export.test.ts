@@ -260,6 +260,7 @@ describe("startServer authenticated auth origin setup", () => {
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
   });
@@ -281,12 +282,11 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
   });
 
   it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
-    loadConfigMock.mockReturnValueOnce({
-      ...loadConfigMock(),
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "http://my-host.ts.net:3100",
-    });
+    }));
     detectPortMock.mockResolvedValueOnce(3110);
 
     const started = await startServer();
@@ -297,12 +297,11 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
   });
 
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
-    loadConfigMock.mockReturnValueOnce({
-      ...loadConfigMock(),
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "https://paperclip.example",
-    });
+    }));
     detectPortMock.mockResolvedValueOnce(3110);
 
     const started = await startServer();
