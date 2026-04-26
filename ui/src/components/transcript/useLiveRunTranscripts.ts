@@ -210,51 +210,103 @@ export function useLiveRunTranscripts({
   useEffect(() => {
     if (normalizedRuns.length === 0) return;
 
+    seenChunkKeysRef.current.clear();
+    pendingLogRowsByRunRef.current.clear();
+    logOffsetByRunRef.current.clear();
+
     let cancelled = false;
 
-    const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
-        return;
-      }
-      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
-      try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
-        if (cancelled) return;
-
-        appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
-
-        if (result.nextOffset !== undefined) {
-          logOffsetByRunRef.current.set(run.id, result.nextOffset);
-          return;
-        }
-        if (result.content.length > 0) {
-          logOffsetByRunRef.current.set(run.id, offset + result.content.length);
-        }
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
-        }
-      } finally {
-        if (!cancelled) {
-          setHydratedRunIds((prev) => {
-            if (prev.has(run.id)) return prev;
-            const next = new Set(prev);
-            next.add(run.id);
-            return next;
-          });
-        }
-      }
-    };
-
     const readAll = async () => {
-      await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
+      const results = await Promise.allSettled(
+        normalizedRuns.map(async (run) => {
+          if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+            return { run, skipped: true as const };
+          }
+          const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+          try {
+            const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+            return { run, result, offset, skipped: false as const };
+          } catch (error) {
+            return { run, error, offset, skipped: false as const };
+          }
+        }),
+      );
+      if (cancelled) return;
+
+      const parsedByRun = new Map<string, Array<RunLogChunk & { dedupeKey: string }>>();
+      const hydratedRunIds = new Set<string>();
+
+      for (const settled of results) {
+        if (settled.status !== "fulfilled") continue;
+        const entry = settled.value;
+        hydratedRunIds.add(entry.run.id);
+
+        if (entry.skipped) continue;
+
+        if ("error" in entry) {
+          if (entry.error instanceof ApiError && entry.error.status === 404 && isTerminalStatus(entry.run.status)) {
+            missingTerminalLogRunIdsRef.current.add(entry.run.id);
+          }
+          continue;
+        }
+
+        const parsed = parsePersistedLogContent(entry.run.id, entry.result.content, pendingLogRowsByRunRef.current);
+        if (parsed.length > 0) {
+          parsedByRun.set(entry.run.id, parsed);
+        }
+
+        if (entry.result.nextOffset !== undefined) {
+          logOffsetByRunRef.current.set(entry.run.id, entry.result.nextOffset);
+        } else if (entry.result.content.length > 0) {
+          logOffsetByRunRef.current.set(entry.run.id, entry.offset + entry.result.content.length);
+        }
+      }
+
+      if (parsedByRun.size > 0) {
+        setChunksByRun((prev) => {
+          const next = new Map(prev);
+          let changed = false;
+
+          for (const [runId, chunks] of parsedByRun) {
+            const existing = [...(next.get(runId) ?? [])];
+            for (const chunk of chunks) {
+              if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
+              seenChunkKeysRef.current.add(chunk.dedupeKey);
+              existing.push({ ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk });
+              changed = true;
+            }
+            if (existing.length > 0) {
+              next.set(runId, existing.slice(-maxChunksPerRun));
+            }
+          }
+
+          if (!changed) return prev;
+          if (seenChunkKeysRef.current.size > 12000) {
+            seenChunkKeysRef.current.clear();
+          }
+          return next;
+        });
+      }
+
+      if (hydratedRunIds.size > 0) {
+        setHydratedRunIds((prev) => {
+          const next = new Set(prev);
+          let changed = false;
+          for (const runId of hydratedRunIds) {
+            if (next.has(runId)) continue;
+            next.add(runId);
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
+      }
     };
 
     void readAll();
     const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
     const interval = activeRuns.length > 0 && logPollIntervalMs > 0
       ? window.setInterval(() => {
-          void Promise.all(activeRuns.map((run) => readRunLog(run)));
+          void readAll();
         }, logPollIntervalMs)
       : null;
 
@@ -262,7 +314,7 @@ export function useLiveRunTranscripts({
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
+  }, [logPollIntervalMs, logReadLimitBytes, maxChunksPerRun, normalizedRuns, runIdsKey]);
 
   useEffect(() => {
     if (!enableRealtimeUpdates) return;
