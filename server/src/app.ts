@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import { buildOpenApiSpec } from "./openapi.js";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -294,6 +295,9 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
+  app.get("/api/openapi.json", (_req, res) => {
+    res.json(buildOpenApiSpec());
+  });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
