@@ -15,7 +15,7 @@ export const companies = pgTable(
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
-      .default(true),
+      .default(false),
     feedbackDataSharingEnabled: boolean("feedback_data_sharing_enabled")
       .notNull()
       .default(false),
