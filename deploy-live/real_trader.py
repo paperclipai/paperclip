@@ -48,7 +48,7 @@ try:
     from schemas import ExchangeOrderResponse
     from pydantic import ValidationError as _PydanticValidationError
     _NORMALIZERS_AVAILABLE = True
-except ImportError:
+except ImportError as _norm_imp_err:
     normalize_okx_order = None  # type: ignore[assignment]
     normalize_bybit_order = None  # type: ignore[assignment]
     normalize_mexc_order = None  # type: ignore[assignment]
@@ -56,19 +56,29 @@ except ImportError:
     ExchangeOrderResponse = None  # type: ignore[assignment,misc]
     _PydanticValidationError = Exception  # type: ignore[assignment,misc]
     _NORMALIZERS_AVAILABLE = False
+    log.error(
+        "Normalizer modules not importable; order-schema validation disabled. "
+        "Reason: %s. This is a degraded-mode deploy — fill normalisation is OFF.",
+        _norm_imp_err,
+    )
 
 # Plan 3 — state_store + alerts (always imported; modules ship with the bot)
 try:
     import state_store as _state_store
     from alerts import AlertDispatcher, ConsoleSink, TelegramSink, DigestSink
     _PLAN3_AVAILABLE = True
-except ImportError:
+except ImportError as _plan3_imp_err:
     _state_store = None  # type: ignore[assignment]
     AlertDispatcher = None  # type: ignore[assignment,misc]
     ConsoleSink = None  # type: ignore[assignment,misc]
     TelegramSink = None  # type: ignore[assignment,misc]
     DigestSink = None  # type: ignore[assignment,misc]
     _PLAN3_AVAILABLE = False
+    log.error(
+        "Plan 3 modules not importable; state_store + AlertDispatcher disabled. "
+        "Reason: %s. This is a degraded-mode deploy — silent failure detection is OFF.",
+        _plan3_imp_err,
+    )
 
 # ---------------------------------------------------------------------------
 # Telegram config
@@ -2561,6 +2571,7 @@ class LiveTrader:
         # -- Plan 3: SQLite state store (always open; harmless when flags off) --
         self.state_conn = None
         self._digest_task: Optional[asyncio.Task] = None
+        self._digest_sink: Optional[Any] = None  # DigestSink; forward-ref since import is gated
         self.alerts = None
         if _PLAN3_AVAILABLE:
             _db_path = str(DATA_DIR / "state.db")
@@ -2573,6 +2584,11 @@ class LiveTrader:
             #   warn  → digest sink (hourly flush, batched)
             #   error → immediate
             #   critical → immediate (repeat-every-5-min handled by caller dedup=300s)
+            # AlertDispatcher dedup window. Plan §9.2 says 60s but also says
+            # "critical repeat-every-5-min" (300s); these conflict. We chose 300s to
+            # honour the critical-repeat semantic. Trade-off: warn/error duplicates
+            # are also suppressed for 5 min instead of 60s. If severity-aware dedup
+            # is needed later, refactor in AlertDispatcher.dispatch.
             self.alerts = AlertDispatcher(dedup_window_s=300.0)
             _console = ConsoleSink()
             self.alerts.add_sink(_console, min_severity="warn")
@@ -2587,9 +2603,9 @@ class LiveTrader:
                 _digest = DigestSink(_tg_sink, flush_interval_s=3600.0)
                 self.alerts.add_sink(_digest, min_severity="warn")
                 # stash for startup task wiring
-                self._digest_sink: Optional[DigestSink] = _digest
+                self._digest_sink = _digest
             else:
-                self._digest_sink = None
+                pass  # self._digest_sink already initialised to None above
 
             # Risk-gap acknowledgement log lines (PLAN3_HANDOFF.md §Risks)
             log.info(
@@ -3613,6 +3629,10 @@ async def main():
         # Plan 3 shutdown cleanup: cancel digest task, flush, close state_conn
         if trader._digest_task is not None:
             trader._digest_task.cancel()
+            try:
+                await trader._digest_task
+            except asyncio.CancelledError:
+                pass
         if trader._digest_sink is not None:
             await trader._digest_sink.flush()
         if trader.state_conn is not None:
