@@ -5,8 +5,10 @@ export {
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
 export {

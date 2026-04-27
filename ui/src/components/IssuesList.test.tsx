@@ -567,13 +567,14 @@ describe("IssuesList", () => {
     });
   });
 
-  it("hides the sub-issue progress summary unless it is enabled and populated", async () => {
+  it("hides the sub-issue progress summary unless it is enabled with multiple sub-issues", async () => {
     const { root } = renderWithQueryClient(
       <IssuesList
         issues={[createIssue()]}
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
+        showProgressSummary
         onUpdateIssue={() => undefined}
       />,
       container,

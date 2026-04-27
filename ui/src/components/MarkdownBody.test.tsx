@@ -187,16 +187,17 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
   });
 
-  it("rewrites full issue URLs to internal issue links", () => {
-    const html = renderMarkdown("See http://localhost:3100/PAP/issues/PAP-1179.", [
-      { identifier: "PAP-1179", status: "blocked" },
+  it("preserves absolute issue URLs as external links", () => {
+    const url = "http://remote.example.test:3103/PAPA/issues/PAPA-115#comment-850083f3-24de-43e7-a8cd-bc01f7cc9f0d";
+    const html = renderMarkdown(`See ${url}.`, [
+      { identifier: "PAPA-115", status: "blocked" },
     ]);
 
-    expect(html).toContain('href="/issues/PAP-1179"');
-    expect(html).toContain("text-red-600");
-    expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
-    expect(html).toContain('data-mention-kind="issue"');
-    expect(html).not.toContain("paperclip-mention-chip--issue");
+    expect(html).toContain(`href="${url}"`);
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain("lucide-external-link");
+    expect(html).not.toContain('href="/issues/PAPA-115"');
+    expect(html).not.toContain("paperclip-markdown-issue-ref");
   });
 
   it("linkifies plain internal issue paths in markdown text", () => {

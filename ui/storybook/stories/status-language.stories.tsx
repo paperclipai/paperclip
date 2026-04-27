@@ -1,11 +1,12 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AGENT_STATUSES, ISSUE_PRIORITIES, ISSUE_STATUSES } from "@paperclipai/shared";
-import type { IssueBlockerAttention } from "@paperclipai/shared";
+import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { Bot, CheckCircle2, Clock3, DollarSign, FolderKanban, Inbox, MessageSquare, Users } from "lucide-react";
 import { CopyText } from "@/components/CopyText";
 import { EmptyState } from "@/components/EmptyState";
 import { Identity } from "@/components/Identity";
+import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
 import { IssueRow } from "@/components/IssueRow";
 import { MetricCard } from "@/components/MetricCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
@@ -43,6 +44,21 @@ type CoveredBlockedCell = {
   expectedCopy: string;
 };
 
+function attention(
+  partial: Partial<IssueBlockerAttention> & Pick<IssueBlockerAttention, "state" | "reason">,
+): IssueBlockerAttention {
+  return {
+    state: partial.state,
+    reason: partial.reason,
+    unresolvedBlockerCount: partial.unresolvedBlockerCount ?? 0,
+    coveredBlockerCount: partial.coveredBlockerCount ?? 0,
+    stalledBlockerCount: partial.stalledBlockerCount ?? 0,
+    attentionBlockerCount: partial.attentionBlockerCount ?? 0,
+    sampleBlockerIdentifier: partial.sampleBlockerIdentifier ?? null,
+    sampleStalledBlockerIdentifier: partial.sampleStalledBlockerIdentifier ?? null,
+  };
+}
+
 const coveredBlockedMatrix: CoveredBlockedCell[] = [
   {
     label: "Normal blocked",
@@ -54,98 +70,116 @@ const coveredBlockedMatrix: CoveredBlockedCell[] = [
   {
     label: "Covered by 1 active child",
     status: "blocked",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "covered",
       reason: "active_child",
       unresolvedBlockerCount: 1,
       coveredBlockerCount: 1,
-      attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PAP-2175",
-    },
+    }),
     expectedVisual: "cyan ring",
     expectedCopy: "Blocked · waiting on active sub-issue PAP-2175",
   },
   {
     label: "Covered by N active children",
     status: "blocked",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "covered",
       reason: "active_child",
       unresolvedBlockerCount: 3,
       coveredBlockerCount: 3,
-      attentionBlockerCount: 0,
-      sampleBlockerIdentifier: null,
-    },
+    }),
     expectedVisual: "cyan ring",
     expectedCopy: "Blocked · waiting on 3 active sub-issues",
   },
   {
     label: "Covered by active dependency",
     status: "blocked",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "covered",
       reason: "active_dependency",
       unresolvedBlockerCount: 1,
       coveredBlockerCount: 1,
-      attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PAP-1918",
-    },
+    }),
     expectedVisual: "cyan ring",
     expectedCopy: "Blocked · covered by active dependency PAP-1918",
   },
   {
     label: "Covered by N active dependencies",
     status: "blocked",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "covered",
       reason: "active_dependency",
       unresolvedBlockerCount: 2,
       coveredBlockerCount: 2,
-      attentionBlockerCount: 0,
-      sampleBlockerIdentifier: null,
-    },
+    }),
     expectedVisual: "cyan ring",
     expectedCopy: "Blocked · covered by 2 active dependencies",
   },
   {
+    label: "Stalled review (single leaf)",
+    status: "blocked",
+    blockerAttention: attention({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 1,
+      stalledBlockerCount: 1,
+      sampleBlockerIdentifier: "PAP-2279",
+      sampleStalledBlockerIdentifier: "PAP-2279",
+    }),
+    expectedVisual: "amber ring with dot",
+    expectedCopy: "Blocked · review stalled on PAP-2279",
+  },
+  {
+    label: "Stalled review (multiple leaves)",
+    status: "blocked",
+    blockerAttention: attention({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 2,
+      stalledBlockerCount: 2,
+      sampleStalledBlockerIdentifier: "PAP-2279",
+    }),
+    expectedVisual: "amber ring with dot",
+    expectedCopy: "Blocked · 2 reviews stalled with no clear next step",
+  },
+  {
     label: "Mixed: 1 covered, 1 needs attention",
     status: "blocked",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "needs_attention",
       reason: "attention_required",
       unresolvedBlockerCount: 2,
       coveredBlockerCount: 1,
       attentionBlockerCount: 1,
-      sampleBlockerIdentifier: null,
-    },
+    }),
     expectedVisual: "solid red ring",
     expectedCopy: "Blocked · 2 unresolved blockers need attention",
   },
   {
     label: "Needs attention (single blocker)",
     status: "blocked",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "needs_attention",
       reason: "attention_required",
       unresolvedBlockerCount: 1,
-      coveredBlockerCount: 0,
       attentionBlockerCount: 1,
       sampleBlockerIdentifier: "PAP-1042",
-    },
+    }),
     expectedVisual: "solid red ring",
     expectedCopy: "Blocked · 1 unresolved blocker needs attention",
   },
   {
     label: "Non-blocked with prop ignored",
     status: "in_progress",
-    blockerAttention: {
+    blockerAttention: attention({
       state: "covered",
       reason: "active_child",
       unresolvedBlockerCount: 1,
       coveredBlockerCount: 1,
-      attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PAP-2175",
-    },
+    }),
     expectedVisual: "yellow ring",
     expectedCopy: "In Progress",
   },
@@ -162,6 +196,157 @@ const coveredBlockedIssue = createIssue({
   lastActivityAt: new Date("2026-04-24T13:40:00.000Z"),
   updatedAt: new Date("2026-04-24T13:40:00.000Z"),
 });
+
+function summaryBlocker(
+  partial: Partial<IssueRelationIssueSummary> & Pick<IssueRelationIssueSummary, "id" | "title" | "status">,
+): IssueRelationIssueSummary {
+  return {
+    id: partial.id,
+    identifier: partial.identifier ?? null,
+    title: partial.title,
+    status: partial.status,
+    priority: partial.priority ?? "medium",
+    assigneeAgentId: partial.assigneeAgentId ?? null,
+    assigneeUserId: partial.assigneeUserId ?? null,
+    terminalBlockers: partial.terminalBlockers,
+  };
+}
+
+type BlockedNoticeStateLabel =
+  | "Default covered"
+  | "Stalled (single leaf)"
+  | "Stalled (multiple leaves)";
+
+type BlockedNoticeFixture = {
+  label: BlockedNoticeStateLabel;
+  caption: string;
+  blockers: IssueRelationIssueSummary[];
+  blockerAttention: IssueBlockerAttention;
+};
+
+const stalledLeafSingle = summaryBlocker({
+  id: "issue-stalled-leaf-single",
+  identifier: "PAP-2279",
+  title: "Stage gate review for export pipeline",
+  status: "in_review",
+});
+
+const stalledLeafMultiPrimary = summaryBlocker({
+  id: "issue-stalled-leaf-multi-1",
+  identifier: "PAP-2284",
+  title: "Approve schema migration",
+  status: "in_review",
+});
+
+const stalledLeafMultiSecondary = summaryBlocker({
+  id: "issue-stalled-leaf-multi-2",
+  identifier: "PAP-2291",
+  title: "Sign off on rollout copy",
+  status: "in_review",
+});
+
+const blockedNoticeFixtures: BlockedNoticeFixture[] = [
+  {
+    label: "Default covered",
+    caption: "Active sub-issue covers the chain — informational only.",
+    blockers: [
+      summaryBlocker({
+        id: "issue-active-child",
+        identifier: "PAP-2175",
+        title: "Wire export pipeline preview",
+        status: "in_progress",
+      }),
+    ],
+    blockerAttention: attention({
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      sampleBlockerIdentifier: "PAP-2175",
+    }),
+  },
+  {
+    label: "Stalled (single leaf)",
+    caption: "Chain stalled on one leaf review — copy names the leaf and shows the chip strip.",
+    blockers: [
+      summaryBlocker({
+        id: "issue-stalled-parent-single",
+        identifier: "PAP-2278",
+        title: "Ship rollout dashboard",
+        status: "blocked",
+        terminalBlockers: [stalledLeafSingle],
+      }),
+    ],
+    blockerAttention: attention({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 1,
+      stalledBlockerCount: 1,
+      sampleBlockerIdentifier: "PAP-2279",
+      sampleStalledBlockerIdentifier: "PAP-2279",
+    }),
+  },
+  {
+    label: "Stalled (multiple leaves)",
+    caption: "Multiple stalled reviews — body uses plural agreement (\"reviews\"/\"them\") to match the chip strip.",
+    blockers: [
+      summaryBlocker({
+        id: "issue-stalled-parent-multi-a",
+        identifier: "PAP-2283",
+        title: "Coordinate billing change rollout",
+        status: "blocked",
+        terminalBlockers: [stalledLeafMultiPrimary],
+      }),
+      summaryBlocker({
+        id: "issue-stalled-parent-multi-b",
+        identifier: "PAP-2290",
+        title: "Coordinate marketing handoff",
+        status: "blocked",
+        terminalBlockers: [stalledLeafMultiSecondary],
+      }),
+    ],
+    blockerAttention: attention({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 2,
+      stalledBlockerCount: 2,
+      sampleStalledBlockerIdentifier: "PAP-2284",
+    }),
+  },
+];
+
+function BlockedNoticeSurface({
+  mode,
+  size,
+  fixture,
+}: {
+  mode: "light" | "dark";
+  size: "desktop" | "mobile";
+  fixture: BlockedNoticeFixture;
+}) {
+  const isDark = mode === "dark";
+  const isMobile = size === "mobile";
+  return (
+    <div className={isDark ? "dark" : undefined}>
+      <div className="rounded-lg border border-border bg-background text-foreground">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+          <span>{fixture.label}</span>
+          <span className="font-mono">
+            {size} · {mode}
+          </span>
+        </div>
+        <div className={isMobile ? "max-w-[358px] px-3 py-3" : "min-w-[620px] px-4 py-3"}>
+          <IssueBlockedNotice
+            issueStatus="blocked"
+            blockers={fixture.blockers}
+            blockerAttention={fixture.blockerAttention}
+          />
+          <p className="text-[11px] text-muted-foreground">{fixture.caption}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function CoveredBlockedSurface({ mode, size }: { mode: "light" | "dark"; size: "desktop" | "mobile" }) {
   const isDark = mode === "dark";
@@ -248,8 +433,9 @@ function StatusLanguage() {
             ))}
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
-            Tooltip and aria-label copy begin with "Blocked · " for cells 2-7; cells 6 and 7 retain the solid red ring
-            and mention blockers that need attention.
+            Tooltip and aria-label copy begin with "Blocked · " for every cell after the first. Covered cells show a cyan
+            ring with a small dot, stalled-review cells show an amber ring with a centered dot, and the needs-attention
+            cells retain the solid red ring.
           </p>
         </Section>
 
@@ -260,6 +446,24 @@ function StatusLanguage() {
             <CoveredBlockedSurface mode="light" size="mobile" />
             <CoveredBlockedSurface mode="dark" size="mobile" />
           </div>
+        </Section>
+
+        <Section eyebrow="Covered blocked" title="IssueBlockedNotice in chat thread">
+          <div className="space-y-5">
+            {blockedNoticeFixtures.map((fixture) => (
+              <div key={fixture.label} className="grid gap-4 xl:grid-cols-2">
+                <BlockedNoticeSurface mode="light" size="desktop" fixture={fixture} />
+                <BlockedNoticeSurface mode="dark" size="desktop" fixture={fixture} />
+                <BlockedNoticeSurface mode="light" size="mobile" fixture={fixture} />
+                <BlockedNoticeSurface mode="dark" size="mobile" fixture={fixture} />
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Stalled-state copy switches to "stalled in review without a clear next step" and adds a "Stalled in review"
+            chip strip beneath the regular blocker chips. The trailing imperative pluralizes when multiple stalled
+            leaves are surfaced ("reviews"/"them") to match the chip strip.
+          </p>
         </Section>
 
         <Section eyebrow="Priority" title="Static labels and editable popover trigger">

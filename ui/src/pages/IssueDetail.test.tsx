@@ -824,8 +824,10 @@ describe("IssueDetail", () => {
         reason: "active_child",
         unresolvedBlockerCount: 1,
         coveredBlockerCount: 1,
+        stalledBlockerCount: 0,
         attentionBlockerCount: 0,
         sampleBlockerIdentifier: "PAP-2",
+        sampleStalledBlockerIdentifier: null,
       },
     }));
 
