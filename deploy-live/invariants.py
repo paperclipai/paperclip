@@ -335,7 +335,7 @@ def _check_stale_ok_exchange_health(conn: sqlite3.Connection) -> list[Violation]
     return out
 
 
-def _violation_to_event(v: Violation, *, now_ms: int) -> dict:
+def violation_to_event(v: Violation, *, now_ms: int) -> dict:
     """Convert a Violation into keyword args for upsert_recon_event.
 
     Returns a dict ready for: upsert_recon_event(conn, **kwargs).
@@ -354,6 +354,13 @@ def _violation_to_event(v: Violation, *, now_ms: int) -> dict:
     )
 
 
+def violation_to_recon_event(v: Violation, *, now_ms: int) -> "ReconciliationEvent":
+    """Build a ReconciliationEvent for AlertDispatcher.dispatch from a Violation."""
+    from schemas import ReconciliationEvent  # lazy import (existing pattern)
+    fields = violation_to_event(v, now_ms=now_ms)
+    return ReconciliationEvent(**fields)
+
+
 class RateLimiter:
     """Coalesces repeated violations within a fixed window.
 
@@ -365,6 +372,10 @@ class RateLimiter:
         self._window_s = window_s
         self._last_seen: dict[tuple, float] = {}
 
+    # Key shape is (category, position_id, exchange, symbol) — more granular than
+    # the plan's (category, position_id). Tighter granularity means independent
+    # violations on different exchanges/symbols don't suppress each other. This
+    # can only produce more alerts than spec, never fewer.
     def allow(self, violation: Violation, *, now_s: Optional[float] = None) -> bool:
         if now_s is None:
             now_s = time.time()

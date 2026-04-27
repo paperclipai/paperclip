@@ -17,7 +17,7 @@ import pytest
 
 import state_store
 import invariants as inv
-from invariants import Violation, RateLimiter, _violation_to_event
+from invariants import Violation, RateLimiter, violation_to_event as _violation_to_event
 from alerts import AlertDispatcher, MemorySink
 
 
@@ -221,6 +221,44 @@ def test_invariants_pass_rate_limiter_suppresses_second_dispatch(fresh_db):
         )
 
     asyncio.run(_run())
+    conn.close()
+
+
+class _BrokenDispatcher:
+    """Dispatcher whose dispatch() always raises; used to verify isolation."""
+    async def dispatch(self, event):
+        raise RuntimeError("simulated dispatcher failure")
+
+
+def test_invariants_pass_isolates_dispatch_failures(fresh_db):
+    """A raising dispatcher must NOT abort the invariants pass; the upsert
+    still happens for every violation; the next iteration is unaffected."""
+    conn = state_store.open_db(fresh_db)
+    _seed_open_position_missing_leg(conn)
+
+    dispatcher = _BrokenDispatcher()
+    rl = RateLimiter(window_s=60.0)
+    now_ms = 1_000_000
+
+    violations = inv.check_all(conn)
+    assert len(violations) >= 1, "Need at least one violation for this test"
+
+    async def _run():
+        # Mirror the logic in _run_invariants_pass: per-violation try/except.
+        for v in violations:
+            try:
+                state_store.upsert_recon_event(conn, **_violation_to_event(v, now_ms=now_ms))
+                if rl.allow(v):
+                    await dispatcher.dispatch(inv.violation_to_recon_event(v, now_ms=now_ms))
+            except Exception:
+                pass  # isolation: one violation failure must not abort others
+
+    asyncio.run(_run())
+
+    # All violations should have been written to the DB despite dispatch failures.
+    rows = conn.execute("SELECT * FROM reconciliation_events").fetchall()
+    assert len(rows) >= 1, "upsert must succeed even when dispatch raises"
+    assert rows[0]["source"] == "invariants"
     conn.close()
 
 

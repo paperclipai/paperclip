@@ -2653,20 +2653,19 @@ class LiveTrader:
                 try:
                     _state_store.upsert_recon_event(
                         self.state_conn,
-                        **_invariants._violation_to_event(v, now_ms=now_ms),
+                        **_invariants.violation_to_event(v, now_ms=now_ms),
                     )
+                    # Note: We deliberately do NOT use upsert_recon_event's `was_insert` flag here.
+                    # Reconciler dispatches only on first insert; invariants dispatches based on
+                    # RateLimiter window (60s). This matches the spec's "one alert per minute"
+                    # semantic for invariant violations: same violation continues alerting hourly,
+                    # unlike reconciler's "alert once per discrepancy" semantic.
                     if (self._inv_rate_limiter is not None
                             and self._inv_rate_limiter.allow(v)
                             and self.alerts is not None):
-                        await self.alerts.dispatch(_ReconEvent(
-                            timestamp_ms=now_ms, source="invariants",
-                            category=v.category, severity=v.severity,
-                            exchange=v.exchange, symbol=v.symbol,
-                            position_id=v.position_id,
-                            expected=v.expected or None,
-                            actual=v.actual or None,
-                            notes=v.notes or None,
-                        ))
+                        await self.alerts.dispatch(
+                            _invariants.violation_to_recon_event(v, now_ms=now_ms)
+                        )
                 except Exception as _v_err:
                     log.error("invariants dispatch failed (best-effort): "
                               "category=%s err=%s", v.category, _v_err)
