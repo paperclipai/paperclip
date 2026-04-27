@@ -1425,16 +1425,6 @@ export async function runChildProcess(
      */
     activityPaths?: string[];
     remoteExecution?: RemoteExecutionSpec | null;
-    /**
-     * Optional file-system paths to watch for activity. When provided, the
-     * timeout becomes *inactivity-based*: the timer resets whenever stdout,
-     * stderr, or file-system activity is detected in the watched paths.
-     * Without this, the timeout is a hard wall-clock limit from process start.
-     *
-     * Useful for adapters like Copilot CLI that write their thinking stream
-     * to session files (e.g. `~/.copilot/session-state/`) instead of stdout.
-     */
-    activityPaths?: string[];
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
