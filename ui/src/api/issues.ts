@@ -10,6 +10,7 @@ import type {
   IssueAttachment,
   IssueComment,
   IssueDocument,
+  IssueDocumentSummary,
   IssueLabel,
   IssueThreadInteraction,
   IssueTreeControlPreview,
@@ -196,6 +197,8 @@ export const issuesApi = {
     ),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  listCompanyDocuments: (companyId: string) =>
+    api.get<IssueDocumentSummary[]>(`/companies/${companyId}/documents`),
   listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
     api.get<IssueDocument[]>(
       `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
