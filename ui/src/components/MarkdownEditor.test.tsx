@@ -22,6 +22,10 @@ const mdxEditorMockState = vi.hoisted(() => ({
   suppressHtmlProcessingValues: [] as boolean[],
 }));
 
+function containsHtmlLikeTag(markdown: string) {
+  return /<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^>]*)?\/?>/.test(markdown);
+}
+
 vi.mock("@mdxeditor/editor", async () => {
   const React = await import("react");
 
@@ -63,7 +67,7 @@ vi.mock("@mdxeditor/editor", async () => {
     }), []);
 
     React.useEffect(() => {
-      if (!suppressHtmlProcessing && markdown.includes("<img ")) {
+      if (!suppressHtmlProcessing && containsHtmlLikeTag(markdown)) {
         setContent("");
         onError?.({
           error: "Error parsing markdown: HTML-like formatting requires suppressHtmlProcessing",
@@ -146,6 +150,17 @@ async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+}
+
+function createFileDragEvent(type: string) {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+    dataTransfer: { types: string[]; files: File[]; dropEffect?: string };
+  };
+  event.dataTransfer = {
+    types: ["Files"],
+    files: [],
+  };
+  return event;
 }
 
 describe("MarkdownEditor", () => {
@@ -251,9 +266,58 @@ describe("MarkdownEditor", () => {
     await flush();
     expect(mdxEditorMockState.markdownValues.at(-1)).toContain("![image](https://example.com/test.png)");
     expect(mdxEditorMockState.markdownValues.at(-1)).not.toContain("<img");
-    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(false);
+    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(true);
     expect(container.textContent).toContain("Before");
     expect(container.textContent).toContain("After");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps arbitrary HTML-like tags in the rich editor instead of falling back to raw source", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={'<section data-source="paste">\n## My take\n\n<p>Benchmark notes</p>\n</section>'}
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(true);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Benchmark notes");
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps scriptable pasted HTML inert in the rich editor", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={'<script>fetch("/api/secrets")</script>\n<iframe src="https://example.com"></iframe>\n<p onclick="steal()">Plain text</p>'}
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.suppressHtmlProcessingValues).toContain(true);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("script, iframe, p[onclick]")).toBeNull();
+    expect(container.textContent).toContain('fetch("/api/secrets")');
+    expect(container.textContent).toContain("Plain text");
 
     await act(async () => {
       root.unmount();
@@ -319,6 +383,101 @@ describe("MarkdownEditor", () => {
       root.unmount();
     });
   });
+
+  it("shows the editor-scoped dropzone by default when files are dragged over it", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value=""
+          onChange={() => {}}
+          placeholder="Markdown body"
+          imageUploadHandler={async () => "https://example.com/image.png"}
+        />,
+      );
+    });
+
+    await flush();
+
+    const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
+    expect(scope).not.toBeNull();
+
+    act(() => {
+      scope?.dispatchEvent(createFileDragEvent("dragenter"));
+    });
+
+    expect(scope?.className).toContain("ring-1");
+    expect(container.textContent).toContain("Drop image to upload");
+
+    act(() => {
+      scope?.dispatchEvent(createFileDragEvent("dragleave"));
+    });
+
+    expect(scope?.className).not.toContain("ring-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("defers file-drop visuals to a parent container when requested", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value=""
+          onChange={() => {}}
+          placeholder="Markdown body"
+          imageUploadHandler={async () => "https://example.com/image.png"}
+          fileDropTarget="parent"
+        />,
+      );
+    });
+
+    await flush();
+
+    const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
+    expect(scope).not.toBeNull();
+
+    act(() => {
+      scope?.dispatchEvent(createFileDragEvent("dragenter"));
+    });
+
+    expect(scope?.className).not.toContain("ring-1");
+    expect(container.textContent).not.toContain("Drop image to upload");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the raw fallback while image-only markdown is settling", async () => {
+    mdxEditorMockState.emitMountSilentEmptyState = true;
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="![Screenshot](/api/attachments/image/content)"
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await flush();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("anchors the mention menu inside the visual viewport when mobile offsets are present", () => {
     expect(
       computeMentionMenuPosition(

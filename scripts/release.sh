@@ -214,6 +214,7 @@ release_info ""
 release_info "==> Step 2/7: Building workspace artifacts..."
 cd "$REPO_ROOT"
 pnpm build
+node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
   rm -rf "$REPO_ROOT/$pkg_dir/skills"

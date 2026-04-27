@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   renderPaperclipWakePrompt,
@@ -157,6 +158,35 @@ describe("runChildProcess", () => {
     expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")("cleans up a still-running child after terminal output", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
+          "setInterval(() => {}, 1000);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async () => {},
+        terminalResultCleanup: {
+          graceMs: 100,
+          hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.signal).toBe("SIGTERM");
+    expect(result.stdout).toContain('"type":"result"');
+  });
+
   it.skipIf(process.platform === "win32")("does not clean up noisy runs that have no terminal output", async () => {
     const runId = randomUUID();
     let observed = "";
@@ -221,22 +251,18 @@ describe("runChildProcess", () => {
   });
 });
 
-describe("appendWithByteCap", () => {
-  it("keeps valid UTF-8 when trimming through multibyte text", () => {
-    const output = appendWithByteCap("prefix ", "hello — world", 7);
-
-    expect(output).not.toContain("\uFFFD");
-    expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
-    expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
-  });
-});
-
 describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/{issueId}/interactions");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Respect budget, pause/cancel, approval gates, and company boundaries",
     );
@@ -264,6 +290,70 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
     expect(prompt).toContain("use child issues instead of polling");
     expect(prompt).toContain("mark blocked work with the unblock owner/action");
+  });
+
+  it("renders dependency-blocked interaction guidance", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1703",
+        title: "Blocked parent",
+        status: "todo",
+      },
+      dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: ["blocker-1"],
+      unresolvedBlockerSummaries: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-1723",
+          title: "Finish blocker",
+          status: "todo",
+          priority: "medium",
+        },
+      ],
+      commentWindow: {
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      comments: [{ id: "comment-1", body: "hello" }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("dependency-blocked interaction: yes");
+    expect(prompt).toContain("respond or triage the human comment");
+    expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
+  });
+
+  it("renders loose review request instructions for execution handoffs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2011",
+        title: "Review request handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        reviewRequest: {
+          instructions: "Please focus on edge cases and leave a short risk summary.",
+        },
+        allowedActions: ["approve", "request_changes"],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Review request instructions:");
+    expect(prompt).toContain("Please focus on edge cases and leave a short risk summary.");
+    expect(prompt).toContain("You are waking as the active reviewer for this issue.");
   });
 
   it("includes continuation and child issue summaries in structured wake context", () => {
@@ -333,5 +423,59 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("applyPaperclipWorkspaceEnv", () => {
+  it("adds shared workspace env vars including AGENT_HOME", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "/tmp/workspace",
+        workspaceSource: "project_primary",
+        workspaceStrategy: "git_worktree",
+        workspaceId: "workspace-1",
+        workspaceRepoUrl: "https://github.com/paperclipai/paperclip.git",
+        workspaceRepoRef: "main",
+        workspaceBranch: "feature/test",
+        workspaceWorktreePath: "/tmp/worktree",
+        agentHome: "/tmp/agent-home",
+      },
+    );
+
+    expect(env).toEqual({
+      PAPERCLIP_WORKSPACE_CWD: "/tmp/workspace",
+      PAPERCLIP_WORKSPACE_SOURCE: "project_primary",
+      PAPERCLIP_WORKSPACE_STRATEGY: "git_worktree",
+      PAPERCLIP_WORKSPACE_ID: "workspace-1",
+      PAPERCLIP_WORKSPACE_REPO_URL: "https://github.com/paperclipai/paperclip.git",
+      PAPERCLIP_WORKSPACE_REPO_REF: "main",
+      PAPERCLIP_WORKSPACE_BRANCH: "feature/test",
+      PAPERCLIP_WORKSPACE_WORKTREE_PATH: "/tmp/worktree",
+      AGENT_HOME: "/tmp/agent-home",
+    });
+  });
+
+  it("skips empty workspace env values", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "",
+        workspaceSource: null,
+        agentHome: "",
+      },
+    );
+
+    expect(env).toEqual({});
+  });
+});
+
+describe("appendWithByteCap", () => {
+  it("keeps valid UTF-8 when trimming through multibyte text", () => {
+    const output = appendWithByteCap("prefix ", "hello — world", 7);
+
+    expect(output).not.toContain("\uFFFD");
+    expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
+    expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
   });
 });

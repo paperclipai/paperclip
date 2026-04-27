@@ -55,7 +55,7 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
-import { listCodexModels } from "./codex-models.js";
+import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
   execute as piExecute,
@@ -145,6 +145,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("codex_local") ?? undefined,
   models: codexModels,
   listModels: listCodexModels,
+  refreshModels: refreshCodexModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -331,12 +332,43 @@ registerBuiltInAdapters();
 // Load external adapter plugins (e.g. droid_local)
 //
 // External adapter packages export createServerAdapter() which returns a
-// ServerAdapterModule. The host fills in sessionManagement.
+// ServerAdapterModule. When the module provides its own sessionManagement
+// it is preserved; otherwise the host falls back to the built-in registry
+// lookup (so externals that override a built-in type inherit the builtin's
+// policy). This brings init-time registration to at-least-as-good behavior
+// as the hot-install path (routes/adapters.ts:179 -> registerServerAdapter):
+// both preserve module-provided sessionManagement, and init-time additionally
+// applies the registry fallback for externals overriding a built-in type.
 // ---------------------------------------------------------------------------
 
 /** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
 function getDisabledAdapterTypesFromStore(): string[] {
   return getDisabledAdapterTypes();
+}
+
+/**
+ * Merge an external adapter module with host-provided session management.
+ *
+ * Module-provided `sessionManagement` takes precedence. When absent, fall
+ * back to the hardcoded registry keyed by adapter type (so externals that
+ * override a built-in — same `type` — inherit the builtin's policy). If
+ * neither is available, `sessionManagement` remains `undefined`.
+ *
+ * Used by both the init-time IIFE below (external-adapter load pass on
+ * server start) and the hot-install path in `routes/adapters.ts`
+ * (`registerWithSessionManagement`), so the two load paths resolve
+ * `sessionManagement` identically.
+ */
+export function resolveExternalAdapterRegistration(
+  externalAdapter: ServerAdapterModule,
+): ServerAdapterModule {
+  return {
+    ...externalAdapter,
+    sessionManagement:
+      externalAdapter.sessionManagement
+        ?? getAdapterSessionManagement(externalAdapter.type)
+        ?? undefined,
+  };
 }
 
 /**
@@ -362,10 +394,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       }
       adaptersByType.set(
         externalAdapter.type,
-        {
-          ...externalAdapter,
-          sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
-        },
+        resolveExternalAdapterRegistration(externalAdapter),
       );
     }
   } catch (err) {
@@ -424,6 +453,20 @@ export function getServerAdapter(type: string): ServerAdapterModule {
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  if (adapter.listModels) {
+    const discovered = await adapter.listModels();
+    if (discovered.length > 0) return discovered;
+  }
+  return adapter.models ?? [];
+}
+
+export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const adapter = findActiveServerAdapter(type);
+  if (!adapter) return [];
+  if (adapter.refreshModels) {
+    const refreshed = await adapter.refreshModels();
+    if (refreshed.length > 0) return refreshed;
+  }
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
     if (discovered.length > 0) return discovered;

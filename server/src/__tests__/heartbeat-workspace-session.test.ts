@@ -9,6 +9,7 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -154,6 +155,58 @@ describe("applyPersistedExecutionWorkspaceConfig", () => {
 
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "workspace-web" }],
+    });
+  });
+});
+
+describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
+  it("merges config snapshot for newly realized workspaces", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "task_session",
+      createdByRuntime: true,
+      configSnapshot: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision.sh",
+      },
+      shouldReuseExisting: false,
+    })).toEqual({
+      source: "task_session",
+      createdByRuntime: true,
+      config: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision.sh",
+        teardownCommand: null,
+        cleanupCommand: null,
+        desiredState: null,
+        serviceStates: null,
+        workspaceRuntime: null,
+      },
+    });
+  });
+
+  it("preserves persisted config snapshot when reusing an existing workspace", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: {
+        config: {
+          environmentId: "env-old",
+          provisionCommand: "bash ./scripts/existing-provision.sh",
+        },
+      },
+      source: "task_session",
+      createdByRuntime: false,
+      configSnapshot: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/new-provision.sh",
+      },
+      shouldReuseExisting: true,
+    })).toEqual({
+      config: {
+        environmentId: "env-old",
+        provisionCommand: "bash ./scripts/existing-provision.sh",
+      },
+      source: "task_session",
+      createdByRuntime: false,
     });
   });
 });

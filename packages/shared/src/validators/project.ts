@@ -19,6 +19,7 @@ export const projectExecutionWorkspacePolicySchema = z
     defaultMode: z.enum(["shared_workspace", "isolated_workspace", "operator_branch", "adapter_default"]).optional(),
     allowIssueOverride: z.boolean().optional(),
     defaultProjectWorkspaceId: z.string().uuid().optional().nullable(),
+    environmentId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
     branchPolicy: z.record(z.unknown()).optional().nullable(),

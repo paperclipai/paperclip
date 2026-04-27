@@ -15,7 +15,11 @@ const sections: ShortcutSection[] = [
     title: "Inbox",
     shortcuts: [
       { keys: ["j"], label: "Move down" },
+      { keys: ["↓"], label: "Move down" },
       { keys: ["k"], label: "Move up" },
+      { keys: ["↑"], label: "Move up" },
+      { keys: ["←"], label: "Collapse selected group" },
+      { keys: ["→"], label: "Expand selected group" },
       { keys: ["Enter"], label: "Open selected item" },
       { keys: ["a"], label: "Archive item" },
       { keys: ["y"], label: "Archive item" },

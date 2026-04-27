@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, sanitizeRecord } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -62,5 +62,26 @@ describe("redaction", () => {
       password: REDACTED_EVENT_VALUE,
       safe: "value",
     });
+  });
+
+  it("redacts common secret shapes from unstructured text", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const githubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+    const input = [
+      "Authorization: Bearer live-bearer-token-value",
+      `payload {"apiKey":"json-secret-value"}`,
+      `escaped {\\"apiKey\\":\\"escaped-json-secret\\"}`,
+      `GITHUB_TOKEN=${githubToken}`,
+      `session=${jwt}`,
+    ].join("\n");
+
+    const result = redactSensitiveText(input);
+
+    expect(result).toContain(REDACTED_EVENT_VALUE);
+    expect(result).not.toContain("live-bearer-token-value");
+    expect(result).not.toContain("json-secret-value");
+    expect(result).not.toContain("escaped-json-secret");
+    expect(result).not.toContain(githubToken);
+    expect(result).not.toContain(jwt);
   });
 });

@@ -253,7 +253,7 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       )}
-                      <span className="text-xs text-muted-foreground font-mono w-14 text-right">
+                      <span className="w-28 whitespace-nowrap text-right font-mono text-xs text-muted-foreground">
                         {getAdapterLabel(agent.adapterType)}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
@@ -356,7 +356,7 @@ function OrgTreeNode({
             )}
             {agent && (
               <>
-                <span className="text-xs text-muted-foreground font-mono w-14 text-right">
+                <span className="w-28 whitespace-nowrap text-right font-mono text-xs text-muted-foreground">
                   {getAdapterLabel(agent.adapterType)}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
