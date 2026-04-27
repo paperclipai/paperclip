@@ -98,12 +98,14 @@ export function ToggleField({
   label,
   hint,
   checked,
+  disabled,
   onChange,
   toggleTestId,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
   toggleTestId?: string;
 }) {
@@ -117,11 +119,18 @@ export function ToggleField({
         data-slot="toggle"
         data-testid={toggleTestId}
         type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
+          checked ? "bg-green-600" : "bg-muted",
+          disabled && "cursor-not-allowed opacity-50"
         )}
-        onClick={() => onChange(!checked)}
+        onClick={() => {
+          if (disabled) return;
+          onChange(!checked);
+        }}
       >
         <span
           className={cn(

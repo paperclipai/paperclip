@@ -1,4 +1,4 @@
-export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+export const COMPANY_STATUSES = ["active", "pausing", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;

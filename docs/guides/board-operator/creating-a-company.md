@@ -53,3 +53,15 @@ Set monthly budgets at both the company and per-agent level. Paperclip enforces:
 ## Step 6: Launch
 
 Enable heartbeats for your agents and they'll start working. Monitor progress from the dashboard.
+
+## Operating a Running Company
+
+From **Company Settings -> Operations**, you can toggle **Company active** on/off for the whole company.
+
+- Turning it off starts a graceful pause:
+  - company moves to `pausing` while in-flight runs finish
+  - no new agent sessions or heartbeat runs are admitted
+  - once active runs drain, status becomes `paused`
+- Turning it on resumes the company back to `active`.
+
+In the left company rail, paused/pausing companies are visually dimmed so status is visible at a glance.
