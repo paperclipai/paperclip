@@ -8,7 +8,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
-import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer, isReleaseApproval, resolvedTypeIcon, resolvedApprovalLabel } from "../components/ApprovalPayload";
+import { ApprovalPayloadRenderer, isReleaseApproval, resolvedTypeIcon, resolvedApprovalLabel } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";

@@ -58,7 +58,7 @@ import { SwipeToArchive } from "../components/SwipeToArchive";
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { approvalLabel, defaultTypeIcon, typeIcon, isReleaseApproval, resolvedTypeIcon, resolvedApprovalLabel } from "../components/ApprovalPayload";
+import { approvalLabel, isReleaseApproval, resolvedTypeIcon, resolvedApprovalLabel } from "../components/ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
