@@ -94,6 +94,9 @@ export function QuickNotesModal() {
       queryClient.invalidateQueries({ queryKey: queryKeys.quickNotes.threads(vars.noteId) });
       setReplyText("");
     },
+    onError: () => {
+      pushToast({ title: "Reply failed", body: "Your reply couldn't be saved. Please try again.", tone: "error" });
+    },
   });
 
   // Ctrl+Shift+P → toggle
@@ -106,6 +109,8 @@ export function QuickNotesModal() {
       }
       if (e.key === "Escape" && open) {
         setOpen(false);
+        setExpandedNoteId(null);
+        setReplyText("");
       }
     }
     function handleOpenEvent() {
@@ -164,7 +169,7 @@ export function QuickNotesModal() {
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" onClick={() => setOpen(false)} />
+      <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" onClick={() => { setOpen(false); setExpandedNoteId(null); setReplyText(""); }} />
 
       {/* Panel — full screen on mobile, right slide-out on desktop */}
       <div className="fixed inset-0 md:inset-auto md:right-0 md:top-0 md:bottom-0 z-50 w-full md:max-w-md bg-card md:border-l border-border shadow-2xl flex flex-col pb-[env(safe-area-inset-bottom)]">
@@ -173,7 +178,7 @@ export function QuickNotesModal() {
           <StickyNote className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium flex-1">Quick Notes</span>
           <span className="text-xs text-muted-foreground hidden md:inline">Ctrl+Shift+P</span>
-          <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground">
+          <button onClick={() => { setOpen(false); setExpandedNoteId(null); setReplyText(""); }} className="text-muted-foreground hover:text-foreground">
             <X className="h-4 w-4" />
           </button>
         </div>
