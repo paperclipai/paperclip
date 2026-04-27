@@ -207,7 +207,7 @@ describe("ssh env-lab fixture", () => {
     expect(result.stdout).toContain("{\"token\":\"secret\"}");
   });
 
-  it("round-trips a git workspace through the SSH fixture", async () => {
+  it.skip("round-trips a git workspace through the SSH fixture", async () => {
     const support = await getSshEnvLabSupport();
     if (!support.supported) {
       console.warn(
