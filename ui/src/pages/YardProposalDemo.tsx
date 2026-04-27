@@ -125,7 +125,7 @@ function PointCloudViewer({ glbUrl }: { glbUrl: string }) {
         group.traverse((child) => {
           if (child instanceof THREE.Points) {
             const mat = child.material as THREE.PointsMaterial;
-            mat.size = 0.18;
+            mat.size = 0.25;
             mat.sizeAttenuation = true;
             mat.vertexColors = true;
             box.union(new THREE.Box3().setFromObject(child));
