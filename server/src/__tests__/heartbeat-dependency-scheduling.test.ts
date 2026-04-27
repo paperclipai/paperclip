@@ -96,7 +96,16 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
-    vi.clearAllMocks();
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Dependency-aware heartbeat test run.",
+      provider: "test",
+      model: "test-model",
+    }));
     runningProcesses.clear();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -345,6 +354,126 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     expect(promotedBlockedRun?.status).toBe("succeeded");
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+    let finishFirstRun!: () => void;
+    const firstRunFinished = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await firstRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "First assignment run completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: firstIssueId,
+        companyId,
+        title: "First assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: secondIssueId,
+        companyId,
+        title: "Second assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    try {
+      const firstWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: firstIssueId },
+        contextSnapshot: { issueId: firstIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+
+      const firstRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+      expect(firstRunStarted).toBe(true);
+      const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1);
+      expect(firstAdapterStarted).toBe(true);
+
+      const secondWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: secondIssueId },
+        contextSnapshot: { issueId: secondIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(secondWake).not.toBeNull();
+
+      const secondRunWhileFirstRunning = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(secondRunWhileFirstRunning?.status).toBe("queued");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+      finishFirstRun();
+
+      const secondRunSucceeded = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, secondWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      });
+      expect(secondRunSucceeded).toBe(true);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    } finally {
+      finishFirstRun();
+    }
   });
 
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {

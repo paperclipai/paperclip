@@ -19,7 +19,6 @@ const baseAgent = {
   adapterType: "process",
   adapterConfig: {},
   runtimeConfig: {},
-  defaultEnvironmentId: null,
   budgetMonthlyCents: 0,
   spentMonthlyCents: 0,
   pauseReason: null,
@@ -352,7 +351,6 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
-    mockEnvironmentService.getById.mockResolvedValue(null);
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -375,9 +373,6 @@ describe.sequential("agent permission routes", () => {
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
-    mockEnsureOpenCodeModelConfiguredAndAvailable.mockResolvedValue([
-      { id: "opencode/gpt-5-nano", label: "opencode/gpt-5-nano" },
-    ]);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
