@@ -5,10 +5,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import {
   approvalSubject,
-  typeIcon,
-  defaultTypeIcon,
   ApprovalPayloadRenderer,
-  typeLabel,
   isReleaseApproval,
   resolvedTypeLabel,
   resolvedTypeIcon,
