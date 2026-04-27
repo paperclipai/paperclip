@@ -528,9 +528,10 @@ class OKXExecutor(ExchangeExecutor):
                     _okx_normalized = normalize_okx_order(fill, requested_size_usd=size_usd)
                 except _PydanticValidationError as _ne:
                     _okx_norm_failed = True
-                    # TODO(Task 9): upsert_recon_event(state_conn,
-                    #     category='unparseable_response', severity='critical',
-                    #     exchange='OKX', symbol=symbol, notes=str(_ne))
+                    # Follow-up: thread `state_conn` into ExchangeExecutor constructors so unparseable_response
+                    # events can be persisted via upsert_recon_event(state_conn, category='unparseable_response',
+                    # severity='critical', exchange='OKX', symbol=symbol, notes=str(_ne)) and dispatched via
+                    # AlertDispatcher. Currently this code path logs only — no recon event, no Telegram alert.
                     log.error(
                         "OKX unparseable_response (severity=critical): normalize_okx_order failed: %s",
                         _ne,
@@ -713,9 +714,10 @@ class BybitExecutor(ExchangeExecutor):
                     _bybit_normalized = normalize_bybit_order(fill, requested_size_usd=size_usd)
                 except _PydanticValidationError as _ne:
                     _bybit_norm_failed = True
-                    # TODO(Task 9): upsert_recon_event(state_conn,
-                    #     category='unparseable_response', severity='critical',
-                    #     exchange='Bybit', symbol=symbol, notes=str(_ne))
+                    # Follow-up: thread `state_conn` into ExchangeExecutor constructors so unparseable_response
+                    # events can be persisted via upsert_recon_event(state_conn, category='unparseable_response',
+                    # severity='critical', exchange='Bybit', symbol=symbol, notes=str(_ne)) and dispatched via
+                    # AlertDispatcher. Currently this code path logs only — no recon event, no Telegram alert.
                     log.error(
                         "Bybit unparseable_response (severity=critical): normalize_bybit_order failed: %s",
                         _ne,
@@ -954,9 +956,10 @@ class MEXCExecutor(ExchangeExecutor):
                     _mexc_normalized = normalize_mexc_order(_mexc_fill_for_norm, requested_size_usd=size_usd)
                 except _PydanticValidationError as _ne:
                     _mexc_norm_failed = True
-                    # TODO(Task 9): upsert_recon_event(state_conn,
-                    #     category='unparseable_response', severity='critical',
-                    #     exchange='MEXC', symbol=symbol, notes=str(_ne))
+                    # Follow-up: thread `state_conn` into ExchangeExecutor constructors so unparseable_response
+                    # events can be persisted via upsert_recon_event(state_conn, category='unparseable_response',
+                    # severity='critical', exchange='MEXC', symbol=symbol, notes=str(_ne)) and dispatched via
+                    # AlertDispatcher. Currently this code path logs only — no recon event, no Telegram alert.
                     log.error(
                         "MEXC unparseable_response (severity=critical): normalize_mexc_order failed: %s",
                         _ne,
@@ -1158,9 +1161,10 @@ class BloFinExecutor(ExchangeExecutor):
                     _blofin_normalized = normalize_blofin_order(_blofin_fill_for_norm, requested_size_usd=size_usd)
                 except _PydanticValidationError as _ne:
                     _blofin_norm_failed = True
-                    # TODO(Task 9): upsert_recon_event(state_conn,
-                    #     category='unparseable_response', severity='critical',
-                    #     exchange='BloFin', symbol=symbol, notes=str(_ne))
+                    # Follow-up: thread `state_conn` into ExchangeExecutor constructors so unparseable_response
+                    # events can be persisted via upsert_recon_event(state_conn, category='unparseable_response',
+                    # severity='critical', exchange='BloFin', symbol=symbol, notes=str(_ne)) and dispatched via
+                    # AlertDispatcher. Currently this code path logs only — no recon event, no Telegram alert.
                     log.error(
                         "BloFin unparseable_response (severity=critical): normalize_blofin_order failed: %s",
                         _ne,

@@ -183,14 +183,25 @@ Cannot be executed from this environment. The plan documents the sequence:
 - **21**: Post-cutover 24–72h watch.
 - **22**: Decommission file path (requires explicit human approval).
 
-## Rollback safety
+## Rollback safety (updated post-Tasks 7/9/10/11/14)
 
-Everything landed so far is **opt-in**:
-- New modules (`live_exchange_fetcher`, `shadow_writer`) are not imported anywhere yet.
-- `start.sh` guard only fires when `USE_SQLITE_STATE=true`.
-- The 4 review-decision changes (Tasks 1–4) are localized to existing modules and have full test coverage.
+With `SHADOW_SQLITE=false` and `USE_SQLITE_STATE=false` (defaults):
 
-The bot can be deployed off this branch today and will behave identically to master — no behavior change reaches the runtime until Tasks 7, 9, 10, 11 wire the modules in. That's intentional: the dangerous wiring is gated behind a deliberate next-session decision rather than a silent inclusion.
+- `state_store` connection opens at startup but is held idle (low cost, no writes).
+- `AlertDispatcher` is constructed; `ConsoleSink` is registered. `TelegramSink` and `DigestSink` register only when both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars are set.
+- The reconciler sweep does NOT start; per-trade reconcile does NOT fire; end-of-cycle invariants pass does NOT run.
+- **The normalizer wiring IS active** in all 4 ExchangeExecutor sites. This is an intentional behavior change vs pre-cutover master (per spec 8a / Phase 0 design): orders that previously succeeded with garbled fill data now return `OrderResult(success=False)` when the fill JSON fails Pydantic validation. This is the silent-USD-mismatch detection that Phase 0 was designed to enable; it is desirable, not regressive — but operators should be aware that some orders that previously appeared to succeed will now appear to fail (the underlying state was always a failure; we now surface it).
+- Backout = stop bot, set both flags off, restart. SQLite file kept on disk as audit material.
+- Test coverage: 189 passing tests including 6 production-bug replay regressions.
+
+## Remaining live items (post-cutover-Tasks-7/9/10/11/14)
+
+1. **`Follow-up:` comments at 4 executor sites in `real_trader.py`** — thread `state_conn` into `ExchangeExecutor` constructors to enable `upsert_recon_event` + alert dispatch on `unparseable_response`. Currently logs-only.
+2. **`_data_source()` selector unwired** in `dashboard.py:26` (`TODO(Task 22)`). Required before Task 22 decommission removes file-based `real_state.json` writes.
+3. **No "resolved" alert path** — when an unresolved recon event clears, no event fires.
+4. **`LiveExchangeFetcher.get_recent_fills` returns `[]`** — reconciler `unlinked_fill` detection inactive in production.
+5. **`AlertDispatcher` dedup window is 300s flat**; severity-aware (60s warn/error, 300s critical) is a possible future tightening.
+6. **`real_trader.py` net delta is +341 vs plan budget +120** — concentrated in 4 nearly-identical normalize-and-emit blocks. Cleanup opportunity: extract `_attempt_normalize()` helper.
 
 ## Test budget
 
