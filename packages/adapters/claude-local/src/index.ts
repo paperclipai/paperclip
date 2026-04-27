@@ -23,6 +23,8 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): pass --dangerously-skip-permissions to claude; defaults to true because Paperclip runs Claude in headless --print mode where interactive permission prompts cannot be answered
+- permissionMode (string, optional): pass --permission-mode to claude (auto|default|plan|dontAsk|bypassPermissions|acceptEdits)
+- disallowedTools (string[], optional): tool patterns to deny via --disallowed-tools (e.g. ["Bash(git push:*)", "Edit"])
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

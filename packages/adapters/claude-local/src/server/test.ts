@@ -155,6 +155,8 @@ export async function testEnvironment(
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      const permissionMode = asString(config.permissionMode, "").trim();
+      const disallowedTools = asStringArray(config.disallowedTools);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -163,6 +165,8 @@ export async function testEnvironment(
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+      if (permissionMode) args.push("--permission-mode", permissionMode);
+      if (disallowedTools.length > 0) args.push("--disallowed-tools", ...disallowedTools);
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
       if (model && (!hasBedrock || isBedrockModelId(model))) {
