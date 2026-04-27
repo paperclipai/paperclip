@@ -21,6 +21,7 @@ export interface InstanceGeneralSettings {
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  maxConcurrentHeartbeatRuns: number | null;
 }
 
 export interface InstanceExperimentalSettings {

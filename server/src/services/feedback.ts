@@ -23,6 +23,7 @@ import { claudeConfigDir, parseClaudeStreamJson } from "@paperclipai/adapter-cla
 import { codexHomeDir, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import { parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import {
+  DEFAULT_BACKUP_RETENTION,
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   instanceGeneralSettingsSchema,
@@ -156,7 +157,10 @@ function normalizeInstanceGeneralSettings(raw: unknown) {
   if (parsed.success) return parsed.data;
   return {
     censorUsernameInLogs: false,
+    keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+    backupRetention: DEFAULT_BACKUP_RETENTION,
+    maxConcurrentHeartbeatRuns: null,
   };
 }
 

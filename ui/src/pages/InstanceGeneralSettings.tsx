@@ -24,6 +24,7 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [maxConcurrentHeartbeatRunsDraft, setMaxConcurrentHeartbeatRunsDraft] = useState<string>("");
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -63,6 +64,11 @@ export function InstanceGeneralSettings() {
     },
   });
 
+  useEffect(() => {
+    const value = generalQuery.data?.maxConcurrentHeartbeatRuns;
+    setMaxConcurrentHeartbeatRunsDraft(value == null ? "" : String(value));
+  }, [generalQuery.data?.maxConcurrentHeartbeatRuns]);
+
   if (generalQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
   }
@@ -81,6 +87,17 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const maxConcurrentHeartbeatRuns = generalQuery.data?.maxConcurrentHeartbeatRuns ?? null;
+
+  const commitMaxConcurrentHeartbeatRuns = () => {
+    const trimmed = maxConcurrentHeartbeatRunsDraft.trim();
+    const nextValue =
+      trimmed.length === 0
+        ? null
+        : Math.max(1, Math.min(1000, Math.floor(Number(trimmed) || 0)));
+    if (nextValue === maxConcurrentHeartbeatRuns) return;
+    updateGeneralMutation.mutate({ maxConcurrentHeartbeatRuns: nextValue });
+  };
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -168,6 +185,59 @@ export function InstanceGeneralSettings() {
             disabled={updateGeneralMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
           />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Concurrent heartbeat runs</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Limit how many heartbeat runs can execute at the same time across the whole instance.
+              When the cap is reached, additional runs stay queued until a slot frees up. Leave blank
+              for no global cap.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-40 space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Max running heartbeats
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                step={1}
+                value={maxConcurrentHeartbeatRunsDraft}
+                onChange={(event) => setMaxConcurrentHeartbeatRunsDraft(event.target.value)}
+                className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono"
+                placeholder="Unlimited"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={updateGeneralMutation.isPending}
+              onClick={() => {
+                setMaxConcurrentHeartbeatRunsDraft("");
+                if (maxConcurrentHeartbeatRuns !== null) {
+                  updateGeneralMutation.mutate({ maxConcurrentHeartbeatRuns: null });
+                }
+              }}
+            >
+              Unlimited
+            </Button>
+            <Button
+              type="button"
+              disabled={updateGeneralMutation.isPending}
+              onClick={commitMaxConcurrentHeartbeatRuns}
+            >
+              Save limit
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Current value: {maxConcurrentHeartbeatRuns == null ? "Unlimited" : maxConcurrentHeartbeatRuns}
+          </p>
         </div>
       </section>
 

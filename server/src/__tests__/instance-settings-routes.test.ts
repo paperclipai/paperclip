@@ -53,6 +53,8 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      maxConcurrentHeartbeatRuns: null,
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -64,6 +66,8 @@ describe("instance settings routes", () => {
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
+        backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        maxConcurrentHeartbeatRuns: 4,
       },
     });
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
@@ -134,6 +138,8 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      maxConcurrentHeartbeatRuns: null,
     });
 
     const patchRes = await request(app)
@@ -142,6 +148,7 @@ describe("instance settings routes", () => {
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
+        maxConcurrentHeartbeatRuns: 4,
       });
 
     expect(patchRes.status).toBe(200);
@@ -149,6 +156,7 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: true,
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
+      maxConcurrentHeartbeatRuns: 4,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
@@ -169,6 +177,8 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      maxConcurrentHeartbeatRuns: null,
     });
   });
 

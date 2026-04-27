@@ -124,6 +124,7 @@ const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const GLOBAL_HEARTBEAT_RUN_LIMIT_ENV = "PAPERCLIP_MAX_CONCURRENT_HEARTBEAT_RUNS";
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -134,6 +135,7 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
+let globalStartLock: Promise<void> | null = null;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -739,6 +741,30 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function parseGlobalHeartbeatRunLimit(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isFinite(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+async function withGlobalStartLock<T>(fn: () => Promise<T>) {
+  const previous = globalStartLock ?? Promise.resolve();
+  const run = previous.then(fn);
+  const marker = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  globalStartLock = marker;
+  try {
+    return await run;
+  } finally {
+    if (globalStartLock === marker) {
+      globalStartLock = null;
+    }
+  }
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -1852,6 +1878,12 @@ export function heartbeatService(db: Db) {
   };
   const budgets = budgetService(db, budgetHooks);
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+
+  async function getConfiguredGlobalHeartbeatRunLimit() {
+    const settingsLimit = (await instanceSettings.getGeneral()).maxConcurrentHeartbeatRuns;
+    if (settingsLimit != null) return settingsLimit;
+    return parseGlobalHeartbeatRunLimit(process.env[GLOBAL_HEARTBEAT_RUN_LIMIT_ENV]);
+  }
 
   async function hasUnsafeTextProjectionDatabase() {
     if (!unsafeTextProjectionPromise) {
@@ -3475,6 +3507,14 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsGlobally() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -3922,7 +3962,7 @@ export function heartbeatService(db: Db) {
       });
 
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      await resumeQueuedRunsAfterCapacityChange(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -3943,6 +3983,14 @@ export function heartbeatService(db: Db) {
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function resumeQueuedRunsAfterCapacityChange(agentId: string) {
+    if (await getConfiguredGlobalHeartbeatRunLimit() == null) {
+      await startNextQueuedRunForAgent(agentId);
+      return;
+    }
+    await resumeQueuedRuns();
   }
 
   async function getLatestIssueRun(companyId: string, issueId: string) {
@@ -4768,7 +4816,7 @@ export function heartbeatService(db: Db) {
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
-    return withAgentStartLock(agentId, async () => {
+    return withGlobalStartLock(() => withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
@@ -4776,7 +4824,17 @@ export function heartbeatService(db: Db) {
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const availableAgentSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      let availableSlots = availableAgentSlots;
+      const configuredGlobalHeartbeatRunLimit = await getConfiguredGlobalHeartbeatRunLimit();
+      if (configuredGlobalHeartbeatRunLimit != null) {
+        const runningGlobalCount = await countRunningRunsGlobally();
+        const availableGlobalSlots = Math.max(
+          0,
+          configuredGlobalHeartbeatRunLimit - runningGlobalCount,
+        );
+        availableSlots = Math.min(availableSlots, availableGlobalSlots);
+      }
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -4837,7 +4895,7 @@ export function heartbeatService(db: Db) {
         });
       }
       return claimedRuns;
-    });
+    }));
   }
 
   async function executeRun(runId: string) {
@@ -5955,7 +6013,7 @@ export function heartbeatService(db: Db) {
           }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          await resumeQueuedRunsAfterCapacityChange(run.agentId);
         }
   }
 
@@ -7073,7 +7131,7 @@ export function heartbeatService(db: Db) {
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    await resumeQueuedRunsAfterCapacityChange(run.agentId);
     return cancelled;
   }
 

@@ -43,6 +43,14 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+Optional safety valve for busy instances:
+
+```sh
+PAPERCLIP_MAX_CONCURRENT_HEARTBEAT_RUNS=4 pnpm dev
+```
+
+When set, Paperclip keeps additional heartbeat runs queued once the instance reaches that many concurrent running heartbeats. This env var is used as a fallback when `Instance Settings > General > Concurrent heartbeat runs` is left unset.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
