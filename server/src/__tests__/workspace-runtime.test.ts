@@ -35,6 +35,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  truncateWorktreeDirName,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
@@ -170,6 +171,36 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
   await resetRuntimeServicesForTests();
+});
+
+describe("truncateWorktreeDirName", () => {
+  it("returns the branch name unchanged when it fits in maxDirNameLen", () => {
+    const parentDirLen = 60;
+    expect(truncateWorktreeDirName("short-branch", parentDirLen)).toBe("short-branch");
+  });
+
+  it("truncates and appends a hash when the branch is too long", () => {
+    const parentDirLen = 180; // leaves only 20 chars for the dir name
+    const longBranch = "a".repeat(80);
+    const result = truncateWorktreeDirName(longBranch, parentDirLen);
+    expect(result.length).toBeLessThanOrEqual(20);
+    expect(result).toMatch(/-[0-9a-f]{7}$/);
+  });
+
+  it("produces distinct dir names for branches sharing a long common prefix", () => {
+    const parentDirLen = 180; // forces aggressive truncation
+    const branchA = `${"x".repeat(80)}-part-a`;
+    const branchB = `${"x".repeat(80)}-part-b`;
+    const dirA = truncateWorktreeDirName(branchA, parentDirLen);
+    const dirB = truncateWorktreeDirName(branchB, parentDirLen);
+    expect(dirA).not.toBe(dirB);
+  });
+
+  it("never produces a dir name longer than the configured cap", () => {
+    const parentDirLen = 195; // worst case: max is clamped to 20
+    const result = truncateWorktreeDirName("z".repeat(120), parentDirLen);
+    expect(result.length).toBeLessThanOrEqual(20);
+  });
 });
 
 describe("sanitizeRuntimeServiceBaseEnv", () => {

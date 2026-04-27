@@ -396,6 +396,18 @@ function sanitizeBranchName(value: string): string {
     .slice(0, 120) || "paperclip-work";
 }
 
+// Windows long parent paths can push the worktree path past MAX_PATH (260),
+// causing git to fail. We truncate the directory name (not the branch) to keep
+// the total under 200 chars and append a short hash so two branches sharing a
+// long common prefix still resolve to distinct directories.
+export function truncateWorktreeDirName(branchName: string, parentDirLenWithSeparator: number): string {
+  const maxDirNameLen = Math.max(20, 200 - parentDirLenWithSeparator);
+  if (branchName.length <= maxDirNameLen) return branchName;
+  const hashSuffix = createHash("sha1").update(branchName).digest("hex").slice(0, 7);
+  const trimLen = Math.max(8, maxDirNameLen - 1 - hashSuffix.length);
+  return `${branchName.slice(0, trimLen).replace(/-+$/, "")}-${hashSuffix}`;
+}
+
 function isAbsolutePath(value: string) {
   return path.isAbsolute(value) || value.startsWith("~");
 }
@@ -1017,14 +1029,9 @@ export async function realizeExecutionWorkspace(input: {
   // git to fail with "$GIT_DIR too big". Truncate the directory name (not the
   // branch) to keep the worktree path under 200 chars, leaving room for
   // nested files.
-  let worktreeDirName = branchName;
-  if (process.platform === "win32") {
-    const parentDirLen = worktreeParentDir.length + 1; // +1 for separator
-    const maxDirNameLen = Math.max(20, 200 - parentDirLen);
-    if (worktreeDirName.length > maxDirNameLen) {
-      worktreeDirName = worktreeDirName.slice(0, maxDirNameLen).replace(/-+$/, "");
-    }
-  }
+  const worktreeDirName = process.platform === "win32"
+    ? truncateWorktreeDirName(branchName, worktreeParentDir.length + 1)
+    : branchName;
   const worktreePath = path.join(worktreeParentDir, worktreeDirName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
