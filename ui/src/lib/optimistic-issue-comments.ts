@@ -12,6 +12,11 @@ export interface OptimisticIssueComment extends IssueComment {
 }
 
 export type IssueTimelineComment = IssueComment | OptimisticIssueComment;
+export type LocallyQueuedIssueComment<T extends IssueComment> = T & {
+  clientStatus: "queued";
+  queueState: "queued";
+  queueTargetRunId: string;
+};
 
 function toTimestamp(value: Date | string) {
   return new Date(value).getTime();
@@ -82,6 +87,26 @@ export function isQueuedIssueComment(params: {
   return toTimestamp(params.comment.createdAt) >= toTimestamp(params.activeRunStartedAt);
 }
 
+export function applyLocalQueuedIssueCommentState<T extends IssueComment>(
+  comment: T,
+  params: {
+    queuedTargetRunId?: string | null;
+    targetRunIsLive: boolean;
+    runningRunId?: string | null;
+  },
+): T | LocallyQueuedIssueComment<T> {
+  const queuedTargetRunId = params.queuedTargetRunId ?? null;
+  if (!queuedTargetRunId || !params.targetRunIsLive) return comment;
+  if (params.runningRunId && params.runningRunId !== queuedTargetRunId) return comment;
+
+  return {
+    ...comment,
+    clientStatus: "queued",
+    queueState: "queued",
+    queueTargetRunId: queuedTargetRunId,
+  };
+}
+
 export function mergeIssueComments(
   comments: IssueComment[] | undefined,
   optimisticComments: OptimisticIssueComment[],
@@ -125,6 +150,21 @@ export function getNextIssueCommentPageParam(
   return lastPage[lastPage.length - 1]?.id;
 }
 
+export function shouldAutoloadOlderIssueComments(params: {
+  activeDetailTab: string;
+  hasOlderComments: boolean;
+  loadedCommentCount: number;
+  initialPageLoading: boolean;
+  olderPageLoading: boolean;
+  autoLoadLimit: number;
+}) {
+  if (params.activeDetailTab !== "chat") return false;
+  if (!params.hasOlderComments) return false;
+  if (params.initialPageLoading || params.olderPageLoading) return false;
+  if (params.loadedCommentCount === 0) return false;
+  return params.loadedCommentCount < params.autoLoadLimit;
+}
+
 export function upsertIssueComment(
   comments: IssueComment[] | undefined,
   nextComment: IssueComment,
@@ -150,7 +190,7 @@ export function applyOptimisticIssueCommentUpdate(
   if (!issue) return issue;
   const nextIssue: Issue = { ...issue };
 
-  if (params.reopen === true && (issue.status === "done" || issue.status === "cancelled")) {
+  if (params.reopen === true && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
     nextIssue.status = "todo";
   }
 

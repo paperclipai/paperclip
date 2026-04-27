@@ -55,6 +55,7 @@ export const createAgentSchema = z.object({
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
   runtimeConfig: z.record(z.unknown()).optional().default({}),
+  defaultEnvironmentId: z.string().uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),

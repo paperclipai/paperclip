@@ -7,6 +7,7 @@ import type {
   ExecutionWorkspace,
   IssueExecutionPolicy,
   IssueExecutionState,
+  IssueLabel,
   Project,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
@@ -26,10 +27,15 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listLabels: vi.fn(),
+  createLabel: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -54,6 +60,10 @@ vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
 vi.mock("../hooks/useProjectOrder", () => ({
   useProjectOrder: ({ projects }: { projects: unknown[] }) => ({
     orderedProjects: projects,
@@ -73,7 +83,9 @@ vi.mock("../lib/assignees", () => ({
 }));
 
 vi.mock("./StatusIcon", () => ({
-  StatusIcon: ({ status }: { status: string }) => <span>{status}</span>,
+  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
+    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
+  ),
 }));
 
 vi.mock("./PriorityIcon", () => ({
@@ -149,6 +161,18 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     blocks: [],
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createLabel(overrides: Partial<IssueLabel> = {}): IssueLabel {
+  return {
+    id: "label-1",
+    companyId: "company-1",
+    name: "Bug",
+    color: "#ef4444",
+    createdAt: new Date("2026-04-06T12:00:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
   };
 }
@@ -296,6 +320,7 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
     currentStageType: "review",
     currentParticipant: { type: "agent", agentId: "agent-1", userId: null },
     returnAssignee: { type: "agent", agentId: "agent-2", userId: null },
+    reviewRequest: null,
     completedStageIds: [],
     lastDecisionId: null,
     lastDecisionOutcome: "changes_requested",
@@ -330,7 +355,13 @@ describe("IssueProperties", () => {
     mockProjectsApi.list.mockResolvedValue([]);
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
+    mockIssuesApi.createLabel.mockResolvedValue(createLabel({
+      id: "label-new",
+      name: "New label",
+      color: "#6366f1",
+    }));
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
   });
 
   afterEach(() => {
@@ -359,6 +390,88 @@ describe("IssueProperties", () => {
     });
 
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("passes blocker attention to the sidebar status icon", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "blocked",
+        blockerAttention: {
+          state: "covered",
+          reason: "active_child",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-2",
+          sampleStalledBlockerIdentifier: null,
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
+
+    act(() => root.unmount());
+  });
+
+  it("renders blocked-by issues as direct chips and edits them from an add action", async () => {
+    const onUpdate = vi.fn();
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({ id: "issue-3", identifier: "PAP-3", title: "New blocker", status: "todo" }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        blockedBy: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "Existing blocker",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const blockerLink = container.querySelector('a[href="/issues/PAP-2"]');
+    expect(blockerLink).not.toBeNull();
+    expect(blockerLink?.textContent).toContain("PAP-2");
+    expect(blockerLink?.closest("button")).toBeNull();
+    expect(container.textContent).toContain("Add blocker");
+    expect(container.querySelector('input[placeholder="Search issues..."]')).toBeNull();
+
+    const addButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add blocker"));
+    expect(addButton).not.toBeUndefined();
+
+    await act(async () => {
+      addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('input[placeholder="Search issues..."]')).not.toBeNull();
+
+    const candidateButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-3 New blocker"));
+    expect(candidateButton).not.toBeUndefined();
+
+    await act(async () => {
+      candidateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-2", "issue-3"] });
 
     act(() => root.unmount());
   });
@@ -392,6 +505,38 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows a workspace tasks link for non-default workspaces when isolated workspaces are enabled", async () => {
+    mockProjectsApi.list.mockResolvedValue([createProject()]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    const root = renderProperties(container, {
+      issue: createIssue({
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-main",
+        executionWorkspaceId: "workspace-1",
+        currentExecutionWorkspace: createExecutionWorkspace({
+          mode: "isolated_workspace",
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+    await flush();
+
+    const tasksLink = Array.from(container.querySelectorAll("a")).find(
+      (link) => link.textContent?.includes("View workspace tasks"),
+    );
+    const workspaceLink = Array.from(container.querySelectorAll("a")).find(
+      (link) => link.textContent?.trim() === "View workspace",
+    );
+    expect(tasksLink).not.toBeUndefined();
+    expect(tasksLink?.getAttribute("href")).toBe("/issues?workspace=workspace-1");
+    expect(workspaceLink).not.toBeUndefined();
+    expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+
+    act(() => root.unmount());
+  });
+
   it("does not show a service link for the main shared workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
@@ -412,6 +557,10 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(container.querySelector(`a[href="${serviceUrl}"]`)).toBeNull();
+    expect(container.textContent).not.toContain("View workspace tasks");
+    expect(Array.from(container.querySelectorAll("a")).some(
+      (link) => link.textContent?.trim() === "View workspace",
+    )).toBe(false);
 
     act(() => root.unmount());
   });
@@ -559,6 +708,61 @@ describe("IssueProperties", () => {
 
     expect(container.querySelector('input[placeholder="Search labels..."]')).not.toBeNull();
     expect(container.querySelector('button[title="Delete Bug"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("shows selected labels from labelIds even before the issue labels relation refreshes", async () => {
+    mockIssuesApi.listLabels.mockResolvedValue([createLabel()]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        labels: [],
+        labelIds: ["label-1"],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("Bug");
+    expect(container.textContent).not.toContain("No labels");
+
+    act(() => root.unmount());
+  });
+
+  it("shows a checkmark on selected labels in the picker", async () => {
+    mockIssuesApi.listLabels.mockResolvedValue([
+      createLabel(),
+      createLabel({ id: "label-2", name: "Feature", color: "#22c55e" }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        labels: [createLabel()],
+        labelIds: ["label-1"],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    const addLabelButton = container.querySelector('button[aria-label="Add label"]');
+    expect(addLabelButton).not.toBeNull();
+    await act(async () => {
+      addLabelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const labelButtons = Array.from(container.querySelectorAll("button"))
+      .filter((button) => button.textContent?.includes("Bug") || button.textContent?.includes("Feature"));
+    const bugButton = labelButtons.find((button) => button.textContent?.includes("Bug") && button.querySelector("svg"));
+    const featureButton = labelButtons.find((button) => button.textContent?.includes("Feature"));
+    expect(bugButton).not.toBeUndefined();
+    expect(featureButton?.querySelector("svg")).toBeNull();
 
     act(() => root.unmount());
   });

@@ -23,6 +23,7 @@ import {
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -826,6 +827,7 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
     refetchInterval: 5000,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -845,12 +847,12 @@ export function Inbox() {
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true),
-    [mineIssues, issueFilters, currentUserId],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true),
-    [touchedIssues, issueFilters, currentUserId],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -1004,14 +1006,6 @@ export function Inbox() {
       ),
     [heartbeatRuns, dismissedAtByKey],
   );
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
-
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
     if (tab === "mine") {
@@ -1159,12 +1153,14 @@ export function Inbox() {
         issueFilters,
         currentUserId,
         enableRoutineVisibilityFilter: true,
+        liveIssueIds,
       }),
     [
       archivedSearchIssues,
       currentUserId,
       filteredWorkItems,
       issueFilters,
+      liveIssueIds,
       normalizedSearchQuery,
       remoteIssueSearchResults,
     ],
@@ -1199,6 +1195,16 @@ export function Inbox() {
       const next = new Set(prev);
       if (next.has(groupKey)) next.delete(groupKey);
       else next.add(groupKey);
+      saveCollapsedInboxGroupKeys(selectedCompanyId, next);
+      return next;
+    });
+  }, [selectedCompanyId]);
+  const setGroupCollapsed = useCallback((groupKey: string, collapsed: boolean) => {
+    setCollapsedGroupKeys((prev) => {
+      if (collapsed ? prev.has(groupKey) : !prev.has(groupKey)) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(groupKey);
+      else next.delete(groupKey);
       saveCollapsedInboxGroupKeys(selectedCompanyId, next);
       return next;
     });
@@ -1253,6 +1259,13 @@ export function Inbox() {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "child") map.set(entry.issueId, index);
+    });
+    return map;
+  }, [flatNavItems]);
+  const groupFlatIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    flatNavItems.forEach((entry, index) => {
+      if (entry.type === "group") map.set(entry.groupKey, index);
     });
     return map;
   }, [flatNavItems]);
@@ -1623,6 +1636,7 @@ export function Inbox() {
     markUnreadIssue: (id: string) => markUnreadMutation.mutate(id),
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
+    setGroupCollapsed,
     navigate,
   });
   kbActionsRef.current = {
@@ -1633,6 +1647,7 @@ export function Inbox() {
     markUnreadIssue: (id: string) => markUnreadMutation.mutate(id),
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
+    setGroupCollapsed,
     navigate,
   };
 
@@ -1689,18 +1704,30 @@ export function Inbox() {
         const entry = navItems[idx];
         if (!entry) return {};
         if (entry.type === "child") return { issue: entry.issue };
-        return { item: entry.item };
+        if (entry.type === "top") return { item: entry.item };
+        return {};
       };
 
       switch (e.key) {
-        case "j": {
+        case "j":
+        case "ArrowDown": {
           e.preventDefault();
           setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
           break;
         }
-        case "k": {
+        case "k":
+        case "ArrowUp": {
           e.preventDefault();
           setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
+          break;
+        }
+        case "ArrowLeft":
+        case "ArrowRight": {
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          const entry = navItems[st.selectedIndex];
+          if (!entry || entry.type !== "group") return;
+          e.preventDefault();
+          act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
           break;
         }
         case "a":
@@ -2095,7 +2122,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
+            <div ref={listRef} className="overflow-hidden rounded-xl bg-card">
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2237,13 +2264,20 @@ export function Inbox() {
                     );
                   }
                   if (group.label) {
+                    const groupNavIdx = groupFlatIndex.get(group.key) ?? -1;
+                    const isGroupSelected = groupNavIdx >= 0 && selectedIndex === groupNavIdx;
                     elements.push(
                       <div
                         key={`group-${group.key}`}
+                        data-inbox-item
                         className={cn(
                           "px-3 sm:px-4",
                           groupIndex > 0 && "pt-2",
+                          isGroupSelected && "bg-accent/50",
                         )}
+                        onClick={() => {
+                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                        }}
                       >
                         <IssueGroupHeader
                           label={group.label}

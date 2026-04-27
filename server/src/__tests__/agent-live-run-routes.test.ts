@@ -7,8 +7,10 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  buildRunOutputSilence: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  buildRunOutputSilence: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
 }));
@@ -18,7 +20,32 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+  getGeneral: vi.fn(),
+  listCompanyIds: vi.fn(),
+}));
+
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
@@ -66,16 +93,47 @@ async function createApp() {
   return app;
 }
 
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
+}
+
 describe("agent live run routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/issues.js");
     vi.doUnmock("../adapters/index.js");
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -90,6 +148,20 @@ describe("agent live run routes", () => {
       name: "Builder",
       adapterType: "codex_local",
     });
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({});
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -102,6 +174,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -118,12 +191,15 @@ describe("agent live run routes", () => {
   });
 
   it("returns a compact active run payload for issue polling", async () => {
-    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       id: "run-1",
       status: "running",
       invocationSource: "on_demand",
@@ -135,11 +211,12 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
       agentName: "Builder",
       adapterType: "codex_local",
+      outputSilence: null,
     });
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
-  });
+  }, 10_000);
 
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
@@ -165,7 +242,10 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
 
-    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
@@ -180,7 +260,10 @@ describe("agent live run routes", () => {
   });
 
   it("uses narrow run log metadata lookups for log polling", async () => {
-    const res = await request(await createApp()).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64");
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");

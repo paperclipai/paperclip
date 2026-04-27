@@ -94,7 +94,7 @@ async function createApp(input: {
   return { app, workerManager };
 }
 
-describe("plugin scoped API routes", () => {
+describe.sequential("plugin scoped API routes", () => {
   const pluginId = "11111111-1111-4111-8111-111111111111";
   const companyId = "22222222-2222-4222-8222-222222222222";
   const agentId = "33333333-3333-4333-8333-333333333333";
@@ -102,7 +102,7 @@ describe("plugin scoped API routes", () => {
   const issueId = "55555555-5555-4555-8555-555555555555";
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({
       id: issueId,

@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { resolveIssueFilterWorkspaceId } from "../lib/issue-filters";
 import { queryKeys } from "../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -108,6 +110,12 @@ function runningRuntimeServiceWithUrl(
   runtimeServices: WorkspaceRuntimeService[] | null | undefined,
 ) {
   return runtimeServices?.find((service) => service.status === "running" && service.url?.trim()) ?? null;
+}
+
+function issuesWorkspaceFilterHref(workspaceId: string) {
+  const params = new URLSearchParams();
+  params.append("workspace", workspaceId);
+  return `/issues?${params.toString()}`;
 }
 
 interface IssuePropertiesProps {
@@ -232,6 +240,11 @@ export function IssueProperties({
     queryFn: () => accessApi.listUserDirectory(companyId!),
     enabled: !!companyId,
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId!),
@@ -263,8 +276,16 @@ export function IssueProperties({
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
     onSuccess: async (created) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
+      queryClient.setQueryData<IssueLabel[] | undefined>(
+        queryKeys.issues.labels(companyId!),
+        (current) => {
+          if (!current) return [created];
+          if (current.some((label) => label.id === created.id)) return current;
+          return [...current, created];
+        },
+      );
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
     },
   });
@@ -292,10 +313,21 @@ export function IssueProperties({
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
   const issueProject = issue.project ?? currentProject;
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const issueUsesMainWorkspace = useMemo(
+    () => isMainIssueWorkspace({ issue, project: issueProject }),
+    [issue, issueProject],
+  );
+  const workspaceFilterId = useMemo(() => {
+    if (!isolatedWorkspacesEnabled) return null;
+    if (issueUsesMainWorkspace) return null;
+    return resolveIssueFilterWorkspaceId(issue);
+  }, [isolatedWorkspacesEnabled, issue, issueUsesMainWorkspace]);
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
   const liveWorkspaceService = useMemo(() => {
-    if (isMainIssueWorkspace({ issue, project: issueProject })) return null;
+    if (issueUsesMainWorkspace) return null;
     return runningRuntimeServiceWithUrl(issue.currentExecutionWorkspace?.runtimeServices);
-  }, [issue, issueProject]);
+  }, [issue.currentExecutionWorkspace?.runtimeServices, issueUsesMainWorkspace]);
   const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
   const relatedTasks = useMemo(() => {
     const excluded = new Set<string>();
@@ -427,10 +459,22 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  const selectedIssueLabels = useMemo(() => {
+    const selectedIds = issue.labelIds ?? [];
+    if (selectedIds.length === 0) return issue.labels ?? [];
 
-  const labelsTrigger = (issue.labels ?? []).length > 0 ? (
+    const labelById = new Map<string, IssueLabel>();
+    for (const label of labels ?? []) labelById.set(label.id, label);
+    for (const label of issue.labels ?? []) labelById.set(label.id, label);
+
+    return selectedIds
+      .map((id) => labelById.get(id))
+      .filter((label): label is IssueLabel => Boolean(label));
+  }, [issue.labelIds, issue.labels, labels]);
+
+  const labelsTrigger = selectedIssueLabels.length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
-      {(issue.labels ?? []).slice(0, 3).map((label) => (
+      {selectedIssueLabels.slice(0, 3).map((label) => (
         <span
           key={label.id}
           className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
@@ -443,8 +487,8 @@ export function IssueProperties({
           {label.name}
         </span>
       ))}
-      {(issue.labels ?? []).length > 3 && (
-        <span className="text-xs text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+      {selectedIssueLabels.length > 3 && (
+        <span className="text-xs text-muted-foreground">+{selectedIssueLabels.length - 3}</span>
       )}
     </div>
   ) : (
@@ -492,7 +536,8 @@ export function IssueProperties({
                 onClick={() => toggleLabel(label.id)}
               >
                 <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
-                <span className="truncate">{label.name}</span>
+                <span className="truncate flex-1">{label.name}</span>
+                {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
               </button>
             );
           })}
@@ -917,21 +962,6 @@ export function IssueProperties({
       </div>
     </>
   );
-  const blockedByTrigger = blockedByIds.length > 0 ? (
-    <div className="flex items-center gap-1 flex-wrap min-w-0">
-      {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
-        <span key={relation.id} className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs">
-          <span className="truncate">{relation.identifier ?? relation.title}</span>
-        </span>
-      ))}
-      {(issue.blockedBy ?? []).length > 2 && (
-        <span className="text-xs text-muted-foreground">+{(issue.blockedBy ?? []).length - 2}</span>
-      )}
-    </div>
-  ) : (
-    <span className="text-sm text-muted-foreground">No blockers</span>
-  );
-
   const blockingIssues = issue.blocks ?? [];
   const blockerOptions = (allIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
@@ -997,6 +1027,16 @@ export function IssueProperties({
       </div>
     </>
   );
+  const renderAddBlockedByButton = (onClick?: () => void) => (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      onClick={onClick}
+    >
+      <Plus className="h-3 w-3" />
+      Add blocker
+    </button>
+  );
 
   return (
     <div className="space-y-4">
@@ -1004,6 +1044,7 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
+            blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel
           />
@@ -1087,32 +1128,47 @@ export function IssueProperties({
           {parentContent}
         </PropertyPicker>
 
-        <PropertyPicker
-          inline={inline}
-          label="Blocked by"
-          open={blockedByOpen}
-          onOpenChange={(open) => {
-            setBlockedByOpen(open);
-            if (!open) setBlockedBySearch("");
-          }}
-          triggerContent={blockedByTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-72"
-        >
-          {blockedByContent}
-        </PropertyPicker>
+        {inline ? (
+          <div>
+            <PropertyRow label="Blocked by">
+              {(issue.blockedBy ?? []).map((relation) => (
+                <IssueReferencePill key={relation.id} issue={relation} />
+              ))}
+              {renderAddBlockedByButton(() => setBlockedByOpen((open) => !open))}
+            </PropertyRow>
+            {blockedByOpen && (
+              <div className="rounded-md border border-border bg-popover p-1 mb-2">
+                {blockedByContent}
+              </div>
+            )}
+          </div>
+        ) : (
+          <PropertyRow label="Blocked by">
+            {(issue.blockedBy ?? []).map((relation) => (
+              <IssueReferencePill key={relation.id} issue={relation} />
+            ))}
+            <Popover
+              open={blockedByOpen}
+              onOpenChange={(open) => {
+                setBlockedByOpen(open);
+                if (!open) setBlockedBySearch("");
+              }}
+            >
+              <PopoverTrigger asChild>
+                {renderAddBlockedByButton()}
+              </PopoverTrigger>
+              <PopoverContent className="w-72 p-1" align="end" collisionPadding={16}>
+                {blockedByContent}
+              </PopoverContent>
+            </Popover>
+          </PropertyRow>
+        )}
 
         <PropertyRow label="Blocking">
           {blockingIssues.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {blockingIssues.map((relation) => (
-                <Link
-                  key={relation.id}
-                  to={`/issues/${relation.identifier ?? relation.id}`}
-                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
-                >
-                  {relation.identifier ?? relation.title}
-                </Link>
+                <IssueReferencePill key={relation.id} issue={relation} />
               ))}
             </div>
           ) : null}
@@ -1122,13 +1178,7 @@ export function IssueProperties({
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
-                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
-                >
-                  {child.identifier ?? child.title}
-                </Link>
+                <IssueReferencePill key={child.id} issue={child} />
               ))
               : null}
             {onAddSubIssue ? (
@@ -1222,13 +1272,24 @@ export function IssueProperties({
                 </a>
               </PropertyRow>
             )}
-            {issue.executionWorkspaceId && (
+            {showWorkspaceDetailLink && issue.executionWorkspaceId && (
               <PropertyRow label="Workspace">
                 <Link
                   to={`/execution-workspaces/${issue.executionWorkspaceId}`}
                   className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                 >
                   View workspace
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              </PropertyRow>
+            )}
+            {workspaceFilterId && (
+              <PropertyRow label="Tasks">
+                <Link
+                  to={issuesWorkspaceFilterHref(workspaceFilterId)}
+                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  View workspace tasks
                   <ExternalLink className="h-3 w-3" />
                 </Link>
               </PropertyRow>

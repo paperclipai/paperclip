@@ -7,27 +7,20 @@ type MarkdownNode = {
 
 const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]+-\d+$/i;
 const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)(?:[?#].*)?$/i;
-const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\b[A-Z][A-Z0-9]+-\d+\b/gi;
+const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]+-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]+-\d+\b/gi;
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
-  let pathname = pathOrUrl.trim();
+  const pathname = pathOrUrl.trim();
   if (!pathname) return null;
-
-  if (/^https?:\/\//i.test(pathname)) {
-    try {
-      pathname = new URL(pathname).pathname;
-    } catch {
-      return null;
-    }
-  }
+  if (/^https?:\/\//i.test(pathname)) return null;
 
   const segments = pathname.split("/").filter(Boolean);
   const issueIndex = segments.findIndex((segment) => segment === "issues");
   if (issueIndex === -1 || issueIndex === segments.length - 1) return null;
   const issuePathId = decodeURIComponent(segments[issueIndex + 1] ?? "");
   if (!issuePathId || issuePathId.startsWith(":")) return null;
-  return issuePathId;
+  return BARE_ISSUE_IDENTIFIER_RE.test(issuePathId) ? issuePathId.toUpperCase() : issuePathId;
 }
 
 export function parseIssueReferenceFromHref(href: string | null | undefined) {
@@ -64,10 +57,15 @@ function splitTrailingPunctuation(token: string) {
 
   while (core.length > 0) {
     const lastChar = core.at(-1);
-    if (!lastChar || !/[),.;!?]/.test(lastChar)) break;
+    if (!lastChar || !/[),.;!?:\]]/.test(lastChar)) break;
     if (lastChar === ")") {
       const openCount = (core.match(/\(/g) ?? []).length;
       const closeCount = (core.match(/\)/g) ?? []).length;
+      if (closeCount <= openCount) break;
+    }
+    if (lastChar === "]") {
+      const openCount = (core.match(/\[/g) ?? []).length;
+      const closeCount = (core.match(/\]/g) ?? []).length;
       if (closeCount <= openCount) break;
     }
     trailing = `${lastChar}${trailing}`;

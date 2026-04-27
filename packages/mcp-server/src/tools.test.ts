@@ -107,6 +107,165 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("controls issue workspace services through the current execution workspace", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({
+        currentExecutionWorkspace: {
+          id: "44444444-4444-4444-8444-444444444444",
+          runtimeServices: [],
+        },
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        operation: { id: "operation-1" },
+        workspace: {
+          id: "44444444-4444-4444-8444-444444444444",
+          runtimeServices: [
+            {
+              id: "55555555-5555-4555-8555-555555555555",
+              serviceName: "web",
+              status: "running",
+              url: "http://127.0.0.1:5173",
+            },
+          ],
+        },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipControlIssueWorkspaceServices");
+    await tool.execute({
+      issueId: "PAP-1135",
+      action: "restart",
+      workspaceCommandId: "web",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [lookupUrl, lookupInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(lookupUrl)).toBe("http://localhost:3100/api/issues/PAP-1135/heartbeat-context");
+    expect(lookupInit.method).toBe("GET");
+
+    const [controlUrl, controlInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(controlUrl)).toBe(
+      "http://localhost:3100/api/execution-workspaces/44444444-4444-4444-8444-444444444444/runtime-services/restart",
+    );
+    expect(controlInit.method).toBe("POST");
+    expect(JSON.parse(String(controlInit.body))).toEqual({
+      workspaceCommandId: "web",
+    });
+  });
+
+  it("waits for an issue workspace runtime service URL", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({
+        currentExecutionWorkspace: {
+          id: "44444444-4444-4444-8444-444444444444",
+          runtimeServices: [
+            {
+              id: "55555555-5555-4555-8555-555555555555",
+              serviceName: "web",
+              status: "running",
+              healthStatus: "healthy",
+              url: "http://127.0.0.1:5173",
+            },
+          ],
+        },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipWaitForIssueWorkspaceService");
+    const response = await tool.execute({
+      issueId: "PAP-1135",
+      serviceName: "web",
+      timeoutSeconds: 1,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.content[0]?.text).toContain("http://127.0.0.1:5173");
+  });
+
+  it("creates suggest_tasks interactions with the expected issue-scoped payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "interaction-1", kind: "suggest_tasks" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipSuggestTasks");
+    await tool.execute({
+      issueId: "PAP-1135",
+      idempotencyKey: "run-1:suggest",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "task-1", title: "One" }],
+      },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "run-1:suggest",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "task-1", title: "One" }],
+      },
+    });
+  });
+
+  it("creates request_confirmation interactions with plan target payloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "interaction-1", kind: "request_confirmation" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipRequestConfirmation");
+    await tool.execute({
+      issueId: "PAP-1135",
+      idempotencyKey: "confirmation:PAP-1135:plan:33333333-3333-4333-8333-333333333333",
+      title: "Plan approval",
+      payload: {
+        version: 1,
+        prompt: "Accept this plan?",
+        acceptLabel: "Accept plan",
+        allowDeclineReason: true,
+        rejectLabel: "Request changes",
+        rejectRequiresReason: true,
+        supersedeOnUserComment: true,
+        target: {
+          type: "issue_document",
+          key: "plan",
+          revisionId: "33333333-3333-4333-8333-333333333333",
+          revisionNumber: 3,
+        },
+      },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      kind: "request_confirmation",
+      continuationPolicy: "none",
+      idempotencyKey: "confirmation:PAP-1135:plan:33333333-3333-4333-8333-333333333333",
+      title: "Plan approval",
+      payload: {
+        version: 1,
+        prompt: "Accept this plan?",
+        acceptLabel: "Accept plan",
+        allowDeclineReason: true,
+        rejectLabel: "Request changes",
+        rejectRequiresReason: true,
+        supersedeOnUserComment: true,
+        target: {
+          type: "issue_document",
+          key: "plan",
+          revisionId: "33333333-3333-4333-8333-333333333333",
+          revisionNumber: 3,
+        },
+      },
+    });
+  });
+
   it("creates approvals with the expected company-scoped payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "approval-1" }),

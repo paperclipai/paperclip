@@ -25,11 +25,11 @@ import {
   findActiveServerAdapter,
   listEnabledServerAdapters,
   registerServerAdapter,
+  resolveExternalAdapterRegistration,
   unregisterServerAdapter,
   isOverridePaused,
   setOverridePaused,
 } from "../adapters/registry.js";
-import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   listAdapterPlugins,
   addAdapterPlugin,
@@ -168,15 +168,17 @@ async function normalizeLocalPath(rawPath: string): Promise<string> {
 }
 
 /**
- * Register an adapter module into the server registry, filling in
- * sessionManagement from the host.
+ * Register an external adapter module into the server registry via the
+ * hot-install path, resolving `sessionManagement` identically to how the
+ * init-time IIFE does. Module-provided `sessionManagement` is honored first,
+ * with fallback to the host registry by type for builtin-type overrides.
+ *
+ * Keeps the hot-install and init-time paths at parity so an adapter installed
+ * via `POST /api/adapters/install` has the same shape in the registry as the
+ * same adapter loaded on the next server restart.
  */
 function registerWithSessionManagement(adapter: ServerAdapterModule): void {
-  const wrapped: ServerAdapterModule = {
-    ...adapter,
-    sessionManagement: getAdapterSessionManagement(adapter.type) ?? undefined,
-  };
-  registerServerAdapter(wrapped);
+  registerServerAdapter(resolveExternalAdapterRegistration(adapter));
 }
 
 // ---------------------------------------------------------------------------

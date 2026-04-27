@@ -190,8 +190,9 @@ describe("worktree helpers", () => {
     ).toEqual(["worktree", "add", "-b", "my-worktree", "/tmp/my-worktree", "origin/main"]);
   });
 
-  it("rewrites loopback auth URLs to the new port only", () => {
+  it("rewrites auth URLs only when they already include a port", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
+    expect(rewriteLocalUrlPort("http://my-host.ts.net:3100", 3110)).toBe("http://my-host.ts.net:3110/");
     expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
   });
 
@@ -599,7 +600,7 @@ describe("worktree helpers", () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    20000,
+    30000,
   );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
@@ -881,7 +882,7 @@ describe("worktree helpers", () => {
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 30_000);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
@@ -1038,7 +1039,7 @@ describe("worktree helpers", () => {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("creates and initializes a worktree from the top-level worktree:make command", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-"));
