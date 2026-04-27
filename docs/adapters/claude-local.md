@@ -22,6 +22,47 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `git` | object | No | Per-agent Git/GitHub identity (off by default — gated by `PAPERCLIP_ADAPTER_GIT_IDENTITY=true`). See [Per-agent Git identity](#per-agent-git-identity). |
+
+## Per-agent Git identity
+
+When the host feature flag `PAPERCLIP_ADAPTER_GIT_IDENTITY=true` is set on the Paperclip server, `claude_local` agents can carry their own Git/GitHub identity per agent. The adapter writes a per-run `.gitconfig` and exports `GIT_AUTHOR_NAME/EMAIL`, `GIT_COMMITTER_NAME/EMAIL`, `GIT_CONFIG_GLOBAL`, and (if a token resolves) `GH_TOKEN`. The host `~/.gitconfig` is **never** modified.
+
+```jsonc
+{
+  "adapterType": "claude_local",
+  "adapterConfig": {
+    "git": {
+      "userName": "paperclip-foundingeng",
+      "userEmail": "paperclip+foundingeng@openstudio.fr",
+      "tokenSecretRef": "env:PAPERCLIP_GH_TOKEN_FOUNDINGENG"
+    }
+  }
+}
+```
+
+Supported `tokenSecretRef` schemes:
+
+- `env:VAR_NAME` — read from the Paperclip server process environment.
+- `file:/abs/path` — read the token from a chmod-600 file.
+
+CLI helper (preferred for managing identities):
+
+```sh
+pnpm paperclipai agent set-git-identity <agentId> \
+  --user-name paperclip-foundingeng \
+  --user-email paperclip+foundingeng@openstudio.fr \
+  --token-ref env:PAPERCLIP_GH_TOKEN_FOUNDINGENG
+```
+
+The CLI never persists the token — only the indirection ref. The actual PAT is supplied to the Paperclip server out-of-band (env var or secure file). Recommended PAT scopes (fine-grained): `contents:write`, `pull_requests:write`.
+
+Mandatory operational notes:
+
+- Feature flag `PAPERCLIP_ADAPTER_GIT_IDENTITY` must be `true` on the server. Otherwise the field is ignored and the adapter inherits host Git config (legacy behavior).
+- Per-run `.gitconfig` files are written under `os.tmpdir()/paperclip-claude-git-identity/<agentId>/<runId>/.gitconfig` and removed at the end of each `execute()` call.
+- The credential helper in the per-run `.gitconfig` references `$GH_TOKEN` — the literal PAT is never embedded in the file.
+- PAT values are redacted from logs by Paperclip's redaction layer (regex covers both `ghp_*` classic and `github_pat_*` fine-grained tokens).
 
 ## Prompt Templates
 

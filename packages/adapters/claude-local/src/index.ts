@@ -28,6 +28,11 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
+- git (object, optional, off by default): per-agent Git/GitHub identity. Gated by the host feature flag PAPERCLIP_ADAPTER_GIT_IDENTITY=true (or context.paperclipAdapterGitIdentity.enabledOverride). Fields:
+  - userName (string, required when git is set): commit author/committer name
+  - userEmail (string, required when git is set): commit author/committer email
+  - tokenSecretRef (string, optional): token reference resolved at heartbeat time. Supported schemes: "env:VAR" (read from process env), "file:/abs/path" (read from a chmod 600 file). Resolved value is exported as GH_TOKEN and wired into a per-run .gitconfig credential helper for github.com.
+  When applied, the adapter writes a per-run isolated .gitconfig and exports GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL, GIT_CONFIG_GLOBAL, and (if a token resolved) GH_TOKEN — the host ~/.gitconfig is never modified.
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds

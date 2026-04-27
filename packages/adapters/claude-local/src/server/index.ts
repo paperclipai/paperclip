@@ -1,4 +1,14 @@
 export { execute, runClaudeLogin } from "./execute.js";
+export {
+  isClaudeLocalGitIdentityEnabled,
+  parseClaudeLocalGitConfig,
+  prepareGitIdentityRuntime,
+  defaultTokenResolver,
+  type ClaudeLocalGitConfig,
+  type ClaudeLocalGitConfigParseError,
+  type ClaudeLocalGitConfigParseResult,
+  type TokenResolver,
+} from "./git-identity.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";
 export { testEnvironment } from "./test.js";

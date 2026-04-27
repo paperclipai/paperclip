@@ -4,6 +4,7 @@ const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-
 const JWT_TEXT_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
 const OPENAI_KEY_TEXT_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const GITHUB_TOKEN_TEXT_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const GITHUB_FINE_GRAINED_PAT_TEXT_RE = /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g;
 const AUTHORIZATION_BEARER_TEXT_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const ENV_SECRET_ASSIGNMENT_TEXT_RE =
   /(\b[A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|JWT)[A-Za-z0-9_]*\s*=\s*)[^\s"'`]+/gi;
@@ -76,5 +77,6 @@ export function redactSensitiveText(input: string): string {
     .replace(ENV_SECRET_ASSIGNMENT_TEXT_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(OPENAI_KEY_TEXT_RE, REDACTED_EVENT_VALUE)
     .replace(GITHUB_TOKEN_TEXT_RE, REDACTED_EVENT_VALUE)
+    .replace(GITHUB_FINE_GRAINED_PAT_TEXT_RE, REDACTED_EVENT_VALUE)
     .replace(JWT_TEXT_RE, REDACTED_EVENT_VALUE);
 }

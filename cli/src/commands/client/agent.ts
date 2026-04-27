@@ -217,6 +217,82 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("set-git-identity")
+      .description(
+        "Set per-agent Git/GitHub identity (claude_local). Updates adapterConfig.git fields without touching other settings.",
+      )
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--user-name <name>", "Git author/committer name")
+      .requiredOption("--user-email <email>", "Git author/committer email")
+      .option(
+        "--token-ref <ref>",
+        "Token reference (env:NAME or file:/abs/path). Resolved at heartbeat time. Omit to clear.",
+      )
+      .option("--clear", "Remove the git identity from adapterConfig.git", false)
+      .action(
+        async (
+          agentId: string,
+          opts: BaseClientOptions & {
+            userName?: string;
+            userEmail?: string;
+            tokenRef?: string;
+            clear?: boolean;
+          },
+        ) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            if (opts.clear) {
+              const result = await ctx.api.patch<Agent>(`/api/agents/${agentId}`, {
+                adapterConfig: { git: null },
+              });
+              if (ctx.json) {
+                printOutput(result, { json: true });
+                return;
+              }
+              console.log(`Cleared adapterConfig.git on agent ${agentId}`);
+              return;
+            }
+            const userName = opts.userName?.trim();
+            const userEmail = opts.userEmail?.trim();
+            if (!userName || !userEmail) {
+              throw new Error("--user-name and --user-email are required (use --clear to remove)");
+            }
+            if (!userEmail.includes("@")) {
+              throw new Error(`--user-email must look like an email address (got: ${userEmail})`);
+            }
+            const tokenRef = opts.tokenRef?.trim() ?? "";
+            if (tokenRef && !/^env:[A-Za-z_][A-Za-z0-9_]*$/.test(tokenRef) && !tokenRef.startsWith("file:/")) {
+              throw new Error(
+                `--token-ref must use env:NAME (e.g. env:PAPERCLIP_GH_TOKEN_FOO) or file:/abs/path (got: ${tokenRef})`,
+              );
+            }
+            const gitFields: Record<string, string> = {
+              userName,
+              userEmail,
+            };
+            if (tokenRef) gitFields.tokenSecretRef = tokenRef;
+            const result = await ctx.api.patch<Agent>(`/api/agents/${agentId}`, {
+              adapterConfig: { git: gitFields },
+            });
+            if (ctx.json) {
+              printOutput(result, { json: true });
+              return;
+            }
+            console.log(
+              `Updated adapterConfig.git on agent ${agentId}: name="${userName}" email="${userEmail}" tokenSecretRef=${tokenRef ? `"${tokenRef}"` : "(unset)"}`,
+            );
+            console.log(
+              "Note: feature flag PAPERCLIP_ADAPTER_GIT_IDENTITY=true must be set on the Paperclip server for this to take effect.",
+            );
+          } catch (err) {
+            handleCommandError(err);
+          }
+        },
+      ),
+  );
+
+  addCommonClientOptions(
+    agent
       .command("local-cli")
       .description(
         "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
