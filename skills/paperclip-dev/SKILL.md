@@ -129,9 +129,12 @@ If `git remote -v` shows only `paperclipai/paperclip` remotes (no user fork), fa
 
 ### Keeping the fork up to date
 
+The canonical remote that points at `paperclipai/paperclip` may be named `origin` **or** `upstream` depending on how the user set up the repo. Detect it the same way as in the "Detect a fork remote" step, then fetch and push from/with that remote so the sync works under either convention:
+
 ```bash
-git fetch origin                          # or 'upstream', whichever points at paperclipai/paperclip
-git push <fork-remote> origin/master:master
+UPSTREAM_REMOTE=$(git remote -v | awk '/paperclipai\/paperclip.*\(fetch\)/{print $1; exit}')
+git fetch "$UPSTREAM_REMOTE"
+git push <fork-remote> "${UPSTREAM_REMOTE}/master:master"
 ```
 
 ## Pull Requests
