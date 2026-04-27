@@ -59,6 +59,7 @@ if (allOutputsExist()) {
 fs.mkdirSync(path.dirname(lockDir), { recursive: true });
 
 let holdsLock = false;
+let exitCode = 0;
 try {
   try {
     fs.mkdirSync(lockDir);
@@ -89,11 +90,16 @@ try {
     }
 
     if (result.status !== 0) {
-      process.exit(result.status ?? 1);
+      exitCode = result.status ?? 1;
+      break;
     }
   }
 } finally {
   if (holdsLock) {
     fs.rmSync(lockDir, { recursive: true, force: true });
   }
+}
+
+if (exitCode !== 0) {
+  process.exit(exitCode);
 }
