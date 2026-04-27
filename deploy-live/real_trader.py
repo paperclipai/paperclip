@@ -71,6 +71,8 @@ try:
         start_periodic_sweep as _start_periodic_sweep,
         schedule_per_trade_reconcile as _schedule_per_trade_reconcile,
     )
+    import invariants as _invariants
+    from schemas import ReconciliationEvent as _ReconEvent
     _PLAN3_AVAILABLE = True
 except ImportError as _plan3_imp_err:
     _state_store = None  # type: ignore[assignment]
@@ -81,6 +83,8 @@ except ImportError as _plan3_imp_err:
     _LiveExchangeFetcher = None  # type: ignore[assignment,misc]
     _start_periodic_sweep = None  # type: ignore[assignment]
     _schedule_per_trade_reconcile = None  # type: ignore[assignment]
+    _invariants = None  # type: ignore[assignment]
+    _ReconEvent = None  # type: ignore[assignment,misc]
     _PLAN3_AVAILABLE = False
     log.error(
         "Plan 3 modules not importable; state_store + AlertDispatcher disabled. "
@@ -2583,6 +2587,10 @@ class LiveTrader:
         self.alerts = None
         self.fetcher: Optional[Any] = None   # LiveExchangeFetcher; set in main() after loop starts
         self.sweep_task: Optional[asyncio.Task] = None  # periodic reconciler sweep
+        # RateLimiter for invariants dispatch — one per trader instance, not module-global
+        self._inv_rate_limiter = (
+            _invariants.RateLimiter(window_s=60.0) if _PLAN3_AVAILABLE else None
+        )
         if _PLAN3_AVAILABLE:
             _db_path = str(DATA_DIR / "state.db")
             _state_store.init_schema(_db_path)
@@ -2628,6 +2636,42 @@ class LiveTrader:
                     "SHADOW_SQLITE=true: shadow_writer connection has no automatic recovery; "
                     "operator action required on write failures during watch window."
                 )
+
+    # -- Invariants pass (Task 11): called end-of-cycle, best-effort --
+    async def _run_invariants_pass(self) -> None:
+        """Run SQLite self-consistency checks; upsert + rate-limited dispatch."""
+        if self.state_conn is None or _invariants is None:
+            return
+        try:
+            now_ms = int(time.time() * 1000)
+            vs = _invariants.check_all(self.state_conn)
+            vs += _invariants.check_inmem_consistency(
+                self.state_conn,
+                in_memory_open_count=len(self.portfolio.open_positions),
+            )
+            for v in vs:
+                try:
+                    _state_store.upsert_recon_event(
+                        self.state_conn,
+                        **_invariants._violation_to_event(v, now_ms=now_ms),
+                    )
+                    if (self._inv_rate_limiter is not None
+                            and self._inv_rate_limiter.allow(v)
+                            and self.alerts is not None):
+                        await self.alerts.dispatch(_ReconEvent(
+                            timestamp_ms=now_ms, source="invariants",
+                            category=v.category, severity=v.severity,
+                            exchange=v.exchange, symbol=v.symbol,
+                            position_id=v.position_id,
+                            expected=v.expected or None,
+                            actual=v.actual or None,
+                            notes=v.notes or None,
+                        ))
+                except Exception as _v_err:
+                    log.error("invariants dispatch failed (best-effort): "
+                              "category=%s err=%s", v.category, _v_err)
+        except Exception as _e:
+            log.error("invariants check pass failed (best-effort): %s", _e)
 
     # -- Canonical pair key --
     @staticmethod
@@ -3631,6 +3675,10 @@ async def main():
                 equity = trader.portfolio.equity
                 if equity > trader.portfolio.peak_equity:
                     trader.portfolio.peak_equity = equity
+
+                # ---- END-OF-CYCLE INVARIANTS CHECK (Plan 3 Task 11) ----
+                if _use_sqlite:
+                    await trader._run_invariants_pass()
 
             except Exception as e:
                 log.error(f"Main loop error: {e}", exc_info=True)

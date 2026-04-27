@@ -335,6 +335,25 @@ def _check_stale_ok_exchange_health(conn: sqlite3.Connection) -> list[Violation]
     return out
 
 
+def _violation_to_event(v: Violation, *, now_ms: int) -> dict:
+    """Convert a Violation into keyword args for upsert_recon_event.
+
+    Returns a dict ready for: upsert_recon_event(conn, **kwargs).
+    """
+    return dict(
+        timestamp_ms=now_ms,
+        source="invariants",
+        category=v.category,
+        severity=v.severity,
+        exchange=v.exchange,
+        symbol=v.symbol,
+        position_id=v.position_id,
+        expected=v.expected or None,
+        actual=v.actual or None,
+        notes=v.notes or None,
+    )
+
+
 class RateLimiter:
     """Coalesces repeated violations within a fixed window.
 
