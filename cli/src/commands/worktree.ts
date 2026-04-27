@@ -68,6 +68,10 @@ import {
   type WorktreeLocalPaths,
 } from "./worktree-lib.js";
 import {
+  DEFAULT_WORKTREE_GC_MIN_AGE_MS,
+  runWorktreeGc,
+} from "@paperclipai/shared/worktree-gc";
+import {
   buildWorktreeMergePlan,
   parseWorktreeMergeScopes,
   type IssueAttachmentRow,
@@ -1845,6 +1849,72 @@ export async function worktreeCleanupCommand(nameArg: string, opts: WorktreeClea
   p.outro(pc.green("Cleanup complete."));
 }
 
+type WorktreeGcOptionsCli = {
+  home?: string;
+  dryRun?: boolean;
+  force?: boolean;
+  minAgeMs?: string;
+};
+
+export async function worktreeGcCommand(opts: WorktreeGcOptionsCli): Promise<void> {
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:gc ")));
+
+  const homeDir = path.resolve(expandHomePrefix(resolveWorktreeHome(opts.home)));
+  const minAgeMs =
+    opts.minAgeMs !== undefined && opts.minAgeMs !== ""
+      ? Math.max(0, Number(opts.minAgeMs))
+      : DEFAULT_WORKTREE_GC_MIN_AGE_MS;
+
+  if (!Number.isFinite(minAgeMs)) {
+    throw new Error(`Invalid --min-age-ms: ${opts.minAgeMs}`);
+  }
+
+  p.log.info(
+    `Scanning ${homeDir}/instances/ — pruning instances whose branch is gone (min-age: ${Math.round(minAgeMs / 1000)}s)${
+      opts.dryRun ? " [dry-run]" : ""
+    }.`,
+  );
+
+  const result = runWorktreeGc({
+    repoCwd: process.cwd(),
+    homeDir,
+    minAgeMs,
+    dryRun: opts.dryRun,
+    force: opts.force,
+    logger: {
+      info: (msg, meta) => {
+        if (meta && Object.keys(meta).length > 0) {
+          p.log.info(`${msg} ${JSON.stringify(meta)}`);
+        } else {
+          p.log.info(msg);
+        }
+      },
+      warn: (msg, meta) => {
+        if (meta && Object.keys(meta).length > 0) {
+          p.log.warning(`${msg} ${JSON.stringify(meta)}`);
+        } else {
+          p.log.warning(msg);
+        }
+      },
+    },
+  });
+
+  for (const skip of result.skipped) {
+    p.log.warning(`skipped ${skip.instanceId}: ${skip.reason}`);
+  }
+  for (const err of result.errors) {
+    p.log.error(`error ${err.instanceId}: ${err.error}`);
+  }
+
+  const verb = opts.dryRun ? "would prune" : "pruned";
+  p.outro(
+    pc.green(
+      `Scanned ${result.scanned} candidate${result.scanned === 1 ? "" : "s"}; ${verb} ${result.pruned.length}.`,
+    ),
+  );
+}
+
 export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
   const envPath = resolvePaperclipEnvFile(configPath);
@@ -3339,4 +3409,25 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--force", "Bypass safety checks (uncommitted changes, unique commits)", false)
     .action(worktreeCleanupCommand);
+
+  program
+    .command("worktree:gc")
+    .description(
+      "Prune orphaned ~/.paperclip-worktrees/instances/<id>/ directories whose branch is gone",
+    )
+    .option(
+      "--home <path>",
+      `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`,
+    )
+    .option("--dry-run", "Show what would be pruned without deleting anything", false)
+    .option(
+      "--force",
+      "Prune even when the linked checkout has uncommitted changes",
+      false,
+    )
+    .option(
+      "--min-age-ms <ms>",
+      `Skip instance dirs younger than this (default: ${DEFAULT_WORKTREE_GC_MIN_AGE_MS})`,
+    )
+    .action(worktreeGcCommand);
 }
