@@ -36,6 +36,28 @@ logging.basicConfig(
 log = logging.getLogger("real_trader")
 
 # ---------------------------------------------------------------------------
+# Plan 3 — defensive imports (gated so bot runs without Plan 3 modules)
+# ---------------------------------------------------------------------------
+try:
+    from normalizers import (
+        normalize_okx_order,
+        normalize_bybit_order,
+        normalize_mexc_order,
+        normalize_blofin_order,
+    )
+    from schemas import ExchangeOrderResponse
+    from pydantic import ValidationError as _PydanticValidationError
+    _NORMALIZERS_AVAILABLE = True
+except ImportError:
+    normalize_okx_order = None  # type: ignore[assignment]
+    normalize_bybit_order = None  # type: ignore[assignment]
+    normalize_mexc_order = None  # type: ignore[assignment]
+    normalize_blofin_order = None  # type: ignore[assignment]
+    ExchangeOrderResponse = None  # type: ignore[assignment,misc]
+    _PydanticValidationError = Exception  # type: ignore[assignment,misc]
+    _NORMALIZERS_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
 # Telegram config
 # ---------------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -280,6 +302,7 @@ class OrderResult:
     timestamp: float
     latency_ms: float = 0.0
     error: str = ""
+    normalized: Optional[Any] = None  # ExchangeOrderResponse when Plan 3 modules available
 
 
 @dataclass
@@ -463,7 +486,13 @@ class OKXExecutor(ExchangeExecutor):
             order_id = data["data"][0]["ordId"]
             fill = await self._wait_for_fill(order_id, inst_id)
             self._mark_success()
-            return OrderResult(
+            _okx_normalized = None
+            if _NORMALIZERS_AVAILABLE and normalize_okx_order is not None:
+                try:
+                    _okx_normalized = normalize_okx_order(fill, requested_size_usd=size_usd)
+                except (_PydanticValidationError, Exception) as _ne:
+                    log.error(f"OKX normalize_okx_order failed (non-fatal): {_ne}")
+            result = OrderResult(
                 success=True, order_id=order_id, exchange="OKX",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("fillSz", size_usd)),
@@ -471,6 +500,8 @@ class OKXExecutor(ExchangeExecutor):
                 fees_usd=abs(float(fill.get("fee", 0))),
                 timestamp=time.time(), latency_ms=(time.time() - t0) * 1000,
             )
+            result.normalized = _okx_normalized
+            return result
         except Exception as e:
             self._mark_error(str(e))
             return OrderResult(
@@ -632,7 +663,13 @@ class BybitExecutor(ExchangeExecutor):
             order_id = data["result"]["orderId"]
             fill = await self._wait_for_fill(order_id, symbol)
             self._mark_success()
-            return OrderResult(
+            _bybit_normalized = None
+            if _NORMALIZERS_AVAILABLE and normalize_bybit_order is not None:
+                try:
+                    _bybit_normalized = normalize_bybit_order(fill, requested_size_usd=size_usd)
+                except (_PydanticValidationError, Exception) as _ne:
+                    log.error(f"Bybit normalize_bybit_order failed (non-fatal): {_ne}")
+            result = OrderResult(
                 success=True, order_id=order_id, exchange="Bybit",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("cumExecValue", size_usd)),
@@ -640,6 +677,8 @@ class BybitExecutor(ExchangeExecutor):
                 fees_usd=abs(float(fill.get("cumExecFee", 0))),
                 timestamp=time.time(), latency_ms=(time.time() - t0) * 1000,
             )
+            result.normalized = _bybit_normalized
+            return result
         except Exception as e:
             self._mark_error(str(e))
             return OrderResult(
@@ -806,7 +845,13 @@ class MEXCExecutor(ExchangeExecutor):
             order_id = str(data.get("data", ""))
             fill = await self._wait_for_fill(order_id, mexc_symbol)
             self._mark_success()
-            return OrderResult(
+            _mexc_normalized = None
+            if _NORMALIZERS_AVAILABLE and normalize_mexc_order is not None:
+                try:
+                    _mexc_normalized = normalize_mexc_order(fill, requested_size_usd=size_usd)
+                except (_PydanticValidationError, Exception) as _ne:
+                    log.error(f"MEXC normalize_mexc_order failed (non-fatal): {_ne}")
+            result = OrderResult(
                 success=True, order_id=order_id, exchange="MEXC",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("dealVol", size_usd)),
@@ -814,6 +859,8 @@ class MEXCExecutor(ExchangeExecutor):
                 fees_usd=abs(float(fill.get("takerFee", 0))),
                 timestamp=time.time(), latency_ms=(time.time() - t0) * 1000,
             )
+            result.normalized = _mexc_normalized
+            return result
         except Exception as e:
             self._mark_error(str(e))
             return OrderResult(
@@ -989,7 +1036,13 @@ class BloFinExecutor(ExchangeExecutor):
             order_id = data["data"]["orderId"]
             fill = await self._wait_for_fill(order_id, inst_id)
             self._mark_success()
-            return OrderResult(
+            _blofin_normalized = None
+            if _NORMALIZERS_AVAILABLE and normalize_blofin_order is not None:
+                try:
+                    _blofin_normalized = normalize_blofin_order(fill, requested_size_usd=size_usd)
+                except (_PydanticValidationError, Exception) as _ne:
+                    log.error(f"BloFin normalize_blofin_order failed (non-fatal): {_ne}")
+            result = OrderResult(
                 success=True, order_id=order_id, exchange="BloFin",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("fillSz", size_usd)),
@@ -997,6 +1050,8 @@ class BloFinExecutor(ExchangeExecutor):
                 fees_usd=abs(float(fill.get("fee", 0))),
                 timestamp=time.time(), latency_ms=(time.time() - t0) * 1000,
             )
+            result.normalized = _blofin_normalized
+            return result
         except Exception as e:
             self._mark_error(str(e))
             return OrderResult(
@@ -1110,7 +1165,7 @@ class DryRunExecutor(ExchangeExecutor):
     async def place_market_order(self, symbol: str, side: str, size_usd: float) -> "OrderResult":
         log.info(f"[DRY_RUN:{self.name}] place_market_order {side} {symbol} ${size_usd:.2f}")
         self._mark_success()
-        return OrderResult(
+        result = OrderResult(
             success=True,
             order_id=f"dryrun-{self.name}-{int(time.time() * 1000)}",
             exchange=self.name,
@@ -1123,6 +1178,8 @@ class DryRunExecutor(ExchangeExecutor):
             timestamp=time.time(),
             latency_ms=0.0,
         )
+        result.normalized = None  # No real exchange response in dry-run
+        return result
 
     async def get_order_status(self, order_id: str, symbol: str) -> dict:
         return {"status": "filled", "filled_qty": 0.0, "fill_price": 0.0}
