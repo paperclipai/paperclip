@@ -164,28 +164,23 @@ type OpenApiAuthLevel =
   | "board"
   | "instance_admin";
 
-type OpenApiDocument = {
-  components?: {
-    schemas?: Record<string, unknown>;
-    securitySchemes?: Record<string, unknown>;
-  };
-  paths?: Record<string, Record<string, Record<string, unknown>>>;
-  security?: Array<Record<string, string[]>>;
-};
-
 const BOARD_SESSION_AUTH_SCHEME = "BoardSessionAuth";
 const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
 
-const BOARD_SECURITY = [
-  { [BOARD_SESSION_AUTH_SCHEME]: [] },
-  { [BOARD_API_KEY_AUTH_SCHEME]: [] },
-] satisfies Array<Record<string, string[]>>;
+function securityRequirement(name: string): Record<string, string[]> {
+  return { [name]: [] };
+}
 
-const AUTHENTICATED_SECURITY = [
+const BOARD_SECURITY: Array<Record<string, string[]>> = [
+  securityRequirement(BOARD_SESSION_AUTH_SCHEME),
+  securityRequirement(BOARD_API_KEY_AUTH_SCHEME),
+];
+
+const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
   ...BOARD_SECURITY,
-  { [AGENT_BEARER_AUTH_SCHEME]: [] },
-] satisfies Array<Record<string, string[]>>;
+  securityRequirement(AGENT_BEARER_AUTH_SCHEME),
+];
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
@@ -325,7 +320,7 @@ function applyOperationStatusOverride(
   delete responses[fromStatus];
 }
 
-function applyDocumentFixups(document: OpenApiDocument): OpenApiDocument {
+function applyDocumentFixups(document: any): any {
   document.components ??= {};
   document.components.securitySchemes = {
     [BOARD_SESSION_AUTH_SCHEME]: {
@@ -352,7 +347,7 @@ function applyDocumentFixups(document: OpenApiDocument): OpenApiDocument {
   document.security = AUTHENTICATED_SECURITY;
 
   for (const [path, pathItem] of Object.entries(document.paths ?? {})) {
-    for (const [method, operation] of Object.entries(pathItem)) {
+    for (const [method, operation] of Object.entries(pathItem as Record<string, any>)) {
       const authLevel = resolveOperationAuthLevel(method, path);
       if (authLevel === "public") {
         operation.security = [];
