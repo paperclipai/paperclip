@@ -1417,7 +1417,6 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
     issueStatus !== "in_progress"
   ) {
     return false;
