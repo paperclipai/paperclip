@@ -96,3 +96,13 @@ export function trackErrorHandlerCrash(
 ): void {
   client.track("error.handler_crash", { error_code: dims.errorCode });
 }
+
+export function trackWakeEmissionFailure(
+  client: TelemetryClient,
+  dims: { reason: string; source: string },
+): void {
+  client.track("wake_emission.failed", {
+    reason: dims.reason,
+    source: dims.source,
+  });
+}
