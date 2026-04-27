@@ -22,8 +22,12 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
-fi
+# Always ensure /paperclip is owned by node:node.
+# The volume mount may have been created during build-time by root (e.g. hermes setup
+# creating ~/.hermes/) and subdirectories created by the server at boot (e.g. data/,
+# logs/) inherit the wrong owner when no UID/GID remap is needed.
+# Without this, Paperclip's run-log-store, hermes adapter, and other components
+# fail with EACCES when the node process tries to write to these directories.
+chown -R node:node /paperclip
 
 exec gosu node "$@"
