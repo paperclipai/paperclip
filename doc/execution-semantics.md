@@ -326,6 +326,8 @@ Examples:
 
 The source issue remains visible and blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, or record the reason it is a false positive.
 
+Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery issues automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.
+
 ### Human Escalation
 
 Human escalation is required when the next safe action depends on board judgment, budget/approval policy, or information unavailable to the control plane.

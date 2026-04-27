@@ -10,6 +10,7 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
 
@@ -142,5 +143,12 @@ describe("recovery classifier boundary", () => {
       livenessState: "plan_only",
       nextAttempt: 1,
     })).toBe("run_liveness_continuation:issue-1:run-1:plan_only:1");
+  });
+
+  it("classifies stranded recovery origins as recovery-owned work", () => {
+    expect(isStrandedIssueRecoveryOriginKind("stranded_issue_recovery")).toBe(true);
+    expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
+    expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
+    expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
   });
 });

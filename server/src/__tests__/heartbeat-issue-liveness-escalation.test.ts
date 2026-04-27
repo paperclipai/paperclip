@@ -103,6 +103,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
       enableIsolatedWorkspaces: false,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
   });
 
@@ -116,7 +117,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   }
 
-  async function seedBlockedChain(opts: { stale?: boolean } = {}) {
+  async function seedBlockedChain(opts: { outsideLookback?: boolean } = {}) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -157,9 +158,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     ]);
 
-    const issueTimestamp = opts.stale === false
-      ? new Date()
-      : new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const issueTimestamp = opts.outsideLookback === true
+      ? new Date(Date.now() - 25 * 60 * 60 * 1000)
+      : new Date(Date.now() - 60 * 60 * 1000);
     await db.insert(issues).values([
       {
         id: blockedIssueId,
@@ -197,6 +198,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
   }
 
   it("keeps liveness findings advisory when auto recovery is disabled", async () => {
+    await instanceSettingsService(db).updateExperimental({
+      enableIssueGraphLivenessAutoRecovery: false,
+    });
     const { companyId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
 
@@ -214,16 +218,16 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(0);
   });
 
-  it("does not create recovery issues until the dependency path is stale for 24 hours", async () => {
+  it("does not create recovery issues outside the configured lookback window", async () => {
     await enableAutoRecovery();
-    const { companyId } = await seedBlockedChain({ stale: false });
+    const { companyId } = await seedBlockedChain({ outsideLookback: true });
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
 
     expect(result.findings).toBe(1);
     expect(result.escalationsCreated).toBe(0);
-    expect(result.skippedAutoRecoveryTooYoung).toBe(1);
+    expect(result.skippedOutsideLookback).toBe(1);
 
     const escalations = await db
       .select()
@@ -424,7 +428,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const dependentExecutionWorkspaceId = randomUUID();
     const blockerExecutionWorkspaceId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const issueTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
 
     await db.insert(companies).values({
       id: companyId,
@@ -559,7 +563,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const secondBlockedIssueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const issueTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
     await db.insert(issues).values({
       id: secondBlockedIssueId,
       companyId,
