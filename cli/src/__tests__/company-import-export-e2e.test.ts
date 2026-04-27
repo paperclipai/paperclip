@@ -303,6 +303,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
         env: createServerEnv(configPath, port, tempDb.connectionString, {
           paperclipHome,
           instanceId: paperclipInstanceId,
+          shellHome: cliShellHome,
         }),
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -351,6 +352,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(cliContext.profile.apiBase).toBe("https://example.test");
     expect(existsSync(expectedContextPath)).toBe(true);
     expect(existsSync(leakedContextPath)).toBe(false);
+    rmSync(expectedContextPath, { force: true });
+    expect(existsSync(expectedContextPath)).toBe(false);
 
     const sourceCompany = await api<{ id: string; name: string; issuePrefix: string }>(apiBase, "/api/companies", {
       method: "POST",
