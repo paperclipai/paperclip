@@ -121,6 +121,46 @@
 - Trello parity는 drag/drop만으로 끝나지 않는다. checklist, due date, attachment preview, sorting은 사용자가 기대할 수 있는 후속 범위다.
 - RealTycoon2 identity hardening은 copy 교체보다 workflow 기본값과 정보 구조 전환이 더 중요하다.
 
+## 마일스톤: v2.3 - 운영 검증 및 외부 연동 실체화
+
+**완료:** 2026-04-27  
+**Phases:** 6  
+**Plans:** 6  
+**Audit:** `tech_debt`
+
+### 만든 것
+
+- Phase 14-18 validation evidence, route fallback test, alignment scorecard 상태를 Phase 19/24 verification에 연결했다.
+- SSO provider metadata validation, SCIM sync preview, rollout readiness audit log를 운영자 검수 가능한 enterprise flow로 만들었다.
+- Obsidian-compatible vault writer dry-run, import candidate apply, `rt2_wins`/`vault_wins`/`manual_merge` conflict resolution을 추가했다.
+- Settlement comment/approve/reject, gold ledger/P&L/audit linkage, anti-gaming signal evidence를 하나의 governance flow로 연결했다.
+- Trello advanced checklist, due date, attachment preview, filter/sort, mobile/native capture queue promotion/failure audit을 완성했다.
+- Phase 19 `19-VERIFICATION.md` 누락 blocker를 닫고 v2.3 요구사항 17/17을 satisfied로 만들었다.
+
+### 잘 된 점
+
+- 기능 요구사항, phase verification, milestone audit을 분리해 `gaps_found`에서 `tech_debt`까지 상태를 명확히 낮췄다.
+- RealTycoon2-controlled storage와 API를 유지하면서 외부 도구 연동을 preview/apply/approval 중심으로 안전하게 확장했다.
+- Trello형 보드와 native capture queue가 실제 반복 업무에 필요한 카드 세부 기능까지 도달했다.
+
+### 비효율적이었던 점
+
+- Phase 19 verification artifact가 최초 audit 이후 Phase 24에서 닫혀 한 번 더 gap closure phase가 필요했다.
+- Phase 19-24 strict Nyquist `*-VALIDATION.md`를 동시에 만들지는 못해 마일스톤 완료 시 tech debt로 이월했다.
+- live IdP handshake, SCIM mutation apply, physical vault daemon 같은 외부 runtime hardening은 여전히 future scope다.
+
+### 확립된 패턴
+
+- 외부 연동은 바로 mutation하지 않고 validation, preview, apply, audit log 단계를 분리한다.
+- 경제 보상은 settlement decision, gold ledger, P&L, anti-gaming signal이 함께 닫혀야 한다.
+- 마일스톤 audit의 blocker는 별도 gap closure phase로 닫고 재감사 결과를 archive한다.
+
+### 핵심 교훈
+
+- `VERIFICATION.md`와 `VALIDATION.md`의 역할을 phase planning 시점에 구분해야 마일스톤 종료 직전 부채가 줄어든다.
+- 기능이 완료되어도 strict validation artifact가 없으면 `passed`가 아니라 `tech_debt`로 기록하는 편이 정확하다.
+- v2.4 이후는 새 기능 확장보다 실제 배포/운영 환경 검증과 persistent runtime hardening을 먼저 검토해야 한다.
+
 ## Cross-Milestone Trend
 
 | Trend | Observation |
@@ -128,4 +168,4 @@
 | Product identity | RT2가 우선순위다. Paperclip/Multica wording은 product-facing surface에서 숨기고 engine/internal compatibility layer로 제한한다. |
 | Verification | Windows sandbox `spawn EPERM`은 반복되는 local environment issue다. Vitest/build에는 승인된 escalated run이 필요할 수 있다. |
 | Planning | 사용자는 wave-by-wave prompting보다 긴 `--auto --chain` execution을 선호한다. |
-| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록한다. |
+| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. |

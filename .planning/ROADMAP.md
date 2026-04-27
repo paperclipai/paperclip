@@ -5,7 +5,8 @@
 - [shipped] **v2.0 RT2 Refoundation** - Phase 1-7 완료, 2026-04-25 ([archive](milestones/v2.0-ROADMAP.md))
 - [shipped] **v2.1 개발기획서 반영 및 운영자 채택** - Phase 8-13 완료, 2026-04-25 ([archive](milestones/v2.1-ROADMAP.md))
 - [shipped] **v2.2 개발기획서 완전 정합성 고도화** - Phase 14-18 완료, 2026-04-25 ([archive](milestones/v2.2-ROADMAP.md))
-- [active] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-23 진행 예정
+- [shipped] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-24 완료, 2026-04-27 ([archive](milestones/v2.3-ROADMAP.md), [requirements](milestones/v2.3-REQUIREMENTS.md), [audit](milestones/v2.3-MILESTONE-AUDIT.md))
+- [active] **v2.4 Knowledge+Economy 심화** - Phase 25-29 진행 중
 
 ## 완료됨
 
@@ -34,10 +35,6 @@
 
 </details>
 
-## 현재 위치
-
-v2.3 운영 검증 및 외부 연동 실체화 마일스톤을 진행 중이다. Phase 19는 완료했고 다음 실행 항목은 Phase 20 discussion이다.
-
 <details>
 <summary>v2.2 개발기획서 완전 정합성 고도화 (Phase 14-18) - 2026-04-25 완료</summary>
 
@@ -47,9 +44,121 @@ v2.3 운영 검증 및 외부 연동 실체화 마일스톤을 진행 중이다.
 - [x] Phase 17: Knowledge Bridge Completion - 1/1 plan complete
 - [x] Phase 18: Economy and Rollout Depth - 1/1 plan complete
 
-Audit status: `tech_debt` because Phase 14-18 `VALIDATION.md` artifacts are missing, but requirements 11/11 and integration flows 5/5 passed.
+Audit status: `tech_debt` because Phase 14-18 `VALIDATION.md` artifacts were missing at close, but requirements 11/11 and integration flows 5/5 passed.
 
 </details>
+
+<details>
+<summary>v2.3 운영 검증 및 외부 연동 실체화 (Phase 19-24) - 2026-04-27 완료</summary>
+
+- [x] Phase 19: Validation and Route Test Hardening - 1/1 plan complete
+- [x] Phase 20: Enterprise Rollout Connectors - 1/1 plan complete
+- [x] Phase 21: Obsidian Bidirectional Knowledge Sync - 1/1 plan complete
+- [x] Phase 22: Settlement Governance and Anti-Gaming - 1/1 plan complete
+- [x] Phase 23: Advanced Work Board and Native Capture - 1/1 plan complete
+- [x] Phase 24: Phase 19 Verification Artifact Closure - 1/1 plan complete
+
+Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flows 5/5 passed. 남은 부채는 Phase 19-24 strict Nyquist `*-VALIDATION.md`와 일부 운영 hardening 항목이다.
+
+</details>
+
+## 활성 마일스톤
+
+### v2.4 Knowledge+Economy 심화
+
+**상태:** 진행 중  
+**시작:** 2026-04-27  
+**Phase:** 25-29  
+**Requirements:** 24 total (5+6+5+4+4)
+
+## Phase Details
+
+### Phase 25: Daily Wiki Projector
+
+**Goal**: Users can view auto-generated daily wiki pages derived from board events, organized by date and user
+
+**Depends on**: Nothing (first phase of milestone)
+
+**Requirements**: WIKI-01, WIKI-02, WIKI-03, WIKI-04, WIKI-05
+
+**Success Criteria** (what must be TRUE):
+1. User can view a daily wiki page listing all board events (todo.created, todo.updated, todo.moved, task.completed, etc.) for a selected date
+2. User can navigate to index.md showing a date-catalog of all daily pages and log.md showing chronological activity across dates
+3. User can view per-user daily pages showing activity filtered to a specific user
+4. Re-running the daily wiki projector from event start produces bit-identical output (replay-safe)
+5. Running the projector twice does not duplicate content in wiki pages (idempotent)
+6. Daily wiki projector appends to existing knowledge_core chain via `appendAndProject()`
+
+**Plans**: TBD
+
+### Phase 26: Graphify Projector
+
+**Goal**: Users can view a knowledge graph with confidence-tagged edges, incremental refresh, and community detection
+
+**Depends on**: Phase 25 (daily wiki projector must complete first — graph reads wiki output)
+
+**Requirements**: GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04, GRAPH-05, GRAPH-06
+
+**Success Criteria** (what must be TRUE):
+1. User can view a knowledge graph visualization showing nodes and edges from daily wiki pages and task metadata
+2. Graph edges display EXTRACTED/INFERRED/AMBIGUOUS confidence tags based on provenance
+3. Graph projector re-runs only when daily wiki content changed (graph_cache hash comparison)
+4. User can view graph tab with interactive node/edge visualization
+5. User can view GRAPH_REPORT.md summarizing graph communities and edge distribution
+6. Leiden algorithm detects communities and clusters edges into topic groups
+
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 27: Coin Ledger Atomicity
+
+**Goal**: Ledger balance operations are atomic and consistent — no read-then-write race conditions
+
+**Depends on**: Nothing (ledger foundation, independent of wiki/graph)
+
+**Requirements**: LEDGER-01, LEDGER-02, LEDGER-03, LEDGER-04, LEDGER-05
+
+**Success Criteria** (what must be TRUE):
+1. `balanceAfter` is computed via SQL subquery in a single atomic write — no application-level read-then-write
+2. Income/expense ledger pairs are wrapped in `db.transaction([...])` and roll back together on any failure
+3. Cross-table P&L query shows `rt2CoinLedger` sum equals `rt2PersonalPnL` aggregate (reconciliation pass)
+4. `rt2CoinLedger` has a `leg` column ('debit'/'credit') for transaction grouping
+5. `balance_after >= 0` check constraint prevents negative balance entries
+
+**Plans**: TBD
+
+### Phase 28: Settlement Governance Hardening
+
+**Goal**: Settlement approval flow is protected by unique constraints and displays anti-gaming signals with configurable thresholds
+
+**Depends on**: Phase 27 (ledger integrity must be established before governance hardening)
+
+**Requirements**: SETTLE-01, SETTLE-02, SETTLE-03, SETTLE-04
+
+**Success Criteria** (what must be TRUE):
+1. Database enforces unique constraint on (companyId, workProductId) — attempting to create duplicate settlement returns an error
+2. Settlement approval UI displays anti-gaming signals: repeated_self_review, abnormal_gold_farming, quality_score_bias
+3. Settlement approval screen shows linked ledger entry and balanceAfter value
+4. User can configure anti-gaming signal thresholds per company (trigger values, score windows)
+
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 29: Consistency Linting (Batch)
+
+**Goal**: Wiki consistency is audited nightly by LLM — issues are flagged with evidence, not auto-fixed
+
+**Depends on**: Phase 26 (graph projector stabilizes wiki content before linting runs)
+
+**Requirements**: LINT-01, LINT-02, LINT-03, LINT-04
+
+**Success Criteria** (what must be TRUE):
+1. Nightly batch job runs LLM scan comparing wiki pages for contradictions and inconsistencies
+2. Lint issues are flagged with evidence snippets — system does not auto-modify wiki content
+3. `rt2WikiLintService` includes an `embedding_consistency` check comparing semantic similarity
+4. Lint runner executes on a schedule (cron/timer), not triggered on every wiki write
+
+**Plans**: TBD
 
 ## 진행상황
 
@@ -74,82 +183,16 @@ Audit status: `tech_debt` because Phase 14-18 `VALIDATION.md` artifacts are miss
 | 17. Knowledge Bridge Completion | v2.2 | 1/1 | Complete | 2026-04-25 |
 | 18. Economy and Rollout Depth | v2.2 | 1/1 | Complete | 2026-04-25 |
 | 19. Validation and Route Test Hardening | v2.3 | 1/1 | Complete | 2026-04-25 |
-| 20. Enterprise Rollout Connectors | v2.3 | 0/1 | Not Started | - |
-| 21. Obsidian Bidirectional Knowledge Sync | v2.3 | 0/1 | Not Started | - |
-| 22. Settlement Governance and Anti-Gaming | v2.3 | 0/1 | Not Started | - |
-| 23. Advanced Work Board and Native Capture | v2.3 | 0/1 | Not Started | - |
-
-## v2.3 운영 검증 및 외부 연동 실체화
-
-**Goal:** v2.2에서 `tech_debt`로 남긴 검증 산출물과 개발기획서 remaining 6% gap을 실제 운영 가능한 외부 연동, 지식 동기화, settlement governance, advanced board/capture 흐름으로 닫는다.
-
-| Phase | Name | Goal | Requirements | Success Criteria |
-|-------|------|------|--------------|------------------|
-| 19 | Validation and Route Test Hardening | Phase 14-18 검증 부채와 skipped route suite를 닫는다 | VALID-01, VALID-02, VALID-03 | 3 - complete |
-| 20 | Enterprise Rollout Connectors | SSO/SCIM/provider validation을 검수 가능한 rollout flow로 만든다 | ENT-02, ENT-03, ENT-04 | 4 |
-| 21 | Obsidian Bidirectional Knowledge Sync | Knowledge Bridge를 preview-only에서 승인 가능한 양방향 sync로 고도화한다 | KNOW-02, KNOW-03, KNOW-04 | 4 |
-| 22 | Settlement Governance and Anti-Gaming | 가격 협상, settlement approval, anti-gaming signal을 gold/P&L/audit과 연결한다 | ECON-02, ECON-03, ECON-04 | 4 |
-| 23 | Advanced Work Board and Native Capture | Trello advanced parity와 mobile/native capture queue를 완성한다 | TRELLO-03, TRELLO-04, TRELLO-05, CAPTURE-02, CAPTURE-03 | 5 |
-
-### Phase 19: Validation and Route Test Hardening
-
-**Goal:** v2.2의 기능 완료 상태를 strict validation artifact와 실행 가능한 route test evidence로 보강한다.
-
-**Requirements:** VALID-01, VALID-02, VALID-03
-
-**Success criteria:**
-1. Phase 14-18 각각에 `VALIDATION.md`가 생성되고 requirement/evidence/verification/risk가 연결된다.
-2. Phase 17-18 route suites가 embedded Postgres 제약을 우회하는 fixture 또는 fallback으로 실행된다.
-3. alignment scorecard가 validation 상태를 `tech_debt`, `validated`, `deferred`로 실제 산출물과 동기화한다.
-
-### Phase 20: Enterprise Rollout Connectors
-
-**Goal:** enterprise rollout 화면을 saved setting preview에서 실제 SSO/SCIM/provider 검증 흐름으로 확장한다.
-
-**Requirements:** ENT-02, ENT-03, ENT-04
-
-**Success criteria:**
-1. SSO provider metadata 입력/업로드에 issuer, URL, certificate, callback 검증 결과가 표시된다.
-2. SCIM sync preview가 user/group create/update/deactivate 후보와 위험 경고를 제공한다.
-3. rollout readiness 화면이 SSO, SCIM, binding, policy 검증 상태를 한 화면에서 보여준다.
-4. 중요한 rollout 검증과 적용 시도가 audit log에 남는다.
-
-### Phase 21: Obsidian Bidirectional Knowledge Sync
-
-**Goal:** Knowledge Bridge를 export/import preview에서 승인 가능한 local vault write와 bidirectional conflict resolution으로 확장한다.
-
-**Requirements:** KNOW-02, KNOW-03, KNOW-04
-
-**Success criteria:**
-1. vault writer 설정과 dry-run 결과가 저장되고 operator UI에서 확인된다.
-2. import preview 후보가 wiki page, graph node, graph edge 변경으로 분리된다.
-3. 승인된 import 후보만 RT2-controlled knowledge store에 반영된다.
-4. sync conflict는 `RT2 wins`, `Vault wins`, `manual merge` 결정과 감사 근거를 남긴다.
-
-### Phase 22: Settlement Governance and Anti-Gaming
-
-**Goal:** 경제 시스템을 evidence display에서 승인 가능한 settlement governance로 확장한다.
-
-**Requirements:** ECON-02, ECON-03, ECON-04
-
-**Success criteria:**
-1. 산출물 가격 제안, 근거, 협상 코멘트, 승인 상태가 하나의 flow로 보인다.
-2. 승인/반려가 gold ledger, P&L, audit log에 일관되게 반영된다.
-3. 고가 또는 위험 settlement는 approval gate를 요구한다.
-4. anti-gaming signal이 settlement 검토에 노출되고 결정 근거로 기록된다.
-
-### Phase 23: Advanced Work Board and Native Capture
-
-**Goal:** Trello 기반 RealTycoon2 업무 보드를 실제 반복 업무에 필요한 checklist/due/attachment/filter 기능과 native capture queue로 완성한다.
-
-**Requirements:** TRELLO-03, TRELLO-04, TRELLO-05, CAPTURE-02, CAPTURE-03
-
-**Success criteria:**
-1. 카드 checklist 추가/완료/재정렬과 진행률 표시가 동작한다.
-2. due date, priority, assignee, attachment preview가 카드와 상세 패널에 반영된다.
-3. board filter/sort가 lane, 담당자, OKR, due date, 가격, 품질 상태를 지원한다.
-4. mobile/native inbound draft queue에서 entry를 review하고 Task/To-Do/Deliverable로 승격할 수 있다.
-5. capture source별 실패, 중복, 권한 문제가 감사 가능한 상태로 추적된다.
+| 20. Enterprise Rollout Connectors | v2.3 | 1/1 | Complete | 2026-04-25 |
+| 21. Obsidian Bidirectional Knowledge Sync | v2.3 | 1/1 | Complete | 2026-04-25 |
+| 22. Settlement Governance and Anti-Gaming | v2.3 | 1/1 | Complete | 2026-04-25 |
+| 23. Advanced Work Board and Native Capture | v2.3 | 1/1 | Complete | 2026-04-25 |
+| 24. Phase 19 Verification Artifact Closure | v2.3 | 1/1 | Complete | 2026-04-27 |
+| 25. Daily Wiki Projector | v2.4 | 0/1 | Not started | - |
+| 26. Graphify Projector | v2.4 | 0/1 | Not started | - |
+| 27. Coin Ledger Atomicity | v2.4 | 0/1 | Not started | - |
+| 28. Settlement Governance Hardening | v2.4 | 0/1 | Not started | - |
+| 29. Consistency Linting (Batch) | v2.4 | 0/1 | Not started | - |
 
 ## Archive
 
@@ -161,6 +204,9 @@ Audit status: `tech_debt` because Phase 14-18 `VALIDATION.md` artifacts are miss
 - [v2.2 roadmap archive](milestones/v2.2-ROADMAP.md)
 - [v2.2 requirements archive](milestones/v2.2-REQUIREMENTS.md)
 - [v2.2 milestone audit](milestones/v2.2-MILESTONE-AUDIT.md)
+- [v2.3 roadmap archive](milestones/v2.3-ROADMAP.md)
+- [v2.3 requirements archive](milestones/v2.3-REQUIREMENTS.md)
+- [v2.3 milestone audit](milestones/v2.3-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-25, v2.3 운영 검증 및 외부 연동 실체화 시작*
+*마지막 업데이트: 2026-04-27, v2.4 milestone started*
