@@ -10,6 +10,25 @@ export type BuildCodexExecArgsResult = {
   fastModeRequested: boolean;
   fastModeApplied: boolean;
   fastModeIgnoredReason: string | null;
+  reasoningEffortNormalizedReason: string | null;
+  reasoningEffortIgnoredReason: string | null;
+};
+
+const CODEX_SUPPORTED_REASONING_EFFORTS = new Set([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+]);
+
+const CODEX_REASONING_EFFORT_ALIASES: Record<string, string> = {
+  xhigh: "high",
+};
+
+type NormalizedReasoningEffort = {
+  effort: string;
+  ignoredReason: string | null;
+  normalizedReason: string | null;
 };
 
 function readExtraArgs(config: unknown): string[] {
@@ -28,16 +47,47 @@ function formatFastModeSupportedModels(): string {
   return `${CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ")} or manually configured model IDs`;
 }
 
+function normalizeModelReasoningEffort(
+  modelReasoningEffort: string,
+): NormalizedReasoningEffort {
+  if (!modelReasoningEffort) {
+    return { effort: "", ignoredReason: null, normalizedReason: null };
+  }
+  const normalizedInput = modelReasoningEffort.trim().toLowerCase();
+  const aliasedEffort = Object.prototype.hasOwnProperty.call(
+    CODEX_REASONING_EFFORT_ALIASES,
+    normalizedInput,
+  )
+    ? CODEX_REASONING_EFFORT_ALIASES[normalizedInput]
+    : normalizedInput;
+  if (!CODEX_SUPPORTED_REASONING_EFFORTS.has(aliasedEffort)) {
+    return {
+      effort: "",
+      ignoredReason: `Ignored unsupported modelReasoningEffort "${modelReasoningEffort}". Supported values: minimal, low, medium, high.`,
+      normalizedReason: null,
+    };
+  }
+  return {
+    effort: aliasedEffort,
+    ignoredReason: null,
+    normalizedReason:
+      aliasedEffort !== normalizedInput
+        ? `Normalized modelReasoningEffort "${modelReasoningEffort}" to "${aliasedEffort}" for Codex exec compatibility.`
+        : null,
+  };
+}
+
 export function buildCodexExecArgs(
   config: unknown,
   options: { resumeSessionId?: string | null } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
   const model = asString(record.model, "").trim();
-  const modelReasoningEffort = asString(
+  const rawModelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),
   ).trim();
+  const modelReasoningEffort = normalizeModelReasoningEffort(rawModelReasoningEffort);
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
@@ -51,8 +101,8 @@ export function buildCodexExecArgs(
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (model) args.push("--model", model);
-  if (modelReasoningEffort) {
-    args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+  if (modelReasoningEffort.effort) {
+    args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort.effort)}`);
   }
   if (fastModeApplied) {
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
@@ -70,5 +120,7 @@ export function buildCodexExecArgs(
       fastModeRequested && !fastModeApplied
         ? `Configured fast mode is currently only supported on ${formatFastModeSupportedModels()}; Paperclip will ignore it for model ${model || "(default)"}.`
         : null,
+    reasoningEffortNormalizedReason: modelReasoningEffort.normalizedReason,
+    reasoningEffortIgnoredReason: modelReasoningEffort.ignoredReason,
   };
 }
