@@ -440,6 +440,7 @@ export interface CreateConfigValues {
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
   defaultEnvironmentId?: string;
+  language?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

@@ -25,6 +25,7 @@ export const defaultCreateValues: CreateConfigValues = {
   workspaceBranchTemplate: "",
   worktreeParentDir: "",
   runtimeServicesJson: "",
+  language: "",
   maxTurnsPerRun: 1000,
   heartbeatEnabled: false,
   intervalSec: 300,

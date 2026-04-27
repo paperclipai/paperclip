@@ -31,6 +31,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   joinPromptSections,
+  buildLanguageInstruction,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
@@ -411,6 +412,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
+  const languageInstruction = buildLanguageInstruction(config);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
@@ -419,6 +421,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     paperclipEnvNote,
     apiAccessNote,
     renderedPrompt,
+    languageInstruction,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,

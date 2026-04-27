@@ -32,6 +32,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  buildLanguageInstruction,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
@@ -244,7 +245,7 @@ export async function ensureCodexSkillsInjected(
           if (linkSkill) {
             await linkSkill(entry.source, target);
           } else {
-            await fs.symlink(entry.source, target);
+            await fs.symlink(entry.source, target, process.platform === "win32" ? "junction" : undefined);
           }
           await onLog(
             "stdout",
@@ -600,6 +601,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const languageInstruction = buildLanguageInstruction(config);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
@@ -607,6 +609,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     codexFallbackHandoffNote,
     sessionHandoffNote,
     renderedPrompt,
+    languageInstruction,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
