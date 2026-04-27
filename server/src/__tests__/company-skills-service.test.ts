@@ -89,4 +89,36 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       editable: true,
     });
   });
+
+  it("imports local skill roots with full file inventory", async () => {
+    const companyId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-import-root-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Root Import Skill\n---\n\n# Root Import Skill\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "scripts", "run.sh"), "echo ok\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# Guide\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "README.md"), "# Root Import Skill\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const result = await svc.importFromSource(companyId, skillDir);
+    const skill = result.imported.find((entry) => entry.sourceLocator === skillDir);
+
+    expect(skill).toBeDefined();
+    expect(skill?.fileInventory).toEqual(expect.arrayContaining([
+      { path: "SKILL.md", kind: "skill" },
+      { path: "README.md", kind: "markdown" },
+      { path: "references/guide.md", kind: "reference" },
+      { path: "scripts/run.sh", kind: "script" },
+    ]));
+    expect(skill?.fileInventory).toHaveLength(4);
+    expect(skill?.trustLevel).toBe("scripts_executables");
+  });
 });
