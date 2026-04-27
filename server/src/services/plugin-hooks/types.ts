@@ -41,6 +41,65 @@ export interface SkillResolverTransformerContext {
 }
 
 /**
+ * Inputs available to a `runtimeEnvProvider` hook. Exposed to plugins right
+ * before an adapter spawns the agent process for a heartbeat. The host calls
+ * the chain once per run; the resulting env is injected into the spawned
+ * process and runtimeFiles are written into `<runDir>/`.
+ *
+ * Only the fields needed by adapters to derive a per-run identity / secret
+ * are exposed. `adapterConfig` is forwarded as an opaque, read-only view so
+ * plugins can branch on adapter-specific settings without mutating them.
+ */
+export interface RuntimeEnvProviderContext {
+  readonly issue: PluginHookIssueContext;
+  readonly agentId: string;
+  readonly agentRole?: string;
+  readonly companyId: string;
+  readonly runId: string;
+  readonly adapterType: string;
+  readonly adapterConfig: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Per-file artifact a `runtimeEnvProvider` hook may stage in the run dir.
+ *
+ * The host writes the file at `<runDir>/<path>` before the process spawns.
+ * Plugins return paths relative to the run dir; the apply layer rejects
+ * absolute paths and any path that escapes the run dir (e.g. contains `..`).
+ *
+ * `mode` is an octal POSIX mode (e.g. `0o600` for secrets). Defaults to
+ * `0o600` to keep credentials private by default. The host may further
+ * tighten this on platforms that do not support the requested bits.
+ */
+export interface RuntimeFileSpec {
+  readonly path: string;
+  readonly content: string;
+  readonly mode?: number;
+}
+
+/**
+ * Aggregated contribution of the `runtimeEnvProvider` chain. Each hook is
+ * given the previous result and returns a new one — chain semantics mirror
+ * the wake-payload chain so plugins compose deterministically.
+ *
+ * `env` keys must be valid POSIX env names (see `RUNTIME_ENV_KEY_PATTERN`
+ * in `apply.ts`). Conflicts are resolved last-write-wins by priority order.
+ *
+ * `runtimeFiles` is keyed by `path`; later hooks overwrite earlier entries
+ * for the same path. Files staged by reserved or invalid paths are dropped
+ * with telemetry, never silently merged into a parent path.
+ */
+export interface RuntimeEnvProviderResult {
+  readonly env: Readonly<Record<string, string>>;
+  readonly runtimeFiles?: readonly RuntimeFileSpec[];
+}
+
+export type RuntimeEnvProvider = (
+  current: RuntimeEnvProviderResult,
+  context: RuntimeEnvProviderContext,
+) => Promise<RuntimeEnvProviderResult> | RuntimeEnvProviderResult;
+
+/**
  * Normalised return shape of a skill-resolver hook so additive/subtractive
  * intent is explicit. The default mapping from `string[]` to this shape is
  * `{ skills, required: [] }`.
@@ -63,6 +122,14 @@ export type SkillResolverTransformer = (
   current: SkillResolverResult,
   context: SkillResolverTransformerContext,
 ) => Promise<SkillResolverResult> | SkillResolverResult;
+
+/**
+ * Empty seed used by the apply layer when starting a `runtimeEnvProvider`
+ * chain. Exported so call-sites and tests share the exact same identity.
+ */
+export const EMPTY_RUNTIME_ENV_RESULT: RuntimeEnvProviderResult = Object.freeze({
+  env: Object.freeze({}) as Readonly<Record<string, string>>,
+});
 
 /**
  * Declarative `when` predicate. Plugins describe predicates in their manifest;
@@ -88,7 +155,10 @@ export type WhenPredicate =
   | { readonly not: WhenPredicate };
 
 /** Symbolic name for the supported hook kinds. */
-export type PluginHookKind = "wakePayloadTransformer" | "skillResolverTransformer";
+export type PluginHookKind =
+  | "wakePayloadTransformer"
+  | "skillResolverTransformer"
+  | "runtimeEnvProvider";
 
 /**
  * Map from {@link PluginHookKind} to the handler signature. Used to keep the
@@ -97,11 +167,12 @@ export type PluginHookKind = "wakePayloadTransformer" | "skillResolverTransforme
 export interface PluginHookHandlerMap {
   wakePayloadTransformer: WakePayloadTransformer;
   skillResolverTransformer: SkillResolverTransformer;
+  runtimeEnvProvider: RuntimeEnvProvider;
 }
 
 /**
  * Manifest-declared hook entry. Plugins surface these inside
- * `manifestJson.hooks.{wakePayloadTransformer,skillResolverTransformer}` —
+ * `manifestJson.hooks.{wakePayloadTransformer,skillResolverTransformer,runtimeEnvProvider}` —
  * MYO-61 finalises the SDK shape; we match it structurally here.
  */
 export interface PluginHookManifestEntry {
@@ -136,4 +207,5 @@ export type PluginHookSkipReason =
 export type PluginHookErrorReason =
   | "handler_threw"
   | "handler_returned_invalid"
-  | "handler_timed_out";
+  | "handler_timed_out"
+  | "runtime_file_rejected";

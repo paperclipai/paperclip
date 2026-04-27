@@ -232,10 +232,45 @@ describe("createPluginHookRegistry", () => {
     for (let i = 0; i < iterations; i += 1) {
       registry.listUnfiltered("wakePayloadTransformer");
       registry.listUnfiltered("skillResolverTransformer");
+      registry.listUnfiltered("runtimeEnvProvider");
     }
     const elapsedNs = (performance.now() - start) * 1_000_000;
     const perCallNs = elapsedNs / iterations;
     // Documented exit criterion: lookup with no hooks installed < 1 ms.
     expect(perCallNs).toBeLessThan(1_000_000);
+  });
+
+  it("supports the runtimeEnvProvider kind end-to-end (register / list / manifest / lifecycle)", async () => {
+    const lifecycle = makeLifecycle();
+    const registry = createPluginHookRegistry();
+    registry.attachLifecycle(lifecycle);
+
+    const accepted = registry.registerManifestEntries({
+      pluginId: "gh-identity-provider",
+      pluginKey: "gh-identity",
+      declarations: {
+        runtimeEnvProvider: { priority: 25, when: { issueHasField: "adapterType" } },
+      },
+      handlers: {
+        runtimeEnvProvider: (current) => current,
+      },
+    });
+    expect(accepted.map((e) => e.kind)).toEqual(["runtimeEnvProvider"]);
+
+    registry.register({
+      kind: "runtimeEnvProvider",
+      pluginId: "p-second",
+      pluginKey: "second",
+      priority: 5,
+      handler: (current) => current,
+    });
+
+    const list = await registry.list("runtimeEnvProvider", { companyId: "c-1" });
+    expect(list.map((e) => e.pluginId)).toEqual(["p-second", "gh-identity-provider"]);
+
+    lifecycle.emit("plugin.unloaded", { pluginId: "gh-identity-provider" });
+    expect(
+      (await registry.list("runtimeEnvProvider", { companyId: "c-1" })).map((e) => e.pluginId),
+    ).toEqual(["p-second"]);
   });
 });

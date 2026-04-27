@@ -20,8 +20,10 @@ export {
 export {
   applyWakePayloadTransformers,
   applySkillResolverTransformers,
+  applyRuntimeEnvProviderHooks,
   DEFAULT_WAKE_BUDGET_MS,
   DEFAULT_SKILL_BUDGET_MS,
+  DEFAULT_RUNTIME_ENV_BUDGET_MS,
   type ApplyOptions,
   type HookErrorEvent,
   type HookSkipEvent,
@@ -44,6 +46,10 @@ export type {
   PluginHookKind,
   PluginHookManifestEntry,
   PluginHookSkipReason,
+  RuntimeEnvProvider,
+  RuntimeEnvProviderContext,
+  RuntimeEnvProviderResult,
+  RuntimeFileSpec,
   SkillResolverResult,
   SkillResolverTransformer,
   SkillResolverTransformerContext,
@@ -52,3 +58,5 @@ export type {
   WakePayloadTransformerContext,
   WhenPredicate,
 } from "./types.js";
+
+export { EMPTY_RUNTIME_ENV_RESULT } from "./types.js";

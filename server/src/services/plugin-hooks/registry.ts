@@ -129,6 +129,7 @@ export interface PluginHookRegistry {
 export interface ManifestHookDeclarations {
   wakePayloadTransformer?: PluginHookManifestEntry;
   skillResolverTransformer?: PluginHookManifestEntry;
+  runtimeEnvProvider?: PluginHookManifestEntry;
 }
 
 interface RegistryEntry<K extends PluginHookKind> extends PluginHookEntry<K> {
@@ -146,6 +147,7 @@ export function createPluginHookRegistry(
   const entries: { [K in PluginHookKind]: RegistryEntry<K>[] } = {
     wakePayloadTransformer: [],
     skillResolverTransformer: [],
+    runtimeEnvProvider: [],
   };
 
   /**
@@ -327,7 +329,11 @@ export function createPluginHookRegistry(
   };
 }
 
-const HOOK_KINDS = ["wakePayloadTransformer", "skillResolverTransformer"] as const;
+const HOOK_KINDS = [
+  "wakePayloadTransformer",
+  "skillResolverTransformer",
+  "runtimeEnvProvider",
+] as const;
 
 const EMPTY: readonly never[] = Object.freeze([]);
 
