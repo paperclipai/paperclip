@@ -80,6 +80,27 @@ const mockBudgetService = vi.hoisted(() => ({
   resolveIncident: vi.fn(),
 }));
 
+const mockQuotaIncidentsService = {
+  listRecent: vi.fn(async () => ({
+    windowMinutes: 30,
+    windowStart: new Date(0),
+    windowEnd: new Date(0),
+    total: 0,
+    totalByCode: {
+      claude_quota_exhausted: 0,
+      claude_rate_limited: 0,
+      claude_provider_5xx: 0,
+    },
+    oldestAt: null,
+    newestAt: null,
+    byAgent: [],
+  })),
+};
+
+const mockClampQuotaIncidentWindowMinutes = vi.fn(
+  (value: unknown) => (typeof value === "number" ? value : 30),
+);
+
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     budgetService: () => mockBudgetService,
@@ -89,6 +110,8 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
+    quotaIncidentsService: () => mockQuotaIncidentsService,
+    clampQuotaIncidentWindowMinutes: mockClampQuotaIncidentWindowMinutes,
   }));
 
   vi.doMock("../services/quota-windows.js", () => ({
