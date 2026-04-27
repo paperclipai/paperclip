@@ -6928,7 +6928,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const sameScopeScheduledRetryRun = activeRuns.find(
-      (candidate) => candidate.status === "scheduled_retry" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) =>
+        candidate.status === "scheduled_retry" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const sameScopeRunningRun = activeRuns.find(
       (candidate) =>
