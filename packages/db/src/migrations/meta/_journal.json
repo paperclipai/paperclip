@@ -498,6 +498,20 @@
       "when": 1776780004000,
       "tag": "0070_active_run_output_watchdog",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777131234000,
+      "tag": "0071_default_hire_approval_off",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777305216238,
+      "tag": "0072_large_sandman",
+      "breakpoints": true
     }
   ]
 }
