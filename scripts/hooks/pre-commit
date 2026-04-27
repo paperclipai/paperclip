@@ -1,18 +1,30 @@
 #!/bin/bash
 # Prevent accidental commits of pnpm-lock.yaml
-# CI owns all lockfile updates; this file should never be committed to PRs
+# CI owns lockfile updates, EXCEPT when package.json changes in the commit
 
-if git diff --cached --name-only | grep -qx 'pnpm-lock.yaml'; then
-  echo "❌ Error: pnpm-lock.yaml is staged for commit"
+staged_files=$(git diff --cached --name-only)
+
+if echo "$staged_files" | grep -qx 'pnpm-lock.yaml'; then
+  # Check if any package.json files have changes between HEAD and staged (current commit + staged)
+  # This covers both new changes and amends where package.json is already in HEAD
+  changed_packages=$(git diff HEAD~1 HEAD -- '*/package.json' | wc -l)
+  staged_packages=$(git diff --cached -- '*/package.json' | wc -l)
+  
+  if [ "$changed_packages" -gt 0 ] || [ "$staged_packages" -gt 0 ]; then
+    # package.json is in the commit — allow lock file
+    exit 0
+  fi
+  
+  # pnpm-lock.yaml is staged but package.json is not in the commit — error
+  echo "❌ Error: pnpm-lock.yaml is staged for commit without package.json changes"
   echo ""
-  echo "CI owns lockfile updates. Do not commit pnpm-lock.yaml."
+  echo "Lockfile policy:"
+  echo "  ✅ DO commit pnpm-lock.yaml when you also change package.json"
+  echo "  ❌ DON'T commit pnpm-lock.yaml alone (CI owns pure lockfile regenerations)"
   echo ""
   echo "To fix this:"
   echo "  git restore --staged pnpm-lock.yaml"
   echo "  git restore pnpm-lock.yaml"
-  echo ""
-  echo "If you added a dependency, only commit package.json changes."
-  echo "CI will regenerate the lock file."
   exit 1
 fi
 
