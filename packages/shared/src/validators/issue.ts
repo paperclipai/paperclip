@@ -133,7 +133,7 @@ export const createIssueSchema = z.object({
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
-  priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  priority: z.enum(ISSUE_PRIORITIES).optional(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: z.number().int().nonnegative().optional().default(0),

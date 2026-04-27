@@ -1453,6 +1453,115 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.create priority inheritance", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-priority-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function createParent(companyId: string, priority: "critical" | "high" | "medium" | "low") {
+    return svc.create(companyId, {
+      title: `Parent ${priority}`,
+      priority,
+    });
+  }
+
+  it("inherits parent priority when creating a child without an explicit priority", async () => {
+    const companyId = await seedCompany();
+    const parent = await createParent(companyId, "critical");
+
+    const child = await svc.create(companyId, {
+      title: "Child without priority",
+      parentId: parent.id,
+    });
+
+    expect(child.priority).toBe("critical");
+  });
+
+  it("uses the column default when no parent is set and priority is omitted", async () => {
+    const companyId = await seedCompany();
+
+    const issue = await svc.create(companyId, {
+      title: "Top-level without priority",
+    });
+
+    expect(issue.priority).toBe("medium");
+  });
+
+  it("lets an explicit child priority override the parent in either direction", async () => {
+    const companyId = await seedCompany();
+    const parent = await createParent(companyId, "critical");
+
+    const lowerChild = await svc.create(companyId, {
+      title: "Child lower than parent",
+      parentId: parent.id,
+      priority: "low",
+    });
+    const sameChild = await svc.create(companyId, {
+      title: "Child equal to parent",
+      parentId: parent.id,
+      priority: "critical",
+    });
+    const lowerParent = await createParent(companyId, "medium");
+    const higherChild = await svc.create(companyId, {
+      title: "Child higher than parent",
+      parentId: lowerParent.id,
+      priority: "high",
+    });
+
+    expect(lowerChild.priority).toBe("low");
+    expect(sameChild.priority).toBe("critical");
+    expect(higherChild.priority).toBe("high");
+  });
+
+  it("propagates priority inheritance through the createChild dispatch", async () => {
+    const companyId = await seedCompany();
+    const parent = await createParent(companyId, "high");
+
+    const { issue: child } = await svc.createChild(parent.id, {
+      title: "Helper child",
+    });
+
+    expect(child.parentId).toBe(parent.id);
+    expect(child.priority).toBe("high");
+  });
+});
+
 describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

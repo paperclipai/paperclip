@@ -2513,6 +2513,17 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
+        let inheritedPriority: string | undefined;
+        if (issueData.priority === undefined && issueData.parentId) {
+          const parentRow = await tx
+            .select({ priority: issues.priority })
+            .from(issues)
+            .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (parentRow != null) {
+            inheritedPriority = parentRow.priority;
+          }
+        }
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
@@ -2615,6 +2626,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          ...(inheritedPriority ? { priority: inheritedPriority } : {}),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,

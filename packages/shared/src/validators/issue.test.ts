@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addIssueCommentSchema,
+  createChildIssueSchema,
   createIssueSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
@@ -60,6 +61,21 @@ describe("issue validators", () => {
     });
 
     expect(parsed.description).toBe("Line 1\n\nLine 2");
+  });
+
+  it("leaves priority undefined when omitted so the service can decide the default", () => {
+    const parsed = createIssueSchema.parse({ title: "Follow up PR" });
+    expect(parsed.priority).toBeUndefined();
+  });
+
+  it("preserves an explicit priority through createIssueSchema", () => {
+    const parsed = createIssueSchema.parse({ title: "Follow up PR", priority: "critical" });
+    expect(parsed.priority).toBe("critical");
+  });
+
+  it("leaves priority undefined when omitted on createChildIssueSchema", () => {
+    const parsed = createChildIssueSchema.parse({ title: "Child task" });
+    expect(parsed.priority).toBeUndefined();
   });
 
   it("normalizes escaped line breaks in thread summaries and documents", () => {
