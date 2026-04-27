@@ -17,6 +17,10 @@ export type RecoveryOriginKind = typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOV
 export type RecoveryReasonKind = typeof RECOVERY_REASON_KINDS[keyof typeof RECOVERY_REASON_KINDS];
 export type RecoveryKeyPrefix = typeof RECOVERY_KEY_PREFIXES[keyof typeof RECOVERY_KEY_PREFIXES];
 
+export function isStrandedIssueRecoveryOriginKind(originKind: string | null | undefined) {
+  return originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+}
+
 export function buildIssueGraphLivenessIncidentKey(input: {
   companyId: string;
   issueId: string;
