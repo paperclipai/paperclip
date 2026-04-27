@@ -12,7 +12,6 @@
     { "path": "./packages/adapters/droid-local" },
     { "path": "./packages/adapters/openclaw-gateway" },
     { "path": "./packages/adapters/opencode-local" },
-    { "path": "./packages/adapters/pi-local" },
     { "path": "./server" },
     { "path": "./ui" },
     { "path": "./cli" }
