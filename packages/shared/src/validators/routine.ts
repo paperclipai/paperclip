@@ -47,7 +47,7 @@ export const routineVariableSchema = z.object({
   }
 });
 
-export const createRoutineSchema = z.object({
+const _routineBaseObjectSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentIssueId: z.string().uuid().optional().nullable(),
@@ -59,11 +59,24 @@ export const createRoutineSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
   variables: z.array(routineVariableSchema).optional().default([]),
+  triggers: z.unknown().optional(),
 });
 
+function _rejectTriggers(value: { triggers?: unknown }, ctx: z.RefinementCtx) {
+  if (value.triggers !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["triggers"],
+      message:
+        "triggers cannot be set on this endpoint — use POST /routines/{id}/triggers to create a trigger",
+    });
+  }
+}
+
+export const createRoutineSchema = _routineBaseObjectSchema.superRefine(_rejectTriggers);
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
-export const updateRoutineSchema = createRoutineSchema.partial();
+export const updateRoutineSchema = _routineBaseObjectSchema.partial().superRefine(_rejectTriggers);
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
 const baseTriggerSchema = z.object({

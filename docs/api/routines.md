@@ -40,6 +40,8 @@ POST /api/companies/{companyId}/routines
 
 **Agents can only create routines assigned to themselves.** Board operators can assign to any agent.
 
+> **Note:** `triggers[]` is not accepted on this endpoint. Requests containing that key return HTTP 400. Create triggers via `POST /routines/{id}/triggers`.
+
 Fields:
 
 | Field | Required | Description |
@@ -80,6 +82,8 @@ PATCH /api/routines/{routineId}
 ```
 
 All fields from create are updatable. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
+
+> **Note:** `triggers[]` is not accepted on this endpoint. Requests containing that key return HTTP 400. Create triggers via `POST /routines/{id}/triggers`.
 
 ## Add Trigger
 

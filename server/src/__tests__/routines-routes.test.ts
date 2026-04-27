@@ -281,6 +281,66 @@ describe("routine routes", () => {
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
   });
 
+  it("rejects POST /companies/:companyId/routines with triggers[] with 400", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Daily routine",
+        assigneeAgentId: agentId,
+        triggers: [{ kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(res.body.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ["triggers"],
+          message: expect.stringContaining("POST /routines/{id}/triggers"),
+        }),
+      ]),
+    );
+    expect(mockRoutineService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects PATCH /routines/:id with triggers[] with 400", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      source: "api_key",
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({
+        triggers: [{ kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(res.body.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ["triggers"],
+          message: expect.stringContaining("POST /routines/{id}/triggers"),
+        }),
+      ]),
+    );
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
   it("allows routine creation when the board user has tasks:assign", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
     const app = await createApp({
