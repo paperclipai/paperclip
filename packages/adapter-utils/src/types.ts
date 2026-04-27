@@ -119,6 +119,50 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+export interface DelegationRequest {
+  assigneeAgentName: string;
+  title: string;
+  description: string;
+  waitForCompletion: boolean;
+  timeoutSeconds: number;
+}
+
+export type DelegationStatus =
+  | "queued"
+  | "completed"
+  | "failed"
+  | "timeout"
+  | "rejected";
+
+export interface DelegationResult {
+  status: DelegationStatus;
+  childRunId: string | null;
+  childIssueId: string | null;
+  childIssueIdentifier: string | null;
+  finalText: string | null;
+  costUsd: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+export interface CornerstoneToolRequest {
+  name: string;
+  input: unknown;
+}
+
+export type CornerstoneToolStatus = "ok" | "error" | "pending_approval";
+
+export interface CornerstoneToolResult {
+  status: CornerstoneToolStatus;
+  output?: unknown;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export type CornerstoneToolsCallback = (
+  req: CornerstoneToolRequest,
+) => Promise<CornerstoneToolResult>;
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -137,6 +181,31 @@ export interface AdapterExecutionContext {
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /**
+   * When present, the adapter may expose a `delegate_task` tool to the agent.
+   * Server binds this callback only for agents with reportsTo children and
+   * `permissions.canDelegate === true`. Adapters that don't support custom
+   * tool surfaces can ignore it.
+   */
+  delegateTask?: (req: DelegationRequest) => Promise<DelegationResult>;
+  /**
+   * When present, the adapter may expose the 11 Cornerstone tools
+   * (get_context, search, list_facts, recall, add_fact, save_conversation,
+   * steward_inspect, steward_advise, steward_preview, steward_apply,
+   * steward_status). Server binds this callback only for agents with
+   * `permissions.canUseCornerstone === true`. Adapters that don't support
+   * custom tool surfaces can ignore it.
+   */
+  cornerstoneTools?: CornerstoneToolsCallback;
+  /**
+   * Cancellation signal for in-process adapters (e.g. managed_agents) that
+   * cannot be cancelled via SIGTERM. When the heartbeat service cancels a
+   * run, this AbortController is fired so the adapter's polling loops can
+   * exit promptly. Adapters that don't honour it fall back to natural
+   * timeout — the cancel still records correctly in the DB but in-flight
+   * provider calls may continue to bill until they complete.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface AdapterModel {

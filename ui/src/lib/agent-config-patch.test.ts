@@ -42,6 +42,8 @@ function makeAgent(): Agent {
     urlKey: "agent",
     permissions: {
       canCreateAgents: false,
+      canDelegate: false,
+      canUseCornerstone: false,
     },
     metadata: null,
   };

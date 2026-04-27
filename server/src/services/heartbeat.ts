@@ -26,6 +26,10 @@ import {
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
+  HEARTBEAT_RUN_EXECUTION_PATH_STATUSES,
+  HEARTBEAT_RUN_CANCELLABLE_STATUSES,
+  HEARTBEAT_RUN_TERMINAL_STATUSES,
+  HEARTBEAT_RUN_UNSUCCESSFUL_TERMINAL_STATUSES,
   issueComments,
   issueRelations,
   issues,
@@ -43,6 +47,8 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { canAgentDelegate, createDelegateTaskCallback } from "./delegation.js";
+import { createCornerstoneToolsCallback } from "./cornerstone-tools.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -149,10 +155,11 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
-const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
-const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
-const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
-const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+// Status literal sets are imported from @paperclipai/db so the schema owns
+// the source of truth. Local aliases keep existing call sites unchanged.
+const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = HEARTBEAT_RUN_EXECUTION_PATH_STATUSES;
+const CANCELLABLE_HEARTBEAT_RUN_STATUSES = HEARTBEAT_RUN_CANCELLABLE_STATUSES;
+const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = HEARTBEAT_RUN_UNSUCCESSFUL_TERMINAL_STATUSES;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -860,6 +867,12 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * Parent heartbeat_run that delegated this wakeup (delegate_task). Stored on
+   * the child run's `parent_run_id` column so cost/usage queries can roll up
+   * descendant costs to the delegator.
+   */
+  parentRunId?: string | null;
 }
 
 type UsageTotals = {
@@ -1997,6 +2010,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // In-process adapters (e.g. managed_agents) cannot be cancelled via SIGTERM
+  // because they don't fork a child process. Instead, we register an
+  // AbortController per run before invoking adapter.execute(...) and pass its
+  // signal through ctx.abortSignal. cancelRunInternal aborts the controller so
+  // adapters that honour the signal exit promptly. The map is cleaned up in
+  // the run-loop finally block regardless of outcome.
+  const runAbortControllers = new Map<string, AbortController>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -2070,6 +2090,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        targetWorkspace: issues.targetWorkspace,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -4780,6 +4801,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
+          targetWorkspace: issueContext.targetWorkspace ?? null,
         }
       : null;
     const continuationSummary = issueRef
@@ -5470,6 +5492,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      const agentPermissions = parseObject(
+        (agent as { permissions?: unknown }).permissions ?? null,
+      );
+      const delegationAllowed = await canAgentDelegate(db, {
+        id: agent.id,
+        companyId: agent.companyId,
+        permissions: agentPermissions,
+      });
+      const delegateTask = delegationAllowed
+        ? createDelegateTaskCallback({
+            db,
+            heartbeat: { wakeup: enqueueWakeup },
+            parentAgent: {
+              id: agent.id,
+              companyId: agent.companyId,
+              name: agent.name,
+              permissions: agentPermissions,
+            },
+            parentRunId: run.id,
+            // Carry the parent task's Cornerstone targetWorkspace through the
+            // delegation boundary so child agents inherit the same workspace
+            // scope. This is the propagation step Mal called out as
+            // "Delegation propagates parent task's targetWorkspace through to
+            // child tasks." Children cannot opt out — agent-supplied namespace
+            // on tool calls is also ignored downstream (delegation safety,
+            // closes prompt-injection hole).
+            parentTargetWorkspace: issueRef?.targetWorkspace ?? null,
+            cancelRun: (childRunId, reason) =>
+              cancelRunInternal(childRunId, reason ?? "Cancelled by parent delegation timeout").then(() => undefined),
+          })
+        : undefined;
+      // canUseCornerstone gate mirrors the canDelegate pattern. Any adapter
+      // that honours ctx.cornerstoneTools (currently managed-agents) will
+      // surface the 11 Cornerstone tools to the model iff this callback is
+      // present. Adapters that don't honour it see a no-op — safe default.
+      const cornerstoneAllowed = asBoolean(agentPermissions.canUseCornerstone, false);
+      const cornerstoneTools = cornerstoneAllowed
+        ? createCornerstoneToolsCallback({
+            db,
+            companyId: agent.companyId,
+            // The task's targetWorkspace overrides AI_OPS_WRITE_WORKSPACE for
+            // both reads and writes. Agent-supplied namespace on tool calls is
+            // ignored when this is set (delegation safety / prompt-injection
+            // guard). Null falls through to AI_OPS_WRITE_WORKSPACE.
+            targetWorkspace: issueRef?.targetWorkspace ?? null,
+          })
+        : undefined;
+      // Per-run AbortController for in-process adapters (managed_agents).
+      // Registered before execute() so cancelRunInternal can fire it; cleared
+      // in the run-loop finally block (line ~5874). Process-based adapters
+      // ignore ctx.abortSignal; they keep using SIGTERM via runningProcesses.
+      const runAbortController = new AbortController();
+      runAbortControllers.set(run.id, runAbortController);
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -5493,6 +5568,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
         },
         authToken: authToken ?? undefined,
+        delegateTask,
+        cornerstoneTools,
+        abortSignal: runAbortController.signal,
       });
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
@@ -5873,6 +5951,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
+          runAbortControllers.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
@@ -6157,7 +6236,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        );
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
@@ -6718,11 +6799,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
             );
+            const shouldSetParentRunId =
+              !activeExecutionRun.parentRunId &&
+              typeof opts.parentRunId === "string" &&
+              opts.parentRunId.length > 0;
             const mergedRun = await tx
               .update(heartbeatRuns)
               .set({
                 contextSnapshot: mergedContextSnapshot,
                 updatedAt: new Date(),
+                ...(shouldSetParentRunId ? { parentRunId: opts.parentRunId } : {}),
               })
               .where(eq(heartbeatRuns.id, activeExecutionRun.id))
               .returning()
@@ -6839,6 +6925,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
+            parentRunId: opts.parentRunId ?? null,
           })
           .returning()
           .then((rows) => rows[0]);
@@ -6911,11 +6998,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         coalescedTargetRun.contextSnapshot,
         contextSnapshot,
       );
+      // Preserve parentRunId across coalescing. Delegation-originated wakeups
+      // carry parentRunId for cost/lineage attribution; if an earlier wakeup
+      // created the run without it, fill it in on merge so child-cost rollups
+      // to the delegating parent still work. Never overwrite an existing
+      // parentRunId (first-writer-wins keeps lineage stable).
+      const shouldSetParentRunId =
+        !coalescedTargetRun.parentRunId &&
+        typeof opts.parentRunId === "string" &&
+        opts.parentRunId.length > 0;
       const mergedRun = await db
         .update(heartbeatRuns)
         .set({
           contextSnapshot: mergedContextSnapshot,
           updatedAt: new Date(),
+          ...(shouldSetParentRunId ? { parentRunId: opts.parentRunId } : {}),
         })
         .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
         .returning()
@@ -6968,6 +7065,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: enrichedContextSnapshot,
         sessionIdBefore: sessionBefore,
         continuationAttempt,
+        parentRunId: opts.parentRunId ?? null,
       })
       .returning()
       .then((rows) => rows[0]);
@@ -7101,6 +7199,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!run) throw notFound("Heartbeat run not found");
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
+
+    // Fire the AbortController for in-process adapters (managed_agents).
+    // Process-based adapters ignore the signal; they're terminated via SIGTERM
+    // below. Both branches run unconditionally so a run that's mid-transition
+    // between in-process and child-process state still gets cancelled.
+    const abortController = runAbortControllers.get(run.id);
+    if (abortController && !abortController.signal.aborted) {
+      try {
+        abortController.abort();
+      } catch {
+        /* noop — AbortController.abort() is idempotent in modern runtimes */
+      }
+    }
 
     const running = runningProcesses.get(run.id);
     if (running) {

@@ -38,7 +38,7 @@ function createAgent(
     updatedAt: now,
     pauseReason: null,
     pausedAt: null,
-    permissions: { canCreateAgents: false },
+    permissions: { canCreateAgents: false, canDelegate: false, canUseCornerstone: false },
   };
 }
 

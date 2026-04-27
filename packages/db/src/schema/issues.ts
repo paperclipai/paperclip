@@ -54,6 +54,13 @@ export const issues = pgTable(
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    // Cornerstone namespace this task targets ("aiops", "default",
+    // "usefulmachines"). Plumbed end-to-end into the cornerstone-tools
+    // dispatcher to override the AI_OPS_WRITE_WORKSPACE fallback. Inherited by
+    // child issues during delegation; agent-supplied namespace on tool calls
+    // does NOT override this (delegation safety / prompt-injection guard).
+    // Null = falls through to AI_OPS_WRITE_WORKSPACE.
+    targetWorkspace: text("target_workspace"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

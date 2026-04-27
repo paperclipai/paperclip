@@ -275,6 +275,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const instanceSettings = instanceSettingsService(db);
   const runLogStore = getRunLogStore();
 
+  // F-HB-5: per-(agent,issue,retryOfRun) intra-process mutex used by
+  // enqueueStrandedIssueRecovery to serialize parallel reconciler sweeps so
+  // duplicate continuation_recovery wakeups don't get enqueued. Multi-process
+  // safety still relies on the DB-level wakeup-existence check + heartbeat_runs
+  // contextSnapshot.retryOfRunId existence check below.
+  const recoveryClaimLocks = new Map<string, Promise<void>>();
+
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
@@ -337,6 +344,90 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function enqueueStrandedIssueRecovery(input: {
+    issueId: string;
+    agentId: string;
+    reason: "issue_assignment_recovery" | "issue_continuation_needed";
+    retryReason: "assignment_recovery" | "issue_continuation_needed";
+    source: string;
+    retryOfRunId?: string | null;
+  }) {
+    // F-HB-5: idempotency on (agentId, issueId, retryOfRunId). Two parallel
+    // reconciler sweeps for the same stranded issue must produce ONE wakeup,
+    // not two. We serialize via an in-process mutex keyed on the recovery
+    // triple AND a DB-level "existing unfinished wakeup" check. The mutex
+    // covers the intra-process race (most common — two sweeps from the same
+    // server instance overlap). The DB check covers the cross-process
+    // window. Final layer of multi-process safety is the heartbeat_runs
+    // contextSnapshot.retryOfRunId check (durable idempotency marker).
+    // (Ada saw double continuation_recovery wakeups when two cron sweeps
+    // overlapped on 2026-04-25 — Bug 8 sibling.)
+    const lockKey = `${input.agentId}|${input.issueId}|${input.retryOfRunId ?? ""}`;
+    const previous = recoveryClaimLocks.get(lockKey) ?? Promise.resolve();
+    let releaseLock!: () => void;
+    const next = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    recoveryClaimLocks.set(lockKey, next);
+    try {
+      await previous;
+
+      const wakeupRetryFilter = input.retryOfRunId
+        ? sql`${agentWakeupRequests.payload} ->> 'retryOfRunId' = ${input.retryOfRunId}`
+        : sql`${agentWakeupRequests.payload} ->> 'retryOfRunId' IS NULL`;
+
+      const existingWakeup = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, input.agentId),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+            wakeupRetryFilter,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (existingWakeup) {
+        return null;
+      }
+
+      // Wakeups transition to terminal statuses fast in the synchronous
+      // run-loop path, so the wakeup-table check above can miss a sibling
+      // sweep that has already enqueued + processed. The heartbeat_run row
+      // persists across status changes — its contextSnapshot.retryOfRunId
+      // is the durable idempotency marker for "a recovery has already been
+      // started for this (agent, issue, retryOfRunId) triple".
+      if (input.retryOfRunId) {
+        const existingRun = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, input.agentId),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'retryOfRunId' = ${input.retryOfRunId}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existingRun) {
+          return null;
+        }
+      }
+
+      return await runStrandedRecoveryEnqueue(input);
+    } finally {
+      releaseLock();
+      if (recoveryClaimLocks.get(lockKey) === next) {
+        recoveryClaimLocks.delete(lockKey);
+      }
+    }
+  }
+
+  async function runStrandedRecoveryEnqueue(input: {
     issueId: string;
     agentId: string;
     reason: "issue_assignment_recovery" | "issue_continuation_needed";
@@ -1497,6 +1588,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
         result.skipped += 1;
         continue;
+      }
+      // F-HB-4: succeeded-skip guard for non-continuation runs only. If the
+      // latest run is a normal/initial execution that SUCCEEDED (e.g. a
+      // delegate_task or issue_assigned run that completed cleanly), the
+      // assignee has finished its work and the issue is awaiting a
+      // separate code path's status flip (delegation.ts ternary, agent
+      // finalText, etc.). Without this guard, every reconciler sweep
+      // enqueues a new continuation_recovery wakeup — Ada's heartbeat loop
+      // (Bug 8 — observed 2026-04-25).
+      //
+      // We MUST still re-enqueue when the latest succeeded run was itself
+      // a continuation_recovery that didn't close the issue — that's the
+      // pre-existing "advance the loop" behavior. Discriminate via the
+      // run's contextSnapshot.retryReason: presence of
+      // "issue_continuation_needed" means the run was a continuation, so
+      // we keep retrying. Absence means the run was a normal execution
+      // and we skip.
+      if (latestRun?.status === "succeeded") {
+        const latestContext = (latestRun.contextSnapshot ?? {}) as Record<string, unknown>;
+        const latestRetryReason = typeof latestContext.retryReason === "string"
+          ? latestContext.retryReason
+          : null;
+        if (latestRetryReason !== "issue_continuation_needed") {
+          result.skipped += 1;
+          continue;
+        }
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);

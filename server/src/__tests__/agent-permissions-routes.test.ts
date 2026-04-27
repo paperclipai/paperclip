@@ -1199,4 +1199,69 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  it("persists canUseCornerstone + canDelegate end-to-end through the hire route", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Cornerstone Ada",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        permissions: {
+          canCreateAgents: false,
+          canDelegate: true,
+          canUseCornerstone: true,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        permissions: {
+          canCreateAgents: false,
+          canDelegate: true,
+          canUseCornerstone: true,
+        },
+      }),
+    );
+  });
+
+  it("persists canUseCornerstone through the permissions patch route", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canDelegate: true,
+        canUseCornerstone: true,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        canCreateAgents: false,
+        canDelegate: true,
+        canUseCornerstone: true,
+      }),
+    );
+  });
 });
