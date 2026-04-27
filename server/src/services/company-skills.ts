@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySkills } from "@paperclipai/db";
+import { companies, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
@@ -1610,6 +1610,14 @@ export function companySkillService(db: Db) {
     }
 
     const refreshPromise = (async () => {
+      const companyExists = await db
+        .select({ id: companies.id })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows.length > 0);
+      if (!companyExists) {
+        throw notFound("Company not found");
+      }
       await ensureBundledSkills(companyId);
       await pruneMissingLocalPathSkills(companyId);
     })();
