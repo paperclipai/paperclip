@@ -96,6 +96,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
       mode: "isolated_workspace",
       environmentId: "env-issue",
     },
+    allowOutsideExecutionWindow: false,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
