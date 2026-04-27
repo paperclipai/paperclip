@@ -1851,6 +1851,9 @@ export function IssueDetail() {
         tone: "error",
       });
     },
+    onError: (err) => {
+      pushToast({ title: "Failed to post comment", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
+    },
   });
 
   const addCommentAndReassign = useMutation({
@@ -2167,6 +2170,9 @@ export function IssueDetail() {
         body: err instanceof Error ? err.message : "Unknown error",
         tone: "error",
       });
+    },
+    onError: (err) => {
+      pushToast({ title: "Failed to post comment and reassign", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
     },
   });
 
