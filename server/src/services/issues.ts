@@ -1275,6 +1275,8 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  executorAgentId: issues.executorAgentId,
+  checkoutHistory: issues.checkoutHistory,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -1845,12 +1847,15 @@ export function issueService(db: Db) {
     if (!stale) return null;
 
     const now = new Date();
+    const checkoutEntry = { agentId: input.actorAgentId, runId: input.actorRunId, checkedOutAt: now.toISOString(), releasedAt: null };
     const adopted = await db
       .update(issues)
       .set({
         checkoutRunId: input.actorRunId,
         executionRunId: input.actorRunId,
         executionLockedAt: now,
+        executorAgentId: sql`COALESCE(${issues.executorAgentId}, ${input.actorAgentId})`,
+        checkoutHistory: sql`COALESCE(${issues.checkoutHistory}, '[]'::jsonb) || ${JSON.stringify(checkoutEntry)}::jsonb`,
         updatedAt: now,
       })
       .where(
@@ -1879,12 +1884,15 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     const now = new Date();
+    const checkoutEntry = { agentId: input.actorAgentId, runId: input.actorRunId, checkedOutAt: now.toISOString(), releasedAt: null };
     const adopted = await db
       .update(issues)
       .set({
         checkoutRunId: input.actorRunId,
         executionRunId: input.actorRunId,
         executionLockedAt: now,
+        executorAgentId: sql`COALESCE(${issues.executorAgentId}, ${input.actorAgentId})`,
+        checkoutHistory: sql`COALESCE(${issues.checkoutHistory}, '[]'::jsonb) || ${JSON.stringify(checkoutEntry)}::jsonb`,
         updatedAt: now,
       })
       .where(
@@ -2918,6 +2926,7 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      const checkoutEntry = { agentId, runId: checkoutRunId, checkedOutAt: now.toISOString(), releasedAt: null };
       const updated = await db
         .update(issues)
         .set({
@@ -2925,6 +2934,8 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
+          executorAgentId: sql`COALESCE(${issues.executorAgentId}, ${agentId})`,
+          checkoutHistory: sql`COALESCE(${issues.checkoutHistory}, '[]'::jsonb) || ${JSON.stringify(checkoutEntry)}::jsonb`,
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -2966,11 +2977,14 @@ export function issueService(db: Db) {
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
+        const reCheckoutEntry = { agentId, runId: checkoutRunId, checkedOutAt: new Date().toISOString(), releasedAt: null };
         const adopted = await db
           .update(issues)
           .set({
             checkoutRunId,
             executionRunId: checkoutRunId,
+            executorAgentId: sql`COALESCE(${issues.executorAgentId}, ${agentId})`,
+            checkoutHistory: sql`COALESCE(${issues.checkoutHistory}, '[]'::jsonb) || ${JSON.stringify(reCheckoutEntry)}::jsonb`,
             updatedAt: new Date(),
           })
           .where(
@@ -3137,6 +3151,7 @@ export function issueService(db: Db) {
         }
       }
 
+      const releaseNow = new Date();
       const updated = await db
         .update(issues)
         .set({
@@ -3146,7 +3161,16 @@ export function issueService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          updatedAt: new Date(),
+          checkoutHistory: sql`CASE
+            WHEN jsonb_array_length(COALESCE(${issues.checkoutHistory}, '[]'::jsonb)) > 0
+            THEN jsonb_set(
+              ${issues.checkoutHistory},
+              ARRAY[(jsonb_array_length(${issues.checkoutHistory}) - 1)::text, 'releasedAt'],
+              to_jsonb(${releaseNow.toISOString()}::text)
+            )
+            ELSE COALESCE(${issues.checkoutHistory}, '[]'::jsonb)
+          END`,
+          updatedAt: releaseNow,
         })
         .where(eq(issues.id, id))
         .returning()
