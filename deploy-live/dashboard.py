@@ -23,6 +23,12 @@ STATE_DB_PATH = os.environ.get(
 )
 
 
+# TODO(Task 22): Wire _data_source() into existing routes. Currently the selector
+# is correct (returns "sqlite" or "file" based on USE_SQLITE_STATE) but no existing
+# route calls it — /api/state continues reading real_state.json regardless. This is
+# acceptable for the cutover watch window where file writes continue (cutover plan
+# §45-46), but must be wired before Task 22 decommission. Requires adding
+# query_positions / query_fills / query_audit helpers to state_store.py.
 def _data_source():
     """Return 'sqlite' when SQLite is enabled and the DB exists, else 'file'."""
     if USE_SQLITE_STATE and os.path.exists(STATE_DB_PATH):

@@ -222,7 +222,12 @@ def _row_to_dict(row) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Inline HTML -- kept here to stay under 250 lines (no separate template file)
+# Inline HTML/JS template for the recon panel. Kept inline (vs. a separate
+# templates/ file) to avoid creating a new directory hierarchy in deploy-live/.
+# This pushes dashboard_recon.py to ~375 lines (228 Python + 148 HTML), which
+# exceeds the plan's <250-line module guidance. Trade-off: simpler deploy
+# (one file, no template lookup path config) vs. line-count cleanliness.
+# If a Task 22+ feature adds more interactive UI, externalize to templates/.
 # ---------------------------------------------------------------------------
 
 _PANEL_HTML = """<!DOCTYPE html>

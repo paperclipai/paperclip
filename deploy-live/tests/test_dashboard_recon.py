@@ -324,6 +324,41 @@ class TestPanelRoute:
 
 
 # ---------------------------------------------------------------------------
+# Meta-test: _INVARIANT_CATEGORIES stays in sync with invariants.py
+# ---------------------------------------------------------------------------
+
+def test_invariant_categories_match_invariants_module_source(monkeypatch):
+    """Regression guard: if invariants.py adds/removes a Violation category,
+    dashboard_recon._INVARIANT_CATEGORIES must be updated. This test extracts
+    category strings from invariants.py source and asserts the set matches."""
+    import re, inspect, dashboard_recon as _dr
+    import invariants as _inv
+
+    src = inspect.getsource(_inv)
+    # Find every category="..." literal in Violation construction.
+    matches = set(re.findall(r'category=[\'"]([\w_]+)[\'"]', src))
+    # Note: this captures all Violation literals — both check_all and
+    # check_inmem_consistency emit categories.
+
+    registry_set = set(_dr._INVARIANT_CATEGORIES)
+
+    # Allow categories in source that aren't yet in the registry to fail loudly.
+    missing_in_registry = matches - registry_set
+    assert not missing_in_registry, (
+        f"Categories in invariants.py not registered in dashboard_recon: "
+        f"{missing_in_registry}. Add them to _INVARIANT_CATEGORIES."
+    )
+
+    # Also fail if registry has categories no longer in invariants.py.
+    extra_in_registry = registry_set - matches
+    # Allow this set to be empty for now; if test reports extras, prune them.
+    assert not extra_in_registry, (
+        f"Categories in dashboard_recon not present in invariants.py: "
+        f"{extra_in_registry}. Remove from _INVARIANT_CATEGORIES."
+    )
+
+
+# ---------------------------------------------------------------------------
 # _data_source selector (14.4)
 # ---------------------------------------------------------------------------
 
