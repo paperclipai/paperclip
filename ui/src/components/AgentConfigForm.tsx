@@ -297,7 +297,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [adapterType],
   );
   const runnableEnvironments = useMemo(
-    () => environments.filter((environment) => supportedEnvironmentDrivers.has(environment.driver)),
+    () => environments.filter((environment) => {
+      if (!supportedEnvironmentDrivers.has(environment.driver)) return false;
+      if (environment.driver !== "sandbox") return true;
+      const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
+      return provider !== null && provider !== "fake";
+    }),
     [environments, supportedEnvironmentDrivers],
   );
 

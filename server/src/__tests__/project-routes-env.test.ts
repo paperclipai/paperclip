@@ -145,7 +145,7 @@ describe("project env routes", () => {
     vi.doUnmock("../services/environments.js");
     vi.doUnmock("../services/secrets.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockProjectService.createWorkspace.mockResolvedValue(null);

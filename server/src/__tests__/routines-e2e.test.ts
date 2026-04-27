@@ -77,7 +77,7 @@ function registerRoutineServiceMock() {
 }
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -136,13 +136,13 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../middleware/index.js");
     registerRoutineServiceMock();
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   async function createApp(actor: Record<string, unknown>) {
     const [{ routineRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      import("../routes/routines.js"),
+      import("../middleware/index.js"),
     ]);
     const app = express();
     app.use(express.json());

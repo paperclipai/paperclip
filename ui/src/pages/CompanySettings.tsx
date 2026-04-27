@@ -5,6 +5,7 @@ import {
   getAdapterEnvironmentSupport,
   type Environment,
   type EnvironmentProbeResult,
+  type JsonSchema,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,6 +20,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
 import {
   Field,
   ToggleField,
@@ -45,12 +47,7 @@ type EnvironmentFormState = {
   sshKnownHosts: string;
   sshStrictHostKeyChecking: boolean;
   sandboxProvider: string;
-  sandboxImage: string;
-  sandboxTemplate: string;
-  sandboxApiKey: string;
-  sandboxApiKeySecretId: string;
-  sandboxTimeoutMs: string;
-  sandboxReuseLease: boolean;
+  sandboxConfig: Record<string, unknown>;
 };
 
 const ENVIRONMENT_SUPPORT_ROWS = AGENT_ADAPTER_TYPES.map((adapterType) => ({
@@ -81,9 +78,7 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
         : form.driver === "sandbox"
           ? {
               provider: form.sandboxProvider.trim(),
-              image: form.sandboxImage.trim() || "ubuntu:24.04",
-              timeoutMs: Number.parseInt(form.sandboxTimeoutMs || "300000", 10) || 300000,
-              reuseLease: form.sandboxReuseLease,
+              ...form.sandboxConfig,
             }
           : {},
   } as const;
@@ -103,12 +98,7 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     sshKnownHosts: "",
     sshStrictHostKeyChecking: true,
     sandboxProvider: "",
-    sandboxImage: "ubuntu:24.04",
-    sandboxTemplate: "base",
-    sandboxApiKey: "",
-    sandboxApiKeySecretId: "",
-    sandboxTimeoutMs: "300000",
-    sandboxReuseLease: false,
+    sandboxConfig: {},
   };
 }
 
@@ -143,34 +133,29 @@ function readSshConfig(environment: Environment) {
 
 function readSandboxConfig(environment: Environment) {
   const config = environment.config ?? {};
+  const { provider: rawProvider, ...providerConfig } = config;
   return {
-    provider:
-      typeof config.provider === "string" && config.provider.trim().length > 0
-        ? config.provider
+    provider: typeof rawProvider === "string" && rawProvider.trim().length > 0
+      ? rawProvider
         : "fake",
-    image: typeof config.image === "string" && config.image.trim().length > 0
-      ? config.image
-      : "ubuntu:24.04",
-    template:
-      typeof config.template === "string" && config.template.trim().length > 0
-        ? config.template
-        : "base",
-    apiKey: "",
-    apiKeySecretId:
-      config.apiKeySecretRef &&
-      typeof config.apiKeySecretRef === "object" &&
-      !Array.isArray(config.apiKeySecretRef) &&
-      typeof (config.apiKeySecretRef as { secretId?: unknown }).secretId === "string"
-        ? String((config.apiKeySecretRef as { secretId: string }).secretId)
-        : "",
-    timeoutMs:
-      typeof config.timeoutMs === "number"
-        ? String(config.timeoutMs)
-        : typeof config.timeoutMs === "string" && config.timeoutMs.trim().length > 0
-          ? config.timeoutMs
-          : "300000",
-    reuseLease: typeof config.reuseLease === "boolean" ? config.reuseLease : false,
+    config: providerConfig,
   };
+}
+
+function normalizeJsonSchema(schema: unknown): JsonSchema | null {
+  return schema && typeof schema === "object" && !Array.isArray(schema)
+    ? schema as JsonSchema
+    : null;
+}
+
+function summarizeSandboxConfig(config: Record<string, unknown>): string | null {
+  for (const key of ["template", "image", "region", "workspacePath"]) {
+    const value = config[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return null;
 }
 
 function SupportMark({ supported }: { supported: boolean }) {
@@ -525,12 +510,7 @@ export function CompanySettings() {
         description: environment.description ?? "",
         driver: "sandbox",
         sandboxProvider: sandbox.provider,
-        sandboxImage: sandbox.image,
-        sandboxTemplate: sandbox.template,
-        sandboxApiKey: sandbox.apiKey,
-        sandboxApiKeySecretId: sandbox.apiKeySecretId,
-        sandboxTimeoutMs: sandbox.timeoutMs,
-        sandboxReuseLease: sandbox.reuseLease,
+        sandboxConfig: sandbox.config,
       });
       return;
     }
@@ -553,6 +533,8 @@ export function CompanySettings() {
     .map(([provider, capability]) => ({
       provider,
       displayName: capability.displayName || provider,
+      description: capability.description,
+      configSchema: normalizeJsonSchema(capability.configSchema),
     }))
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
   const sandboxCreationEnabled = discoveredPluginSandboxProviders.length > 0;
@@ -563,21 +545,32 @@ export function CompanySettings() {
     !discoveredPluginSandboxProviders.some((provider) => provider.provider === environmentForm.sandboxProvider)
       ? [
           ...discoveredPluginSandboxProviders,
-          { provider: environmentForm.sandboxProvider, displayName: environmentForm.sandboxProvider },
+          { provider: environmentForm.sandboxProvider, displayName: environmentForm.sandboxProvider, description: undefined, configSchema: null },
         ]
       : discoveredPluginSandboxProviders;
+
+  const selectedSandboxProvider = pluginSandboxProviders.find(
+    (provider) => provider.provider === environmentForm.sandboxProvider,
+  ) ?? null;
+  const selectedSandboxSchema = selectedSandboxProvider?.configSchema ?? null;
+  const sandboxConfigErrors =
+    environmentForm.driver === "sandbox" && selectedSandboxSchema
+      ? validateJsonSchemaForm(selectedSandboxSchema as any, environmentForm.sandboxConfig)
+      : {};
 
   useEffect(() => {
     if (environmentForm.driver !== "sandbox") return;
     if (environmentForm.sandboxProvider.trim().length > 0 && environmentForm.sandboxProvider !== "fake") return;
     const firstProvider = discoveredPluginSandboxProviders[0]?.provider;
     if (!firstProvider) return;
+    const firstSchema = discoveredPluginSandboxProviders[0]?.configSchema;
     setEnvironmentForm((current) => (
       current.driver !== "sandbox" || (current.sandboxProvider.trim().length > 0 && current.sandboxProvider !== "fake")
         ? current
         : {
             ...current,
             sandboxProvider: firstProvider,
+            sandboxConfig: firstSchema ? getDefaultValues(firstSchema as any) : {},
           }
     ));
   }, [discoveredPluginSandboxProviders, environmentForm.driver, environmentForm.sandboxProvider]);
@@ -593,10 +586,7 @@ export function CompanySettings() {
     (environmentForm.driver !== "sandbox" ||
       environmentForm.sandboxProvider.trim().length > 0 &&
       environmentForm.sandboxProvider !== "fake" &&
-      environmentForm.sandboxImage.trim().length > 0 &&
-      environmentForm.sandboxTimeoutMs.trim().length > 0 &&
-      Number.isFinite(Number(environmentForm.sandboxTimeoutMs)) &&
-      Number(environmentForm.sandboxTimeoutMs) > 0);
+      Object.keys(sandboxConfigErrors).length === 0);
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -835,10 +825,14 @@ export function CompanySettings() {
                           </div>
                         ) : environment.driver === "sandbox" ? (
                           <div className="text-xs text-muted-foreground">
-                            {String(environment.config.provider ?? "fake")} sandbox provider ·{" "}
-                            {typeof environment.config.image === "string"
-                              ? environment.config.image
-                              : "ubuntu:24.04"}
+                            {(() => {
+                              const provider =
+                                typeof environment.config.provider === "string" ? environment.config.provider : "sandbox";
+                              const displayName =
+                                environmentCapabilities?.sandboxProviders?.[provider]?.displayName ?? provider;
+                              const summary = summarizeSandboxConfig(environment.config as Record<string, unknown>);
+                              return `${displayName} sandbox provider${summary ? ` · ${summary}` : ""}`;
+                            })()}
                           </div>
                         ) : (
                           <div className="text-xs text-muted-foreground">Runs on this Paperclip host.</div>
@@ -920,6 +914,16 @@ export function CompanySettings() {
                         e.target.value === "sandbox"
                           ? current.sandboxProvider.trim() || discoveredPluginSandboxProviders[0]?.provider || ""
                           : current.sandboxProvider,
+                      sandboxConfig:
+                        e.target.value === "sandbox"
+                          ? (
+                              current.sandboxProvider.trim().length > 0 && current.driver === "sandbox"
+                                ? current.sandboxConfig
+                                : discoveredPluginSandboxProviders[0]?.configSchema
+                                  ? getDefaultValues(discoveredPluginSandboxProviders[0].configSchema as any)
+                                  : {}
+                            )
+                          : current.sandboxConfig,
                       driver:
                         e.target.value === "local"
                           ? "local"
@@ -1024,11 +1028,20 @@ export function CompanySettings() {
                     <select
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       value={environmentForm.sandboxProvider}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const nextProviderKey = e.target.value;
+                        const nextProvider = pluginSandboxProviders.find((provider) => provider.provider === nextProviderKey) ?? null;
                         setEnvironmentForm((current) => ({
                           ...current,
-                          sandboxProvider: e.target.value,
-                        }))}
+                          sandboxProvider: nextProviderKey,
+                          sandboxConfig:
+                            current.sandboxProvider === nextProviderKey
+                              ? current.sandboxConfig
+                              : nextProvider?.configSchema
+                                ? getDefaultValues(nextProvider.configSchema as any)
+                                : {},
+                        }));
+                      }}
                     >
                       {pluginSandboxProviders.map((provider) => (
                         <option key={provider.provider} value={provider.provider}>
@@ -1037,33 +1050,25 @@ export function CompanySettings() {
                       ))}
                     </select>
                   </Field>
-                  <Field label="Image" hint="Operator-facing sandbox image label passed through to the selected provider plugin.">
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                      type="text"
-                      placeholder="ubuntu:24.04"
-                      value={environmentForm.sandboxImage}
-                      onChange={(e) => setEnvironmentForm((current) => ({ ...current, sandboxImage: e.target.value }))}
-                    />
-                  </Field>
-                  <Field label="Timeout (ms)" hint="Command timeout passed to the sandbox provider plugin.">
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                      type="number"
-                      min={1}
-                      value={environmentForm.sandboxTimeoutMs}
-                      onChange={(e) =>
-                        setEnvironmentForm((current) => ({ ...current, sandboxTimeoutMs: e.target.value }))}
-                    />
-                  </Field>
-                  <div className="md:col-span-2">
-                    <ToggleField
-                      label="Reuse lease"
-                      hint="When enabled, Paperclip will try to reconnect to a previously leased sandbox before provisioning a new one."
-                      checked={environmentForm.sandboxReuseLease}
-                      onChange={(checked) =>
-                        setEnvironmentForm((current) => ({ ...current, sandboxReuseLease: checked }))}
-                    />
+                  <div className="md:col-span-2 space-y-3">
+                    {selectedSandboxProvider?.description ? (
+                      <div className="text-xs text-muted-foreground">
+                        {selectedSandboxProvider.description}
+                      </div>
+                    ) : null}
+                    {selectedSandboxSchema ? (
+                      <JsonSchemaForm
+                        schema={selectedSandboxSchema as any}
+                        values={environmentForm.sandboxConfig}
+                        onChange={(values) =>
+                          setEnvironmentForm((current) => ({ ...current, sandboxConfig: values }))}
+                        errors={sandboxConfigErrors}
+                      />
+                    ) : (
+                      <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        This provider does not declare additional configuration fields.
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : null}

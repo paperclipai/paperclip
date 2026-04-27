@@ -415,7 +415,7 @@ describe("claude execute", () => {
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
-    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    delete process.env.PAPERCLIP_INSTANCE_ID;
 
     try {
       const first = await execute({
@@ -574,7 +574,7 @@ describe("claude execute", () => {
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
-    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    delete process.env.PAPERCLIP_INSTANCE_ID;
 
     try {
       const first = await execute({
@@ -711,8 +711,9 @@ describe("claude execute", () => {
       expect(result.exitCode).toBe(1);
       expect(result.errorCode).toBe("claude_transient_upstream");
       expect(result.errorFamily).toBe("transient_upstream");
-      expect(result.retryNotBefore).toBe("2026-04-22T21:00:00.000Z");
-      expect(result.resultJson?.retryNotBefore).toBe("2026-04-22T21:00:00.000Z");
+      const expectedRetryNotBefore = "2026-04-22T21:00:00.000Z";
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
       expect(result.errorMessage ?? "").toContain("extra usage");
       expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
         new Date("2026-04-22T21:00:00.000Z").getTime(),

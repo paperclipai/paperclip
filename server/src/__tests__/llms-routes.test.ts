@@ -48,7 +48,7 @@ describe("llm routes", () => {
     vi.doUnmock("../routes/llms.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockListServerAdapters.mockReturnValue([
       { type: "codex_local", agentConfigurationDoc: "# codex_local agent configuration" },
     ]);

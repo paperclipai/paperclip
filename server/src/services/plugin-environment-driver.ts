@@ -1,5 +1,9 @@
 import type { Db } from "@paperclipai/db";
-import type { EnvironmentProbeResult, PluginEnvironmentConfig } from "@paperclipai/shared";
+import type {
+  EnvironmentProbeResult,
+  PluginEnvironmentConfig,
+  PluginEnvironmentDriverDeclaration,
+} from "@paperclipai/shared";
 import type {
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
@@ -42,15 +46,31 @@ export async function resolvePluginEnvironmentDriverByKey(input: {
   workerManager: PluginWorkerManager;
   driverKey: string;
 }) {
+  return await resolvePluginSandboxProviderDriverByKey({
+    db: input.db,
+    driverKey: input.driverKey,
+    workerManager: input.workerManager,
+    requireRunning: true,
+  });
+}
+
+export async function resolvePluginSandboxProviderDriverByKey(input: {
+  db: Db;
+  driverKey: string;
+  workerManager?: PluginWorkerManager;
+  requireRunning?: boolean;
+}): Promise<{ plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["list"]>>[number]; driver: PluginEnvironmentDriverDeclaration } | null> {
   const pluginRegistry = pluginRegistryService(input.db);
   const plugins = await pluginRegistry.list();
   for (const plugin of plugins) {
-    if (plugin.status !== "ready") continue;
     const driver = plugin.manifestJson.environmentDrivers?.find(
       (candidate) => candidate.driverKey === input.driverKey && candidate.kind === "sandbox_provider",
-    );
+    ) as PluginEnvironmentDriverDeclaration | undefined;
     if (!driver) continue;
-    if (!input.workerManager.isRunning(plugin.id)) continue;
+    if (input.requireRunning) {
+      if (plugin.status !== "ready") continue;
+      if (!input.workerManager?.isRunning(plugin.id)) continue;
+    }
     return { plugin, driver };
   }
   return null;
@@ -73,8 +93,53 @@ export async function listReadyPluginEnvironmentDrivers(input: {
         driverKey: driver.driverKey,
         displayName: driver.displayName,
         description: driver.description,
+        configSchema: driver.configSchema,
       }));
   });
+}
+
+export async function validatePluginSandboxProviderConfig(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  provider: string;
+  config: Record<string, unknown>;
+}): Promise<{
+  normalizedConfig: Record<string, unknown>;
+  pluginId: string;
+  pluginKey: string;
+  driver: PluginEnvironmentDriverDeclaration;
+}> {
+  const resolved = await resolvePluginSandboxProviderDriverByKey({
+    db: input.db,
+    driverKey: input.provider,
+    workerManager: input.workerManager,
+    requireRunning: true,
+  });
+  if (!resolved) {
+    throw unprocessable(`Sandbox provider "${input.provider}" is not installed or its plugin worker is not running.`);
+  }
+
+  const result = await input.workerManager.call(resolved.plugin.id, "environmentValidateConfig", {
+    driverKey: input.provider,
+    config: input.config,
+  });
+
+  if (!result.ok) {
+    throw unprocessable(
+      result.errors?.[0] ?? `Sandbox provider "${input.provider}" rejected its config.`,
+      {
+        errors: result.errors ?? [],
+        warnings: result.warnings ?? [],
+      },
+    );
+  }
+
+  return {
+    normalizedConfig: result.normalizedConfig ?? input.config,
+    pluginId: resolved.plugin.id,
+    pluginKey: resolved.plugin.pluginKey,
+    driver: resolved.driver,
+  };
 }
 
 export async function validatePluginEnvironmentDriverConfig(input: {
@@ -156,11 +221,12 @@ export async function probePluginSandboxProviderDriver(input: {
     };
   }
 
+  const { provider: _provider, ...driverConfig } = input.config;
   const result = await input.workerManager.call(resolved.plugin.id, "environmentProbe", {
     driverKey: input.provider,
     companyId: input.companyId,
     environmentId: input.environmentId,
-    config: input.config,
+    config: driverConfig,
   });
 
   return {

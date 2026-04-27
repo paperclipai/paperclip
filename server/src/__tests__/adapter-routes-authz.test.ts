@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mocks = vi.hoisted(() => {
@@ -121,12 +121,45 @@ function createApp(actor: Express.Request["actor"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = actor;
+    req.actor = {
+      ...actor,
+      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
+      memberships: Array.isArray(actor.memberships)
+        ? actor.memberships.map((membership) => ({ ...membership }))
+        : actor.memberships,
+    } as Express.Request["actor"];
     next();
   });
   app.use("/api", adapterRoutes());
   app.use(errorHandler);
   return app;
+}
+
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
 }
 
 function boardMember(membershipRole: "admin" | "operator" | "viewer"): Express.Request["actor"] {
@@ -162,23 +195,29 @@ const instanceAdmin: Express.Request["actor"] = {
 function sendMutatingRequest(app: express.Express, name: string) {
   switch (name) {
     case "install":
-      return request(app)
-        .post("/api/adapters/install")
-        .send({ packageName: EXTERNAL_PACKAGE_NAME });
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/adapters/install")
+          .send({ packageName: EXTERNAL_PACKAGE_NAME }),
+      );
     case "disable":
-      return request(app)
-        .patch(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}`)
-        .send({ disabled: true });
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}`)
+          .send({ disabled: true }),
+      );
     case "override":
-      return request(app)
-        .patch("/api/adapters/claude_local/override")
-        .send({ paused: true });
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch("/api/adapters/claude_local/override")
+          .send({ paused: true }),
+      );
     case "delete":
-      return request(app).delete(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}`);
+      return requestApp(app, (baseUrl) => request(baseUrl).delete(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}`));
     case "reload":
-      return request(app).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reload`);
+      return requestApp(app, (baseUrl) => request(baseUrl).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reload`));
     case "reinstall":
-      return request(app).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reinstall`);
+      return requestApp(app, (baseUrl) => request(baseUrl).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reinstall`));
     default:
       throw new Error(`Unknown mutating adapter route: ${name}`);
   }
@@ -190,7 +229,13 @@ function seedInstalledExternalAdapter() {
   registerServerAdapter(createAdapter());
 }
 
-describe("adapter management route authorization", () => {
+function resetInstalledExternalAdapterState() {
+  mocks.externalRecords.clear();
+  unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);
+  setOverridePaused("claude_local", false);
+}
+
+describe.sequential("adapter management route authorization", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("node:child_process");
@@ -232,50 +277,61 @@ describe("adapter management route authorization", () => {
     setOverridePaused("claude_local", false);
   });
 
-  it.each([
-    "install",
-    "disable",
-    "override",
-    "delete",
-    "reload",
-    "reinstall",
-  ])("rejects %s for a non-instance-admin board user with company membership", async (routeName) => {
-    seedInstalledExternalAdapter();
-    const app = createApp(boardMember("admin"));
+  it("rejects mutating adapter routes for a non-instance-admin board user with company membership", async () => {
+    for (const routeName of [
+      "install",
+      "disable",
+      "override",
+      "delete",
+      "reload",
+      "reinstall",
+    ]) {
+      resetInstalledExternalAdapterState();
+      seedInstalledExternalAdapter();
+      const app = createApp(boardMember("admin"));
 
-    const res = await sendMutatingRequest(app, routeName);
+      const res = await sendMutatingRequest(app, routeName);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(403);
+    }
   });
 
-  it.each([
-    ["install", 201],
-    ["disable", 200],
-    ["override", 200],
-    ["delete", 200],
-    ["reload", 200],
-    ["reinstall", 200],
-  ] as const)("allows instance admins to reach %s", async (routeName, expectedStatus) => {
-    if (routeName !== "install") {
-      seedInstalledExternalAdapter();
+  it("allows instance admins to reach mutating adapter routes", async () => {
+    for (const [routeName, expectedStatus] of [
+      ["install", 201],
+      ["disable", 200],
+      ["override", 200],
+      ["delete", 200],
+      ["reload", 200],
+      ["reinstall", 200],
+    ] as const) {
+      resetInstalledExternalAdapterState();
+      if (routeName !== "install") {
+        seedInstalledExternalAdapter();
+      }
+      const app = createApp(instanceAdmin);
+
+      const res = await sendMutatingRequest(app, routeName);
+
+      expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(expectedStatus);
     }
-    const app = createApp(instanceAdmin);
-
-    const res = await sendMutatingRequest(app, routeName);
-
-    expect(res.status, JSON.stringify(res.body)).toBe(expectedStatus);
   });
 
   it.each(["viewer", "operator"] as const)(
     "does not let a company %s trigger adapter npm install or reload",
     async (membershipRole) => {
       seedInstalledExternalAdapter();
-      const app = createApp(boardMember(membershipRole));
+      const installApp = createApp(boardMember(membershipRole));
+      const reloadApp = createApp(boardMember(membershipRole));
 
-      const install = await request(app)
-        .post("/api/adapters/install")
-        .send({ packageName: EXTERNAL_PACKAGE_NAME });
-      const reload = await request(app).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reload`);
+      const install = await requestApp(installApp, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/adapters/install")
+          .send({ packageName: EXTERNAL_PACKAGE_NAME }),
+      );
+      const reload = await requestApp(reloadApp, (baseUrl) =>
+        request(baseUrl).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reload`),
+      );
 
       expect(install.status, JSON.stringify(install.body)).toBe(403);
       expect(reload.status, JSON.stringify(reload.body)).toBe(403);
