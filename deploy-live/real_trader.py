@@ -487,13 +487,21 @@ class OKXExecutor(ExchangeExecutor):
             fill = await self._wait_for_fill(order_id, inst_id)
             self._mark_success()
             _okx_normalized = None
+            _okx_norm_failed = False
             if _NORMALIZERS_AVAILABLE and normalize_okx_order is not None:
                 try:
                     _okx_normalized = normalize_okx_order(fill, requested_size_usd=size_usd)
-                except (_PydanticValidationError, Exception) as _ne:
-                    log.error(f"OKX normalize_okx_order failed (non-fatal): {_ne}")
+                except _PydanticValidationError as _ne:
+                    _okx_norm_failed = True
+                    # TODO(Task 9): upsert_recon_event(state_conn,
+                    #     category='unparseable_response', severity='critical',
+                    #     exchange='OKX', symbol=symbol, notes=str(_ne))
+                    log.error(
+                        "OKX unparseable_response (severity=critical): normalize_okx_order failed: %s",
+                        _ne,
+                    )
             result = OrderResult(
-                success=True, order_id=order_id, exchange="OKX",
+                success=(not _okx_norm_failed), order_id=order_id, exchange="OKX",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("fillSz", size_usd)),
                 fill_price=float(fill.get("avgPx", 0)),
@@ -664,13 +672,21 @@ class BybitExecutor(ExchangeExecutor):
             fill = await self._wait_for_fill(order_id, symbol)
             self._mark_success()
             _bybit_normalized = None
+            _bybit_norm_failed = False
             if _NORMALIZERS_AVAILABLE and normalize_bybit_order is not None:
                 try:
                     _bybit_normalized = normalize_bybit_order(fill, requested_size_usd=size_usd)
-                except (_PydanticValidationError, Exception) as _ne:
-                    log.error(f"Bybit normalize_bybit_order failed (non-fatal): {_ne}")
+                except _PydanticValidationError as _ne:
+                    _bybit_norm_failed = True
+                    # TODO(Task 9): upsert_recon_event(state_conn,
+                    #     category='unparseable_response', severity='critical',
+                    #     exchange='Bybit', symbol=symbol, notes=str(_ne))
+                    log.error(
+                        "Bybit unparseable_response (severity=critical): normalize_bybit_order failed: %s",
+                        _ne,
+                    )
             result = OrderResult(
-                success=True, order_id=order_id, exchange="Bybit",
+                success=(not _bybit_norm_failed), order_id=order_id, exchange="Bybit",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("cumExecValue", size_usd)),
                 fill_price=float(fill.get("avgPrice", 0)),
@@ -846,6 +862,7 @@ class MEXCExecutor(ExchangeExecutor):
             fill = await self._wait_for_fill(order_id, mexc_symbol)
             self._mark_success()
             _mexc_normalized = None
+            _mexc_norm_failed = False
             if _NORMALIZERS_AVAILABLE and normalize_mexc_order is not None:
                 try:
                     # MEXC futures _wait_for_fill returns futures-API fields
@@ -868,10 +885,17 @@ class MEXCExecutor(ExchangeExecutor):
                         "status": "FILLED" if fill.get("state") == 3 else "NEW",
                     }
                     _mexc_normalized = normalize_mexc_order(_mexc_fill_for_norm, requested_size_usd=size_usd)
-                except (_PydanticValidationError, Exception) as _ne:
-                    log.error(f"MEXC normalize_mexc_order failed (non-fatal): {_ne}")
+                except _PydanticValidationError as _ne:
+                    _mexc_norm_failed = True
+                    # TODO(Task 9): upsert_recon_event(state_conn,
+                    #     category='unparseable_response', severity='critical',
+                    #     exchange='MEXC', symbol=symbol, notes=str(_ne))
+                    log.error(
+                        "MEXC unparseable_response (severity=critical): normalize_mexc_order failed: %s",
+                        _ne,
+                    )
             result = OrderResult(
-                success=True, order_id=order_id, exchange="MEXC",
+                success=(not _mexc_norm_failed), order_id=order_id, exchange="MEXC",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("dealVol", size_usd)),
                 fill_price=float(fill.get("dealAvgPrice", 0)),
@@ -1056,6 +1080,7 @@ class BloFinExecutor(ExchangeExecutor):
             fill = await self._wait_for_fill(order_id, inst_id)
             self._mark_success()
             _blofin_normalized = None
+            _blofin_norm_failed = False
             if _NORMALIZERS_AVAILABLE and normalize_blofin_order is not None:
                 try:
                     # BloFin _wait_for_fill uses fillSz/avgPx; normalizer expects
@@ -1064,10 +1089,17 @@ class BloFinExecutor(ExchangeExecutor):
                     _blofin_fill_for_norm.setdefault("filledQuoteSize", fill.get("fillSz", "0"))
                     _blofin_fill_for_norm.setdefault("averagePrice", fill.get("avgPx", "0"))
                     _blofin_normalized = normalize_blofin_order(_blofin_fill_for_norm, requested_size_usd=size_usd)
-                except (_PydanticValidationError, Exception) as _ne:
-                    log.error(f"BloFin normalize_blofin_order failed (non-fatal): {_ne}")
+                except _PydanticValidationError as _ne:
+                    _blofin_norm_failed = True
+                    # TODO(Task 9): upsert_recon_event(state_conn,
+                    #     category='unparseable_response', severity='critical',
+                    #     exchange='BloFin', symbol=symbol, notes=str(_ne))
+                    log.error(
+                        "BloFin unparseable_response (severity=critical): normalize_blofin_order failed: %s",
+                        _ne,
+                    )
             result = OrderResult(
-                success=True, order_id=order_id, exchange="BloFin",
+                success=(not _blofin_norm_failed), order_id=order_id, exchange="BloFin",
                 symbol=symbol, side=side, size_usd=size_usd,
                 filled_usd=float(fill.get("fillSz", size_usd)),
                 fill_price=float(fill.get("avgPx", 0)),
