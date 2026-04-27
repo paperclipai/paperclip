@@ -468,58 +468,78 @@ def upsert_recon_event(
     (source, category, exchange, symbol, position_id) already exists —
     bump its repeat_count and last_seen_ms. Returns (event_id, was_insert).
 
+    Implemented as a single atomic ``INSERT ... ON CONFLICT DO UPDATE``
+    statement (requires SQLite >= 3.24, which is our deployment target).
+    This eliminates the three-statement INSERT → SELECT → UPDATE pattern
+    that could interleave under concurrent asyncio tasks and read stale
+    severity data during escalation.
+
     Idempotency is enforced by the partial unique index uniq_recon_unresolved_key.
     Once an event is resolved (resolution != 'unresolved') the unique key
     no longer applies, so a fresh occurrence inserts a new row — that's
     intentional, since 'manually triaged then recurred' is meaningful signal.
     """
-    try:
-        new_id = write_recon_event(
-            conn,
-            timestamp_ms=timestamp_ms, source=source, category=category,
-            severity=severity, exchange=exchange, symbol=symbol,
-            position_id=position_id, expected=expected, actual=actual,
-            notes=notes,
+    # _SEVERITY_ORDER maps severity name → integer rank (info=0 … critical=3).
+    # We embed the CASE expression directly in SQL so the severity-escalation
+    # comparison happens atomically inside the single statement.
+    conn.execute(
+        """INSERT INTO reconciliation_events
+               (timestamp, source, category, severity, exchange, symbol,
+                position_id, expected, actual, notes, last_seen_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(source, category,
+                       COALESCE(exchange, ''),
+                       COALESCE(symbol, ''),
+                       COALESCE(position_id, -1))
+           WHERE resolution = 'unresolved'
+           DO UPDATE SET
+               repeat_count = repeat_count + 1,
+               last_seen_ms = excluded.last_seen_ms,
+               severity = CASE
+                   WHEN CASE excluded.severity
+                            WHEN 'info'     THEN 0
+                            WHEN 'warn'     THEN 1
+                            WHEN 'error'    THEN 2
+                            WHEN 'critical' THEN 3
+                            ELSE 0 END
+                      > CASE reconciliation_events.severity
+                            WHEN 'info'     THEN 0
+                            WHEN 'warn'     THEN 1
+                            WHEN 'error'    THEN 2
+                            WHEN 'critical' THEN 3
+                            ELSE 0 END
+                   THEN excluded.severity
+                   ELSE reconciliation_events.severity
+               END""",
+        (
+            timestamp_ms, source, category, severity, exchange, symbol,
+            position_id,
+            json.dumps(expected) if expected is not None else None,
+            json.dumps(actual) if actual is not None else None,
+            notes, timestamp_ms,
+        ),
+    )
+    # After the upsert, look up the row by its unique natural key. This is
+    # more reliable than ``cur.lastrowid`` for the UPDATE branch — SQLite's
+    # ``last_insert_rowid()`` can reflect a rowid from a concurrent INSERT
+    # on a different table that happened between our upsert and the read,
+    # producing a stale value. The SELECT-by-key is always correct.
+    row = conn.execute(
+        """SELECT id, repeat_count FROM reconciliation_events
+           WHERE resolution='unresolved'
+             AND source=? AND category=?
+             AND COALESCE(exchange,'')=COALESCE(?, '')
+             AND COALESCE(symbol,'')=COALESCE(?, '')
+             AND COALESCE(position_id,-1)=COALESCE(?, -1)""",
+        (source, category, exchange, symbol, position_id),
+    ).fetchone()
+    if row is None:
+        # Should not happen; guard against unexpected schema divergence.
+        raise RuntimeError(
+            f"upsert_recon_event: row not found after upsert "
+            f"(source={source!r} category={category!r})"
         )
-        return new_id, True
-    except sqlite3.IntegrityError as e:
-        if "uniq_recon_unresolved_key" not in str(e):
-            raise
-        # Find the existing unresolved row matching this key and bump it.
-        row = conn.execute(
-            """SELECT id FROM reconciliation_events
-               WHERE resolution='unresolved'
-                 AND source=? AND category=?
-                 AND COALESCE(exchange,'')=COALESCE(?, '')
-                 AND COALESCE(symbol,'')=COALESCE(?, '')
-                 AND COALESCE(position_id,-1)=COALESCE(?, -1)""",
-            (source, category, exchange, symbol, position_id),
-        ).fetchone()
-        if row is None:
-            # Race lost between INSERT failure and the lookup — re-raise.
-            raise
-        existing_id = row["id"]
-        # Escalate severity only if the new occurrence is strictly worse
-        # than the existing one. Order: info < warn < error < critical.
-        # This NEVER downgrades — a 'critical' row stays 'critical' even
-        # if subsequent occurrences arrive at 'error'.
-        # _SEVERITY_ORDER is defined above.
-        new_rank = _SEVERITY_ORDER[severity]
-        existing_severity = conn.execute(
-            "SELECT severity FROM reconciliation_events WHERE id=?",
-            (existing_id,),
-        ).fetchone()["severity"]
-        existing_rank = _SEVERITY_ORDER[existing_severity]
-        final_severity = severity if new_rank > existing_rank else existing_severity
-        conn.execute(
-            """UPDATE reconciliation_events
-               SET repeat_count = repeat_count + 1,
-                   last_seen_ms = ?,
-                   severity = ?
-               WHERE id=?""",
-            (timestamp_ms, final_severity, existing_id),
-        )
-        return existing_id, False
+    return row["id"], row["repeat_count"] == 1
 
 
 def list_unresolved_recon_events(

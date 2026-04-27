@@ -32,18 +32,18 @@ if TYPE_CHECKING:
 class ExchangeFetcher(Protocol):
     """Read-only access to an exchange's authoritative state.
 
-    Each method may raise ConnectionError if the exchange is unreachable.
-    Implementations must NOT mutate state.
+    Each method is async and may raise ConnectionError if the exchange is
+    unreachable. Implementations must NOT mutate state.
     """
 
-    def get_open_positions(self, exchange: str) -> list[dict[str, Any]]:
+    async def get_open_positions(self, exchange: str) -> list[dict[str, Any]]:
         """Return open positions on the named exchange.
 
         Each dict has at least: symbol, side, size_usd.
         """
         ...
 
-    def get_recent_fills(self, exchange: str, *, since_ms: int) -> list[dict[str, Any]]:
+    async def get_recent_fills(self, exchange: str, *, since_ms: int) -> list[dict[str, Any]]:
         """Return fills with filled_at_ms >= since_ms.
 
         Each dict has at least: order_id, symbol, side, size_usd, fill_price,
@@ -51,7 +51,7 @@ class ExchangeFetcher(Protocol):
         """
         ...
 
-    def get_balance(self, exchange: str) -> dict[str, Any]:
+    async def get_balance(self, exchange: str) -> dict[str, Any]:
         """Return {available_usd, locked_usd} for the named exchange."""
         ...
 
@@ -85,15 +85,15 @@ class FakeExchange:
         if exchange in self._unreachable:
             raise ConnectionError(self._unreachable[exchange])
 
-    def get_open_positions(self, exchange: str) -> list[dict[str, Any]]:
+    async def get_open_positions(self, exchange: str) -> list[dict[str, Any]]:
         self._check_reachable(exchange)
         return list(self._positions.get(exchange, []))
 
-    def get_recent_fills(self, exchange: str, *, since_ms: int) -> list[dict[str, Any]]:
+    async def get_recent_fills(self, exchange: str, *, since_ms: int) -> list[dict[str, Any]]:
         self._check_reachable(exchange)
         return [f for f in self._fills.get(exchange, []) if f.get("filled_at_ms", 0) >= since_ms]
 
-    def get_balance(self, exchange: str) -> dict[str, Any]:
+    async def get_balance(self, exchange: str) -> dict[str, Any]:
         self._check_reachable(exchange)
         return dict(self._balances.get(exchange, {"available_usd": 0.0, "locked_usd": 0.0}))
 
@@ -168,9 +168,9 @@ async def reconcile_exchange(
 
     now_ms = int(time.time() * 1000)
     try:
-        ex_positions = fetcher.get_open_positions(exchange)
-        ex_fills = fetcher.get_recent_fills(exchange, since_ms=since_ms)
-        ex_balance = fetcher.get_balance(exchange)
+        ex_positions = await fetcher.get_open_positions(exchange)
+        ex_fills = await fetcher.get_recent_fills(exchange, since_ms=since_ms)
+        ex_balance = await fetcher.get_balance(exchange)
     except ConnectionError as e:
         prior = get_exchange_health(conn, exchange)
         consecutive = (prior.consecutive_errors + 1) if prior else 1

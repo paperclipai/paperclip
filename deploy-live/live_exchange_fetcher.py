@@ -1,25 +1,17 @@
 """Concrete ExchangeFetcher implementation for the live trader.
 
 Adapts the bot's existing async ExchangeExecutor classes into the
-synchronous ExchangeFetcher Protocol the reconciler expects. The
-executors live on the trader's asyncio loop; the reconciler is meant
-to be invoked off-loop (via ``loop.run_in_executor``) so its blocking
-SQLite I/O doesn't stall the trader. We bridge from the reconciler's
-worker thread back to the trader's loop with
-``asyncio.run_coroutine_threadsafe``.
+async ExchangeFetcher Protocol the reconciler expects. All methods are
+async and call executor methods directly with ``await`` — there is no
+thread bridging, no ``run_coroutine_threadsafe``, and no blocking
+``future.result()`` calls.
 
 Wiring contract (for Plan 3 Task 10):
 
-    loop = asyncio.get_running_loop()
-    fetcher = LiveExchangeFetcher(executors, loop=loop)
-    # Inside the trader, spawn reconciler work on a thread:
-    await loop.run_in_executor(None, reconcile_exchange,
-                               state_conn, fetcher, ...)
-
-Calling ``fetcher.get_balance(...)`` directly from the trader's main
-loop will deadlock — it would block the loop waiting for a coroutine
-that needs the same loop to make progress. Always go through
-``run_in_executor`` (or a separate worker thread).
+    fetcher = LiveExchangeFetcher(executors)
+    # Inside the trader's asyncio loop, await fetcher methods directly:
+    await fetcher.get_open_positions(exchange)
+    await fetcher.get_balance(exchange)
 
 Known limitations:
 
@@ -44,28 +36,25 @@ from typing import Any, Optional
 
 log = logging.getLogger("live_exchange_fetcher")
 
-_DEFAULT_TIMEOUT_S = 10.0
-
 
 class LiveExchangeFetcher:
-    """Sync ExchangeFetcher backed by async ExchangeExecutor instances.
+    """Async ExchangeFetcher backed by async ExchangeExecutor instances.
 
-    Must be called from a thread other than the trader's asyncio loop
-    (typically via ``loop.run_in_executor``). See module docstring.
+    All methods are async and must be awaited from within the trader's
+    asyncio loop. There is no thread bridging — calling from a worker
+    thread is not supported and will deadlock.
     """
 
     def __init__(
         self,
         executors: dict[str, Any],
         *,
-        loop: asyncio.AbstractEventLoop,
-        timeout_s: float = _DEFAULT_TIMEOUT_S,
+        timeout_s: float = 10.0,
     ):
         # executors keys are the executor.name strings as used by real_trader
         # ("OKX", "MEXC", "Bybit", "BloFin"). Reconciler addresses exchanges
         # via the same string identifiers.
         self._executors = executors
-        self._loop = loop
         self._timeout_s = timeout_s
 
     def _executor(self, exchange: str):
@@ -76,24 +65,21 @@ class LiveExchangeFetcher:
             )
         return ex
 
-    def _run_on_loop(self, coro):
-        """Submit a coroutine to the trader's loop; block worker thread for the result."""
+    async def get_open_positions(self, exchange: str) -> list[dict[str, Any]]:
+        ex = self._executor(exchange)
         try:
-            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-            return future.result(timeout=self._timeout_s)
+            raw = await asyncio.wait_for(
+                ex.get_open_positions(), timeout=self._timeout_s
+            )
         except asyncio.TimeoutError as e:
             raise ConnectionError(f"timeout after {self._timeout_s}s") from e
         except Exception as e:  # noqa: BLE001
             if _looks_like_network_error(e):
                 raise ConnectionError(str(e)) from e
             raise
-
-    def get_open_positions(self, exchange: str) -> list[dict[str, Any]]:
-        ex = self._executor(exchange)
-        raw = self._run_on_loop(ex.get_open_positions())
         return list(_normalize_positions(exchange, raw or []))
 
-    def get_recent_fills(
+    async def get_recent_fills(
         self, exchange: str, *, since_ms: int
     ) -> list[dict[str, Any]]:
         # See module docstring: deferred until per-exchange fill endpoints
@@ -101,9 +87,19 @@ class LiveExchangeFetcher:
         # check to no-op for live use; tests still cover the path via FakeExchange.
         return []
 
-    def get_balance(self, exchange: str) -> dict[str, Any]:
+    async def get_balance(self, exchange: str) -> dict[str, Any]:
         ex = self._executor(exchange)
-        raw = self._run_on_loop(ex.get_balance()) or {}
+        try:
+            raw = await asyncio.wait_for(
+                ex.get_balance(), timeout=self._timeout_s
+            )
+        except asyncio.TimeoutError as e:
+            raise ConnectionError(f"timeout after {self._timeout_s}s") from e
+        except Exception as e:  # noqa: BLE001
+            if _looks_like_network_error(e):
+                raise ConnectionError(str(e)) from e
+            raise
+        raw = raw or {}
         return {
             "available_usd": float(raw.get("available", 0.0) or 0.0),
             "locked_usd": float(raw.get("locked", 0.0) or 0.0),

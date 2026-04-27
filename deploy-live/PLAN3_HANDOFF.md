@@ -1,8 +1,8 @@
 # Plan 3 progress + handoff
 
-## Done in this session (Tasks 1–6, 8, 12, 13, 15, 16)
+## Done in this session (Tasks 1–6, 8, 12, 13, 15, 16 + 3 merge-blocker fixes)
 
-10 of 16 code tasks landed; 134 tests green.
+10 of 16 code tasks landed; 190 tests green.
 
 | Task | Commit | What |
 |---|---|---|
@@ -13,6 +13,21 @@
 | 12, 13, 15, 16 | `5d4d3e06` | Bundled: requirements (httpx, pytest-asyncio, pydantic), start.sh pre-start guard, CI workflow, size_mismatch golden fixture |
 | 6 | `a2da54c9` | `LiveExchangeFetcher` adapter; sync API bridges into trader's async loop via `run_coroutine_threadsafe`; per-exchange position normalizers for OKX/Bybit/MEXC/BloFin |
 | 8 | `f33add99` | `ShadowWriter` mirrors writes to SQLite under `SHADOW_SQLITE=true` with strict failure isolation |
+| Critical 1,2,3 | (pending commit) | Async fetcher rewrite (deadlock fix); atomic upsert_recon_event (write serialization) |
+
+## ✅ Merge-blockers resolved
+
+### Critical 1 — LiveExchangeFetcher deadlock (RESOLVED)
+
+`LiveExchangeFetcher` methods are now `async def`. The `_run_on_loop` / `asyncio.run_coroutine_threadsafe` / `future.result()` pattern is gone entirely. `reconcile_exchange` now `await`s the fetcher directly on the same loop. `real_trader.py` constructs the fetcher as `LiveExchangeFetcher(executors)` (no `loop=` arg). Tests no longer use `background_loop`; they use `asyncio.run()`.
+
+### Critical 2 — SQLite check_same_thread (RESOLVED, no code change needed)
+
+Confirmed: no `sqlite3.ProgrammingError` occurs with the async fetcher approach since all SQLite I/O stays on the single asyncio event loop. No `check_same_thread=False` needed.
+
+### Critical 3 — state_conn write serialization (RESOLVED via single-statement upsert)
+
+`upsert_recon_event` now uses a single atomic `INSERT ... ON CONFLICT DO UPDATE` statement. The old three-statement INSERT → SELECT → UPDATE sequence that could interleave between concurrent asyncio tasks is gone. SQLite 3.24+ required; deployment target is 3.53. The `was_insert` flag is determined by a post-upsert `SELECT` on the natural key (not `lastrowid`, which is unreliable for the UPDATE branch when other tables receive inserts on the same connection between statements).
 
 ## Remaining (Tasks 7, 9, 10, 11, 14 + ops Tasks 17–22)
 
