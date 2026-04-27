@@ -848,7 +848,26 @@ class MEXCExecutor(ExchangeExecutor):
             _mexc_normalized = None
             if _NORMALIZERS_AVAILABLE and normalize_mexc_order is not None:
                 try:
-                    _mexc_normalized = normalize_mexc_order(fill, requested_size_usd=size_usd)
+                    # MEXC futures _wait_for_fill returns futures-API fields
+                    # (state:int, dealVol, dealAvgPrice, side:int).
+                    # Translate to the spot-API shape the normalizer expects.
+                    _mexc_side_int = fill.get("side", 0)
+                    _mexc_side_str = "BUY" if _mexc_side_int in (1, 2) else "SELL"
+                    _mexc_deal_avg = float(fill.get("dealAvgPrice", 0) or 0)
+                    _mexc_deal_vol = float(fill.get("dealVol", 0) or 0)
+                    _mexc_fill_for_norm = {
+                        "orderId": fill.get("orderId", order_id),
+                        "symbol": symbol,
+                        "side": _mexc_side_str,
+                        "executedQty": str(_mexc_deal_vol),
+                        # cummulativeQuoteQty = contracts * avg price (USD notional)
+                        "cummulativeQuoteQty": str(_mexc_deal_vol * _mexc_deal_avg),
+                        "price": str(_mexc_deal_avg),
+                        "fees": str(abs(float(fill.get("takerFee", 0) or 0))),
+                        "transactTime": int(fill.get("createTime", 0) or 0),
+                        "status": "FILLED" if fill.get("state") == 3 else "NEW",
+                    }
+                    _mexc_normalized = normalize_mexc_order(_mexc_fill_for_norm, requested_size_usd=size_usd)
                 except (_PydanticValidationError, Exception) as _ne:
                     log.error(f"MEXC normalize_mexc_order failed (non-fatal): {_ne}")
             result = OrderResult(
@@ -1039,7 +1058,12 @@ class BloFinExecutor(ExchangeExecutor):
             _blofin_normalized = None
             if _NORMALIZERS_AVAILABLE and normalize_blofin_order is not None:
                 try:
-                    _blofin_normalized = normalize_blofin_order(fill, requested_size_usd=size_usd)
+                    # BloFin _wait_for_fill uses fillSz/avgPx; normalizer expects
+                    # filledQuoteSize/averagePrice. Translate at the call site.
+                    _blofin_fill_for_norm = dict(fill)
+                    _blofin_fill_for_norm.setdefault("filledQuoteSize", fill.get("fillSz", "0"))
+                    _blofin_fill_for_norm.setdefault("averagePrice", fill.get("avgPx", "0"))
+                    _blofin_normalized = normalize_blofin_order(_blofin_fill_for_norm, requested_size_usd=size_usd)
                 except (_PydanticValidationError, Exception) as _ne:
                     log.error(f"BloFin normalize_blofin_order failed (non-fatal): {_ne}")
             result = OrderResult(

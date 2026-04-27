@@ -210,3 +210,80 @@ def test_blofin_normalizer_silent_failure():
     # Normalizer must surface this as success=False so reconciler catches it.
     assert r.success is False
     assert r.filled_size_usd == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests for the real_trader.py call-site translation shapes
+# (Approach B fix: futures/fill-dict fields translated before normalizer call)
+# ---------------------------------------------------------------------------
+
+def test_mexc_normalizer_accepts_futures_translated_shape():
+    """Verify the translated dict that real_trader.py builds from MEXC futures
+    _wait_for_fill (dealVol/dealAvgPrice/state:int/side:int) passes the normalizer."""
+    # Simulate what real_trader.py constructs before calling normalize_mexc_order:
+    # side=1 (open long) -> "BUY", state=3 (filled)
+    deal_avg = 1.234
+    deal_vol = 20.0
+    translated = {
+        "orderId": "mexc-futures-001",
+        "symbol": "ORDIUSDT",
+        "side": "BUY",
+        "executedQty": str(deal_vol),
+        "cummulativeQuoteQty": str(deal_vol * deal_avg),
+        "price": str(deal_avg),
+        "fees": "0.0247",
+        "transactTime": 1700000000000,
+        "status": "FILLED",
+    }
+    r = normalize_mexc_order(translated, requested_size_usd=24.68)
+    assert r.exchange == "MEXC"
+    assert r.success is True
+    assert r.side == "buy"
+    assert r.filled_size_usd == pytest.approx(deal_vol * deal_avg)
+    assert r.fill_price == pytest.approx(deal_avg)
+
+
+def test_mexc_normalizer_accepts_futures_translated_shape_sell():
+    """MEXC futures side=3 (open short) -> translates to SELL."""
+    deal_avg = 2.5
+    deal_vol = 10.0
+    translated = {
+        "orderId": "mexc-futures-002",
+        "symbol": "ORDIUSDT",
+        "side": "SELL",
+        "executedQty": str(deal_vol),
+        "cummulativeQuoteQty": str(deal_vol * deal_avg),
+        "price": str(deal_avg),
+        "fees": "0.01",
+        "transactTime": 1700000001000,
+        "status": "FILLED",
+    }
+    r = normalize_mexc_order(translated, requested_size_usd=25.0)
+    assert r.success is True
+    assert r.side == "sell"
+
+
+def test_blofin_normalizer_accepts_fillsz_avgpx_translated_shape():
+    """Verify the translated dict that real_trader.py builds from BloFin
+    _wait_for_fill (fillSz/avgPx) passes the normalizer via setdefault mapping."""
+    # Simulate what real_trader.py constructs: copy fill dict, add aliased keys
+    fill = {
+        "instId": "ORDI-USDT",
+        "orderId": "blofin-fill-001",
+        "side": "buy",
+        "fillSz": "24.68",
+        "avgPx": "1.234",
+        "fee": "-0.0247",
+        "updateTime": "1700000000000",
+        "state": "filled",
+    }
+    translated = dict(fill)
+    translated.setdefault("filledQuoteSize", fill.get("fillSz", "0"))
+    translated.setdefault("averagePrice", fill.get("avgPx", "0"))
+    r = normalize_blofin_order(translated, requested_size_usd=24.68)
+    assert r.exchange == "BLOFIN"
+    assert r.success is True
+    assert r.side == "buy"
+    assert r.filled_size_usd == pytest.approx(24.68)
+    assert r.fill_price == pytest.approx(1.234)
+    assert r.fees_usd == pytest.approx(0.0247)
