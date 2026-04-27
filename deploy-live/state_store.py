@@ -7,10 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
+
+
+def env_truthy(name: str, default: str = "false") -> bool:
+    """Parse a flag env var. Truthy: '1', 'true', 'yes' (case-insensitive)."""
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes")
 
 from schemas import PositionRecord, FillRecord, AuditEntry, BalanceSnapshot, ExchangeHealthRecord, ReconciliationEvent
 

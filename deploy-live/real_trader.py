@@ -86,11 +86,29 @@ except ImportError as _plan3_imp_err:
     _invariants = None  # type: ignore[assignment]
     _ReconEvent = None  # type: ignore[assignment,misc]
     _PLAN3_AVAILABLE = False
+    _plan3_import_error_msg = str(_plan3_imp_err)
     log.error(
         "Plan 3 modules not importable; state_store + AlertDispatcher disabled. "
         "Reason: %s. This is a degraded-mode deploy — silent failure detection is OFF.",
         _plan3_imp_err,
     )
+else:
+    _plan3_import_error_msg = ""
+
+# ---------------------------------------------------------------------------
+# Reliability gate — fail loudly if RELIABILITY_REQUIRED=true and Plan 3 is off
+# ---------------------------------------------------------------------------
+_RELIABILITY_REQUIRED = _state_store.env_truthy("RELIABILITY_REQUIRED") if _PLAN3_AVAILABLE else (
+    os.environ.get("RELIABILITY_REQUIRED", "false").strip().lower() in ("1", "true", "yes")
+)
+if not _PLAN3_AVAILABLE and _RELIABILITY_REQUIRED:
+    log.critical(
+        "RELIABILITY_REQUIRED=true but Plan 3 modules failed to import (%s); "
+        "refusing to start without data reliability layer.",
+        _plan3_import_error_msg,
+    )
+    import sys as _sys
+    _sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Telegram config
@@ -3242,9 +3260,9 @@ async def main():
 
         # -- Plan 3 Task 10: wire reconciler behind feature flag --
         _use_sqlite = (
-            os.environ.get("SHADOW_SQLITE", "false").lower() in ("1", "true", "yes")
-            or os.environ.get("USE_SQLITE_STATE", "false").lower() in ("1", "true", "yes")
-        )
+            _state_store.env_truthy("SHADOW_SQLITE")
+            or _state_store.env_truthy("USE_SQLITE_STATE")
+        ) if _PLAN3_AVAILABLE else False
         if _PLAN3_AVAILABLE and trader.state_conn is not None and _use_sqlite:
             trader.fetcher = _LiveExchangeFetcher(executors)
             trader.sweep_task = _start_periodic_sweep(
@@ -3734,14 +3752,19 @@ async def main():
                 await trader.sweep_task
             except asyncio.CancelledError:
                 pass
+        # Flush any pending digest events FIRST, before cancelling the task.
+        # Otherwise cancel can race with run()'s internal flush, dropping a batch.
+        if trader._digest_sink is not None:
+            try:
+                await trader._digest_sink.flush()
+            except Exception as _e:
+                log.warning("DigestSink final flush failed: %s", _e)
         if trader._digest_task is not None:
             trader._digest_task.cancel()
             try:
                 await trader._digest_task
             except asyncio.CancelledError:
                 pass
-        if trader._digest_sink is not None:
-            await trader._digest_sink.flush()
         if trader.state_conn is not None:
             trader.state_conn.close()
             trader.state_conn = None

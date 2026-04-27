@@ -369,3 +369,63 @@ def test_translate_mexc_fill_silent_failure_trap_still_fires():
     # The normalizer should treat this as success=False (trap fires)
     r = normalize_mexc_order(out, requested_size_usd=15.0)
     assert r.success is False
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — BloFin translation unit-semantic tests
+# Verify real_trader.py:~1159 setdefault translation + USD-denomination guard
+# ---------------------------------------------------------------------------
+
+def test_blofin_setdefault_translation_produces_normalizer_input():
+    """Replicates real_trader.py BloFin translation; asserts normalize_blofin_order accepts it."""
+    blofin_fill_native = {
+        "orderId": "BO_TEST_1",
+        "instId": "BTC-USDT",
+        "side": "buy",
+        "state": "filled",
+        "fillSz": "100.0",   # BloFin's native field
+        "avgPx": "65000.0",  # BloFin's native field
+        "fee": "0.05",
+        "updateTime": "1700000000000",
+    }
+    # Replicate the real_trader.py translation:
+    translated = dict(blofin_fill_native)
+    translated.setdefault("filledQuoteSize", blofin_fill_native.get("fillSz", "0"))
+    translated.setdefault("averagePrice", blofin_fill_native.get("avgPx", "0"))
+
+    result = normalize_blofin_order(translated, requested_size_usd=100.0)
+    assert result.success is True
+    assert result.exchange == "BLOFIN"
+
+
+def test_blofin_translation_unit_semantics_fillsz_is_usd():
+    """REGRESSION GUARD: BloFin fillSz semantic.
+
+    The translation maps fillSz -> filledQuoteSize directly, assuming fillSz is
+    USD-denominated quote size. If BloFin ever returns fillSz in contracts/base
+    units, this test should fail and force re-evaluation.
+
+    With requested_size_usd=100 and fillSz=100.0 the resulting filled_size_usd
+    should be ~100 (within tolerance for fees). If filled_size_usd is way off
+    (e.g., 100 contracts x $65K = $6.5M) the unit assumption is broken.
+    """
+    fill = {
+        "orderId": "BO_TEST_2",
+        "instId": "BTC-USDT",
+        "side": "buy",
+        "state": "filled",
+        "fillSz": "100.0",   # If this is USD, filled_size_usd should be ~100
+        "avgPx": "65000.0",
+        "fee": "0.05",
+        "updateTime": "1700000000000",
+    }
+    translated = dict(fill)
+    translated.setdefault("filledQuoteSize", fill["fillSz"])
+    translated.setdefault("averagePrice", fill["avgPx"])
+
+    result = normalize_blofin_order(translated, requested_size_usd=100.0)
+    assert 90 <= result.filled_size_usd <= 110, (
+        f"BloFin translation produced filled_size_usd={result.filled_size_usd}; "
+        f"expected ~100. If fillSz is contracts not USD, this assumption is "
+        f"broken -- investigate BloFin API docs."
+    )

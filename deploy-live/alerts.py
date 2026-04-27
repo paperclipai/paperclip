@@ -112,33 +112,49 @@ class DigestSink:
 
     DIGEST_SEVERITY = "warn"
 
-    def __init__(self, inner: Any, *, flush_interval_s: float = 3600.0) -> None:
+    def __init__(self, inner: Any, *, flush_interval_s: float = 3600.0,
+                 max_buffer_size: int = 200) -> None:
         self._inner = inner
         self._flush_interval_s = flush_interval_s
+        self._max_buffer_size = max_buffer_size
         self._buffer: list[ReconciliationEvent] = []
+        self._dropped_count: int = 0
 
     async def send(self, event: ReconciliationEvent) -> None:
         if event.severity == self.DIGEST_SEVERITY:
+            if len(self._buffer) >= self._max_buffer_size:
+                self._dropped_count += 1
+                return
             self._buffer.append(event)
         else:
             await self._inner.send(event)
 
     async def flush(self) -> None:
         """Send all buffered warn events as a single digest, then clear the buffer."""
-        if not self._buffer:
-            return
         events, self._buffer = self._buffer, []
+        dropped, self._dropped_count = self._dropped_count, 0
+        if not events and not dropped:
+            return
         # Build a combined synthetic event carrying a summary in notes.
+        # Cap displayed lines and total message size to stay under Telegram's 4096-char limit.
         summary_lines = [
             f"[{e.category}@{e.exchange or '-'}:{e.symbol or '-'}]"
-            for e in events
+            for e in events[:50]
         ]
+        notes_parts = [f"{len(events)} warn(s) in last digest window: " + ", ".join(summary_lines)]
+        if len(events) > 50:
+            notes_parts.append(f"... and {len(events) - 50} more")
+        if dropped:
+            notes_parts.append(
+                f"({dropped} additional warn(s) dropped due to buffer overflow)"
+            )
+        notes = "; ".join(notes_parts)[:3500]
         digest_event = ReconciliationEvent(
             timestamp_ms=int(time.time() * 1000),
             source="reconciler",
             category="warn_digest",
             severity="warn",
-            notes=f"{len(events)} warn(s) in last digest window: " + ", ".join(summary_lines),
+            notes=notes,
         )
         try:
             await self._inner.send(digest_event)

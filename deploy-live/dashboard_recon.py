@@ -51,7 +51,7 @@ recon_bp = Blueprint("recon", __name__, url_prefix="/recon")
 # SQLite path helper -- mirrors dashboard._data_source() logic
 # ---------------------------------------------------------------------------
 
-_USE_SQLITE = os.environ.get("USE_SQLITE_STATE", "false").lower() == "true"
+_USE_SQLITE = _ss.env_truthy("USE_SQLITE_STATE")
 _DB_PATH = os.environ.get(
     "STATE_DB_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "state.db"),

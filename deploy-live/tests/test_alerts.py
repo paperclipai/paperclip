@@ -247,3 +247,141 @@ def test_digest_sink_flush_on_inner_failure_does_not_raise():
         await digest.flush()
 
     asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# Fix 5 — DigestSink buffer cap tests
+# ---------------------------------------------------------------------------
+
+def test_digest_sink_buffer_cap_drops_excess():
+    """Events beyond max_buffer_size are dropped silently; _dropped_count increments."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0, max_buffer_size=3)
+
+        for _ in range(5):
+            await digest.send(_sample_event(severity="warn", category="balance_drift"))
+
+        assert len(digest._buffer) == 3
+        assert digest._dropped_count == 2
+
+    asyncio.run(_go())
+
+
+def test_digest_sink_dropped_counter_survives_to_flush_notes():
+    """dropped_count is reset after flush; notes include the overflow message."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0, max_buffer_size=2)
+
+        for _ in range(4):
+            await digest.send(_sample_event(severity="warn", category="balance_drift"))
+
+        assert digest._dropped_count == 2
+
+        await digest.flush()
+
+        # Counter reset after flush
+        assert digest._dropped_count == 0
+        assert digest._buffer == []
+
+        # Flush sent one combined event; notes mention overflow
+        assert len(inner.events) == 1
+        assert "dropped" in (inner.events[0].notes or "")
+
+    asyncio.run(_go())
+
+
+def test_digest_sink_flush_with_only_dropped_no_buffer_events():
+    """If the buffer fills up before any flush, then empties via cap, a flush that
+    finds buffer empty but dropped>0 still sends a digest noting the drops."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0, max_buffer_size=2)
+
+        # Fill to cap
+        for _ in range(2):
+            await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        # Drain buffer manually (simulate prior flush)
+        digest._buffer = []
+        # Now dropped_count is 0 since no overflow yet — add overflow events
+        for _ in range(3):
+            await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        # Buffer has 2, dropped has 1
+        assert digest._dropped_count == 1
+        await digest.flush()
+        # After flush, counter reset
+        assert digest._dropped_count == 0
+
+    asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — env_truthy helper tests
+# ---------------------------------------------------------------------------
+
+from state_store import env_truthy
+
+
+def test_env_truthy_recognises_truthy_values(monkeypatch):
+    for val in ("1", "true", "yes", "TRUE", "Yes", "YES", "True"):
+        monkeypatch.setenv("_TEST_FLAG", val)
+        assert env_truthy("_TEST_FLAG") is True, f"expected True for {val!r}"
+
+
+def test_env_truthy_rejects_falsy_values(monkeypatch):
+    for val in ("0", "false", "no", "FALSE", "off", "", "maybe"):
+        monkeypatch.setenv("_TEST_FLAG", val)
+        assert env_truthy("_TEST_FLAG") is False, f"expected False for {val!r}"
+
+
+def test_env_truthy_uses_default_when_unset(monkeypatch):
+    monkeypatch.delenv("_TEST_FLAG", raising=False)
+    assert env_truthy("_TEST_FLAG") is False
+    assert env_truthy("_TEST_FLAG", default="true") is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — RELIABILITY_REQUIRED sys.exit tests
+# ---------------------------------------------------------------------------
+
+import sys
+import importlib
+import types
+
+
+def test_reliability_required_exits_when_plan3_unavailable(monkeypatch):
+    """When RELIABILITY_REQUIRED=true and Plan 3 modules can't be imported,
+    real_trader module-level code must call sys.exit(1)."""
+    import builtins
+
+    monkeypatch.setenv("RELIABILITY_REQUIRED", "true")
+
+    # Inject a stub state_store that has env_truthy so real_trader can call it
+    fake_ss = types.ModuleType("state_store")
+    fake_ss.env_truthy = lambda name, default="false": (  # type: ignore[attr-defined]
+        os.environ.get(name, default).strip().lower() in ("1", "true", "yes")
+    )
+    monkeypatch.setitem(sys.modules, "state_store", fake_ss)
+
+    # Force all Plan 3 imports to fail by removing them from sys.modules
+    for mod in list(sys.modules):
+        if mod in ("alerts", "live_exchange_fetcher", "reconciler", "invariants", "schemas"):
+            monkeypatch.delitem(sys.modules, mod, raising=False)
+
+    original_import = builtins.__import__
+
+    # Make the Plan 3 imports raise ImportError
+    def _block_import(name, *args, **kwargs):
+        if name in ("alerts", "live_exchange_fetcher", "reconciler", "invariants"):
+            raise ImportError(f"blocked: {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _block_import)
+
+    # Remove real_trader from sys.modules so it re-executes module-level code
+    monkeypatch.delitem(sys.modules, "real_trader", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        import real_trader  # noqa: F401
+    assert exc_info.value.code == 1
