@@ -5699,7 +5699,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (issueId && (outcome === "failed" || outcome === "timed_out")) {
+        if (
+          issueId &&
+          (outcome === "failed" || outcome === "timed_out") &&
+          !readTransientRecoveryContractFromRun(livenessRun)
+        ) {
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
             if (!existingRunComment) {
@@ -5804,7 +5808,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         await finalizeIssueCommentPolicy(livenessRun, agent);
-        if (issueId) {
+        if (issueId && readNonEmptyString(parseObject(livenessRun.contextSnapshot).retryReason) !== "issue_continuation_needed") {
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
             if (!existingRunComment) {
@@ -5883,8 +5887,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
             // Post a failure comment on the issue so the failure is visible outside the run timeline.
-            const outerIssueId = readNonEmptyString(parseObject(failedRun.contextSnapshot).issueId);
-            if (outerIssueId) {
+            const outerContextSnapshot = parseObject(failedRun.contextSnapshot);
+            const outerIssueId = readNonEmptyString(outerContextSnapshot.issueId);
+            const isContinuationRecovery =
+              readNonEmptyString(outerContextSnapshot.retryReason) === "issue_continuation_needed";
+            if (outerIssueId && !isContinuationRecovery) {
               const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, outerIssueId).catch(() => null);
               if (!existingRunComment) {
                 await issuesSvc.addComment(
