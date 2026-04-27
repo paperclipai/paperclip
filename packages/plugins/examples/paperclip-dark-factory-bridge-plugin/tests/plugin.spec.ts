@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { pluginManifestV1Schema } from "@paperclipai/shared";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
-import plugin from "../src/worker.js";
+import plugin, { PROJECTION_DISCLAIMER } from "../src/worker.js";
 
-const PROJECTION_DISCLAIMER = "Projection only — Dark Factory Journal remains truth source";
+type ApiResponseBody<T> = { body: T };
 
 function apiInput(routeKey: string, issueId: string, companyId: string, method: "GET" | "POST" = "GET", body: Record<string, unknown> | null = null) {
   return {
@@ -69,6 +69,34 @@ describe("Dark Factory bridge projection plugin", () => {
     ]);
   });
 
+  it("rejects API requests with missing or invalid issueId before building projection state", async () => {
+    const companyId = randomUUID();
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const missingIssueId = await plugin.definition.onApiRequest?.({
+      ...apiInput("projection", "issue-placeholder", companyId),
+      params: {},
+    });
+    expect(missingIssueId).toMatchObject({
+      status: 400,
+      body: {
+        error: "issueId is required",
+      },
+    });
+
+    const invalidIssueId = await plugin.definition.onApiRequest?.({
+      ...apiInput("journal-cursor", "issue-placeholder", companyId),
+      params: { issueId: undefined as unknown as string },
+    });
+    expect(invalidIssueId).toMatchObject({
+      status: 400,
+      body: {
+        error: "issueId is required",
+      },
+    });
+  });
+
   it("dispatches projection, cursor, provider health, and rehydrate API routes as authoritative:false projection responses", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -113,15 +141,32 @@ describe("Dark Factory bridge projection plugin", () => {
     });
 
     const rehydrate = await plugin.definition.onApiRequest?.(apiInput("rehydrate-request", issueId, companyId, "POST", { reason: "operator requested mock refresh" }));
+    const repeatedRehydrate = await plugin.definition.onApiRequest?.(apiInput("rehydrate-request", issueId, companyId, "POST", { reason: "operator requested mock refresh" }));
     expect(rehydrate).toMatchObject({
       status: 202,
       body: {
         source: "dark-factory-projection",
         truthSource: "dark-factory-journal",
         authoritative: false,
-        receipt: expect.objectContaining({ status: "requested", terminalStateAdvanced: false }),
+        receipt: expect.objectContaining({
+          receiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
+          status: "requested",
+          terminalStateAdvanced: false,
+          idempotencyKey: expect.stringMatching(/^df-run-.*:rehydrate-request$/),
+        }),
       },
     });
+    type RehydrateReceiptBody = { receipt: { receiptId: string; status: string; terminalStateAdvanced: boolean; idempotencyKey: string } };
+    const rehydrateBody = (rehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
+    const repeatedRehydrateBody = (repeatedRehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
+    expect(repeatedRehydrateBody.receipt).toMatchObject(rehydrateBody.receipt);
+  });
+
+  it("keeps journal cursor rows unique per company and issue in the plugin namespace migration", async () => {
+    const migration = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../migrations/001_dark_factory_projection.sql", import.meta.url), "utf8"));
+
+    expect(migration).toContain("CREATE UNIQUE INDEX IF NOT EXISTS dark_factory_bridge_poc_journal_cursors_company_issue_unique");
+    expect(migration).toContain("ON dark_factory_bridge_poc.journal_cursors (company_id, issue_id)");
   });
 
   it("returns projection summary through getData for dashboard/detail tabs", async () => {
@@ -174,7 +219,7 @@ describe("Dark Factory bridge projection plugin", () => {
       truthSource: "dark-factory-journal",
       authoritative: false,
       receipt: {
-        receiptId: expect.stringMatching(/^df-rehydrate-/),
+        receiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
         status: "requested",
         terminalStateAdvanced: false,
       },

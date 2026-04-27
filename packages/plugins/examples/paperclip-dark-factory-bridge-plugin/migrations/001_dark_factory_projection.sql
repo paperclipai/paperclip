@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS dark_factory_bridge_poc.journal_cursors (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS dark_factory_bridge_poc_journal_cursors_company_issue_unique
+  ON dark_factory_bridge_poc.journal_cursors (company_id, issue_id);
+
 CREATE TABLE IF NOT EXISTS dark_factory_bridge_poc.callback_receipts (
   id text PRIMARY KEY,
   company_id text NOT NULL,

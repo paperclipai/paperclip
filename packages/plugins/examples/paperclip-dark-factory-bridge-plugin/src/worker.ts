@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { definePlugin, runWorker, type PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 
 export const PROJECTION_DISCLAIMER = "Projection only — Dark Factory Journal remains truth source";
@@ -160,7 +160,7 @@ function buildRehydrateReceipt(issueId: string, reason?: string | null) {
     linkedRunId,
     requestedAt: isoFromOffset(`${issueId}:rehydrate`, 5),
     receipt: {
-      receiptId: `df-rehydrate-${randomUUID()}`,
+      receiptId: `df-rehydrate-${linkedRunId}`,
       status: "requested" as const,
       terminalStateAdvanced: false as const,
       idempotencyKey: `${linkedRunId}:rehydrate-request`,
@@ -188,7 +188,13 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input: PluginApiRequestInput) {
-    const issueId = input.params.issueId;
+    const issueId = stringField(input.params.issueId);
+    if (!issueId) {
+      return {
+        status: 400,
+        body: { error: "issueId is required" },
+      };
+    }
 
     if (input.routeKey === "projection") {
       return { status: 200, body: buildProjection(issueId) };
