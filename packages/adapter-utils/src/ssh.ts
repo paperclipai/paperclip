@@ -670,6 +670,16 @@ export async function getSshEnvLabSupport(): Promise<SshEnvLabSupport> {
     }
   }
 
+  // Check if /dev/null is accessible (some environments restrict this)
+  try {
+    await fs.access("/dev/null", fsConstants.W_OK);
+  } catch {
+    return {
+      supported: false,
+      reason: "/dev/null is not accessible",
+    };
+  }
+
   return {
     supported: true,
     reason: null,

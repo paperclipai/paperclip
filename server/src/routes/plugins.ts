@@ -173,6 +173,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-notifications-example",
+    pluginKey: "paperclipai.plugin-notifications",
+    displayName: "Mobile Push Notifications",
+    description: "Sends real-time push notifications to your phone via Pushover whenever Paperclip issues are created, blocked, completed, or when agents fail and budget limits are hit. Works on iOS and Android.",
+    localPath: "packages/plugins/examples/plugin-notifications-example",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {

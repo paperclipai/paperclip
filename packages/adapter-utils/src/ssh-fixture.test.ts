@@ -256,7 +256,7 @@ describe("ssh env-lab fixture", () => {
 
     await runSshCommand(
       config,
-      `sh -lc 'cd ${JSON.stringify(started.workspaceDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && git add tracked.txt untracked.txt && git commit -m "remote update" >/dev/null && printf "remote dirty\\n" > tracked.txt && printf "remote extra\\n" > remote-only.txt'`,
+      `sh -lc 'cd ${JSON.stringify(started.workspaceDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && git add tracked.txt untracked.txt && git commit -m "remote update" 2>&1 | head -1 && printf "remote dirty\\n" > tracked.txt && printf "remote extra\\n" > remote-only.txt'`,
       { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
     );
 
