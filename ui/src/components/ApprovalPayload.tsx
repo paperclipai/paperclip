@@ -1,5 +1,35 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Rocket } from "lucide-react";
 import { formatCents } from "../lib/utils";
+import type { Approval } from "@paperclipai/shared";
+
+export const RELEASE_MANAGER_AGENT_ID = "9532afbd-33aa-4b27-82e1-9a031773af60";
+
+export function isReleaseApproval(approval: Approval): boolean {
+  if (approval.type !== "request_board_approval") return false;
+  const payload = approval.payload as Record<string, unknown> | null;
+  if (!payload) return false;
+  if (payload.approvalCategory === "release") return true;
+  if (typeof payload.releaseAction === "string" && payload.releaseAction.trim().length > 0) return true;
+  if (approval.requestedByAgentId === RELEASE_MANAGER_AGENT_ID) return true;
+  return false;
+}
+
+export function resolvedTypeLabel(approval: Approval): string {
+  if (isReleaseApproval(approval)) return "Release Approval";
+  return typeLabel[approval.type] ?? approval.type;
+}
+
+export function resolvedTypeIcon(approval: Approval): typeof UserPlus {
+  if (isReleaseApproval(approval)) return Rocket;
+  return typeIcon[approval.type] ?? defaultTypeIcon;
+}
+
+export function resolvedApprovalLabel(approval: Approval): string {
+  const base = resolvedTypeLabel(approval);
+  const subject = approvalSubject(approval.payload as Record<string, unknown> | null);
+  if (subject) return `${base}: ${subject}`;
+  return base;
+}
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",

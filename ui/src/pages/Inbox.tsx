@@ -58,7 +58,7 @@ import { SwipeToArchive } from "../components/SwipeToArchive";
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import { approvalLabel, defaultTypeIcon, typeIcon, isReleaseApproval, resolvedTypeIcon, resolvedApprovalLabel } from "../components/ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -407,8 +407,9 @@ function ApprovalInboxRow({
   selected?: boolean;
   className?: string;
 }) {
-  const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const Icon = resolvedTypeIcon(approval);
+  const label = resolvedApprovalLabel(approval);
+  const isRelease = isReleaseApproval(approval);
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
@@ -463,7 +464,7 @@ function ApprovalInboxRow({
         >
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
-          <span className="mt-0.5 shrink-0 rounded-md bg-muted p-1.5 sm:mt-0">
+          <span className={cn("mt-0.5 shrink-0 rounded-md p-1.5 sm:mt-0", isRelease ? "bg-purple-500/10" : "bg-muted")}>
             <Icon className="h-4 w-4 text-muted-foreground" />
           </span>
           <span className="min-w-0 flex-1">
@@ -485,7 +486,7 @@ function ApprovalInboxRow({
               onClick={onApprove}
               disabled={isPending}
             >
-              Approve
+              {isRelease ? "Approve release" : "Approve"}
             </Button>
             <Button
               variant="destructive"
@@ -494,7 +495,7 @@ function ApprovalInboxRow({
               onClick={onReject}
               disabled={isPending}
             >
-              Reject
+              {isRelease ? "Hold" : "Reject"}
             </Button>
           </div>
         ) : null}
@@ -507,7 +508,7 @@ function ApprovalInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {isRelease ? "Approve release" : "Approve"}
           </Button>
           <Button
             variant="destructive"
@@ -516,7 +517,7 @@ function ApprovalInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {isRelease ? "Hold" : "Reject"}
           </Button>
         </div>
       ) : null}

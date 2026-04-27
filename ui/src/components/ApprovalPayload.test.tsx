@@ -3,7 +3,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
+import { ApprovalPayloadRenderer, approvalLabel, isReleaseApproval, resolvedApprovalLabel, RELEASE_MANAGER_AGENT_ID } from "./ApprovalPayload";
+import type { Approval } from "@paperclipai/shared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -84,5 +85,90 @@ describe("ApprovalPayloadRenderer", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+function makeTestApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: "approval-test",
+    companyId: "company-1",
+    type: "request_board_approval",
+    requestedByAgentId: null,
+    requestedByUserId: null,
+    status: "pending",
+    payload: {},
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-04-01"),
+    updatedAt: new Date("2026-04-01"),
+    ...overrides,
+  };
+}
+
+describe("isReleaseApproval", () => {
+  it("returns false for hire_agent type", () => {
+    expect(isReleaseApproval(makeTestApproval({ type: "hire_agent" }))).toBe(false);
+  });
+
+  it("returns false for request_board_approval with empty payload", () => {
+    expect(isReleaseApproval(makeTestApproval({ payload: {} }))).toBe(false);
+  });
+
+  it("returns true when payload.approvalCategory is 'release'", () => {
+    expect(
+      isReleaseApproval(makeTestApproval({ payload: { approvalCategory: "release" } })),
+    ).toBe(true);
+  });
+
+  it("returns true when payload.releaseAction is a non-empty string", () => {
+    expect(
+      isReleaseApproval(makeTestApproval({ payload: { releaseAction: "approve_release" } })),
+    ).toBe(true);
+  });
+
+  it("returns true when requestedByAgentId matches RELEASE_MANAGER_AGENT_ID", () => {
+    expect(
+      isReleaseApproval(makeTestApproval({ requestedByAgentId: RELEASE_MANAGER_AGENT_ID })),
+    ).toBe(true);
+  });
+
+  it("returns false when requestedByAgentId is a different UUID", () => {
+    expect(
+      isReleaseApproval(makeTestApproval({ requestedByAgentId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" })),
+    ).toBe(false);
+  });
+
+  it("returns true when both discriminator and agent ID match", () => {
+    expect(
+      isReleaseApproval(
+        makeTestApproval({
+          requestedByAgentId: RELEASE_MANAGER_AGENT_ID,
+          payload: { approvalCategory: "release" },
+        }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("resolvedApprovalLabel", () => {
+  it("returns 'Release Approval: [title]' for release approval", () => {
+    expect(
+      resolvedApprovalLabel(
+        makeTestApproval({
+          payload: { approvalCategory: "release", title: "v2.1.0 hotfix" },
+        }),
+      ),
+    ).toBe("Release Approval: v2.1.0 hotfix");
+  });
+
+  it("returns 'Board Approval: [title]' for non-release board approval", () => {
+    expect(
+      resolvedApprovalLabel(
+        makeTestApproval({
+          payload: { title: "Reply with an ASCII frog" },
+        }),
+      ),
+    ).toBe("Board Approval: Reply with an ASCII frog");
   });
 });

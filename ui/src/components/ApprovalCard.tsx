@@ -9,6 +9,9 @@ import {
   defaultTypeIcon,
   ApprovalPayloadRenderer,
   typeLabel,
+  isReleaseApproval,
+  resolvedTypeLabel,
+  resolvedTypeIcon,
 } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
@@ -42,8 +45,9 @@ export function ApprovalCard({
   pendingAction?: "approve" | "reject" | null;
 }) {
   const payload = approval.payload as Record<string, unknown> | null;
-  const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const kindLabel = typeLabel[approval.type] ?? approval.type;
+  const Icon = resolvedTypeIcon(approval);
+  const kindLabel = resolvedTypeLabel(approval);
+  const isRelease = isReleaseApproval(approval);
   const subject = approvalSubject(payload);
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
@@ -118,7 +122,7 @@ export function ApprovalCard({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  {pendingAction === "approve" ? "Approving..." : "Approve"}
+                  {pendingAction === "approve" ? "Approving..." : isRelease ? "Approve release" : "Approve"}
                 </Button>
                 <Button
                   variant="destructive"
@@ -126,7 +130,7 @@ export function ApprovalCard({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                  {pendingAction === "reject" ? (isRelease ? "Holding..." : "Rejecting...") : isRelease ? "Hold" : "Reject"}
                 </Button>
               </>
             )}

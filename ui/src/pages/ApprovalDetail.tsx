@@ -8,7 +8,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
-import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
+import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer, isReleaseApproval, resolvedTypeIcon, resolvedApprovalLabel } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -148,7 +148,8 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
-  const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
+  const TypeIcon = resolvedTypeIcon(approval);
+  const isRelease = isReleaseApproval(approval);
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
   const resolvedCta =
@@ -183,7 +184,9 @@ export function ApprovalDetail() {
               <div>
                 <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>
                 <p className="text-xs text-green-700 dark:text-green-200/90">
-                  Requesting agent was notified to review this approval and linked issues.
+                  {isRelease
+                    ? "The Release Manager was notified. No code was merged or deployed."
+                    : "Requesting agent was notified to review this approval and linked issues."}
                 </p>
               </div>
             </div>
@@ -203,7 +206,7 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
+              <h2 className="text-lg font-semibold">{resolvedApprovalLabel(approval)}</h2>
               <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
             </div>
           </div>
@@ -256,9 +259,16 @@ export function ApprovalDetail() {
               ))}
             </div>
             <p className="text-[11px] text-muted-foreground mt-2">
-              Linked issues remain open until the requesting agent follows up and closes them.
+              {isRelease
+                ? "Linked issues remain open. The Release Manager will proceed with the release workflow separately."
+                : "Linked issues remain open until the requesting agent follows up and closes them."}
             </p>
           </div>
+        )}
+        {isRelease && isActionable && (
+          <p className="text-xs text-muted-foreground italic">
+            Approval records your decision and notifies the Release Manager. It does not merge code, deploy, publish, or activate spend.
+          </p>
         )}
         <div className="flex flex-wrap items-center gap-2">
           {isActionable && !isBudgetApproval && (
@@ -269,7 +279,7 @@ export function ApprovalDetail() {
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
-                Approve
+                {isRelease ? "Approve release request" : "Approve"}
               </Button>
               <Button
                 variant="destructive"
@@ -277,7 +287,7 @@ export function ApprovalDetail() {
                 onClick={() => rejectMutation.mutate()}
                 disabled={rejectMutation.isPending}
               >
-                Reject
+                {isRelease ? "Hold or request changes" : "Reject"}
               </Button>
             </>
           )}
