@@ -1,0 +1,19 @@
+#!/bin/bash
+# Prevent accidental commits of pnpm-lock.yaml
+# CI owns all lockfile updates; this file should never be committed to PRs
+
+if git diff --cached --name-only | grep -qx 'pnpm-lock.yaml'; then
+  echo "❌ Error: pnpm-lock.yaml is staged for commit"
+  echo ""
+  echo "CI owns lockfile updates. Do not commit pnpm-lock.yaml."
+  echo ""
+  echo "To fix this:"
+  echo "  git restore --staged pnpm-lock.yaml"
+  echo "  git restore pnpm-lock.yaml"
+  echo ""
+  echo "If you added a dependency, only commit package.json changes."
+  echo "CI will regenerate the lock file."
+  exit 1
+fi
+
+exit 0

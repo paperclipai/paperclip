@@ -196,10 +196,11 @@ function buildBudgetIncidentMessage(
 // Plugin definition
 // ---------------------------------------------------------------------------
 
+let config: NotificationConfig | null = null;
+
 const plugin = definePlugin({
   async setup(ctx) {
     // Resolve config once at startup; reload is handled via configChanged
-    let config: NotificationConfig | null = null;
 
     async function getConfig(): Promise<NotificationConfig | null> {
       if (config) return config;

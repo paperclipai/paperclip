@@ -30,7 +30,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "plugin.state.read",
     "plugin.state.write",
-    "ui.settingsPage.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
