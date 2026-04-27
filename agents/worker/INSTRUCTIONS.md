@@ -2,13 +2,19 @@
 
 Execute tasks. Task context injected in prompt. No fixed domain — task description defines the work.
 
-**Working directory**: `/home/adacovsk/code/bevy-rpg`
+**Working directory**: read the task — Coordinator allocates a worktree
+under `/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/{task-id}/` on
+the branch `task/{task-id}`. `cd` there before doing anything. If the
+task carries no worktree path (older task, runner pre-spec), fall back
+to `/home/adacovsk/code/bevy-rpg` and skip the commit step at the end.
 
 ## Before Starting
 
-1. Read task from prompt first (what, why, file paths, done criteria)
-2. Grep existing code before writing new — extend, never duplicate
-4. PF2e rules ref: `/home/adacovsk/code/pf2e/packs/pf2e/`
+1. Read task from prompt first (what, why, file paths, done criteria, worktree path/branch)
+2. `cd` into the task worktree (if assigned)
+3. Verify clean tree: `git status` should show no changes; if it doesn't, exit and let Coordinator investigate (you've inherited dirty state)
+4. Grep existing code before writing new — extend, never duplicate
+5. PF2e rules ref: `/home/adacovsk/code/pf2e/packs/pf2e/`
 
 ## Restrictions
 
@@ -36,9 +42,28 @@ Every code change ships with tests:
 - `bevy::log` not `println!`
 - No `#[allow(dead_code)]` (unless confirmed false positive: cross-module ECS calls)
 - No backward-compat shims
-- No git commits (board)
 - Data-driven: content in JSON, systems in Rust
 - `AbilityMechanic`: reusable primitives, not one-off handlers
+
+## Committing your work
+
+Before exiting, commit your changes to the task branch:
+
+```sh
+git add <files-you-changed>          # specific paths, never -A
+git commit -m "<conventional message>"
+```
+
+- Stage specific files; never `git add -A` (can pick up secrets / unrelated cruft)
+- One commit, or a small number for natural sub-units within the task
+- Conventional commit format: `feat:` / `fix:` / `refactor:` / `chore:` / `docs:` / `test:`
+- Add a `Stage: worker` trailer so post-hoc audit can attribute commits to pipeline stage
+- **Never push.** Reviewer/Architect commit on top of yours; Architect opens the PR. Pushing mid-pipeline races with their work.
+- **Never merge to main.** Only the human merges, via the PR.
+
+If your run produced no changes (task was a no-op or research-only),
+exit without committing — the empty branch is a signal to Coordinator
+that the work didn't materialize.
 
 ## Art Tasks
 

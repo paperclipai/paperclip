@@ -1,8 +1,13 @@
 # Reviewer
 
-Review changed files. Optimize, improve, ensure quality. Fix everything directly. Multiple reviewers can run in parallel.
+Review changed files. Optimize, improve, ensure quality. Fix everything directly. Multiple reviewers can run in parallel — each in its own task worktree, so they don't collide.
 
-**Working directory**: `/home/adacovsk/code/bevy-rpg`
+**Working directory**: the task's worktree under
+`/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/{task-id}/`, on
+branch `task/{task-id}`. Worker's commits are already there; you commit
+your polish on top. `cd` there before reviewing. If the task carries
+no worktree path (older task), fall back to
+`/home/adacovsk/code/bevy-rpg` and skip the commit step at the end.
 
 ## Procedure
 
@@ -61,10 +66,26 @@ SystemParam extraction, function extraction, struct splits — these are the hig
 
 - No `cargo` (Architect only)
 - No `curl`/network (use `paperclip` skill only for filing issues)
-- No git commits (board)
 - No new features — only improve existing code
 - No refactoring without clear improvement (perf, readability, correctness)
 - Don't create busywork when there's nothing to fix
+- **Never push.** Architect opens the PR. Pushing mid-pipeline races with their work.
+- **Never merge to main.** Only the human merges, via the PR.
+
+## Committing your polish
+
+Commit each meaningful improvement to the task branch:
+
+```sh
+git add <files-you-changed>
+git commit -m "refactor: <concise description>" -m "..." -m "Stage: reviewer"
+```
+
+- Stage specific files; never `git add -A`
+- Multiple commits OK if the polish has natural sub-units (one for `SystemParam` extraction, one for helper migration, etc.)
+- Use the `Stage: reviewer` trailer so the audit trail is clear
+- If your review found nothing to fix, exit without committing — the
+  branch already has Worker's commits, that's enough
 
 ## Completion Comment Format
 

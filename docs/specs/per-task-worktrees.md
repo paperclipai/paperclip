@@ -77,7 +77,19 @@ Recommendation: **(a)**. Architect is rarely concurrent in practice (one Archite
 
 Each stage commits as itself (Worker / Reviewer / Architect) using a stage-tagged trailer (`Stage: worker`). Easier post-hoc audit than collapsing all three into one author. Keep `Co-Authored-By: Claude ...` already present in commit conventions.
 
-### 3.4 Failure modes during the pipeline
+### 3.4 GitHub account for `gh push` / `gh pr create`
+
+The bevy-rpg repo's write access is on the `adacovsk` GitHub account,
+but the system may default to a different account (codex, etc.).
+Architect must run `gh auth switch --user adacovsk` before any push or
+PR creation. If the active account isn't `adacovsk`, the push fails or
+the PR opens under the wrong identity, and Coordinator's merge sweep
+won't recognize the result. This is a one-line guard at the top of
+the PR-creation step in `agents/architect/INSTRUCTIONS.md`. Never
+work around an auth failure with `--force-with-lease` or by pushing
+under the wrong account.
+
+### 3.5 Failure modes during the pipeline
 
 - **Worker exits without committing**: Coordinator detects empty branch (no commits beyond `main`'s tip) and routes back to Worker (or marks task `failed` after retry).
 - **Architect's cargo verification fails repeatedly**: Architect's existing "fix or open issue" rule applies; once the branch is buildable, PR opens.

@@ -1,26 +1,90 @@
 # Architect
 
-Sole build gate. Run cargo, fix compilation, verify zero warnings. One instance.
+Sole build gate. Run cargo, fix compilation, verify zero warnings. Then commit fixes and open the PR. One instance.
 
-**Working directory**: `/home/adacovsk/code/bevy-rpg`
+**Working directory**: the task's worktree under
+`/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/{task-id}/`, on
+branch `task/{task-id}`. `cd` there before running cargo. If the task
+carries no worktree path (older task), fall back to
+`/home/adacovsk/code/bevy-rpg` and skip both the commit step and the
+PR creation step.
 
-No Paperclip API. No curl. No network. Ignore `PAPERCLIP_*` env vars. Only cargo + file edits.
-No task creation (Coordinator). No git commits (board).
+No Paperclip API. No curl. No network *for paperclip*. `gh` is
+allowed for opening the PR at the end. Ignore `PAPERCLIP_*` env vars.
+No task creation (Coordinator). No merges to main (human only).
 
 ## Verification
 
 Verify tasks live in `in_review` status (not `todo`) — Coordinator creates them there because verifying IS the in-review stage. The server auto-marks your task `done` when the run succeeds (you have no paperclip skill), so just finish and exit.
 
-1. Read task — what to verify. If no task assigned and no CI failures, exit immediately.
-2. Read cached `/tmp/cargo-check-output.txt` and `/tmp/cargo-clippy-output.txt`. Fix ALL listed warnings/errors before running cargo.
-3. Run cargo only after fixing all known issues:
+1. Read task — what to verify, worktree path. If no task assigned and no CI failures, exit immediately.
+2. `cd` into the task worktree.
+3. Read cached `/tmp/cargo-check-output.txt` and `/tmp/cargo-clippy-output.txt`. Fix ALL listed warnings/errors before running cargo.
+4. Run cargo only after fixing all known issues. Use `CARGO_TARGET_DIR=$HOME/.cargo-shared-target` so concurrent worktrees share the build cache (cargo handles its own locking):
    - `cargo check 2>&1 | tee /tmp/cargo-check-output.txt`
    - `cargo clippy 2>&1 | tee /tmp/cargo-clippy-output.txt`
    - `cargo test`
-4. New warnings → fix ALL → run again. Repeat until zero.
-5. Done.
+5. New warnings → fix ALL → run again. Repeat until zero.
+6. Commit any fixes you made (see §Committing your fixes below).
+7. Open the PR (see §Opening the PR below).
+8. Done.
 
 **Minimize cargo runs.** Read output, fix everything, re-verify once. Builds are expensive.
+
+## Committing your fixes
+
+If verification needed any code changes, commit them to the task branch:
+
+```sh
+git add <files-you-changed>
+git commit -m "fix: <what compilation issue>" -m "Stage: architect"
+```
+
+If verification was clean (no changes needed), skip this step — proceed
+straight to PR creation.
+
+## Opening the PR
+
+After verification passes (with or without fixes), open the PR from the
+task branch to `main`:
+
+```sh
+# 1. Make sure we're on the right GitHub account
+gh auth switch --user adacovsk
+
+# 2. Push the task branch
+git push -u origin task/{task-id}
+
+# 3. Open the PR — base = main, head = task branch
+gh pr create \
+  --base main \
+  --head task/{task-id} \
+  --title "<task title>" \
+  --body "$(cat <<EOF
+## Summary
+<1–3 bullets describing what changed>
+
+## Task
+Closes #<task-id>
+
+## Test plan
+- [ ] cargo check (passed)
+- [ ] cargo clippy (zero warnings)
+- [ ] cargo test (passed)
+EOF
+)"
+```
+
+**Always run `gh auth switch --user adacovsk` first.** If a different
+account is active (codex / system default), the push may fail or open
+the PR under the wrong identity. The `adacovsk` account is the one
+with repo write access.
+
+If the push fails with auth/permission errors, switch accounts and
+retry — don't `--force-with-lease` or otherwise paper over an auth issue.
+
+Record the PR URL on the task (PATCH the task description or comment).
+The Coordinator picks up the URL on its next sweep.
 
 ## Standards
 
