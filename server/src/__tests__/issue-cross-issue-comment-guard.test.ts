@@ -268,6 +268,38 @@ describe("cross-issue comment guard (OCT-552)", () => {
       .patch(`/api/issues/${ISSUE_B_ID}`)
       .send({ comment: "Stale run ID" });
 
-    expect(res.status).not.toBe(409);
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects when run record is found but has no contextSnapshot.issueId", async () => {
+    const doneIssue = makeIssue({ id: ISSUE_B_ID, status: "done" });
+    mockIssueService.getById.mockResolvedValue(doneIssue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: RUN_FOR_ISSUE_A,
+      contextSnapshot: null,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_B_ID}`)
+      .send({ comment: "Run with no context" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects when run record's contextSnapshot is not an object", async () => {
+    const doneIssue = makeIssue({ id: ISSUE_B_ID, status: "done" });
+    mockIssueService.getById.mockResolvedValue(doneIssue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: RUN_FOR_ISSUE_A,
+      contextSnapshot: "not-an-object",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${ISSUE_B_ID}/comments`)
+      .send({ body: "Bad context" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 });

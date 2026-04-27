@@ -608,8 +608,10 @@ export function issueRoutes(
     // an agent LLM accidentally addresses the wrong issue ID.
     // The runId on req.actor comes from a Paperclip-issued JWT, so a null run
     // lookup is anomalous rather than malicious; we let the existing checkout
-    // and assignee guards handle authorization in that case and only enforce
-    // cross-issue rejection when we can confirm the run's target issueId.
+    // and assignee guards handle authorization in that case. When the run
+    // record IS available we require its contextSnapshot.issueId to match the
+    // target issue, since a run record without a clear issue context cannot be
+    // confirmed as legitimate for posting on a closed issue.
     const isClosed = issue.status === "done" || issue.status === "cancelled";
     if (isClosed && req.actor.runId) {
       const run = await heartbeat.getRun(req.actor.runId);
@@ -620,7 +622,7 @@ export function issueRoutes(
           typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
             ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
             : null;
-        if (runIssueId && runIssueId !== issue.id) {
+        if (!runIssueId || runIssueId !== issue.id) {
           res.status(409).json({
             error: "Agent run is for a different issue; commenting on a completed issue from another run is not allowed",
             runIssueId,
