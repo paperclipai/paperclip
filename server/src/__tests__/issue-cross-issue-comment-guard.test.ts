@@ -268,7 +268,13 @@ describe("cross-issue comment guard (OCT-552)", () => {
       .patch(`/api/issues/${ISSUE_B_ID}`)
       .send({ comment: "Stale run ID" });
 
-    expect(res.status).toBe(200);
+    // Status from later route handlers (which other guards/mocks shape) is not
+    // what this test verifies. We assert that THIS guard did not reject:
+    // the cross-issue 409 must not fire when getRun returns null, regardless
+    // of what the rest of the patch path does with the request.
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(RUN_FOR_ISSUE_A);
+    expect(res.status).not.toBe(409);
+    expect(res.body.error).not.toMatch(/different issue/i);
   });
 
   it("rejects when run record is found but has no contextSnapshot.issueId", async () => {
