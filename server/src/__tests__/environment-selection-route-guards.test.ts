@@ -18,7 +18,6 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
-  createChild: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
   getByIdentifier: vi.fn(),
@@ -29,10 +28,22 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
-const mockReferenceSummary = vi.hoisted(() => ({
-  inbound: [],
-  outbound: [],
-  documentSources: [],
+const mockIssueReferenceService = vi.hoisted(() => ({
+  deleteDocumentSource: vi.fn(async () => undefined),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  syncComment: vi.fn(async () => undefined),
+  syncDocument: vi.fn(async () => undefined),
+  syncIssue: vi.fn(async () => undefined),
+}));
+
+const mockSecretService = vi.hoisted(() => ({
+  normalizeEnvBindingsForPersistence: vi.fn(async (_companyId: string, env: Record<string, unknown>) => env),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -41,10 +52,7 @@ vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   issueService: () => mockIssueService,
   environmentService: () => mockEnvironmentService,
-  secretService: () => ({
-    normalizeEnvBindingsForPersistence: vi.fn(async (_companyId: string, env: unknown) => env),
-    normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: unknown) => config),
-  }),
+  issueReferenceService: () => mockIssueReferenceService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => ({}),
   accessService: () => ({
@@ -67,33 +75,17 @@ vi.mock("../services/index.js", () => ({
     listApprovalsForIssue: vi.fn(),
     unlink: vi.fn(),
   }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(),
-    listFeedbackTraces: vi.fn(),
-    getFeedbackTraceById: vi.fn(),
-    getFeedbackTraceBundle: vi.fn(),
-    saveIssueVote: vi.fn(),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({})),
-    listCompanyIds: vi.fn(async () => []),
-  }),
-  issueReferenceService: () => ({
-    emptySummary: vi.fn(() => mockReferenceSummary),
-    syncIssue: vi.fn(),
-    syncComment: vi.fn(),
-    syncDocument: vi.fn(),
-    deleteDocumentSource: vi.fn(),
-    listIssueReferenceSummary: vi.fn(async () => mockReferenceSummary),
-    diffIssueReferenceSummary: vi.fn(() => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
-    })),
-  }),
   documentService: () => ({}),
   routineService: () => ({}),
   workProductService: () => ({}),
+}));
+
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
 }));
 
 vi.mock("../services/issue-assignment-wakeup.js", () => ({
@@ -133,7 +125,7 @@ function createIssueApp() {
   return issueServer;
 }
 
-const sshEnvironmentId = "11111111-1111-4111-8111-111111111111";
+const sandboxEnvironmentId = "11111111-1111-4111-8111-111111111111";
 
 async function closeServer(server: Server | null) {
   if (!server) return;
@@ -162,26 +154,33 @@ describe.sequential("execution environment route guards", () => {
     mockProjectService.resolveByReference.mockReset();
     mockProjectService.listWorkspaces.mockReset();
     mockIssueService.create.mockReset();
-    mockIssueService.createChild.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockEnvironmentService.getById.mockReset();
+    mockIssueReferenceService.deleteDocumentSource.mockClear();
+    mockIssueReferenceService.diffIssueReferenceSummary.mockClear();
+    mockIssueReferenceService.emptySummary.mockClear();
+    mockIssueReferenceService.listIssueReferenceSummary.mockClear();
+    mockIssueReferenceService.syncComment.mockClear();
+    mockIssueReferenceService.syncDocument.mockClear();
+    mockIssueReferenceService.syncIssue.mockClear();
+    mockSecretService.normalizeEnvBindingsForPersistence.mockClear();
     mockLogActivity.mockReset();
   });
 
-  it("accepts SSH environments on project create", async () => {
+  it("accepts sandbox environments on project create", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
+      id: sandboxEnvironmentId,
       companyId: "company-1",
-      driver: "ssh",
-      config: {},
+      driver: "sandbox",
+      config: { provider: "fake-plugin" },
     });
     mockProjectService.create.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
-      name: "SSH Project",
+      name: "Sandboxed Project",
       status: "backlog",
     });
     const app = createProjectApp();
@@ -189,10 +188,10 @@ describe.sequential("execution environment route guards", () => {
     const res = await request(app)
       .post("/api/companies/company-1/projects")
       .send({
-        name: "SSH Project",
+        name: "Sandboxed Project",
         executionWorkspacePolicy: {
           enabled: true,
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 
@@ -200,24 +199,24 @@ describe.sequential("execution environment route guards", () => {
     expect(mockProjectService.create).toHaveBeenCalled();
   });
 
-  it("accepts SSH environments on project update", async () => {
+  it("accepts sandbox environments on project update", async () => {
     mockProjectService.getById.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
-      name: "SSH Project",
+      name: "Sandboxed Project",
       status: "backlog",
       archivedAt: null,
     });
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
+      id: sandboxEnvironmentId,
       companyId: "company-1",
-      driver: "ssh",
-      config: {},
+      driver: "sandbox",
+      config: { provider: "fake-plugin" },
     });
     mockProjectService.update.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
-      name: "SSH Project",
+      name: "Sandboxed Project",
       status: "backlog",
     });
     const app = createProjectApp();
@@ -227,7 +226,7 @@ describe.sequential("execution environment route guards", () => {
       .send({
         executionWorkspacePolicy: {
           enabled: true,
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 
@@ -235,120 +234,17 @@ describe.sequential("execution environment route guards", () => {
     expect(mockProjectService.update).toHaveBeenCalled();
   });
 
-  it("rejects cross-company environments on project create", async () => {
+  it("accepts sandbox environments on issue create", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
-      companyId: "company-2",
-      driver: "ssh",
-      config: {},
-    });
-    const app = createProjectApp();
-
-    const res = await request(app)
-      .post("/api/companies/company-1/projects")
-      .send({
-        name: "Cross Company Project",
-        executionWorkspacePolicy: {
-          enabled: true,
-          environmentId: sshEnvironmentId,
-        },
-      });
-
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Environment not found.");
-    expect(mockProjectService.create).not.toHaveBeenCalled();
-  });
-
-  it("rejects unsupported driver environments on project update", async () => {
-    mockProjectService.getById.mockResolvedValue({
-      id: "project-1",
+      id: sandboxEnvironmentId,
       companyId: "company-1",
-      name: "SSH Project",
-      status: "backlog",
-      archivedAt: null,
-    });
-    mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
-      companyId: "company-1",
-      driver: "unsupported_driver",
-      config: {},
-    });
-    const app = createProjectApp();
-
-    const res = await request(app)
-      .patch("/api/projects/project-1")
-      .send({
-        executionWorkspacePolicy: {
-          enabled: true,
-          environmentId: sshEnvironmentId,
-        },
-      });
-
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain('Environment driver "unsupported_driver" is not allowed here');
-    expect(mockProjectService.update).not.toHaveBeenCalled();
-  });
-
-  it("rejects archived environments on project create", async () => {
-    mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
-      companyId: "company-1",
-      driver: "ssh",
-      status: "archived",
-      config: {},
-    });
-    const app = createProjectApp();
-
-    const res = await request(app)
-      .post("/api/companies/company-1/projects")
-      .send({
-        name: "Archived Project",
-        executionWorkspacePolicy: {
-          enabled: true,
-          environmentId: sshEnvironmentId,
-        },
-      });
-
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Environment is archived.");
-    expect(mockProjectService.create).not.toHaveBeenCalled();
-  });
-
-  it("rejects archived environments on issue create", async () => {
-    mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
-      companyId: "company-1",
-      driver: "ssh",
-      status: "archived",
-      config: {},
-    });
-    const app = createIssueApp();
-
-    const res = await request(app)
-      .post("/api/companies/company-1/issues")
-      .send({
-        title: "Archived Issue",
-        executionWorkspaceSettings: {
-          environmentId: sshEnvironmentId,
-        },
-      });
-
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Environment is archived.");
-    expect(mockIssueService.create).not.toHaveBeenCalled();
-  });
-
-  it("accepts SSH environments on issue create", async () => {
-    mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
-      companyId: "company-1",
-      driver: "ssh",
-      config: {},
+      driver: "sandbox",
+      config: { provider: "fake-plugin" },
     });
     mockIssueService.create.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
-      title: "SSH Issue",
+      title: "Sandboxed Issue",
       status: "todo",
       identifier: "PAPA-999",
     });
@@ -357,9 +253,9 @@ describe.sequential("execution environment route guards", () => {
     const res = await request(app)
       .post("/api/companies/company-1/issues")
       .send({
-        title: "SSH Issue",
+        title: "Sandboxed Issue",
         executionWorkspaceSettings: {
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 
@@ -369,7 +265,7 @@ describe.sequential("execution environment route guards", () => {
 
   it("rejects unsupported driver environments on issue create", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
+      id: sandboxEnvironmentId,
       companyId: "company-1",
       driver: "unsupported_driver",
       config: {},
@@ -381,7 +277,7 @@ describe.sequential("execution environment route guards", () => {
       .send({
         title: "Unsupported Driver Issue",
         executionWorkspaceSettings: {
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 
@@ -390,71 +286,59 @@ describe.sequential("execution environment route guards", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
-  it("rejects unsupported driver environments on child issue create", async () => {
-    mockIssueService.getById.mockResolvedValue({
-      id: "parent-1",
-      companyId: "company-1",
-      status: "todo",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-      createdByUserId: null,
-      identifier: "PAPA-998",
-    });
+  it("rejects built-in fake sandbox environments on issue create", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
+      id: sandboxEnvironmentId,
       companyId: "company-1",
-      driver: "unsupported_driver",
-      config: {},
+      driver: "sandbox",
+      config: { provider: "fake" },
     });
     const app = createIssueApp();
 
     const res = await request(app)
-      .post("/api/issues/parent-1/children")
+      .post("/api/companies/company-1/issues")
       .send({
-        title: "Unsupported Child",
+        title: "Fake Sandbox Issue",
         executionWorkspaceSettings: {
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toContain('Environment driver "unsupported_driver" is not allowed here');
-    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(res.body.error).toContain('Environment sandbox provider "fake" is not allowed here');
+    expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
-  it("rejects cross-company environments on child issue create", async () => {
-    mockIssueService.getById.mockResolvedValue({
-      id: "parent-1",
-      companyId: "company-1",
-      status: "todo",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-      createdByUserId: null,
-      identifier: "PAPA-998",
-    });
+  it("accepts plugin-backed sandbox environments on issue create", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
-      companyId: "company-2",
-      driver: "ssh",
-      config: {},
+      id: sandboxEnvironmentId,
+      companyId: "company-1",
+      driver: "sandbox",
+      config: { provider: "fake-plugin" },
+    });
+    mockIssueService.create.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Plugin Sandbox Issue",
+      status: "todo",
+      identifier: "PAPA-999",
     });
     const app = createIssueApp();
 
     const res = await request(app)
-      .post("/api/issues/parent-1/children")
+      .post("/api/companies/company-1/issues")
       .send({
-        title: "Cross Company Child",
+        title: "Plugin Sandbox Issue",
         executionWorkspaceSettings: {
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Environment not found.");
-    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(422);
+    expect(mockIssueService.create).toHaveBeenCalled();
   });
 
-  it("accepts SSH environments on issue update", async () => {
+  it("accepts sandbox environments on issue update", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -465,10 +349,10 @@ describe.sequential("execution environment route guards", () => {
       identifier: "PAPA-999",
     });
     mockEnvironmentService.getById.mockResolvedValue({
-      id: sshEnvironmentId,
+      id: sandboxEnvironmentId,
       companyId: "company-1",
-      driver: "ssh",
-      config: {},
+      driver: "sandbox",
+      config: { provider: "fake-plugin" },
     });
     mockIssueService.update.mockResolvedValue({
       id: "issue-1",
@@ -482,7 +366,7 @@ describe.sequential("execution environment route guards", () => {
       .patch("/api/issues/issue-1")
       .send({
         executionWorkspaceSettings: {
-          environmentId: sshEnvironmentId,
+          environmentId: sandboxEnvironmentId,
         },
       });
 

@@ -87,10 +87,12 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products with a clear next action.",
+  "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
   "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
@@ -282,6 +284,9 @@ type PaperclipWakeExecutionStage = {
   stageType: string | null;
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
   returnAssignee: PaperclipWakeExecutionPrincipal | null;
+  reviewRequest: {
+    instructions: string;
+  } | null;
   lastDecisionOutcome: string | null;
   allowedActions: string[];
 };
@@ -484,11 +489,14 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
     : [];
   const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
   const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
+  const reviewRequestRaw = parseObject(stage.reviewRequest);
+  const reviewInstructions = asString(reviewRequestRaw.instructions, "").trim();
+  const reviewRequest = reviewInstructions ? { instructions: reviewInstructions } : null;
   const stageId = asString(stage.stageId, "").trim() || null;
   const stageType = asString(stage.stageType, "").trim() || null;
   const lastDecisionOutcome = asString(stage.lastDecisionOutcome, "").trim() || null;
 
-  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !lastDecisionOutcome && allowedActions.length === 0) {
+  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !reviewRequest && !lastDecisionOutcome && allowedActions.length === 0) {
     return null;
   }
 
@@ -498,6 +506,7 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
     stageType,
     currentParticipant,
     returnAssignee,
+    reviewRequest,
     lastDecisionOutcome,
     allowedActions,
   };
@@ -664,6 +673,13 @@ export function renderPaperclipWakePrompt(
     if (executionStage.allowedActions.length > 0) {
       lines.push(`- allowed actions: ${executionStage.allowedActions.join(", ")}`);
     }
+    if (executionStage.reviewRequest) {
+      lines.push(
+        "",
+        "Review request instructions:",
+        executionStage.reviewRequest.instructions,
+      );
+    }
     lines.push("");
     if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {
       lines.push(
@@ -817,6 +833,41 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+export function applyPaperclipWorkspaceEnv(
+  env: Record<string, string>,
+  input: {
+    workspaceCwd?: string | null;
+    workspaceSource?: string | null;
+    workspaceStrategy?: string | null;
+    workspaceId?: string | null;
+    workspaceRepoUrl?: string | null;
+    workspaceRepoRef?: string | null;
+    workspaceBranch?: string | null;
+    workspaceWorktreePath?: string | null;
+    agentHome?: string | null;
+  },
+): Record<string, string> {
+  const mappings = [
+    ["PAPERCLIP_WORKSPACE_CWD", input.workspaceCwd],
+    ["PAPERCLIP_WORKSPACE_SOURCE", input.workspaceSource],
+    ["PAPERCLIP_WORKSPACE_STRATEGY", input.workspaceStrategy],
+    ["PAPERCLIP_WORKSPACE_ID", input.workspaceId],
+    ["PAPERCLIP_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
+    ["PAPERCLIP_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["PAPERCLIP_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
+    ["AGENT_HOME", input.agentHome],
+  ] as const;
+
+  for (const [key, value] of mappings) {
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = value;
+    }
+  }
+
+  return env;
 }
 
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -1021,6 +1072,20 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
+async function readSkillRequired(skillDir: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
+    const normalized = content.replace(/\r\n/g, "\n");
+    if (!normalized.startsWith("---\n")) return true;
+    const closing = normalized.indexOf("\n---\n", 4);
+    if (closing < 0) return true;
+    const frontmatter = normalized.slice(4, closing);
+    return !/^\s*required\s*:\s*false\s*$/m.test(frontmatter);
+  } catch {
+    return true;
+  }
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -1030,15 +1095,20 @@ export async function listPaperclipSkillEntries(
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
+    const dirs = entries.filter((entry) => entry.isDirectory());
+    return Promise.all(dirs.map(async (entry) => {
+      const skillDir = path.join(root, entry.name);
+      const required = await readSkillRequired(skillDir);
+      return {
         key: `paperclipai/paperclip/${entry.name}`,
         runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+        source: skillDir,
+        required,
+        requiredReason: required
+          ? "Bundled Paperclip skills are always available for local adapters."
+          : null,
+      };
+    }));
   } catch {
     return [];
   }

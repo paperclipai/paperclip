@@ -3,7 +3,12 @@ export type {
   Environment,
   EnvironmentLease,
   EnvironmentProbeResult,
+  FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
+  PluginSandboxEnvironmentConfig,
+  PluginEnvironmentConfig,
+  SandboxEnvironmentConfig,
+  SandboxEnvironmentProvider,
   SshEnvironmentConfig,
 } from "./environment.js";
 export type {
@@ -18,8 +23,23 @@ export type {
   FeedbackTraceBundleFile,
   FeedbackTraceBundle,
 } from "./feedback.js";
-export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionPolicy } from "./instance.js";
-export { DAILY_RETENTION_PRESETS, WEEKLY_RETENTION_PRESETS, MONTHLY_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION } from "./instance.js";
+export type {
+  InstanceExperimentalSettings,
+  InstanceGeneralSettings,
+  InstanceSettings,
+  BackupRetentionPolicy,
+  IssueGraphLivenessAutoRecoveryPreview,
+  IssueGraphLivenessAutoRecoveryPreviewItem,
+} from "./instance.js";
+export {
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
+  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+} from "./instance.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
@@ -85,6 +105,10 @@ export type {
   WorkspaceRuntimeService,
   WorkspaceRuntimeServiceStateMap,
   WorkspaceRuntimeDesiredState,
+  WorkspaceRealizationRecord,
+  WorkspaceRealizationRequest,
+  WorkspaceRealizationSyncStrategy,
+  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceProviderType,
@@ -109,6 +133,9 @@ export type {
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueBlockerAttention,
+  IssueBlockerAttentionReason,
+  IssueBlockerAttentionState,
   IssueReferenceSource,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
@@ -119,6 +146,7 @@ export type {
   IssueExecutionStage,
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
+  IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
   IssueThreadInteractionActorFields,
@@ -280,6 +308,7 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
   PluginUiSlotDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,

@@ -302,9 +302,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     branchTemplate: "",
     worktreeParentDir: "",
   };
-  const runSelectableEnvironments = (environments ?? []).filter((environment) =>
-    environment.driver === "local" || environment.driver === "ssh"
-  );
+  const runSelectableEnvironments = (environments ?? []).filter((environment) => {
+    if (environment.driver === "local" || environment.driver === "ssh") return true;
+    if (environment.driver !== "sandbox") return false;
+    const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
+    return provider !== null && provider !== "fake";
+  });
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });

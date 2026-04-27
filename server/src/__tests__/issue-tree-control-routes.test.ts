@@ -195,6 +195,61 @@ describe("issue tree control routes", () => {
     );
   });
 
+  it("still marks affected issues cancelled when run interruption fails", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    mockTreeControlService.createHold.mockResolvedValue({
+      hold: {
+        id: "33333333-3333-4333-8333-333333333333",
+        mode: "cancel",
+        reason: "cancel subtree",
+      },
+      preview: {
+        mode: "cancel",
+        totals: { affectedIssues: 1 },
+        warnings: [],
+        activeRuns: [
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            issueId: "11111111-1111-4111-8111-111111111111",
+          },
+        ],
+      },
+    });
+    mockTreeControlService.cancelIssueStatusesForHold.mockResolvedValue({
+      updatedIssueIds: ["11111111-1111-4111-8111-111111111111"],
+      updatedIssues: [],
+    });
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("adapter process did not exit"));
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds")
+      .send({ mode: "cancel", reason: "cancel subtree" });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
+    expect(mockTreeControlService.cancelIssueStatusesForHold).toHaveBeenCalledWith(
+      "company-2",
+      "11111111-1111-4111-8111-111111111111",
+      "33333333-3333-4333-8333-333333333333",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.tree_hold_run_interrupt_failed",
+        entityId: "44444444-4444-4444-8444-444444444444",
+        details: expect.objectContaining({
+          error: "adapter process did not exit",
+        }),
+      }),
+    );
+  });
+
   it("restores affected issues and can request explicit wakeups", async () => {
     const app = await createApp({
       type: "board",

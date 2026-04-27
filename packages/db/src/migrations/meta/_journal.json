@@ -484,6 +484,20 @@
       "when": 1776959400000,
       "tag": "0068_environment_local_driver_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776780003000,
+      "tag": "0069_liveness_recovery_dedupe",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1776780004000,
+      "tag": "0070_active_run_output_watchdog",
+      "breakpoints": true
     }
   ]
 }

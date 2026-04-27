@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   heartbeatRuns,
+  issueComments,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -76,6 +77,151 @@ export const ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS: ReadonlySet<string> = 
   "issue_reopened_via_comment",
   "issue_comment_mentioned",
 ] as const);
+const ISSUE_TREE_CONTROL_INTERACTION_WAKE_SOURCES: Readonly<Record<string, ReadonlySet<string>>> = {
+  issue_commented: new Set(["issue.comment"]),
+  issue_reopened_via_comment: new Set(["issue.comment.reopen"]),
+  issue_comment_mentioned: new Set(["comment.mention"]),
+};
+
+type VerifiedInteractionActor = {
+  requestedByActorType?: string | null;
+  requestedByActorId?: string | null;
+};
+
+function readNonEmptyStringFromRecord(record: unknown, key: string) {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readInteractionWakeCommentId(record: unknown) {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>).wakeCommentIds;
+  if (Array.isArray(value)) {
+    const latest = value
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .at(-1);
+    if (latest) return latest.trim();
+  }
+  return readNonEmptyStringFromRecord(record, "wakeCommentId") ?? readNonEmptyStringFromRecord(record, "commentId");
+}
+
+function hasVerifiedInteractionSource(wakeReason: string, contextSnapshot: Record<string, unknown>) {
+  const source = readNonEmptyStringFromRecord(contextSnapshot, "source");
+  if (!source) return false;
+  return ISSUE_TREE_CONTROL_INTERACTION_WAKE_SOURCES[wakeReason]?.has(source) ?? false;
+}
+
+function actorMatchesComment(
+  actor: VerifiedInteractionActor,
+  comment: { authorAgentId: string | null; authorUserId: string | null },
+) {
+  if (!actor.requestedByActorType) return false;
+  if (actor.requestedByActorType === "system") return true;
+  if (!actor.requestedByActorId) return false;
+  if (actor.requestedByActorType === "agent") return comment.authorAgentId === actor.requestedByActorId;
+  if (actor.requestedByActorType === "user") return comment.authorUserId === actor.requestedByActorId;
+  return false;
+}
+
+async function hasVerifiedInteractionWakeRequest(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    agentId?: string | null;
+    runId?: string | null;
+    wakeupRequestId?: string | null;
+    issueId: string;
+    commentId: string;
+    comment: { authorAgentId: string | null; authorUserId: string | null };
+  },
+) {
+  if (!input.runId && !input.wakeupRequestId) return false;
+  const predicates = [
+    eq(agentWakeupRequests.companyId, input.companyId),
+    sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+    sql`${agentWakeupRequests.payload} ->> 'commentId' = ${input.commentId}`,
+  ];
+  if (input.agentId) predicates.push(eq(agentWakeupRequests.agentId, input.agentId));
+  if (input.runId && input.wakeupRequestId) {
+    const requestScope = or(
+      eq(agentWakeupRequests.runId, input.runId),
+      eq(agentWakeupRequests.id, input.wakeupRequestId),
+    );
+    if (requestScope) predicates.push(requestScope);
+  } else if (input.runId) {
+    predicates.push(eq(agentWakeupRequests.runId, input.runId));
+  } else if (input.wakeupRequestId) {
+    predicates.push(eq(agentWakeupRequests.id, input.wakeupRequestId));
+  }
+
+  const requests = await dbOrTx
+    .select({
+      requestedByActorType: agentWakeupRequests.requestedByActorType,
+      requestedByActorId: agentWakeupRequests.requestedByActorId,
+    })
+    .from(agentWakeupRequests)
+    .where(and(...predicates));
+
+  return requests.some((request) => actorMatchesComment(request, input.comment));
+}
+
+export async function isVerifiedIssueTreeControlInteractionWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    issueId: string;
+    agentId?: string | null;
+    contextSnapshot: Record<string, unknown> | null | undefined;
+    requestedByActorType?: "user" | "agent" | "system" | string | null;
+    requestedByActorId?: string | null;
+    runId?: string | null;
+    wakeupRequestId?: string | null;
+  },
+) {
+  const contextSnapshot = input.contextSnapshot ?? null;
+  const wakeReason =
+    readNonEmptyStringFromRecord(contextSnapshot, "wakeReason") ??
+    readNonEmptyStringFromRecord(contextSnapshot, "reason");
+  if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
+  if (!contextSnapshot || !hasVerifiedInteractionSource(wakeReason, contextSnapshot)) return false;
+
+  const commentId = readInteractionWakeCommentId(contextSnapshot);
+  if (!commentId) return false;
+
+  const comment = await dbOrTx
+    .select({
+      id: issueComments.id,
+      authorAgentId: issueComments.authorAgentId,
+      authorUserId: issueComments.authorUserId,
+    })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        eq(issueComments.id, commentId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (!comment) return false;
+
+  const directActor = {
+    requestedByActorType: input.requestedByActorType,
+    requestedByActorId: input.requestedByActorId,
+  };
+  if (actorMatchesComment(directActor, comment)) return true;
+
+  return hasVerifiedInteractionWakeRequest(dbOrTx, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    runId: input.runId,
+    wakeupRequestId: input.wakeupRequestId,
+    issueId: input.issueId,
+    commentId,
+    comment,
+  });
+}
 
 function normalizeReleasePolicy(
   releasePolicy: IssueTreeHoldReleasePolicy | null | undefined,

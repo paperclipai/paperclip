@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function createSelectChain(rows: unknown[]) {
   const query = {
@@ -44,8 +44,6 @@ function createInvite(overrides: Record<string, unknown> = {}) {
   };
 }
 
-let currentAccessModule: Awaited<ReturnType<typeof vi.importActual<typeof import("../routes/access.js")>>> | null = null;
-
 async function createApp(
   db: Record<string, unknown>,
   network: {
@@ -54,11 +52,9 @@ async function createApp(
   },
 ) {
   const [access, middleware] = await Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/access.js"),
+    import("../middleware/index.js"),
   ]);
-  currentAccessModule = access;
-  access.setInviteResolutionNetworkForTest(network);
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = { type: "anon" };
@@ -71,6 +67,7 @@ async function createApp(
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
       allowedHostnames: [],
+      inviteResolutionNetwork: network,
     }),
   );
   app.use(middleware.errorHandler);
@@ -79,43 +76,43 @@ async function createApp(
 
 describe.sequential("GET /invites/:token/test-resolution", () => {
   beforeEach(() => {
-    currentAccessModule = null;
+    vi.clearAllMocks();
   });
 
-  afterEach(async () => {
-    currentAccessModule?.setInviteResolutionNetworkForTest(null);
-  });
+  it("rejects private, local, multicast, and reserved targets before probing", async () => {
+    const cases = [
+      ["localhost", "http://localhost:3100/api/health", "127.0.0.1"],
+      ["IPv4 loopback", "http://127.0.0.1:3100/api/health", "127.0.0.1"],
+      ["IPv6 loopback", "http://[::1]:3100/api/health", "::1"],
+      ["IPv4-mapped IPv6 loopback hex", "http://[::ffff:7f00:1]/api/health", "::ffff:7f00:1"],
+      ["IPv4-mapped IPv6 RFC1918 hex", "http://[::ffff:c0a8:101]/api/health", "::ffff:c0a8:101"],
+      ["RFC1918 10/8", "http://10.0.0.5/api/health", "10.0.0.5"],
+      ["RFC1918 172.16/12", "http://172.16.10.5/api/health", "172.16.10.5"],
+      ["RFC1918 192.168/16", "http://192.168.1.10/api/health", "192.168.1.10"],
+      ["link-local metadata", "http://169.254.169.254/latest/meta-data", "169.254.169.254"],
+      ["multicast", "http://224.0.0.1/probe", "224.0.0.1"],
+      ["NAT64 well-known prefix", "https://gateway.example.test/health", "64:ff9b::0a00:0001"],
+      ["NAT64 local-use prefix", "https://gateway.example.test/health", "64:ff9b:1::0a00:0001"],
+    ] as const;
 
-  it.each([
-    ["localhost", "http://localhost:3100/api/health", "127.0.0.1"],
-    ["IPv4 loopback", "http://127.0.0.1:3100/api/health", "127.0.0.1"],
-    ["IPv6 loopback", "http://[::1]:3100/api/health", "::1"],
-    ["IPv4-mapped IPv6 loopback hex", "http://[::ffff:7f00:1]/api/health", "::ffff:7f00:1"],
-    ["IPv4-mapped IPv6 RFC1918 hex", "http://[::ffff:c0a8:101]/api/health", "::ffff:c0a8:101"],
-    ["RFC1918 10/8", "http://10.0.0.5/api/health", "10.0.0.5"],
-    ["RFC1918 172.16/12", "http://172.16.10.5/api/health", "172.16.10.5"],
-    ["RFC1918 192.168/16", "http://192.168.1.10/api/health", "192.168.1.10"],
-    ["link-local metadata", "http://169.254.169.254/latest/meta-data", "169.254.169.254"],
-    ["multicast", "http://224.0.0.1/probe", "224.0.0.1"],
-    ["NAT64 well-known prefix", "https://gateway.example.test/health", "64:ff9b::0a00:0001"],
-    ["NAT64 local-use prefix", "https://gateway.example.test/health", "64:ff9b:1::0a00:0001"],
-  ])("rejects %s targets before probing", async (_label, url, address) => {
-    const lookup = vi.fn().mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
-    const requestHead = vi.fn();
-    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
+    for (const [label, url, address] of cases) {
+      const lookup = vi.fn().mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
+      const requestHead = vi.fn();
+      const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
-    const res = await request(app)
-      .get("/api/invites/pcp_invite_test/test-resolution")
-      .query({ url });
+      const res = await request(app)
+        .get("/api/invites/pcp_invite_test/test-resolution")
+        .query({ url });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe(
-      "url resolves to a private, local, multicast, or reserved address",
-    );
-    expect(requestHead).not.toHaveBeenCalled();
-  }, 15_000);
+      expect(res.status, label).toBe(400);
+      expect(res.body.error).toBe(
+        "url resolves to a private, local, multicast, or reserved address",
+      );
+      expect(requestHead).not.toHaveBeenCalled();
+    }
+  }, 20_000);
 
-  it("rejects hostnames that resolve to private addresses", async () => {
+  it.sequential("rejects hostnames that resolve to private addresses", async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
     const requestHead = vi.fn();
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
@@ -132,7 +129,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     expect(requestHead).not.toHaveBeenCalled();
   });
 
-  it("rejects hostnames when any resolved address is private", async () => {
+  it.sequential("rejects hostnames when any resolved address is private", async () => {
     const lookup = vi.fn().mockResolvedValue([
       { address: "127.0.0.1", family: 4 },
       { address: "93.184.216.34", family: 4 },
@@ -148,7 +145,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     expect(requestHead).not.toHaveBeenCalled();
   });
 
-  it("allows public HTTPS targets through the resolved and pinned probe path", async () => {
+  it.sequential("allows public HTTPS targets through the resolved and pinned probe path", async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const requestHead = vi.fn().mockResolvedValue({ httpStatus: 204 });
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
@@ -177,7 +174,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     );
   });
 
-  it.each([
+  it.sequential.each([
     ["missing invite", []],
     ["revoked invite", [createInvite({ revokedAt: new Date("2026-03-07T00:05:00.000Z") })]],
     ["expired invite", [createInvite({ expiresAt: new Date("2020-03-07T00:10:00.000Z") })]],

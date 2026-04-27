@@ -5,8 +5,10 @@ export {
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
 export {
@@ -151,6 +153,7 @@ export {
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
+  issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
@@ -343,6 +346,7 @@ export {
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
+  pluginEnvironmentDriverDeclarationSchema,
   pluginUiSlotDeclarationSchema,
   pluginLauncherActionDeclarationSchema,
   pluginLauncherRenderDeclarationSchema,
@@ -361,6 +365,7 @@ export {
   type PluginJobDeclarationInput,
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
+  type PluginEnvironmentDriverDeclarationInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
   type PluginLauncherRenderDeclarationInput,

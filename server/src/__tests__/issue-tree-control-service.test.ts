@@ -3,9 +3,11 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -38,8 +40,10 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
   afterEach(async () => {
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -340,6 +344,12 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     const childIssueId = randomUUID();
     const rootRunId = randomUUID();
     const childRunId = randomUUID();
+    const forgedRunId = randomUUID();
+    const rootWakeupRequestId = randomUUID();
+    const childWakeupRequestId = randomUUID();
+    const forgedWakeupRequestId = randomUUID();
+    const rootCommentId = randomUUID();
+    const childCommentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -377,6 +387,63 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         assigneeAgentId: agentId,
       },
     ]);
+    await db.insert(issueComments).values([
+      {
+        id: rootCommentId,
+        companyId,
+        issueId: rootIssueId,
+        authorUserId: "board-user",
+        body: "Please answer this root issue question.",
+      },
+      {
+        id: childCommentId,
+        companyId,
+        issueId: childIssueId,
+        authorUserId: "board-user",
+        body: "Please answer this child issue question.",
+      },
+    ]);
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: rootWakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: rootIssueId, commentId: rootCommentId },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+        runId: rootRunId,
+      },
+      {
+        id: forgedWakeupRequestId,
+        companyId,
+        agentId,
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        payload: { issueId: childIssueId, commentId: childCommentId },
+        status: "queued",
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+        runId: forgedRunId,
+      },
+      {
+        id: childWakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: childIssueId, commentId: childCommentId },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+        runId: childRunId,
+      },
+    ]);
     await db.insert(heartbeatRuns).values([
       {
         id: rootRunId,
@@ -385,7 +452,29 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         invocationSource: "automation",
         triggerDetail: "system",
         status: "queued",
-        contextSnapshot: { issueId: rootIssueId, wakeReason: "issue_commented", commentId: randomUUID() },
+        wakeupRequestId: rootWakeupRequestId,
+        contextSnapshot: {
+          issueId: rootIssueId,
+          wakeReason: "issue_commented",
+          commentId: rootCommentId,
+          wakeCommentId: rootCommentId,
+          source: "issue.comment",
+        },
+      },
+      {
+        id: forgedRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        wakeupRequestId: forgedWakeupRequestId,
+        contextSnapshot: {
+          issueId: childIssueId,
+          wakeReason: "issue_commented",
+          commentId: childCommentId,
+          wakeCommentId: childCommentId,
+        },
       },
       {
         id: childRunId,
@@ -394,7 +483,14 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         invocationSource: "automation",
         triggerDetail: "system",
         status: "queued",
-        contextSnapshot: { issueId: childIssueId, wakeReason: "issue_commented", commentId: randomUUID() },
+        wakeupRequestId: childWakeupRequestId,
+        contextSnapshot: {
+          issueId: childIssueId,
+          wakeReason: "issue_commented",
+          commentId: childCommentId,
+          wakeCommentId: childCommentId,
+          source: "issue.comment",
+        },
       },
     ]);
 
@@ -407,6 +503,13 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
 
     const issueSvc = issueService(db);
     await expect(issueSvc.checkout(childIssueId, agentId, ["todo"], randomUUID())).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        rootIssueId,
+        mode: "pause",
+      }),
+    });
+    await expect(issueSvc.checkout(childIssueId, agentId, ["todo"], forgedRunId)).rejects.toMatchObject({
       status: 409,
       details: expect.objectContaining({
         rootIssueId,

@@ -43,7 +43,9 @@ export const issuesApi = {
       executionWorkspaceId?: string;
       originKind?: string;
       originId?: string;
+      descendantOf?: string;
       includeRoutineExecutions?: boolean;
+      includeBlockedBy?: boolean;
       q?: string;
       limit?: number;
     },
@@ -63,7 +65,9 @@ export const issuesApi = {
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
     if (filters?.originId) params.set("originId", filters.originId);
+    if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
