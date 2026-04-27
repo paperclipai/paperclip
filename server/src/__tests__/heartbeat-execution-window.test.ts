@@ -12,6 +12,7 @@ import {
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueDocuments,
   issues,
 } from "@paperclipai/db";
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
