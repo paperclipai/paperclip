@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 from normalizers import normalize_mexc_order
+from real_trader import _translate_mexc_fill_for_normalizer
 
 
 def test_mexc_normalizer_happy_path():
@@ -287,3 +288,84 @@ def test_blofin_normalizer_accepts_fillsz_avgpx_translated_shape():
     assert r.filled_size_usd == pytest.approx(24.68)
     assert r.fill_price == pytest.approx(1.234)
     assert r.fees_usd == pytest.approx(0.0247)
+
+
+# ---------------------------------------------------------------------------
+# _translate_mexc_fill_for_normalizer — call-site translation helper tests
+# These exercise the actual translation logic in real_trader.py, not just
+# the normalizer accepting a pre-built dict.  If someone breaks the field
+# mapping or side logic the tests below will fail.
+# ---------------------------------------------------------------------------
+
+def test_translate_mexc_fill_buy_open_long():
+    """side=1 (open long) -> BUY; field mapping and notional computation correct."""
+    futures_fill = {
+        "orderId": "f-001",
+        "side": 1,
+        "dealVol": "20.0",
+        "dealAvgPrice": "1.5",
+        "takerFee": "0.03",
+        "createTime": 1700000000000,
+        "state": 3,
+    }
+    out = _translate_mexc_fill_for_normalizer(futures_fill, "f-001", "ORDIUSDT")
+    assert out["side"] == "BUY"
+    assert out["executedQty"] == "20.0"
+    assert out["cummulativeQuoteQty"] == str(20.0 * 1.5)
+    assert out["price"] == "1.5"
+    assert out["status"] == "FILLED"
+    assert out["symbol"] == "ORDIUSDT"
+    assert out["fees"] == "0.03"
+    # Downstream: normalizer must also accept this output
+    r = normalize_mexc_order(out, requested_size_usd=30.0)
+    assert r.side == "buy"
+    assert r.filled_size_usd == pytest.approx(30.0)
+
+
+def test_translate_mexc_fill_sell_open_short():
+    """side=3 (open short) -> SELL."""
+    futures_fill = {
+        "orderId": "f-002",
+        "side": 3,
+        "dealVol": "10.0",
+        "dealAvgPrice": "2.0",
+        "takerFee": "0.02",
+        "createTime": 1700000001000,
+        "state": 3,
+    }
+    out = _translate_mexc_fill_for_normalizer(futures_fill, "f-002", "ORDIUSDT")
+    assert out["side"] == "SELL"
+    assert out["cummulativeQuoteQty"] == str(10.0 * 2.0)
+    r = normalize_mexc_order(out, requested_size_usd=20.0)
+    assert r.side == "sell"
+    assert r.success is True
+
+
+def test_translate_mexc_fill_rejects_close_order_sides():
+    """sides 2 and 4 (close orders) must raise AssertionError — not silently map."""
+    for bad_side in (2, 4):
+        with pytest.raises(AssertionError, match="close-order sides not supported"):
+            _translate_mexc_fill_for_normalizer(
+                {"side": bad_side, "dealVol": "5.0", "dealAvgPrice": "1.0",
+                 "takerFee": "0.01", "createTime": 0, "state": 3},
+                "f-bad", "ORDIUSDT",
+            )
+
+
+def test_translate_mexc_fill_silent_failure_trap_still_fires():
+    """dealVol>0 with dealAvgPrice=0 -> cummulativeQuoteQty=0 -> normalizer trap fires."""
+    futures_fill = {
+        "orderId": "f-trap",
+        "side": 1,
+        "dealVol": "15.0",
+        "dealAvgPrice": "0",   # silent-failure shape
+        "takerFee": "0",
+        "createTime": 0,
+        "state": 3,
+    }
+    out = _translate_mexc_fill_for_normalizer(futures_fill, "f-trap", "ORDIUSDT")
+    assert out["cummulativeQuoteQty"] == "0.0"
+    assert out["executedQty"] == "15.0"
+    # The normalizer should treat this as success=False (trap fires)
+    r = normalize_mexc_order(out, requested_size_usd=15.0)
+    assert r.success is False

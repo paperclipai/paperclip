@@ -788,6 +788,54 @@ class BybitExecutor(ExchangeExecutor):
             return []
 
 
+def _translate_mexc_fill_for_normalizer(fill: dict, order_id: str, symbol: str) -> dict:
+    """Translate a MEXC futures _wait_for_fill dict into the spot-API shape that
+    normalize_mexc_order expects.
+
+    Background: normalize_mexc_order was written for the MEXC SPOT API.  This
+    executor uses MEXC FUTURES, which returns different field names.  Field mapping:
+      futures dealVol        -> spot executedQty
+      futures dealAvgPrice   -> spot price
+      futures dealVol * dealAvgPrice -> spot cummulativeQuoteQty (USD notional)
+      futures side int       -> spot side string ("BUY" / "SELL")
+      futures state int      -> spot status string ("FILLED" / "NEW")
+
+    Silent-failure trap: the normalizer raises when cummulativeQuoteQty==0 and
+    executedQty>0.  The futures-equivalent shape is dealVol>0 with dealAvgPrice=0,
+    which maps to cummulativeQuoteQty=0, so the trap fires correctly.
+
+    NOTE: this normalizer only covers the open-order silent-failure class.  Any
+    futures-specific bug shape outside that pattern may not be detected here;
+    revisit if such cases emerge.
+
+    Side mapping: the bot only places open orders (side=1 open-long, side=3
+    open-short).  Sides 2 (close-long) and 4 (close-short) are unsupported; an
+    assert fires loudly if _wait_for_fill ever echoes one back.
+    """
+    _side_int = fill.get("side", 0)
+    # Only open orders are placed by this bot; close-order sides (2, 4) would
+    # silently misclassify if mapped here — fail loud instead.
+    assert _side_int in (1, 3), (
+        f"MEXC close-order sides not supported by current translation: "
+        f"side={_side_int}. Update mapping if adding close-order support."
+    )
+    _side_str = "BUY" if _side_int == 1 else "SELL"
+    _deal_avg = float(fill.get("dealAvgPrice", 0) or 0)
+    _deal_vol = float(fill.get("dealVol", 0) or 0)
+    return {
+        "orderId": fill.get("orderId", order_id),
+        "symbol": symbol,
+        "side": _side_str,
+        "executedQty": str(_deal_vol),
+        # cummulativeQuoteQty = contracts * avg price (USD notional)
+        "cummulativeQuoteQty": str(_deal_vol * _deal_avg),
+        "price": str(_deal_avg),
+        "fees": str(abs(float(fill.get("takerFee", 0) or 0))),
+        "transactTime": int(fill.get("createTime", 0) or 0),
+        "status": "FILLED" if fill.get("state") == 3 else "NEW",
+    }
+
+
 class MEXCExecutor(ExchangeExecutor):
     """MEXC exchange executor with HMAC-SHA256 signing of query string."""
 
@@ -865,25 +913,9 @@ class MEXCExecutor(ExchangeExecutor):
             _mexc_norm_failed = False
             if _NORMALIZERS_AVAILABLE and normalize_mexc_order is not None:
                 try:
-                    # MEXC futures _wait_for_fill returns futures-API fields
-                    # (state:int, dealVol, dealAvgPrice, side:int).
-                    # Translate to the spot-API shape the normalizer expects.
-                    _mexc_side_int = fill.get("side", 0)
-                    _mexc_side_str = "BUY" if _mexc_side_int in (1, 2) else "SELL"
-                    _mexc_deal_avg = float(fill.get("dealAvgPrice", 0) or 0)
-                    _mexc_deal_vol = float(fill.get("dealVol", 0) or 0)
-                    _mexc_fill_for_norm = {
-                        "orderId": fill.get("orderId", order_id),
-                        "symbol": symbol,
-                        "side": _mexc_side_str,
-                        "executedQty": str(_mexc_deal_vol),
-                        # cummulativeQuoteQty = contracts * avg price (USD notional)
-                        "cummulativeQuoteQty": str(_mexc_deal_vol * _mexc_deal_avg),
-                        "price": str(_mexc_deal_avg),
-                        "fees": str(abs(float(fill.get("takerFee", 0) or 0))),
-                        "transactTime": int(fill.get("createTime", 0) or 0),
-                        "status": "FILLED" if fill.get("state") == 3 else "NEW",
-                    }
+                    _mexc_fill_for_norm = _translate_mexc_fill_for_normalizer(
+                        fill, order_id, symbol
+                    )
                     _mexc_normalized = normalize_mexc_order(_mexc_fill_for_norm, requested_size_usd=size_usd)
                 except _PydanticValidationError as _ne:
                     _mexc_norm_failed = True
