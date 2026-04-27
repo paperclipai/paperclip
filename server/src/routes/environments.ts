@@ -184,6 +184,7 @@ export function environmentRoutes(
             source: "plugin" as const,
             pluginKey: driver.pluginKey,
             pluginId: driver.pluginId,
+            configSchema: driver.configSchema,
           },
         ])),
       },
@@ -409,9 +410,11 @@ export function environmentRoutes(
       const companyId = req.params.companyId as string;
       await assertCanMutateEnvironments(req, companyId);
       const actor = getActorInfo(req);
-      const normalizedConfig = normalizeEnvironmentConfigForProbe({
+      const normalizedConfig = await normalizeEnvironmentConfigForProbe({
+        db,
         driver: req.body.driver,
         config: req.body.config,
+        pluginWorkerManager: options.pluginWorkerManager,
       });
       const environment = {
         id: "unsaved",

@@ -2122,7 +2122,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
+            <div ref={listRef} className="overflow-hidden rounded-xl bg-card">
               {(() => {
                 const renderInboxIssue = ({
                   issue,

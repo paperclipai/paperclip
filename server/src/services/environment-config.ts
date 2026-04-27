@@ -6,16 +6,26 @@ import type {
   EnvironmentDriver,
   FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
-  PluginSandboxEnvironmentConfig,
   PluginEnvironmentConfig,
+  PluginSandboxEnvironmentConfig,
   SandboxEnvironmentConfig,
   SshEnvironmentConfig,
 } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
-import { validatePluginEnvironmentDriverConfig } from "./plugin-environment-driver.js";
+import {
+  resolvePluginSandboxProviderDriverByKey,
+  validatePluginEnvironmentDriverConfig,
+  validatePluginSandboxProviderConfig,
+} from "./plugin-environment-driver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  collectSecretRefPaths,
+  isUuidSecretRef,
+  readConfigValueAtPath,
+  writeConfigValueAtPath,
+} from "./json-schema-secret-refs.js";
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
@@ -43,6 +53,17 @@ const sshEnvironmentConfigSchema = z.object({
   strictHostKeyChecking: z.boolean().optional().default(true),
 }).strict();
 
+const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
+  privateKey: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((value) => (value && value.length > 0 ? value : null)),
+}).strict();
+
+const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
+
 const fakeSandboxEnvironmentConfigSchema = z.object({
   provider: z.literal("fake").default("fake"),
   image: z
@@ -59,18 +80,13 @@ const pluginSandboxProviderKeySchema = z.string()
   .regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Sandbox provider key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
-  )
-  .refine((value) => value !== "fake", {
-    message: "Built-in sandbox providers must use their dedicated config schema.",
-  });
+  );
 
 const pluginSandboxEnvironmentConfigSchema = z.object({
   provider: pluginSandboxProviderKeySchema,
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
 }).catchall(z.unknown());
-
-type SandboxConfigSchemaMode = "stored" | "probe" | "persistence";
 
 const pluginEnvironmentConfigSchema = z.object({
   pluginKey: z.string().min(1),
@@ -99,7 +115,6 @@ function getSandboxProvider(raw: Record<string, unknown>) {
 
 function parseSandboxEnvironmentConfig(
   input: Record<string, unknown> | null | undefined,
-  mode: SandboxConfigSchemaMode,
 ) {
   const raw = parseObject(input);
   const provider = getSandboxProvider(raw);
@@ -117,16 +132,19 @@ function parseSandboxEnvironmentConfig(
     : ({ success: false as const, error: parsed.error });
 }
 
-const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
-  privateKey: z
-    .string()
-    .trim()
-    .optional()
-    .nullable()
-    .transform((value) => (value && value.length > 0 ? value : null)),
-}).strict();
-
-const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
+async function getSandboxProviderConfigSchema(
+  db: Db,
+  provider: string,
+): Promise<Record<string, unknown> | null> {
+  const resolved = await resolvePluginSandboxProviderDriverByKey({
+    db,
+    driverKey: provider,
+  });
+  const schema = resolved?.driver.configSchema;
+  return schema && typeof schema === "object" && !Array.isArray(schema)
+    ? schema as Record<string, unknown>
+    : null;
+}
 
 function secretName(input: {
   environmentName: string;
@@ -167,6 +185,69 @@ async function createEnvironmentSecret(input: {
   };
 }
 
+async function persistConfigSecretRefs(input: {
+  db: Db;
+  companyId: string;
+  environmentName: string;
+  driver: EnvironmentDriver;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+  actor?: { userId?: string | null; agentId?: string | null };
+}): Promise<Record<string, unknown>> {
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const rawValue = readConfigValueAtPath(nextConfig, path);
+    if (typeof rawValue !== "string") continue;
+    const trimmed = rawValue.trim();
+    if (trimmed.length === 0) {
+      nextConfig = writeConfigValueAtPath(nextConfig, path, undefined);
+      continue;
+    }
+    if (isUuidSecretRef(trimmed)) {
+      nextConfig = writeConfigValueAtPath(nextConfig, path, trimmed);
+      continue;
+    }
+    const created = await createEnvironmentSecret({
+      db: input.db,
+      companyId: input.companyId,
+      environmentName: input.environmentName,
+      driver: input.driver,
+      field: path.replace(/[^a-z0-9]+/gi, "-").toLowerCase(),
+      value: trimmed,
+      actor: input.actor,
+    });
+    nextConfig = writeConfigValueAtPath(nextConfig, path, created.secretId);
+  }
+  return nextConfig;
+}
+
+async function resolveConfigSecretRefsForRuntime(input: {
+  db: Db;
+  companyId: string;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+}): Promise<Record<string, unknown>> {
+  const secrets = secretService(input.db);
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const current = readConfigValueAtPath(nextConfig, path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValue(input.companyId, trimmed, "latest"),
+    );
+  }
+  return nextConfig;
+}
+
+export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): Record<string, unknown> {
+  const { provider: _provider, ...driverConfig } = config as Record<string, unknown>;
+  return driverConfig;
+}
+
 export function normalizeEnvironmentConfig(input: {
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
@@ -186,7 +267,7 @@ export function normalizeEnvironmentConfig(input: {
   }
 
   if (input.driver === "sandbox") {
-    const parsed = parseSandboxEnvironmentConfig(input.config, "stored");
+    const parsed = parseSandboxEnvironmentConfig(input.config);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
         issues: parsed.error.issues,
@@ -209,9 +290,11 @@ export function normalizeEnvironmentConfig(input: {
 }
 
 export function normalizeEnvironmentConfigForProbe(input: {
+  db: Db;
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
-}): Record<string, unknown> {
+  pluginWorkerManager?: PluginWorkerManager;
+}): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
     const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config));
     if (!parsed.success) {
@@ -223,16 +306,33 @@ export function normalizeEnvironmentConfigForProbe(input: {
   }
 
   if (input.driver === "sandbox") {
-    const parsed = parseSandboxEnvironmentConfig(input.config, "probe");
+    const parsed = parseSandboxEnvironmentConfig(input.config);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
         issues: parsed.error.issues,
       });
     }
-    return parsed.data;
+    if (parsed.data.provider === "fake") {
+      return parsed.data;
+    }
+    if (!input.pluginWorkerManager) {
+      throw unprocessable("Sandbox provider config validation requires a running plugin worker manager.");
+    }
+    return validatePluginSandboxProviderConfig({
+      db: input.db,
+      workerManager: input.pluginWorkerManager,
+      provider: parsed.data.provider,
+      config: stripSandboxProviderEnvelope(parsed.data),
+    }).then((validated) => ({
+      provider: parsed.data.provider,
+      ...validated.normalizedConfig,
+    }));
   }
 
-  return normalizeEnvironmentConfig(input);
+  return normalizeEnvironmentConfig({
+    driver: input.driver,
+    config: input.config,
+  });
 }
 
 export async function normalizeEnvironmentConfigForPersistence(input: {
@@ -279,19 +379,41 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   }
 
   if (input.driver === "sandbox") {
-    const parsed = parseSandboxEnvironmentConfig(input.config, "persistence");
+    const parsed = parseSandboxEnvironmentConfig(input.config);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
         issues: parsed.error.issues,
       });
     }
-    const sandboxConfig = parsed.data;
-    if (sandboxConfig.provider === "fake") {
+    if (parsed.data.provider === "fake") {
       throw unprocessable(
         "Built-in fake sandbox environments are reserved for internal probes and cannot be saved.",
       );
     }
-    return { ...(sandboxConfig as PluginSandboxEnvironmentConfig) };
+    if (!input.pluginWorkerManager) {
+      throw unprocessable("Sandbox provider config validation requires a running plugin worker manager.");
+    }
+    const validated = await validatePluginSandboxProviderConfig({
+      db: input.db,
+      workerManager: input.pluginWorkerManager,
+      provider: parsed.data.provider,
+      config: stripSandboxProviderEnvelope(parsed.data),
+    });
+    return await persistConfigSecretRefs({
+      db: input.db,
+      companyId: input.companyId,
+      environmentName: input.environmentName,
+      driver: input.driver,
+      config: {
+        provider: parsed.data.provider,
+        ...validated.normalizedConfig,
+      },
+      schema:
+        validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)
+          ? validated.driver.configSchema as Record<string, unknown>
+          : null,
+      actor: input.actor,
+    });
   }
 
   if (input.driver === "plugin") {
@@ -339,6 +461,18 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     };
   }
 
+  if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
+    return {
+      driver: "sandbox",
+      config: await resolveConfigSecretRefsForRuntime({
+        db,
+        companyId,
+        config: parsed.config as Record<string, unknown>,
+        schema: await getSandboxProviderConfigSchema(db, parsed.config.provider),
+      }) as SandboxEnvironmentConfig,
+    };
+  }
+
   return parsed;
 }
 
@@ -370,7 +504,7 @@ export function parseEnvironmentDriverConfig(
   }
 
   if (environment.driver === "sandbox") {
-    const parsed = parseSandboxEnvironmentConfig(environment.config, "stored");
+    const parsed = parseSandboxEnvironmentConfig(environment.config);
     if (!parsed.success) {
       throw parsed.error;
     }

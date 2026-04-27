@@ -124,6 +124,7 @@ function createActiveRun(overrides: Partial<ActiveRunForIssue> = {}): ActiveRunF
       snoozedUntil: null,
       evaluationIssueId: "issue-eval-1",
       evaluationIssueIdentifier: "PAP-404",
+      evaluationIssueAssigneeAgentId: "agent-owner",
     },
     ...overrides,
   };
@@ -139,6 +140,8 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       childIssues={props.childIssues ?? []}
       agentMap={props.agentMap ?? new Map([["agent-1", { name: "CodexCoder" }]])}
       pendingWatchdogDecision={props.pendingWatchdogDecision}
+      canRecordWatchdogDecisions={props.canRecordWatchdogDecisions}
+      watchdogDecisionError={props.watchdogDecisionError}
       onWatchdogDecision={props.onWatchdogDecision}
     />,
   );
@@ -365,5 +368,23 @@ describe("IssueRunLedger", () => {
       decision: "continue",
       evaluationIssueId: "issue-eval-1",
     });
+  });
+
+  it("hides watchdog decision actions for known non-owner viewers", () => {
+    const onWatchdogDecision = vi.fn();
+    renderLedger({
+      runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
+      activeRun: createActiveRun(),
+      canRecordWatchdogDecisions: false,
+      onWatchdogDecision,
+    });
+
+    expect(container.textContent).toContain("Stale-run watchdog alert");
+    expect(container.textContent).toContain("PAP-404");
+    expect(container.textContent).not.toContain("Continue monitoring");
+    expect(container.textContent).not.toContain("Snooze 1h");
+    expect(container.textContent).not.toContain("Mark false positive");
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+    expect(onWatchdogDecision).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptInviteSchema, createAgentSchema, updateAgentSchema } from "./index.js";
+import { AGENT_ROLE_LABELS, acceptInviteSchema, createAgentSchema, updateAgentSchema } from "./index.js";
 
 describe("dynamic adapter type validation schemas", () => {
   it("accepts external adapter types in create/update agent schemas", () => {
@@ -34,5 +34,17 @@ describe("dynamic adapter type validation schemas", () => {
         adapterType: "external_adapter",
       }).adapterType,
     ).toBe("external_adapter");
+  });
+
+  it("accepts the security agent role and exposes its UI label", () => {
+    expect(
+      createAgentSchema.parse({
+        name: "Security Engineer",
+        role: "security",
+        adapterType: "codex_local",
+      }).role,
+    ).toBe("security");
+
+    expect(AGENT_ROLE_LABELS.security).toBe("Security");
   });
 });

@@ -1,6 +1,6 @@
 import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Github } from "lucide-react";
+import { ExternalLink, Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -131,6 +131,56 @@ function isExternalHttpUrl(href: string | null | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function renderLinkBody(
+  children: ReactNode,
+  leadingIcon: ReactNode,
+  trailingIcon: ReactNode,
+): ReactNode {
+  if (!leadingIcon && !trailingIcon) return children;
+
+  // React-markdown can pass arrays/elements for styled link text; the nowrap
+  // splitting below is intentionally limited to plain text links.
+  if (typeof children === "string" && children.length > 0) {
+    if (children.length === 1) {
+      return (
+        <span style={{ whiteSpace: "nowrap" }}>
+          {leadingIcon}
+          {children}
+          {trailingIcon}
+        </span>
+      );
+    }
+    const first = children[0];
+    const last = children[children.length - 1];
+    const middle = children.slice(1, -1);
+    return (
+      <>
+        {leadingIcon ? (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {leadingIcon}
+            {first}
+          </span>
+        ) : first}
+        {middle}
+        {trailingIcon ? (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {last}
+            {trailingIcon}
+          </span>
+        ) : last}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {leadingIcon}
+      {children}
+      {trailingIcon}
+    </>
+  );
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
@@ -281,6 +331,12 @@ export function MarkdownBody({
       }
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
+      const leadingIcon = isGitHubLink ? (
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+      ) : null;
+      const trailingIcon = isExternal && !isGitHubLink ? (
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+      ) : null;
       return (
         <a
           href={href}
@@ -289,8 +345,7 @@ export function MarkdownBody({
             : { rel: "noreferrer" })}
           style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
         >
-          {isGitHubLink ? <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" /> : null}
-          {linkChildren}
+          {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
         </a>
       );
     },

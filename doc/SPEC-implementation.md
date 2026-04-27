@@ -395,7 +395,14 @@ Side effects:
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
 
-Detailed ownership, execution, blocker, active-run watchdog, and crash-recovery semantics are documented in `doc/execution-semantics.md`.
+V1 non-terminal liveness rule:
+
+- agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
+- `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery issue owns the next action
+- a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
+- when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
+
+Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
 ## 8.3 Approval Status
 
