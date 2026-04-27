@@ -859,3 +859,96 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 });
+
+describeEmbeddedPostgres("issueService.list identifier filter", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-identifier-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("returns only the issue matching the identifier filter", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueAId = randomUUID();
+    const issueBId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: issueAId,
+        companyId,
+        identifier: "RPAA-100",
+        title: "First issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: issueBId,
+        companyId,
+        identifier: "RPAA-200",
+        title: "Second issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, { identifier: "RPAA-100" });
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(issueAId);
+    expect(result[0].identifier).toBe("RPAA-100");
+  });
+
+  it("is case-insensitive for the identifier filter", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "RPAA-300",
+      title: "Case test issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const result = await svc.list(companyId, { identifier: "rpaa-300" });
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(issueId);
+  });
+});

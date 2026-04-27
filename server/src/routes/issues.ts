@@ -376,6 +376,7 @@ export function issueRoutes(
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
+      identifier: req.query.identifier as string | undefined,
     });
     res.json(result);
   });
