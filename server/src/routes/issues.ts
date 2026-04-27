@@ -606,30 +606,28 @@ export function issueRoutes(
     // Prevent agents in an active run from commenting on completed issues that
     // belong to a different task. This catches stray cross-issue comments where
     // an agent LLM accidentally addresses the wrong issue ID.
+    // The runId on req.actor comes from a Paperclip-issued JWT, so a null run
+    // lookup is anomalous rather than malicious; we let the existing checkout
+    // and assignee guards handle authorization in that case and only enforce
+    // cross-issue rejection when we can confirm the run's target issueId.
     const isClosed = issue.status === "done" || issue.status === "cancelled";
     if (isClosed && req.actor.runId) {
       const run = await heartbeat.getRun(req.actor.runId);
-      if (!run) {
-        res.status(409).json({
-          error: "Agent run not found; cannot verify issue context for a completed issue",
-          runId: req.actor.runId,
-          targetIssueId: issue.id,
-        });
-        return false;
-      }
-      const runIssueId =
-        run.contextSnapshot &&
-        typeof run.contextSnapshot === "object" &&
-        typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
-          ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
-          : null;
-      if (runIssueId && runIssueId !== issue.id) {
-        res.status(409).json({
-          error: "Agent run is for a different issue; commenting on a completed issue from another run is not allowed",
-          runIssueId,
-          targetIssueId: issue.id,
-        });
-        return false;
+      if (run) {
+        const runIssueId =
+          run.contextSnapshot &&
+          typeof run.contextSnapshot === "object" &&
+          typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (runIssueId && runIssueId !== issue.id) {
+          res.status(409).json({
+            error: "Agent run is for a different issue; commenting on a completed issue from another run is not allowed",
+            runIssueId,
+            targetIssueId: issue.id,
+          });
+          return false;
+        }
       }
     }
 
