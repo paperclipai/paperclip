@@ -80,6 +80,18 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as openhandsExecute,
+  testEnvironment as openhandsTestEnvironment,
+  sessionCodec as openhandsSessionCodec,
+  listSkills as openhandsListSkills,
+  syncSkills as openhandsSyncSkills,
+  listModels as openhandsListModels,
+} from "@paperclipai/adapter-openhands-local/server";
+import {
+  agentConfigurationDoc as openhandsAgentConfigurationDoc,
+  models as openhandsModels,
+} from "@paperclipai/adapter-openhands-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -298,6 +310,22 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const openhandsLocalAdapter: ServerAdapterModule = {
+  type: "openhands_local",
+  execute: openhandsExecute,
+  testEnvironment: openhandsTestEnvironment,
+  sessionCodec: openhandsSessionCodec,
+  listSkills: openhandsListSkills,
+  syncSkills: openhandsSyncSkills,
+  models: openhandsModels,
+  listModels: openhandsListModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: openhandsAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -319,6 +347,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    openhandsLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
