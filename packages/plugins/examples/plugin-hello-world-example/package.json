@@ -16,7 +16,7 @@
     "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "node ../../../../scripts/ensure-plugin-build-deps.mjs && tsc --noEmit"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "workspace:*"
