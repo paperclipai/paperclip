@@ -1860,14 +1860,14 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean; detachedStale?: boolean }) {
+}, options?: { descendantOnly?: boolean; detachedStaleTarget?: "pid" | "group" }) {
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
-  if (options?.detachedStale && run.processPid) {
+  if (options?.detachedStaleTarget === "pid" && run.processPid) {
     return `Process lost -- detached child pid ${run.processPid} stayed alive past the stale threshold and was terminated`;
   }
-  if (options?.detachedStale && run.processGroupId) {
+  if (options?.detachedStaleTarget === "group" && run.processGroupId) {
     return `Process lost -- detached process group ${run.processGroupId} stayed alive past the stale threshold and was terminated`;
   }
   if (run.processPid) {
@@ -4419,7 +4419,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         descendantOnlyCleanup
           ? { descendantOnly: true }
           : detachedRunExceededThreshold
-            ? { detachedStale: true }
+            ? { detachedStaleTarget: processPidAlive ? "pid" : "group" }
             : undefined,
       );
 
