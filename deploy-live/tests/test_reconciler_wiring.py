@@ -285,3 +285,35 @@ def test_repeat_events_do_not_redispatch():
         conn.close()
 
     asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# Test 8: dispatcher.dispatch raises → reconcile completes without exception
+# ---------------------------------------------------------------------------
+
+def test_dispatch_failure_does_not_abort_reconcile():
+    """If alert_dispatcher.dispatch raises, _maybe_dispatch must swallow the
+    exception so the rest of reconcile_exchange continues unaffected."""
+    async def _go():
+        _, conn = _make_db()
+
+        # Phantom position: exchange has it, state_store doesn't
+        fake = FakeExchange()
+        fake.set_open_positions("OKX", [
+            {"symbol": "BTCUSDT", "side": "buy", "size_usd": 100.0},
+        ])
+        fake.set_balance("OKX", available_usd=100.0)
+        fake.set_recent_fills("OKX", [])
+
+        class _BrokenDispatcher:
+            async def dispatch(self, event):
+                raise RuntimeError("simulated sink failure")
+
+        # Should NOT raise even though dispatch() raises every time.
+        await reconcile_exchange(
+            conn, fake, exchange="OKX", since_ms=0,
+            alert_dispatcher=_BrokenDispatcher(),
+        )
+        conn.close()
+
+    asyncio.run(_go())

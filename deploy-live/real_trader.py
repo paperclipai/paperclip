@@ -3199,7 +3199,7 @@ async def main():
             or os.environ.get("USE_SQLITE_STATE", "false").lower() in ("1", "true", "yes")
         )
         if _PLAN3_AVAILABLE and trader.state_conn is not None and _use_sqlite:
-            _loop = asyncio.get_event_loop()
+            _loop = asyncio.get_running_loop()
             trader.fetcher = _LiveExchangeFetcher(executors, loop=_loop)
             trader.sweep_task = _start_periodic_sweep(
                 trader.state_conn, trader.fetcher,

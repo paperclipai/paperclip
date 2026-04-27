@@ -11,9 +11,12 @@ live trader's existing executor classes.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 import time
 from typing import TYPE_CHECKING, Any, Optional, Protocol
+
+log = logging.getLogger(__name__)
 
 from state_store import (
     list_open_positions, list_recent_fills,
@@ -135,23 +138,33 @@ async def reconcile_exchange(
         actual: Optional[dict] = None,
         notes: Optional[str] = None,
     ) -> None:
-        """Dispatch on first insert only — avoids Telegram spam for repeat events."""
+        """Dispatch on first insert only — avoids Telegram spam for repeat events.
+        Best-effort: never raises. Failures are logged so the rest of the
+        reconcile cycle continues unaffected.
+        """
         if alert_dispatcher is None or not was_insert:
             return
-        event = _ReconEvent(
-            id=event_id,
-            timestamp_ms=now_ms,
-            source="reconciler",
-            category=category,
-            severity=severity,
-            exchange=exchange,
-            symbol=symbol,
-            position_id=position_id,
-            expected=expected,
-            actual=actual,
-            notes=notes,
-        )
-        await alert_dispatcher.dispatch(event)
+        try:
+            event = _ReconEvent(
+                id=event_id,
+                timestamp_ms=now_ms,
+                source="reconciler",
+                category=category,
+                severity=severity,
+                exchange=exchange,
+                symbol=symbol,
+                position_id=position_id,
+                expected=expected,
+                actual=actual,
+                notes=notes,
+            )
+            await alert_dispatcher.dispatch(event)
+        except Exception as e:
+            log.error(
+                "reconciler dispatch failed (best-effort): category=%s severity=%s "
+                "exchange=%s symbol=%s err=%s",
+                category, severity, exchange, symbol, e,
+            )
 
     now_ms = int(time.time() * 1000)
     try:
