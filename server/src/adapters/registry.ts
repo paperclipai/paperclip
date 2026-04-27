@@ -55,6 +55,14 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  execute as deepseekExecute,
+  testEnvironment as deepseekTestEnvironment,
+} from "@paperclipai/adapter-deepseek-local/server";
+import {
+  agentConfigurationDoc as deepseekAgentConfigurationDoc,
+  models as deepseekModels,
+} from "@paperclipai/adapter-deepseek-local";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -215,6 +223,18 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const deepseekLocalAdapter: ServerAdapterModule = {
+  type: "deepseek_local",
+  execute: deepseekExecute,
+  testEnvironment: deepseekTestEnvironment,
+  models: deepseekModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: deepseekAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   execute: piExecute,
@@ -313,6 +333,7 @@ function registerBuiltInAdapters() {
   for (const adapter of [
     claudeLocalAdapter,
     codexLocalAdapter,
+    deepseekLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,

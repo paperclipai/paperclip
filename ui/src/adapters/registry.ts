@@ -2,6 +2,7 @@ import type { UIAdapterModule } from "./types";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
+import { deepseekLocalUIAdapter } from "./deepseek-local";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
@@ -51,6 +52,7 @@ function registerBuiltInUIAdapters() {
   for (const adapter of [
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
+    deepseekLocalUIAdapter,
     geminiLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
