@@ -288,6 +288,65 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("queues requester wakeup after board requests approval revision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-revision-1" });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-7/request-revision")
+      .send({ decisionNote: "Please revise" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_revision_requested",
+        payload: expect.objectContaining({
+          approvalId: "approval-7",
+          approvalStatus: "revision_requested",
+          issueId: "issue-1",
+          issueIds: ["issue-1"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          approvalId: "approval-7",
+          approvalStatus: "revision_requested",
+          issueId: "issue-1",
+          issueIds: ["issue-1"],
+          taskId: "issue-1",
+          wakeReason: "approval_revision_requested",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.requester_wakeup_queued",
+        entityId: "approval-7",
+        details: expect.objectContaining({
+          requesterAgentId: "agent-1",
+          wakeRunId: "wake-revision-1",
+          linkedIssueIds: ["issue-1"],
+        }),
+      }),
+    );
+  });
+
   it("lets agents create generic issue-linked board approval requests", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-1",
