@@ -403,10 +403,26 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
           };
         }
 
-        const participant = selectStageParticipant(nextStage, {
+        let participant = selectStageParticipant(nextStage, {
           preferred: explicitAssignee,
           exclude: existingState?.returnAssignee ?? null,
         });
+        // Fall back to the return assignee when the next stage has no other
+        // eligible participants and cannot be auto-skipped — the policy
+        // lists only the return assignee on this stage, so self-approval is
+        // intentional. Skippable stages (e.g. review with only the return
+        // assignee) are handled by the start-workflow skip loop on the
+        // next transition instead.
+        if (
+          !participant &&
+          !canAutoSkipPendingStage({
+            stage: nextStage,
+            returnAssignee: existingState?.returnAssignee ?? null,
+            requestedStatus,
+          })
+        ) {
+          participant = selectStageParticipant(nextStage, { preferred: explicitAssignee });
+        }
         if (!participant) {
           throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
         }
@@ -502,13 +518,26 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
   const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
+  const selectPreferred =
+    existingState?.status === CHANGES_REQUESTED_STATUS
+      ? explicitAssignee ?? existingState.currentParticipant ?? null
+      : explicitAssignee;
   let participant = selectStageParticipant(pendingStage, {
-    preferred:
-      existingState?.status === CHANGES_REQUESTED_STATUS
-        ? explicitAssignee ?? existingState.currentParticipant ?? null
-        : explicitAssignee,
+    preferred: selectPreferred,
     exclude: returnAssignee,
   });
+  // When the pending stage's only eligible participant is the return
+  // assignee and the stage cannot be auto-skipped (e.g. an approval stage),
+  // fall back to self-assignment — policies that list only one participant
+  // on a non-skippable stage imply self-approval is intentional.
+  if (
+    !participant &&
+    !canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })
+  ) {
+    participant = selectStageParticipant(pendingStage, {
+      preferred: selectPreferred,
+    });
+  }
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
