@@ -28,7 +28,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractAgentMentionIds, extractAgentUrlKeyMentions, extractProjectMentionIds, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -3549,12 +3549,17 @@ export function issueService(db: Db) {
       }
 
       const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      const urlKeyMentions = extractAgentUrlKeyMentions(body);
+      if (tokens.size === 0 && explicitAgentMentionIds.length === 0 && urlKeyMentions.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
         if (tokens.has(agent.name.toLowerCase())) {
+          resolved.add(agent.id);
+        }
+        const agentUrlKey = normalizeAgentUrlKey(agent.name);
+        if (agentUrlKey && urlKeyMentions.includes(agentUrlKey)) {
           resolved.add(agent.id);
         }
       }

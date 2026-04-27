@@ -11,6 +11,7 @@ const PROJECT_MENTION_LINK_RE = /\[[^\]]*]\((project:\/\/[^)\s]+)\)/gi;
 const AGENT_MENTION_LINK_RE = /\[[^\]]*]\((agent:\/\/[^)\s]+)\)/gi;
 const USER_MENTION_LINK_RE = /\[[^\]]*]\((user:\/\/[^)\s]+)\)/gi;
 const SKILL_MENTION_LINK_RE = /\[[^\]]*]\((skill:\/\/[^)\s]+)\)/gi;
+const AGENT_URL_KEY_MENTION_LINK_RE = /\[[^\]]*]\(\/[A-Za-z]+\/agents\/([a-z0-9-]+)\)/gi;
 const AGENT_ICON_NAME_RE = /^[a-z0-9-]+$/i;
 const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/i;
 
@@ -203,6 +204,18 @@ export function extractUserMentionIds(markdown: string): string[] {
     if (parsed) ids.add(parsed.userId);
   }
   return [...ids];
+}
+
+export function extractAgentUrlKeyMentions(markdown: string): string[] {
+  if (!markdown) return [];
+  const keys = new Set<string>();
+  const re = new RegExp(AGENT_URL_KEY_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(markdown)) !== null) {
+    const key = match[1].toLowerCase();
+    if (key) keys.add(key);
+  }
+  return [...keys];
 }
 
 export function extractSkillMentionIds(markdown: string): string[] {
