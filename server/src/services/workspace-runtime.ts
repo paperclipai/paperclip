@@ -986,7 +986,22 @@ export async function syncReusedExecutionWorktree(input: {
 
   const worktreePath = input.workspace.worktreePath ?? input.workspace.cwd;
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
-  if (!repoRoot) return;
+  if (!repoRoot) {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "workspace_sync",
+        command: syncCommand,
+        cwd: worktreePath,
+        metadata: { skipped: true, reason: "git_repo_root_unresolved", worktreePath },
+        run: async () => ({
+          status: "skipped",
+          exitCode: null,
+          system: `Skipped workspace sync: unable to resolve git repo root from ${worktreePath}\n`,
+        }),
+      });
+    }
+    return;
+  }
 
   await syncExecutionWorktree({
     strategy: rawStrategy,
@@ -996,6 +1011,54 @@ export async function syncReusedExecutionWorktree(input: {
     branchName: input.workspace.branchName ?? "",
     issue: input.issue,
     agent: input.agent,
+    recorder: input.recorder ?? null,
+  });
+}
+
+export async function provisionReusedExecutionWorktree(input: {
+  config: Record<string, unknown>;
+  workspace: {
+    cwd: string;
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  base: ExecutionWorkspaceInput;
+  issue: ExecutionWorkspaceIssueRef | null;
+  agent: ExecutionWorkspaceAgentRef;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const rawStrategy = parseObject(input.config.workspaceStrategy);
+  const provisionCommand = asString(rawStrategy.provisionCommand, "").trim();
+  if (!provisionCommand) return;
+
+  const worktreePath = input.workspace.worktreePath ?? input.workspace.cwd;
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
+  if (!repoRoot) {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "workspace_provision",
+        command: provisionCommand,
+        cwd: worktreePath,
+        metadata: { skipped: true, reason: "git_repo_root_unresolved", worktreePath },
+        run: async () => ({
+          status: "skipped",
+          exitCode: null,
+          system: `Skipped workspace provision: unable to resolve git repo root from ${worktreePath}\n`,
+        }),
+      });
+    }
+    return;
+  }
+
+  await provisionExecutionWorktree({
+    strategy: rawStrategy,
+    base: input.base,
+    repoRoot,
+    worktreePath,
+    branchName: input.workspace.branchName ?? "",
+    issue: input.issue,
+    agent: input.agent,
+    created: false,
     recorder: input.recorder ?? null,
   });
 }
