@@ -53,17 +53,36 @@ What / Why / Where (file paths) / Done-when / Label (`needs-build` | `data-only`
 
 ## Worktree allocation
 
-When promoting a task from `backlog` → `todo` (step 4), allocate its
-worktree before assigning. Run from `$PAPERCLIP_PROJECT`:
+When promoting a task from `backlog` → `todo` (step 4), **allocate the
+worktree before assigning to any agent**. Worker/Reviewer/Architect
+hard-gate on the worktree existing (their step 0); without one, they
+abort and the task stalls. Allocation is the operational
+precondition — not optional, not "best effort".
+
+Run from `$PAPERCLIP_PROJECT`:
 
 ```sh
 git worktree add .paperclip/worktrees/{task-id} -b task/{task-id} main
 ```
 
-Then PATCH the task with the worktree path and branch name as custom
-fields (or include them in the description if custom fields aren't
-available yet). Worker/Reviewer/Architect read this and `cd` there
-before starting work.
+**Verify allocation succeeded** before patching the task:
+
+```sh
+test -d "$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}" \
+  && git -C "$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}" \
+       branch --show-current | grep -qx "task/{task-id}"
+```
+
+If verification fails (worktree directory missing, wrong branch, etc.):
+- DO NOT assign the task to any agent — they'd fail step 0.
+- Comment on the task: `"Worktree allocation failed: {reason}.
+  Investigate before reassigning."`
+- Leave the task in `backlog` (don't promote to `todo`).
+
+Only after verification succeeds, PATCH the task with the worktree path
+and branch as a `worktree:` line in the description (custom fields
+preferred when the schema supports them; fall back to description
+otherwise). Worker/Reviewer/Architect read this in their step 0.
 
 Skip allocation if the worktree already exists (idempotent re-promote).
 

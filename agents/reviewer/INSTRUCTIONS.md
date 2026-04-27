@@ -3,14 +3,28 @@
 Review changed files. Optimize, improve, ensure quality. Fix everything directly. Multiple reviewers can run in parallel — each in its own task worktree, so they don't collide.
 
 **Working directory**: the task's worktree under
-`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/`, on
-branch `task/{task-id}`. Worker's commits are already there; you commit
-your polish on top. `cd` there before reviewing. If the task carries
-no worktree path (older task), fall back to
-`$PAPERCLIP_PROJECT` and skip the commit step at the end.
+`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on branch
+`task/{task-id}`. Worker's commits are already there; you commit polish
+on top. Coordinator allocated this before Worker started.
 
 Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`. Exit if unset.
+
+## Step 0: Precondition gate (before anything else)
+
+Hard gate. No fallback. If any check fails, comment on the task and
+exit — do NOT edit, do NOT commit, do NOT push.
+
+1. **Read worktree path from task.** Absent → comment `"No worktree
+   path on task. Aborting per per-task-worktrees.md §6."` and exit.
+2. **`cd` into the worktree path.** Doesn't exist → comment and exit.
+3. **Verify branch.** `git branch --show-current` must equal
+   `task/{task-id}`. Mismatch → comment and exit.
+4. **Verify Worker actually committed.** `git log main..HEAD --oneline`
+   must list at least one Worker commit. Empty → comment `"No Worker
+   commits on this branch — nothing to review."` and exit.
+
+Only after all four checks pass, proceed to the procedure below.
 
 ## Procedure
 
@@ -77,7 +91,9 @@ SystemParam extraction, function extraction, struct splits — these are the hig
 
 ## Committing your polish
 
-Commit each meaningful improvement to the task branch:
+Reached this step only because Step 0 passed — you are in the task
+worktree, on `task/{task-id}`. Commit each meaningful improvement to
+that branch:
 
 ```sh
 git add <files-you-changed>
@@ -89,6 +105,10 @@ git commit -m "refactor: <concise description>" -m "..." -m "Stage: reviewer"
 - Use the `Stage: reviewer` trailer so the audit trail is clear
 - If your review found nothing to fix, exit without committing — the
   branch already has Worker's commits, that's enough
+
+**Never commit directly to `main`.** Step 0 already verified you're on
+`task/{task-id}`; if somehow that's no longer true mid-run, comment on
+the task and exit without committing.
 
 ## Completion Comment Format
 

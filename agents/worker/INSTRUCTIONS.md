@@ -2,22 +2,49 @@
 
 Execute tasks. Task context injected in prompt. No fixed domain — task description defines the work.
 
-**Working directory**: read the task — Coordinator allocates a worktree
-under `$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on the branch
-`task/{task-id}`. `cd` there before doing anything. If the task carries
-no worktree path (older task, runner pre-spec), fall back to
-`$PAPERCLIP_PROJECT` and skip the commit step at the end.
+**Working directory**: the task's worktree under
+`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on branch
+`task/{task-id}`. Coordinator allocates this before assignment.
 
 Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_PF2E_REF`. Exit if unset.
 
+## Step 0: Precondition gate (before anything else)
+
+This is a **hard gate**. There is no fallback path. If any check fails,
+exit immediately with a comment on the task — do NOT edit, do NOT
+commit, do NOT push.
+
+1. **Read worktree path from task.** The task description / custom field
+   carries `worktree: $PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/`.
+   If absent → comment `"No worktree path on task — Coordinator did not
+   allocate. Aborting per per-task-worktrees.md §6."` and exit.
+
+2. **`cd` into the worktree path.** If the directory does not exist →
+   comment `"Worktree path on task points at non-existent directory
+   {path}. Coordinator allocation failed. Aborting."` and exit.
+
+3. **Verify branch.** `git branch --show-current` must equal
+   `task/{task-id}`. If not → comment `"Wrong branch in worktree:
+   expected task/{task-id}, got {actual}. Aborting."` and exit.
+
+4. **Verify clean tree.** `git status --porcelain` must be empty. Dirty
+   state means an earlier agent left work uncommitted → comment
+   `"Worktree has uncommitted changes from prior stage. Aborting to
+   avoid mixing tasks."` and exit.
+
+Only after all four checks pass, proceed to "Before Starting" below.
+
+The hard-gate design is deliberate: a soft fallback ("if no worktree,
+work in main repo and skip commit") creates a half-applied state where
+agents commit straight to main, bypassing review. Loud failure here
+surfaces Coordinator-side bugs immediately instead of hiding them.
+
 ## Before Starting
 
-1. Read task from prompt first (what, why, file paths, done criteria, worktree path/branch)
-2. `cd` into the task worktree (if assigned)
-3. Verify clean tree: `git status` should show no changes; if it doesn't, exit and let Coordinator investigate (you've inherited dirty state)
-4. Grep existing code before writing new — extend, never duplicate
-5. PF2e rules ref: `$PAPERCLIP_PF2E_REF/packs/pf2e/`
+1. Read task from prompt (what, why, file paths, done criteria)
+2. Grep existing code before writing new — extend, never duplicate
+3. PF2e rules ref: `$PAPERCLIP_PF2E_REF/packs/pf2e/`
 
 ## Restrictions
 
@@ -50,7 +77,9 @@ Every code change ships with tests:
 
 ## Committing your work
 
-Before exiting, commit your changes to the task branch:
+Reached this step only because Step 0 passed — you are in the task
+worktree, on `task/{task-id}`, with a clean starting tree. Commit your
+changes to that branch:
 
 ```sh
 git add <files-you-changed>          # specific paths, never -A
@@ -67,6 +96,10 @@ git commit -m "<conventional message>"
 If your run produced no changes (task was a no-op or research-only),
 exit without committing — the empty branch is a signal to Coordinator
 that the work didn't materialize.
+
+**Never commit directly to `main`.** Step 0 already verified you're on
+`task/{task-id}`; if somehow that's no longer true (you `git checkout`-d
+elsewhere mid-run), comment on the task and exit without committing.
 
 ## Art Tasks
 

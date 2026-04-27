@@ -3,35 +3,50 @@
 Sole build gate. Run cargo, fix compilation, verify zero warnings. Then commit fixes and open the PR. One instance.
 
 **Working directory**: the task's worktree under
-`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/`, on
-branch `task/{task-id}`. `cd` there before running cargo. If the task
-carries no worktree path (older task), fall back to
-`$PAPERCLIP_PROJECT` and skip both the commit step and the
-PR creation step.
+`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on branch
+`task/{task-id}`. Coordinator allocated this; Worker and Reviewer have
+already committed there. You verify, fix if needed, push, and open
+the PR.
 
 Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_GH_USER`. Exit with an error if
 either is unset — never guess.
 
-No Paperclip API. No curl. No network *for paperclip*. `gh` is
-allowed for opening the PR at the end. Ignore `PAPERCLIP_*` env vars.
-No task creation (Coordinator). No merges to main (human only).
+No Paperclip API. No curl. No network *for paperclip*. `gh` is allowed
+for opening the PR at the end. No task creation (Coordinator). No
+merges to main (human only).
+
+## Step 0: Precondition gate (before anything else)
+
+Hard gate. No fallback. If any check fails, comment on the task and
+exit — do NOT edit, do NOT commit, do NOT push, do NOT run cargo.
+
+1. **Read worktree path from task.** Absent → comment `"No worktree
+   path on task. Aborting per per-task-worktrees.md §6."` and exit.
+2. **`cd` into the worktree path.** Doesn't exist → comment and exit.
+3. **Verify branch.** `git branch --show-current` must equal
+   `task/{task-id}`. Mismatch → comment and exit.
+4. **Verify upstream commits.** `git log main..HEAD --oneline` must
+   list at least one Worker (or Reviewer) commit — there's something
+   to verify. Empty → comment `"Branch has no commits beyond main —
+   nothing to verify."` and exit.
+
+Only after all four checks pass, proceed to "Verification" below.
 
 ## Verification
 
 Verify tasks live in `in_review` status (not `todo`) — Coordinator creates them there because verifying IS the in-review stage. The server auto-marks your task `done` when the run succeeds (you have no paperclip skill), so just finish and exit.
 
-1. Read task — what to verify, worktree path. If no task assigned and no CI failures, exit immediately.
-2. `cd` into the task worktree.
-3. Read cached `/tmp/cargo-check-output.txt` and `/tmp/cargo-clippy-output.txt`. Fix ALL listed warnings/errors before running cargo.
-4. Run cargo only after fixing all known issues. Use `CARGO_TARGET_DIR=$HOME/.cargo-shared-target` so concurrent worktrees share the build cache (cargo handles its own locking):
+1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
+2. Read cached `/tmp/cargo-check-output.txt` and `/tmp/cargo-clippy-output.txt`. Fix ALL listed warnings/errors before running cargo.
+3. Run cargo only after fixing all known issues. Use `CARGO_TARGET_DIR=$HOME/.cargo-shared-target` so concurrent worktrees share the build cache (cargo handles its own locking):
    - `cargo check 2>&1 | tee /tmp/cargo-check-output.txt`
    - `cargo clippy 2>&1 | tee /tmp/cargo-clippy-output.txt`
    - `cargo test`
-5. New warnings → fix ALL → run again. Repeat until zero.
-6. Commit any fixes you made (see §Committing your fixes below).
-7. Open the PR (see §Opening the PR below).
-8. Done.
+4. New warnings → fix ALL → run again. Repeat until zero.
+5. Commit any fixes you made (see §Committing your fixes below).
+6. Open the PR (see §Opening the PR below).
+7. Done.
 
 **Minimize cargo runs.** Read output, fix everything, re-verify once. Builds are expensive.
 

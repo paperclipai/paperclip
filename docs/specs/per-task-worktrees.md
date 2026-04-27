@@ -87,6 +87,33 @@ opens under the wrong identity, and Coordinator's merge sweep won't
 recognize the result. Never work around an auth failure with
 `--force-with-lease` or by pushing under the wrong account.
 
+### 3.5a Hard-gate Step 0 on every agent (post-mortem from first pilot)
+
+The first attempt at this pipeline ran with a *soft* fallback: agent
+INSTRUCTIONS said `"if the task carries no worktree path, fall back to
+$PAPERCLIP_PROJECT and skip the commit step"`. In practice, agents
+applied the prominent "commit your work" section but missed the
+buried fallback caveat — they committed straight to `main` instead of
+to a task branch, defeating the whole point of the pipeline.
+
+The fix is structural: every Worker/Reviewer/Architect run starts with
+a numbered **Step 0 precondition gate** that hard-aborts if the
+worktree isn't allocated, isn't on the right branch, or is dirty.
+There is no fallback path. If an agent's checks fail, it comments on
+the task and exits — no edits, no commits, no push.
+
+This makes Coordinator's allocation step the operational precondition
+for the rest of the pipeline. If allocation breaks, every downstream
+agent surfaces the failure immediately instead of silently
+side-stepping into commits-to-main. Coordinator gets a parallel gate:
+*verify* the worktree directory exists and is on the correct branch
+before assigning the task to any agent.
+
+Trade-off: when the pipeline is misconfigured (e.g., env vars unset,
+git failure during allocation), tasks stall with a clear error
+instead of producing dirty work. That's correct — silent fallback is
+the antipattern, loud failure is the design.
+
 ### 3.5 Environment variables (operator setup)
 
 Agent INSTRUCTIONS reference these env vars instead of hardcoded
