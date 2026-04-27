@@ -436,6 +436,39 @@ describe.sequential("agent skill routes", () => {
     );
   });
 
+  it("accepts the security role on direct agent creation and preserves it in telemetry", async () => {
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeAgent("claude_local"),
+      ...patch,
+      role: "security",
+      adapterConfig: patch.adapterConfig ?? {},
+    }));
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Security Engineer",
+        role: "security",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        role: "security",
+      }),
+    );
+    expect(mockTrackAgentCreated).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentId: "11111111-1111-4111-8111-111111111111",
+        agentRole: "security",
+      }),
+    );
+  });
+
   it("materializes a managed AGENTS.md for directly created local agents", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
