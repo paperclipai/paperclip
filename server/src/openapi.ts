@@ -34,6 +34,7 @@ import {
   createProjectWorkspaceSchema,
   // Company
   createCompanySchema,
+  updateCompanySchema,
   updateCompanyBrandingSchema,
   // Routine
   createRoutineSchema,
@@ -78,12 +79,16 @@ import {
   releaseIssueTreeHoldSchema,
   // Issue interactions
   createIssueThreadInteractionSchema,
+  createChildIssueSchema,
   // Auth / profile
   updateCurrentUserProfileSchema,
   // Company portability (legacy routes)
   companyPortabilityExportSchema,
   companyPortabilityPreviewSchema,
   companyPortabilityImportSchema,
+  // Instance settings
+  patchInstanceGeneralSettingsSchema,
+  patchInstanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
 
 extendZodWithOpenApi(z);
@@ -194,7 +199,7 @@ registry.registerPath({
   summary: "Update a company",
   request: {
     params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(updateCompanySchema.partial()),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
@@ -1508,7 +1513,15 @@ registry.registerPath({
   summary: "Create an activity entry",
   request: {
     params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+      actorId: z.string().min(1),
+      action: z.string().min(1),
+      entityType: z.string().min(1),
+      entityId: z.string().min(1),
+      agentId: z.string().uuid().optional().nullable(),
+      details: z.record(z.unknown()).optional().nullable(),
+    })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -1618,7 +1631,9 @@ registry.registerPath({
   summary: "Create an inbox dismissal",
   request: {
     params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
+    })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -1638,7 +1653,7 @@ registry.registerPath({
   path: "/api/instance/settings/general",
   tags: ["instance"],
   summary: "Update general instance settings",
-  request: { body: jsonBody(z.record(z.unknown())) },
+  request: { body: jsonBody(patchInstanceGeneralSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -1655,7 +1670,7 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Update experimental instance settings",
-  request: { body: jsonBody(z.record(z.unknown())) },
+  request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -1863,7 +1878,12 @@ registry.registerPath({
   summary: "Submit watchdog decisions for a run",
   request: {
     params: z.object({ runId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      decision: z.enum(["snooze", "continue", "dismissed_false_positive"]),
+      evaluationIssueId: z.string().optional().nullable(),
+      reason: z.string().optional().nullable(),
+      snoozedUntil: z.string().datetime().optional().nullable(),
+    })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -1961,7 +1981,7 @@ registry.registerPath({
   path: "/api/issues/{id}/children",
   tags: ["issues"],
   summary: "Create child issues",
-  request: { params: z.object({ id: z.string() }), body: jsonBody(z.record(z.unknown())) },
+  request: { params: z.object({ id: z.string() }), body: jsonBody(createChildIssueSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2389,7 +2409,13 @@ registry.registerPath({
   path: "/api/adapters/install",
   tags: ["adapters"],
   summary: "Install an adapter",
-  request: { body: jsonBody(z.record(z.unknown())) },
+  request: {
+    body: jsonBody(z.object({
+      packageName: z.string(),
+      isLocalPath: z.boolean().optional(),
+      version: z.string().optional(),
+    })),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2397,10 +2423,10 @@ registry.registerPath({
   method: "patch",
   path: "/api/adapters/{type}",
   tags: ["adapters"],
-  summary: "Update adapter config",
+  summary: "Enable or disable an adapter",
   request: {
     params: z.object({ type: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({ disabled: z.boolean() })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -2409,10 +2435,10 @@ registry.registerPath({
   method: "patch",
   path: "/api/adapters/{type}/override",
   tags: ["adapters"],
-  summary: "Override adapter settings",
+  summary: "Pause or resume an adapter's override of a builtin",
   request: {
     params: z.object({ type: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({ paused: z.boolean() })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -2492,7 +2518,18 @@ registry.registerPath({
   path: "/api/plugins/tools/execute",
   tags: ["plugins"],
   summary: "Execute a plugin tool",
-  request: { body: jsonBody(z.record(z.unknown())) },
+  request: {
+    body: jsonBody(z.object({
+      tool: z.string(),
+      parameters: z.record(z.unknown()).optional(),
+      runContext: z.object({
+        agentId: z.string(),
+        runId: z.string(),
+        companyId: z.string(),
+        projectId: z.string(),
+      }),
+    })),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2501,7 +2538,13 @@ registry.registerPath({
   path: "/api/plugins/install",
   tags: ["plugins"],
   summary: "Install a plugin",
-  request: { body: jsonBody(z.record(z.unknown())) },
+  request: {
+    body: jsonBody(z.object({
+      packageName: z.string(),
+      version: z.string().optional(),
+      isLocalPath: z.boolean().optional(),
+    })),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2584,7 +2627,7 @@ registry.registerPath({
   summary: "Set plugin config",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({ configJson: z.record(z.unknown()) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -2596,7 +2639,7 @@ registry.registerPath({
   summary: "Test plugin config",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({ configJson: z.record(z.unknown()) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -2632,10 +2675,9 @@ registry.registerPath({
   method: "post",
   path: "/api/plugins/{pluginId}/webhooks/{endpointKey}",
   tags: ["plugins"],
-  summary: "Fire a plugin webhook",
+  summary: "Deliver an external webhook payload to a plugin",
   request: {
     params: z.object({ pluginId: z.string(), endpointKey: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -2656,7 +2698,11 @@ registry.registerPath({
   summary: "Send data via plugin bridge",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      key: z.string(),
+      companyId: z.string().optional(),
+      params: z.record(z.unknown()).optional(),
+    })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -2668,7 +2714,11 @@ registry.registerPath({
   summary: "Send action via plugin bridge",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      key: z.string(),
+      companyId: z.string().optional(),
+      params: z.record(z.unknown()).optional(),
+    })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -2677,10 +2727,13 @@ registry.registerPath({
   method: "post",
   path: "/api/plugins/{pluginId}/data/{key}",
   tags: ["plugins"],
-  summary: "Set plugin data by key",
+  summary: "Get plugin data by key (URL-keyed bridge)",
   request: {
     params: z.object({ pluginId: z.string(), key: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      companyId: z.string().optional(),
+      params: z.record(z.unknown()).optional(),
+    })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -2689,10 +2742,13 @@ registry.registerPath({
   method: "post",
   path: "/api/plugins/{pluginId}/actions/{key}",
   tags: ["plugins"],
-  summary: "Invoke a plugin action",
+  summary: "Invoke a plugin action (URL-keyed bridge)",
   request: {
     params: z.object({ pluginId: z.string(), key: z.string() }),
-    body: jsonBody(z.record(z.unknown())),
+    body: jsonBody(z.object({
+      companyId: z.string().optional(),
+      params: z.record(z.unknown()).optional(),
+    })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
