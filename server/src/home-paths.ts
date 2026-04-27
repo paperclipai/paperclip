@@ -54,6 +54,18 @@ export function resolveDefaultBackupDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
 }
 
+export function resolveProjectScratchRoot(): string {
+  return path.resolve(resolvePaperclipInstanceRoot(), "projects");
+}
+
+export function resolveCompanyScratchRoot(): string {
+  return path.resolve(resolvePaperclipInstanceRoot(), "companies");
+}
+
+export function resolvePaperclipTrashRoot(): string {
+  return path.resolve(resolvePaperclipInstanceRoot(), "_trash");
+}
+
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   const trimmed = agentId.trim();
   if (!PATH_SEGMENT_RE.test(trimmed)) {

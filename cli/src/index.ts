@@ -9,6 +9,7 @@ import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
+import { projectsGcCommand } from "./commands/gc.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
 import { registerIssueCommands } from "./commands/client/issue.js";
@@ -137,6 +138,25 @@ heartbeat
   .option("--json", "Output raw JSON where applicable")
   .option("--debug", "Show raw adapter stdout/stderr JSON chunks")
   .action(heartbeatRun);
+
+program
+  .command("projects:gc")
+  .description(
+    "Quarantine orphaned <instance-root>/{projects,companies}/<companyId>/ scratch dirs (whose company is gone) into <instance-root>/_trash/, and sweep trash older than the retention window",
+  )
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("-i, --instance <id>", "Instance id to scan (defaults to current PAPERCLIP_INSTANCE_ID or 'default')")
+  .option("--apply", "Actually quarantine orphans and sweep expired trash (default is dry-run)", false)
+  .option(
+    "--retention-days <days>",
+    "Retention window for trash before final deletion (default: env PAPERCLIP_PROJECTS_GC_RETENTION_DAYS or 14)",
+    (value) => Number(value),
+  )
+  .option("--json", "Print results as JSON (skips banner and prompts)", false)
+  .action(async (opts) => {
+    await projectsGcCommand(opts);
+  });
 
 registerContextCommands(program);
 registerCompanyCommands(program);

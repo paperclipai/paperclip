@@ -85,6 +85,9 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  projectsGcEnabled: boolean;
+  projectsGcIntervalHours: number;
+  projectsGcRetentionDays: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +334,15 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    projectsGcEnabled: process.env.PAPERCLIP_PROJECTS_GC_ENABLED !== "false",
+    projectsGcIntervalHours: Math.max(
+      1,
+      Number(process.env.PAPERCLIP_PROJECTS_GC_INTERVAL_HOURS) || 24,
+    ),
+    projectsGcRetentionDays: Math.max(
+      0,
+      Number(process.env.PAPERCLIP_PROJECTS_GC_RETENTION_DAYS) || 14,
+    ),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
