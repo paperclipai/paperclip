@@ -134,3 +134,107 @@ Steps 1–3 land in sequence; step 5 only flips after 3 is verified on at least 
 - Replacing GitHub PR review with an in-Paperclip review UI. PRs land in GitHub for now; Paperclip just records the URL on the task.
 - Auto-merge. Human always merges.
 - Worktree-per-stage (separate worktree for Worker vs Reviewer). Same worktree across stages keeps it simple; review polish lands as a follow-up commit on the same branch.
+
+## 6. Operator setup
+
+One-time configuration required before the new pipeline runs.
+
+### 6.1 Env vars (the four from §3.5)
+
+Add to your shell init (`~/.bashrc` / `~/.zshrc`) **or** create a
+Paperclip-level config at `~/.paperclip/env` and source it from agent
+launch:
+
+```sh
+# Path to the project repo agents work on
+export PAPERCLIP_PROJECT="/absolute/path/to/your-project"
+
+# Path to this Paperclip checkout
+export PAPERCLIP_HOME="/absolute/path/to/paperclip"
+
+# Path to the PF2e Foundry data reference (Worker only, project-specific)
+export PAPERCLIP_PF2E_REF="/absolute/path/to/pf2e"
+
+# GitHub account with write access to the project repo
+export PAPERCLIP_GH_USER="your-github-username"
+```
+
+If any are unset when an agent launches, the agent exits immediately
+with a clear error rather than guessing — silent fallbacks are how
+dirty state leaks across machines (§3.5).
+
+### 6.2 Shared cargo build cache
+
+Architect runs cargo with `CARGO_TARGET_DIR=$HOME/.cargo-shared-target`
+so parallel worktrees don't each cold-build their own `target/`. Add to
+the same shell init:
+
+```sh
+export CARGO_TARGET_DIR="$HOME/.cargo-shared-target"
+```
+
+Cargo's own lockfile serializes concurrent builds — that's correct
+behavior, not a problem to solve. Architect runs are infrequent enough
+that the wait is rarely visible.
+
+### 6.3 Project repo `.gitignore`
+
+The project repo must ignore `.paperclip/worktrees/` so the human
+operator can't accidentally `git add .` worktree contents from the
+main checkout. One line:
+
+```gitignore
+.paperclip/worktrees/
+```
+
+This was added to bevy-rpg in commit `<hash>`; do the equivalent in
+any other project this pipeline points at.
+
+### 6.4 Verifying setup
+
+```sh
+# All four agent env vars set, no defaults
+$ env | grep ^PAPERCLIP_
+PAPERCLIP_PROJECT=/...
+PAPERCLIP_HOME=/...
+PAPERCLIP_PF2E_REF=/...
+PAPERCLIP_GH_USER=...
+
+# Cargo target shared
+$ env | grep ^CARGO_TARGET_DIR
+CARGO_TARGET_DIR=/.../.cargo-shared-target
+
+# gh auth has the right account available (it doesn't need to be ACTIVE
+# yet — Architect switches at PR time — just needs to be logged in)
+$ gh auth status
+✓ Logged in to github.com as <PAPERCLIP_GH_USER>
+
+# Project repo's .gitignore has the worktree exclusion
+$ grep '\.paperclip/worktrees' "$PAPERCLIP_PROJECT/.gitignore"
+.paperclip/worktrees/
+```
+
+If all four checks pass, the pipeline is ready for a pilot task.
+
+## 7. Pilot task
+
+Before flipping the global "No Agent Commits" rule (step 5 of §4), run
+one full task end-to-end through the new flow to verify each stage:
+
+1. Pick a small `data-only` backlog task (no cargo verification, fewer
+   moving parts).
+2. Promote it through the Coordinator's run loop. Verify the worktree
+   appears at `$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on
+   branch `task/{task-id}`.
+3. Watch the Worker run: should `cd` into the worktree and commit
+   there (not in main).
+4. Watch the Reviewer run: should append commits to the same branch.
+5. (For `needs-build` only) Watch the Architect run: cargo verify, fix,
+   commit, `gh auth switch`, push, `gh pr create`.
+6. Review the PR yourself, merge.
+7. Watch the next Coordinator sweep: should detect merge, run
+   `git worktree remove` + `git branch -D`.
+
+If all seven steps work without manual intervention, flip
+`bevy-rpg/CLAUDE.md` "No Agent Commits" → "Agents commit to task
+branches" (§4 step 5) and the rollout is complete.
