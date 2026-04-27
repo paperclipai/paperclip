@@ -273,6 +273,82 @@ export interface PluginSettingsPageProps {
 }
 
 // ---------------------------------------------------------------------------
+// New Issue Form Extension
+// ---------------------------------------------------------------------------
+
+/**
+ * Form state exposed to `newIssueFormExtension` slot components.
+ *
+ * Contains the current values of host-owned form fields that the plugin
+ * may read. Fields are read-only snapshots; use `NewIssueFormActions` to
+ * write back.
+ */
+export interface NewIssueFormState {
+  /** Current description field value (plain text / markdown). */
+  description: string;
+}
+
+/**
+ * Callbacks exposed to `newIssueFormExtension` slot components.
+ *
+ * Each callback writes to the corresponding host-owned form field.
+ * The host remains the owner of form state; the plugin merely requests
+ * an update.
+ */
+export interface NewIssueFormActions {
+  /** Replace the description field content. */
+  setDescription: (value: string) => void;
+}
+
+/**
+ * Props passed to a plugin new-issue form extension component.
+ *
+ * A `newIssueFormExtension` slot renders inline inside the native
+ * "New Issue" dialog, between the assignee/reviewer rows and the
+ * description editor. The plugin can read the current description
+ * via `context.formState` and write to it via `context.formActions`.
+ *
+ * The host owns all other form fields (title, status, priority,
+ * assignee, reviewer, approver, project, execution workspace, file
+ * attachments, draft auto-save, mentions, company switching, and
+ * the submit action). The plugin cannot modify or block those.
+ *
+ * The slot is company-scoped: `context.companyId` reflects the
+ * currently selected company in the dialog.
+ *
+ * If the plugin is uninstalled or its render fails, the dialog
+ * reverts to its normal behavior with no visible change (the outlet
+ * is failure-isolated via PluginSlotOutlet error boundaries).
+ *
+ * **Capability requirement:** `ui.action.register`
+ *
+ * **Why `ui.action.register`:** This slot extends the host UI with a
+ * new interactive control (the type selector) that triggers side effects
+ * (writing to the description field). It does not read or write issues
+ * directly — the host's own submit flow handles issue creation. The
+ * `ui.action.register` capability is the standard gate for slots that
+ * add interactive UI surfaces.
+ *
+ * **Use cases:**
+ * - Issue type selectors that insert markdown templates
+ * - Pre-fill controls that seed description from external sources
+ * - Any read/write augmentation of the description field during creation
+ */
+export interface PluginNewIssueFormExtensionProps {
+  /** Host context including companyId, companyPrefix, formState, and formActions. */
+  context: PluginHostContext & {
+    /** ID of the company selected in the New Issue dialog. */
+    companyId: string;
+    /** Issue prefix of the selected company (e.g. "PER"). */
+    companyPrefix: string | null;
+    /** Current form field values (read-only snapshot). */
+    formState: NewIssueFormState;
+    /** Callbacks to update form fields. */
+    formActions: NewIssueFormActions;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // usePluginData hook return type
 // ---------------------------------------------------------------------------
 
