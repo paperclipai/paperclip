@@ -29,4 +29,20 @@ describe("parseClaudeCliUsageText", () => {
       { label: "Current week (all models)", usedPercent: 88 },
     ]);
   });
+
+  it("merges compact status-line windows into a partial usage panel", () => {
+    const rendered = [
+      "Settings:",
+      "Usage",
+      "Current session",
+      "42% used",
+      "Resets Apr 27 at 5pm",
+      "Opus 4.6 | 5h: 52% | 7d: 23%",
+    ].join("\n");
+
+    expect(parseClaudeCliUsageText(rendered).map(({ label, usedPercent }) => ({ label, usedPercent }))).toEqual([
+      { label: "Current session", usedPercent: 42 },
+      { label: "Current week (all models)", usedPercent: 23 },
+    ]);
+  });
 });

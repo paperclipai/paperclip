@@ -278,7 +278,7 @@ function usageOutputLooksRelevant(text: string): boolean {
   const normalized = normalizeForLabelSearch(text);
   return normalized.includes("currentsession")
     || normalized.includes("currentweek")
-    || statusLineUsageWindows(text).length > 0
+    || statusLineUsageWindowsFromCleanedText(text).length > 0
     || normalized.includes("loadingusage")
     || normalized.includes("failedtoloadusagedata")
     || normalized.includes("tokenexpired")
@@ -288,7 +288,7 @@ function usageOutputLooksRelevant(text: string): boolean {
 
 function usageOutputLooksComplete(text: string): boolean {
   const normalized = normalizeForLabelSearch(text);
-  if (statusLineUsageWindows(text).length > 0) {
+  if (statusLineUsageWindowsFromCleanedText(text).length > 0) {
     return true;
   }
   if (
@@ -335,9 +335,8 @@ function percentFromLine(line: string): number | null {
   return Math.round(clamped);
 }
 
-function statusLineUsageWindows(text: string): QuotaWindow[] {
-  const cleaned = cleanTerminalText(text);
-  const match = cleaned.match(
+function statusLineUsageWindowsFromCleanedText(cleanedText: string): QuotaWindow[] {
+  const match = cleanedText.match(
     /\b5h\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*(?:[|,;/]\s*)?7d\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?)\s*%/i,
   );
   if (!match) return [];
@@ -450,7 +449,7 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
     };
   });
 
-  const statusLineWindows = statusLineUsageWindows(fullCleaned);
+  const statusLineWindows = statusLineUsageWindowsFromCleanedText(fullCleaned);
   if (!windows.some((window) => normalizeForLabelSearch(window.label) === "currentsession")) {
     if (statusLineWindows.length > 0) return statusLineWindows;
     throw new Error("Could not parse Claude CLI usage output.");
