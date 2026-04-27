@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { companies, companySkills, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -88,5 +89,41 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       sourceBadge: "local",
       editable: true,
     });
+  });
+
+  it("survives concurrent createLocalSkill calls with the same key (#3845)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // Fan out many service instances hitting upsertImportedSkills for the
+    // same (companyId, key) without sharing the in-process dedup map. This
+    // reproduces the multi-replica race where two callers both see
+    // getByKey → null and both attempt INSERT. Before #3845's fix, at least
+    // one call threw a PostgresError on the (company_id, key) unique index.
+    const parallelism = 16;
+    const request = { name: "Race", slug: "race", description: null, markdown: null };
+    const results = await Promise.all(
+      Array.from({ length: parallelism }, () =>
+        companySkillService(db).createLocalSkill(companyId, request),
+      ),
+    );
+
+    for (const result of results) {
+      expect(result.key).toBe(`company/${companyId}/race`);
+    }
+
+    const rows = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe(`company/${companyId}/race`);
+
+    cleanupDirs.add(path.dirname(rows[0].sourceLocator as string));
   });
 });
