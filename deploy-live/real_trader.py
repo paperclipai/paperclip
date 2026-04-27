@@ -66,6 +66,11 @@ except ImportError as _norm_imp_err:
 try:
     import state_store as _state_store
     from alerts import AlertDispatcher, ConsoleSink, TelegramSink, DigestSink
+    from live_exchange_fetcher import LiveExchangeFetcher as _LiveExchangeFetcher
+    from reconciler import (
+        start_periodic_sweep as _start_periodic_sweep,
+        schedule_per_trade_reconcile as _schedule_per_trade_reconcile,
+    )
     _PLAN3_AVAILABLE = True
 except ImportError as _plan3_imp_err:
     _state_store = None  # type: ignore[assignment]
@@ -73,6 +78,9 @@ except ImportError as _plan3_imp_err:
     ConsoleSink = None  # type: ignore[assignment,misc]
     TelegramSink = None  # type: ignore[assignment,misc]
     DigestSink = None  # type: ignore[assignment,misc]
+    _LiveExchangeFetcher = None  # type: ignore[assignment,misc]
+    _start_periodic_sweep = None  # type: ignore[assignment]
+    _schedule_per_trade_reconcile = None  # type: ignore[assignment]
     _PLAN3_AVAILABLE = False
     log.error(
         "Plan 3 modules not importable; state_store + AlertDispatcher disabled. "
@@ -2573,6 +2581,8 @@ class LiveTrader:
         self._digest_task: Optional[asyncio.Task] = None
         self._digest_sink: Optional[Any] = None  # DigestSink; forward-ref since import is gated
         self.alerts = None
+        self.fetcher: Optional[Any] = None   # LiveExchangeFetcher; set in main() after loop starts
+        self.sweep_task: Optional[asyncio.Task] = None  # periodic reconciler sweep
         if _PLAN3_AVAILABLE:
             _db_path = str(DATA_DIR / "state.db")
             _state_store.init_schema(_db_path)
@@ -3183,6 +3193,22 @@ async def main():
             trader._digest_task = asyncio.create_task(trader._digest_sink.run())
         tg_listener = TelegramCommandListener(trader)
 
+        # -- Plan 3 Task 10: wire reconciler behind feature flag --
+        _use_sqlite = (
+            os.environ.get("SHADOW_SQLITE", "false").lower() in ("1", "true", "yes")
+            or os.environ.get("USE_SQLITE_STATE", "false").lower() in ("1", "true", "yes")
+        )
+        if _PLAN3_AVAILABLE and trader.state_conn is not None and _use_sqlite:
+            _loop = asyncio.get_event_loop()
+            trader.fetcher = _LiveExchangeFetcher(executors, loop=_loop)
+            trader.sweep_task = _start_periodic_sweep(
+                trader.state_conn, trader.fetcher,
+                exchanges=EXCHANGES,
+                interval_s=RECONCILE_INTERVAL_SEC,
+            )
+            log.info("Reconciler sweep started (interval=%ss, exchanges=%s)",
+                     RECONCILE_INTERVAL_SEC, EXCHANGES)
+
         # -- Discover symbols --
         symbols = await discover_symbols(session)
         trader.symbols_set = set(symbols)
@@ -3370,6 +3396,16 @@ async def main():
                             pos, current_spread, exit_reason,
                             q_short=q_short, q_long=q_long
                         )
+                        # Per-trade reconcile after close (fire-and-forget, gated on flag)
+                        if trader.state_conn is not None and trader.fetcher is not None:
+                            _schedule_per_trade_reconcile(
+                                trader.state_conn, trader.fetcher,
+                                exchange=pos.exchange_short, symbol=pos.symbol,
+                            )
+                            _schedule_per_trade_reconcile(
+                                trader.state_conn, trader.fetcher,
+                                exchange=pos.exchange_long, symbol=pos.symbol,
+                            )
                         if success:
                             # Update blacklist if loss
                             if pos.net_pnl_usd < 0 and pos.size_usd > 0:
@@ -3528,6 +3564,16 @@ async def main():
                             open_msg = format_live_open_msg(pos, trader.portfolio)
                             msg_id = await send_telegram(session, open_msg)
                             pos.telegram_msg_id = msg_id
+                            # Per-trade reconcile (fire-and-forget, gated on flag)
+                            if trader.state_conn is not None and trader.fetcher is not None:
+                                _schedule_per_trade_reconcile(
+                                    trader.state_conn, trader.fetcher,
+                                    exchange=pos.exchange_short, symbol=pos.symbol,
+                                )
+                                _schedule_per_trade_reconcile(
+                                    trader.state_conn, trader.fetcher,
+                                    exchange=pos.exchange_long, symbol=pos.symbol,
+                                )
 
                 # ---- RECONCILIATION ----
                 mismatches = await trader.risk_mgr.reconcile_positions(session)
@@ -3626,7 +3672,13 @@ async def main():
         )
         await send_telegram(session, final_msg)
 
-        # Plan 3 shutdown cleanup: cancel digest task, flush, close state_conn
+        # Plan 3 shutdown cleanup: cancel sweep + digest tasks, flush, close state_conn
+        if trader.sweep_task is not None:
+            trader.sweep_task.cancel()
+            try:
+                await trader.sweep_task
+            except asyncio.CancelledError:
+                pass
         if trader._digest_task is not None:
             trader._digest_task.cancel()
             try:
