@@ -136,7 +136,7 @@ async function createApp(actor: Record<string, unknown> = {
   return app;
 }
 
-describe("issue thread interaction routes", () => {
+describe.sequential("issue thread interaction routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
@@ -144,7 +144,7 @@ describe("issue thread interaction routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({

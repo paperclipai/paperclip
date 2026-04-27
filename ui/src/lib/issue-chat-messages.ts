@@ -30,6 +30,8 @@ export interface IssueChatComment extends IssueComment {
   clientStatus?: "pending" | "queued";
   queueState?: "queued";
   queueTargetRunId?: string | null;
+  queueReason?: "hold" | "active_run" | "other";
+  followUpRequested?: boolean;
 }
 
 export interface IssueChatLinkedRun {
@@ -42,6 +44,7 @@ export interface IssueChatLinkedRun {
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
+  logBytes?: number | null;
 }
 
 export interface IssueChatTranscriptEntry {
@@ -315,7 +318,9 @@ function createCommentMessage(args: {
     clientStatus: comment.clientStatus ?? null,
     queueState: comment.queueState ?? null,
     queueTargetRunId: comment.queueTargetRunId ?? null,
+    queueReason: comment.queueReason ?? null,
     interruptedRunId: comment.interruptedRunId ?? null,
+    followUpRequested: comment.followUpRequested === true,
   };
 
   if (comment.authorAgentId) {
@@ -354,7 +359,9 @@ function createTimelineEventMessage(args: {
       ? "System"
       : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
 
-  const lines: string[] = [`${actorName} updated this issue`];
+  const lines: string[] = [
+    event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
+  ];
   if (event.statusChange) {
     lines.push(
       `Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,
@@ -385,6 +392,7 @@ function createTimelineEventMessage(args: {
         actorId: event.actorId,
         statusChange: event.statusChange ?? null,
         assigneeChange: event.assigneeChange ?? null,
+        followUpRequested: event.followUpRequested === true,
       },
     },
   };
