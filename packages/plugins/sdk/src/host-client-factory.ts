@@ -97,6 +97,13 @@ export interface HostServices {
     delete(params: WorkerToHostMethods["state.delete"][0]): Promise<void>;
   };
 
+  /** Provides restricted plugin database namespace methods. */
+  db: {
+    namespace(params: WorkerToHostMethods["db.namespace"][0]): Promise<WorkerToHostMethods["db.namespace"][1]>;
+    query(params: WorkerToHostMethods["db.query"][0]): Promise<WorkerToHostMethods["db.query"][1]>;
+    execute(params: WorkerToHostMethods["db.execute"][0]): Promise<WorkerToHostMethods["db.execute"][1]>;
+  };
+
   /** Provides `entities.upsert`, `entities.list`. */
   entities: {
     upsert(params: WorkerToHostMethods["entities.upsert"][0]): Promise<WorkerToHostMethods["entities.upsert"][1]>;
@@ -135,6 +142,11 @@ export interface HostServices {
     write(params: WorkerToHostMethods["metrics.write"][0]): Promise<void>;
   };
 
+  /** Provides `telemetry.track`. */
+  telemetry: {
+    track(params: WorkerToHostMethods["telemetry.track"][0]): Promise<void>;
+  };
+
   /** Provides `log`. */
   logger: {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
@@ -155,14 +167,24 @@ export interface HostServices {
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
   };
 
-  /** Provides `issues.list`, `issues.get`, `issues.create`, `issues.update`, `issues.listComments`, `issues.createComment`. */
+  /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
     create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
+    setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
+    addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
+    removeBlockers(params: WorkerToHostMethods["issues.relations.removeBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.removeBlockers"][1]>;
+    assertCheckoutOwner(params: WorkerToHostMethods["issues.assertCheckoutOwner"][0]): Promise<WorkerToHostMethods["issues.assertCheckoutOwner"][1]>;
+    getSubtree(params: WorkerToHostMethods["issues.getSubtree"][0]): Promise<WorkerToHostMethods["issues.getSubtree"][1]>;
+    requestWakeup(params: WorkerToHostMethods["issues.requestWakeup"][0]): Promise<WorkerToHostMethods["issues.requestWakeup"][1]>;
+    requestWakeups(params: WorkerToHostMethods["issues.requestWakeups"][0]): Promise<WorkerToHostMethods["issues.requestWakeups"][1]>;
+    getOrchestrationSummary(params: WorkerToHostMethods["issues.summaries.getOrchestration"][0]): Promise<WorkerToHostMethods["issues.summaries.getOrchestration"][1]>;
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
+    createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -264,6 +286,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "state.set": "plugin.state.write",
   "state.delete": "plugin.state.write",
 
+  "db.namespace": "database.namespace.read",
+  "db.query": "database.namespace.read",
+  "db.execute": "database.namespace.write",
+
   // Entities — no specific capability required (plugin-scoped by design)
   "entities.upsert": null,
   "entities.list": null,
@@ -284,6 +310,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Metrics
   "metrics.write": "metrics.write",
 
+  // Telemetry
+  "telemetry.track": "telemetry.track",
+
   // Logger — always allowed
   "log": null,
 
@@ -303,8 +332,18 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.get": "issues.read",
   "issues.create": "issues.create",
   "issues.update": "issues.update",
+  "issues.relations.get": "issue.relations.read",
+  "issues.relations.setBlockedBy": "issue.relations.write",
+  "issues.relations.addBlockers": "issue.relations.write",
+  "issues.relations.removeBlockers": "issue.relations.write",
+  "issues.assertCheckoutOwner": "issues.checkout",
+  "issues.getSubtree": "issue.subtree.read",
+  "issues.requestWakeup": "issues.wakeup",
+  "issues.requestWakeups": "issues.wakeup",
+  "issues.summaries.getOrchestration": "issues.orchestration.read",
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
+  "issues.createInteraction": "issue.interactions.create",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -411,6 +450,16 @@ export function createHostClientHandlers(
       return services.state.delete(params);
     }),
 
+    "db.namespace": gated("db.namespace", async (params) => {
+      return services.db.namespace(params);
+    }),
+    "db.query": gated("db.query", async (params) => {
+      return services.db.query(params);
+    }),
+    "db.execute": gated("db.execute", async (params) => {
+      return services.db.execute(params);
+    }),
+
     // Entities
     "entities.upsert": gated("entities.upsert", async (params) => {
       return services.entities.upsert(params);
@@ -445,6 +494,11 @@ export function createHostClientHandlers(
     // Metrics
     "metrics.write": gated("metrics.write", async (params) => {
       return services.metrics.write(params);
+    }),
+
+    // Telemetry
+    "telemetry.track": gated("telemetry.track", async (params) => {
+      return services.telemetry.track(params);
     }),
 
     // Logger
@@ -490,11 +544,41 @@ export function createHostClientHandlers(
     "issues.update": gated("issues.update", async (params) => {
       return services.issues.update(params);
     }),
+    "issues.relations.get": gated("issues.relations.get", async (params) => {
+      return services.issues.getRelations(params);
+    }),
+    "issues.relations.setBlockedBy": gated("issues.relations.setBlockedBy", async (params) => {
+      return services.issues.setBlockedBy(params);
+    }),
+    "issues.relations.addBlockers": gated("issues.relations.addBlockers", async (params) => {
+      return services.issues.addBlockers(params);
+    }),
+    "issues.relations.removeBlockers": gated("issues.relations.removeBlockers", async (params) => {
+      return services.issues.removeBlockers(params);
+    }),
+    "issues.assertCheckoutOwner": gated("issues.assertCheckoutOwner", async (params) => {
+      return services.issues.assertCheckoutOwner(params);
+    }),
+    "issues.getSubtree": gated("issues.getSubtree", async (params) => {
+      return services.issues.getSubtree(params);
+    }),
+    "issues.requestWakeup": gated("issues.requestWakeup", async (params) => {
+      return services.issues.requestWakeup(params);
+    }),
+    "issues.requestWakeups": gated("issues.requestWakeups", async (params) => {
+      return services.issues.requestWakeups(params);
+    }),
+    "issues.summaries.getOrchestration": gated("issues.summaries.getOrchestration", async (params) => {
+      return services.issues.getOrchestrationSummary(params);
+    }),
     "issues.listComments": gated("issues.listComments", async (params) => {
       return services.issues.listComments(params);
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
       return services.issues.createComment(params);
+    }),
+    "issues.createInteraction": gated("issues.createInteraction", async (params) => {
+      return services.issues.createInteraction(params);
     }),
 
     // Issue Documents

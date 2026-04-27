@@ -7,6 +7,7 @@ export {
   loggingConfigSchema,
   serverConfigSchema,
   authConfigSchema,
+  telemetryConfigSchema,
   storageConfigSchema,
   storageLocalDiskConfigSchema,
   storageS3ConfigSchema,
@@ -19,10 +20,11 @@ export {
   type LoggingConfig,
   type ServerConfig,
   type AuthConfig,
+  type TelemetryConfig,
   type StorageConfig,
   type StorageLocalDiskConfig,
   type StorageS3Config,
   type SecretsConfig,
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
-} from "@paperclipai/shared";
+} from "../../../packages/shared/src/config-schema.js";

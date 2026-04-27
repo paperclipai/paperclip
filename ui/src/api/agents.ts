@@ -8,6 +8,7 @@ import type {
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
+  AgentWakeupResponse,
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
@@ -25,6 +26,13 @@ export interface AgentKey {
 export interface AdapterModel {
   id: string;
   label: string;
+}
+
+export interface DetectedAdapterModel {
+  model: string;
+  provider: string;
+  source: string;
+  candidates?: string[];
 }
 
 export interface ClaudeLoginResult {
@@ -138,6 +146,7 @@ export const agentsApi = {
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
+  approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
   terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
   remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),
   listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
@@ -155,9 +164,13 @@ export const agentsApi = {
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
-  adapterModels: (companyId: string, type: string) =>
+  adapterModels: (companyId: string, type: string, options?: { refresh?: boolean }) =>
     api.get<AdapterModel[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models`,
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${options?.refresh ? "?refresh=1" : ""}`,
+    ),
+  detectModel: (companyId: string, type: string) =>
+    api.get<DetectedAdapterModel | null>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
     ),
   testEnvironment: (
     companyId: string,
@@ -179,7 +192,7 @@ export const agentsApi = {
       idempotencyKey?: string | null;
     },
     companyId?: string,
-  ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
+  ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>

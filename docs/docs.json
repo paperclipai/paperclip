@@ -46,6 +46,9 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
@@ -97,6 +100,8 @@
               "adapters/codex-local",
               "adapters/process",
               "adapters/http",
+              "adapters/external-adapters",
+              "adapters/adapter-ui-parser",
               "adapters/creating-an-adapter"
             ]
           }

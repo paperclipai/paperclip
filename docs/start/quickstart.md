@@ -13,6 +13,8 @@ npx paperclipai onboard --yes
 
 This walks you through setup, configures your environment, and gets Paperclip running.
 
+If you already have a Paperclip install, rerunning `onboard` keeps your current config and data paths intact. Use `paperclipai configure` if you want to edit settings.
+
 To start Paperclip again later:
 
 ```sh

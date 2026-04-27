@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
 import type { HireApprovedPayload } from "@paperclipai/adapter-utils";
-import { findServerAdapter } from "../adapters/registry.js";
+import { findActiveServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 
@@ -40,7 +40,7 @@ export async function notifyHireApproved(
   }
 
   const adapterType = row.adapterType ?? "process";
-  const adapter = findServerAdapter(adapterType);
+  const adapter = findActiveServerAdapter(adapterType);
   const onHireApproved = adapter?.onHireApproved;
   if (!onHireApproved) {
     return;

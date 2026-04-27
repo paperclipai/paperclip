@@ -8,7 +8,7 @@ Run Paperclip in Docker without installing Node or pnpm locally.
 ## Compose Quickstart (Recommended)
 
 ```sh
-docker compose -f docker-compose.quickstart.yml up --build
+docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Open [http://localhost:3100](http://localhost:3100).
@@ -21,9 +21,11 @@ Defaults:
 Override with environment variables:
 
 ```sh
-PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=./data/pc \
-  docker compose -f docker-compose.quickstart.yml up --build
+PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
+  docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
+
+**Note:** `PAPERCLIP_DATA_DIR` is resolved relative to the compose file (`docker/`), so `../data/pc` maps to `data/pc` in the project root.
 
 ## Manual Docker Build
 

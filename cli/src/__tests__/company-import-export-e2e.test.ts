@@ -287,6 +287,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: `CLI Export Source ${Date.now()}` }),
     });
+    await api(apiBase, `/api/companies/${sourceCompany.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requireBoardApprovalForNewAgents: false }),
+    });
 
     const sourceAgent = await api<{ id: string; name: string }>(
       apiBase,
@@ -393,10 +398,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       apiBase,
       `/api/companies/${importedNew.company.id}/issues`,
     );
+    const importedMatchingIssues = importedIssues.filter((issue) => issue.title === sourceIssue.title);
 
     expect(importedAgents.map((agent) => agent.name)).toContain(sourceAgent.name);
     expect(importedProjects.map((project) => project.name)).toContain(sourceProject.name);
-    expect(importedIssues.map((issue) => issue.title)).toContain(sourceIssue.title);
+    expect(importedMatchingIssues).toHaveLength(1);
 
     const previewExisting = await runCliJson<{
       errors: string[];
@@ -466,11 +472,13 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       apiBase,
       `/api/companies/${importedNew.company.id}/issues`,
     );
+    const twiceImportedMatchingIssues = twiceImportedIssues.filter((issue) => issue.title === sourceIssue.title);
 
     expect(twiceImportedAgents).toHaveLength(2);
     expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(2);
     expect(twiceImportedProjects).toHaveLength(2);
-    expect(twiceImportedIssues).toHaveLength(2);
+    expect(twiceImportedMatchingIssues).toHaveLength(2);
+    expect(new Set(twiceImportedMatchingIssues.map((issue) => issue.identifier)).size).toBe(2);
 
     const zipPath = path.join(tempRoot, "exported-company.zip");
     const portableFiles: Record<string, string> = {};
@@ -498,5 +506,5 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     expect(importedFromZip.company.action).toBe("created");
     expect(importedFromZip.agents.some((agent) => agent.action === "created")).toBe(true);
-  }, 60_000);
+  }, 90_000);
 });

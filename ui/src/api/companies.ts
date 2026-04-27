@@ -28,7 +28,14 @@ export const companiesApi = {
     data: Partial<
       Pick<
         Company,
-        "name" | "description" | "status" | "budgetMonthlyCents" | "requireBoardApprovalForNewAgents" | "brandColor" | "logoAssetId"
+        | "name"
+        | "description"
+        | "status"
+        | "budgetMonthlyCents"
+        | "requireBoardApprovalForNewAgents"
+        | "feedbackDataSharingEnabled"
+        | "brandColor"
+        | "logoAssetId"
       >
     >,
   ) => api.patch<Company>(`/companies/${companyId}`, data),
@@ -40,17 +47,12 @@ export const companiesApi = {
     companyId: string,
     data: CompanyPortabilityExportRequest,
   ) =>
-    api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/export`, data),
+    api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/exports`, data),
   exportPreview: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
   ) =>
     api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
-  exportPackage: (
-    companyId: string,
-    data: CompanyPortabilityExportRequest,
-  ) =>
-    api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/exports`, data),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
