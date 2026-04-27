@@ -5807,7 +5807,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
-        await finalizeIssueCommentPolicy(livenessRun, agent);
+        // Post the failure comment BEFORE finalizeIssueCommentPolicy so the
+        // policy check sees the just-written comment and does not queue a
+        // spurious missing_issue_comment retry run.
         if (issueId && readNonEmptyString(parseObject(livenessRun.contextSnapshot).retryReason) !== "issue_continuation_needed") {
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
@@ -5820,6 +5822,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           } catch (_) { /* best-effort */ }
         }
+        await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
@@ -5883,10 +5886,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
             }
-            await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
-            // Post a failure comment on the issue so the failure is visible outside the run timeline.
+            // Post the failure comment BEFORE finalizeIssueCommentPolicy so
+            // the policy check sees the just-written comment and does not
+            // queue a spurious missing_issue_comment retry run.
             const outerContextSnapshot = parseObject(failedRun.contextSnapshot);
             const outerIssueId = readNonEmptyString(outerContextSnapshot.issueId);
             const isContinuationRecovery =
@@ -5901,6 +5904,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ).catch(() => undefined);
               }
             }
+            if (failedAgent) {
+              await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
+            }
+            await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
