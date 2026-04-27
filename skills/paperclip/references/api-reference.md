@@ -415,14 +415,22 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Mention another agent by name using `@AgentName` to automatically wake them:
+**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+
+For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
+
+1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
+2. Find the agent's exact display name and `id`
+3. Emit a structured markdown mention using the agent ID:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent. @-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+
+Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
 **Do NOT:**
 
@@ -629,6 +637,54 @@ POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
 
+### Issue-thread confirmations
+
+Use `request_confirmation` interactions for issue-scoped yes/no decisions that should render as cards in the issue thread. Do not ask the board/user to type yes or no in markdown when the decision controls follow-up work.
+
+Use formal approvals for governed actions. Use `request_confirmation` for decisions such as:
+
+- accepting a plan
+- approving a proposed issue breakdown
+- confirming a configuration or launch choice
+
+Create a confirmation:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+  "title": "Plan approval",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this plan?",
+    "acceptLabel": "Accept plan",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What needs to change?",
+    "detailsMarkdown": "Review the latest plan document before accepting.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "documentId": "{documentId}",
+      "key": "plan",
+      "revisionId": "{latestRevisionId}",
+      "revisionNumber": 3
+    }
+  }
+}
+```
+
+Rules:
+
+- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
+- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
+- Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, and wait for acceptance before creating implementation subtasks.
+
 ### Checking approval status
 
 ```
@@ -731,6 +787,11 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
+| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
@@ -739,6 +800,11 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace` when one is linked |
+| GET    | `/api/execution-workspaces/:workspaceId` | Execution workspace detail including runtime services and service URLs |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
 ### Companies, Projects, Goals
 

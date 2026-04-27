@@ -38,13 +38,17 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
+      enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
+      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
     };
   }
   return {
+    enableEnvironments: false,
     enableIsolatedWorkspaces: false,
     autoRestartDevServerWhenIdle: false,
+    enableIssueGraphLivenessAutoRecovery: false,
   };
 }
 
@@ -85,7 +89,16 @@ export function instanceSettingsService(db: Db) {
       })
       .returning();
 
-    return created;
+    if (created) return created;
+
+    const raced = await db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+      .then((rows) => rows[0] ?? null);
+    if (raced) return raced;
+
+    throw new Error("Failed to initialize instance settings row");
   }
 
   return {

@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -27,6 +28,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
   resolveByReference: vi.fn(),
 }));
 
@@ -56,6 +58,13 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+const mockIssueTreeControlService = vi.hoisted(() => ({
+  getActivePauseHoldGate: vi.fn(async () => null),
+}));
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -64,6 +73,38 @@ vi.mock("@paperclipai/shared/telemetry", () => ({
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+}));
+
+vi.mock("../services/access.js", () => ({
+  accessService: () => mockAccessService,
+}));
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/agents.js", () => ({
+  agentService: () => mockAgentService,
+}));
+
+vi.mock("../services/feedback.js", () => ({
+  feedbackService: () => mockFeedbackService,
+}));
+
+vi.mock("../services/heartbeat.js", () => ({
+  heartbeatService: () => mockHeartbeatService,
+}));
+
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
+}));
+
+vi.mock("../services/issues.js", () => ({
+  issueService: () => mockIssueService,
+}));
+
+vi.mock("../services/routines.js", () => ({
+  routineService: () => mockRoutineService,
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -76,40 +117,27 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueReferenceService: () => ({
+    deleteDocumentSource: async () => undefined,
+    diffIssueReferenceSummary: () => ({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
+    }),
+    emptySummary: () => ({ outbound: [], inbound: [] }),
+    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+    syncComment: async () => undefined,
+    syncDocument: async () => undefined,
+    syncIssue: async () => undefined,
+  }),
   issueService: () => mockIssueService,
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
+  issueTreeControlService: () => mockIssueTreeControlService,
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => ({}),
 }));
-
-function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
-    trackAgentTaskCompleted: vi.fn(),
-    trackErrorHandlerCrash: vi.fn(),
-  }));
-
-  vi.doMock("../telemetry.js", () => ({
-    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-  }));
-
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => mockFeedbackService,
-    goalService: () => ({}),
-    heartbeatService: () => mockHeartbeatService,
-    instanceSettingsService: () => mockInstanceSettingsService,
-    issueApprovalService: () => ({}),
-    issueService: () => mockIssueService,
-    logActivity: mockLogActivity,
-    projectService: () => ({}),
-    routineService: () => mockRoutineService,
-    workProductService: () => ({}),
-  }));
-}
 
 function createApp() {
   const app = express();
@@ -119,8 +147,8 @@ function createApp() {
 
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
   ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
@@ -148,7 +176,7 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "todo" | "done" | "blocked") {
+function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progress") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -161,18 +189,28 @@ function makeIssue(status: "todo" | "done" | "blocked") {
   };
 }
 
-describe("issue comment reopen routes", () => {
+function agentActor(agentId = "22222222-2222-4222-8222-222222222222") {
+  return {
+    type: "agent",
+    agentId,
+    companyId: "company-1",
+    source: "agent_key",
+    runId: "run-1",
+  };
+}
+
+async function waitForWakeup(assertion: () => void) {
+  await vi.waitFor(assertion);
+}
+
+describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
+    mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
@@ -184,6 +222,7 @@ describe("issue comment reopen routes", () => {
     mockHeartbeatService.getActiveRunForAgent.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
     mockAgentService.getById.mockReset();
+    mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockLogActivity.mockReset();
     mockFeedbackService.listIssueVotesForUser.mockReset();
@@ -191,6 +230,7 @@ describe("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
     mockDb.transaction.mockReset();
@@ -218,6 +258,7 @@ describe("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -229,18 +270,50 @@ describe("issue comment reopen routes", () => {
       authorUserId: "local-board",
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockResolvedValue(null);
-    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
-      ambiguous: false,
-      agent: {
-        id: reference,
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        reportsTo: null,
+        permissions: { canCreateAgents: false },
       },
-    }));
+      {
+        id: "44444444-4444-4444-8444-444444444444",
+        reportsTo: null,
+        permissions: { canCreateAgents: false },
+      },
+    ]);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => {
+      if (reference === "ambiguous-codex") {
+        return { ambiguous: true, agent: null };
+      }
+      if (reference === "missing-codex") {
+        return { ambiguous: false, agent: null };
+      }
+      if (reference === "codexcoder") {
+        return {
+          ambiguous: false,
+          agent: { id: "33333333-3333-4333-8333-333333333333" },
+        };
+      }
+      return {
+        ambiguous: false,
+        agent: { id: reference },
+      };
+    });
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
@@ -305,10 +378,6 @@ describe("issue comment reopen routes", () => {
       ...makeIssue("todo"),
       ...patch,
     }));
-    mockAgentService.resolveByReference.mockResolvedValue({
-      ambiguous: false,
-      agent: { id: "33333333-3333-4333-8333-333333333333" },
-    });
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -326,14 +395,10 @@ describe("issue comment reopen routes", () => {
 
   it("rejects ambiguous assignee shortnames", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockAgentService.resolveByReference.mockResolvedValue({
-      ambiguous: true,
-      agent: null,
-    });
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ assigneeAgentId: "codexcoder" });
+      .send({ assigneeAgentId: "ambiguous-codex" });
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("ambiguous");
@@ -342,14 +407,10 @@ describe("issue comment reopen routes", () => {
 
   it("rejects missing assignee shortnames", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockAgentService.resolveByReference.mockResolvedValue({
-      ambiguous: false,
-      agent: null,
-    });
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ assigneeAgentId: "codexcoder" });
+      .send({ assigneeAgentId: "missing-codex" });
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Agent not found");
@@ -405,7 +466,7 @@ describe("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
         reason: "issue_reopened_via_comment",
@@ -413,7 +474,107 @@ describe("issue comment reopen routes", () => {
           reopenedFrom: "done",
         }),
       }),
+    ));
+  });
+
+  it("does not implicitly reopen closed issues via POST comments for agent-authored comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "hello",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "33333333-3333-4333-8333-333333333333",
+      authorUserId: null,
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "77777777-7777-4777-8777-777777777777",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
     );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("moves assigned blocked issues back to todo via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("blocked"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please continue" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          reopenedFrom: "blocked",
+          mutation: "comment",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          wakeCommentId: "comment-1",
+          wakeReason: "issue_reopened_via_comment",
+          reopenedFrom: "blocked",
+        }),
+      }),
+    ));
+  });
+
+  it("does not move dependency-blocked issues to todo via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "what is happening?" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          mutation: "comment",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          wakeCommentId: "comment-1",
+          wakeReason: "issue_commented",
+        }),
+      }),
+    ));
   });
 
   it("does not implicitly reopen closed issues via POST comments when no agent is assigned", async () => {
@@ -431,8 +592,147 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("blocked"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please continue" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          reopenedFrom: "blocked",
+          mutation: "comment",
+        }),
+      }),
+    ));
+  });
+
+  it("does not implicitly reopen closed issues via the PATCH comment path for agent-authored comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "hello",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "33333333-3333-4333-8333-333333333333",
+      authorUserId: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "88888888-8888-4888-8888-888888888888",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not move dependency-blocked issues to todo via the PATCH comment path", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("blocked"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "what is happening?" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          mutation: "comment",
+        }),
+      }),
+    ));
+  });
+
   it("wakes the assignee when an assigned blocked issue moves back to todo", async () => {
     const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          mutation: "update",
+        }),
+      }),
+    ));
+  });
+
+  it("wakes the assignee when an assigned done issue moves back to todo", async () => {
+    const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
@@ -455,9 +755,166 @@ describe("issue comment reopen routes", () => {
           issueId: "11111111-1111-4111-8111-111111111111",
           mutation: "update",
         }),
+        contextSnapshot: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          source: "issue.status_change",
+        }),
       }),
     );
   });
+
+  it("explicit same-agent resume works through the PATCH comment path", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please validate the follow-up", resume: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: "22222222-2222-4222-8222-222222222222",
+        actorUserId: null,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        details: expect.objectContaining({
+          commentId: "comment-1",
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          reopenedFrom: "done",
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+      }),
+    );
+  });
+
+  it("keeps generic same-agent comments on closed issues inert", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "follow-up note without intent" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("explicit same-agent resume comments reopen closed issues and mark the wake payload", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please validate the follow-up", resume: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        details: expect.objectContaining({
+          commentId: "comment-1",
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          reopenedFrom: "done",
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "issue_reopened_via_comment",
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+      }),
+    );
+  });
+
+  it("rejects explicit agent resume intent from a non-assignee", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp(), agentActor("44444444-4444-4444-8444-444444444444")))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "restart someone else's work", resume: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects explicit resume intent under an active pause hold", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue({
+      holdId: "hold-1",
+      rootIssueId: "root-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      isRoot: false,
+      mode: "pause",
+      reason: "reviewing",
+      releasePolicy: null,
+    });
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please resume", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Issue follow-up blocked by active subtree pause hold");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects explicit resume intent on cancelled issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please resume", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cancelled issues must be restored through the dedicated restore flow");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("interrupts an active run before a combined comment update", async () => {
     const issue = {
       ...makeIssue("todo"),
@@ -498,6 +955,73 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it("cancels an active run when an issue is marked cancelled", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "cancelled" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancelled",
+        details: expect.objectContaining({
+          source: "issue_status_cancelled",
+          issueId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+    );
+  });
+
+  it("does not cancel active runs when an issue is marked done", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
@@ -605,30 +1129,30 @@ describe("issue comment reopen routes", () => {
         status: "in_review",
         assigneeAgentId: null,
         assigneeUserId: "local-board",
+        reviewRequest: {
+          instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
+        },
       });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      expect.objectContaining({
-        status: "in_review",
-        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
-        assigneeUserId: null,
-        executionState: expect.objectContaining({
-          status: "pending",
-          currentStageType: "review",
-          currentParticipant: expect.objectContaining({
-            type: "agent",
-            agentId: "33333333-3333-4333-8333-333333333333",
-          }),
-          returnAssignee: expect.objectContaining({
-            type: "agent",
-            agentId: "22222222-2222-4222-8222-222222222222",
-          }),
-        }),
-      }),
-    );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+    expect(res.body.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(res.body.assigneeUserId).toBeNull();
+    expect(res.body.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+      },
+      returnAssignee: {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+      },
+      reviewRequest: {
+        instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
+      },
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "33333333-3333-4333-8333-333333333333",
       expect.objectContaining({
         reason: "execution_review_requested",
@@ -637,11 +1161,14 @@ describe("issue comment reopen routes", () => {
           executionStage: expect.objectContaining({
             wakeRole: "reviewer",
             stageType: "review",
+            reviewRequest: {
+              instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
+            },
             allowedActions: ["approve", "request_changes"],
           }),
         }),
       }),
-    );
+    ));
   });
 
   it("wakes the return assignee with execution_changes_requested", async () => {
@@ -693,7 +1220,7 @@ describe("issue comment reopen routes", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
         reason: "execution_changes_requested",
@@ -707,6 +1234,6 @@ describe("issue comment reopen routes", () => {
           }),
         }),
       }),
-    );
+    ));
   });
 });

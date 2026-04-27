@@ -33,8 +33,10 @@ export const instanceGeneralSettingsSchema = z.object({
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
 
 export const instanceExperimentalSettingsSchema = z.object({
+  enableEnvironments: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
+  enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
