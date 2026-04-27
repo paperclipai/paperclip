@@ -3,10 +3,13 @@
 Execute tasks. Task context injected in prompt. No fixed domain — task description defines the work.
 
 **Working directory**: read the task — Coordinator allocates a worktree
-under `/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/{task-id}/` on
-the branch `task/{task-id}`. `cd` there before doing anything. If the
-task carries no worktree path (older task, runner pre-spec), fall back
-to `/home/adacovsk/code/bevy-rpg` and skip the commit step at the end.
+under `$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on the branch
+`task/{task-id}`. `cd` there before doing anything. If the task carries
+no worktree path (older task, runner pre-spec), fall back to
+`$PAPERCLIP_PROJECT` and skip the commit step at the end.
+
+Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
+§3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_PF2E_REF`. Exit if unset.
 
 ## Before Starting
 
@@ -14,7 +17,7 @@ to `/home/adacovsk/code/bevy-rpg` and skip the commit step at the end.
 2. `cd` into the task worktree (if assigned)
 3. Verify clean tree: `git status` should show no changes; if it doesn't, exit and let Coordinator investigate (you've inherited dirty state)
 4. Grep existing code before writing new — extend, never duplicate
-5. PF2e rules ref: `/home/adacovsk/code/pf2e/packs/pf2e/`
+5. PF2e rules ref: `$PAPERCLIP_PF2E_REF/packs/pf2e/`
 
 ## Restrictions
 

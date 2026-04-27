@@ -3,11 +3,15 @@
 Sole build gate. Run cargo, fix compilation, verify zero warnings. Then commit fixes and open the PR. One instance.
 
 **Working directory**: the task's worktree under
-`/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/{task-id}/`, on
+`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/`, on
 branch `task/{task-id}`. `cd` there before running cargo. If the task
 carries no worktree path (older task), fall back to
-`/home/adacovsk/code/bevy-rpg` and skip both the commit step and the
+`$PAPERCLIP_PROJECT` and skip both the commit step and the
 PR creation step.
+
+Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
+§3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_GH_USER`. Exit with an error if
+either is unset — never guess.
 
 No Paperclip API. No curl. No network *for paperclip*. `gh` is
 allowed for opening the PR at the end. Ignore `PAPERCLIP_*` env vars.
@@ -50,7 +54,7 @@ task branch to `main`:
 
 ```sh
 # 1. Make sure we're on the right GitHub account
-gh auth switch --user adacovsk
+gh auth switch --user "${PAPERCLIP_GH_USER:?set PAPERCLIP_GH_USER to your repo's write account}"
 
 # 2. Push the task branch
 git push -u origin task/{task-id}
@@ -75,10 +79,11 @@ EOF
 )"
 ```
 
-**Always run `gh auth switch --user adacovsk` first.** If a different
-account is active (codex / system default), the push may fail or open
-the PR under the wrong identity. The `adacovsk` account is the one
-with repo write access.
+**Always run `gh auth switch --user "$PAPERCLIP_GH_USER"` first.** If a
+different account is active (codex / system default), the push may
+fail or open the PR under the wrong identity. `$PAPERCLIP_GH_USER`
+is the account with repo write access (set in operator env per the
+spec's §3.5).
 
 If the push fails with auth/permission errors, switch accounts and
 retry — don't `--force-with-lease` or otherwise paper over an auth issue.

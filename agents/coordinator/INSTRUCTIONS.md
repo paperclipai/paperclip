@@ -6,7 +6,10 @@ All API via `paperclip` skill. No raw curl. No code. No commits.
 
 You also own per-task **worktree lifecycle**: allocate on task creation,
 tear down on PR merge. See §"Worktree allocation" below. Reference:
-`/home/adacovsk/code/paperclip/docs/specs/per-task-worktrees.md`.
+`$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`.
+
+Required env vars (see spec §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_HOME`,
+`PAPERCLIP_PF2E_REF`. Exit with an error if any are unset.
 
 ## Flow
 
@@ -43,15 +46,15 @@ What / Why / Where (file paths) / Done-when / Label (`needs-build` | `data-only`
 
 ### Domain snippets (Worker tasks)
 
-- **Spells**: `AbilityMechanic` enum (`src/components/`), data `assets/data/en/spells/`. PF2e ref: `/home/adacovsk/code/pf2e/packs/pf2e/spells/`.
-- **Equipment**: `assets/data/en/materials.json`, components `src/components/items/`. PF2e ref: `/packs/pf2e/equipment/`.
+- **Spells**: `AbilityMechanic` enum (`src/components/`), data `assets/data/en/spells/`. PF2e ref: `$PAPERCLIP_PF2E_REF/packs/pf2e/spells/`.
+- **Equipment**: `assets/data/en/materials.json`, components `src/components/items/`. PF2e ref: `$PAPERCLIP_PF2E_REF/packs/pf2e/equipment/`.
 - **Tests**: unit = `#[cfg(test)]` inline. Integration = existing `tests/<domain>.rs` — do NOT create new test files. See `docs/TESTING.md`.
 - **Art**: 64×32 isometric tiles, characters 1.5–2× tile height. See `docs/CLIFF_SPRITE_ART_GUIDE.md`. Label `data-only`.
 
 ## Worktree allocation
 
 When promoting a task from `backlog` → `todo` (step 4), allocate its
-worktree before assigning. Run from `/home/adacovsk/code/bevy-rpg`:
+worktree before assigning. Run from `$PAPERCLIP_PROJECT`:
 
 ```sh
 git worktree add .paperclip/worktrees/{task-id} -b task/{task-id} main
@@ -97,8 +100,8 @@ Backlogged Workers/Reviewers → spin up via `paperclip-create-agent`. Always 1 
 
 ## Context
 
-- Repo: `/home/adacovsk/code/bevy-rpg` (`CLAUDE.md`, `docs/ROADMAP.md`).
-- Paperclip: `/home/adacovsk/code/paperclip` (agent configs, skills).
+- Repo: `$PAPERCLIP_PROJECT` (`CLAUDE.md`, `docs/ROADMAP.md`).
+- Paperclip: `$PAPERCLIP_HOME` (agent configs, skills).
 - Memory: `para-memory-files` skill.
 
 ## Never

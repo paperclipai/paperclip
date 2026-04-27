@@ -6,7 +6,7 @@ Audience: Paperclip pipeline contributors; bevy-rpg pipeline operator
 
 ## 1. Problem
 
-Today every agent — Worker, Reviewer, Architect — runs in the same working directory (`/home/adacovsk/code/bevy-rpg`). Two failure modes follow:
+Today every agent — Worker, Reviewer, Architect — runs in the same working directory (`$PAPERCLIP_PROJECT`). Two failure modes follow:
 
 1. **Cross-task interference.** Two Workers running in parallel touch the same files; one stashes, resets, or overwrites the other's edits. We've seen `SAVE_FORMAT_VERSION` reintroduced three times by separate agents because each was working in isolation but committing into the same tree.
 2. **Human review burden.** Because no agent commits, the human operator has to grep+diff the working tree to group changes into commits before review. With ~30+ files touched per pipeline cycle, this burns large amounts of operator (and Claude) tokens just to plan commits.
@@ -24,8 +24,8 @@ Coordinator, on task creation, allocates:
   (Reuses the existing `.paperclip/worktrees/` convention already recognized by `server/src/worktree-config.ts`.)
 
 ```
-/home/adacovsk/code/bevy-rpg/                       ← human's main worktree, never touched by agents
-/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/
+$PAPERCLIP_PROJECT/                       ← human's main worktree, never touched by agents
+$PAPERCLIP_PROJECT/.paperclip/worktrees/
   task-001/                                         ← Worker A's task, branch task/001
   task-002/                                         ← Worker B's task, branch task/002 (parallel-safe)
 ```
@@ -79,15 +79,36 @@ Each stage commits as itself (Worker / Reviewer / Architect) using a stage-tagge
 
 ### 3.4 GitHub account for `gh push` / `gh pr create`
 
-The bevy-rpg repo's write access is on the `adacovsk` GitHub account,
-but the system may default to a different account (codex, etc.).
-Architect must run `gh auth switch --user adacovsk` before any push or
-PR creation. If the active account isn't `adacovsk`, the push fails or
-the PR opens under the wrong identity, and Coordinator's merge sweep
-won't recognize the result. This is a one-line guard at the top of
-the PR-creation step in `agents/architect/INSTRUCTIONS.md`. Never
-work around an auth failure with `--force-with-lease` or by pushing
-under the wrong account.
+Repo write access lives on a specific GitHub account, and the system
+may default to a different one (codex, etc.). Architect runs
+`gh auth switch --user "$PAPERCLIP_GH_USER"` before any push or PR
+creation. If the active account is wrong, the push fails or the PR
+opens under the wrong identity, and Coordinator's merge sweep won't
+recognize the result. Never work around an auth failure with
+`--force-with-lease` or by pushing under the wrong account.
+
+### 3.5 Environment variables (operator setup)
+
+Agent INSTRUCTIONS reference these env vars instead of hardcoded
+paths/usernames. Set them in your shell init or in a Paperclip-level
+config (e.g. `~/.paperclip/env`) before launching agents:
+
+| Var | Purpose | Example shape |
+|---|---|---|
+| `PAPERCLIP_PROJECT` | Absolute path to the project repo agents work on | `/path/to/your-project` |
+| `PAPERCLIP_HOME` | Absolute path to this Paperclip checkout | `/path/to/paperclip` |
+| `PAPERCLIP_PF2E_REF` | Absolute path to the PF2e Foundry data reference (Worker only, project-specific) | `/path/to/pf2e` |
+| `PAPERCLIP_GH_USER` | GitHub account with write access to the project repo | `<your-github-username>` |
+
+Agents that need any of these but find them unset should exit with a
+clear error rather than guessing — silent fallbacks are how dirty
+state leaks across machines.
+
+Why env vars instead of hardcoded values: this fork lives at
+`github.com/<user>/paperclip` and the bevy-rpg fork at
+`github.com/<user>/bevy-rpg`. Other operators forking either repo
+should be able to point at their own paths and account by setting four
+env vars, not by editing every INSTRUCTIONS file.
 
 ### 3.5 Failure modes during the pipeline
 

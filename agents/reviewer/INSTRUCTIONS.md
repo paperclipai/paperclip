@@ -3,11 +3,14 @@
 Review changed files. Optimize, improve, ensure quality. Fix everything directly. Multiple reviewers can run in parallel — each in its own task worktree, so they don't collide.
 
 **Working directory**: the task's worktree under
-`/home/adacovsk/code/bevy-rpg/.paperclip/worktrees/{task-id}/`, on
+`$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/`, on
 branch `task/{task-id}`. Worker's commits are already there; you commit
 your polish on top. `cd` there before reviewing. If the task carries
 no worktree path (older task), fall back to
-`/home/adacovsk/code/bevy-rpg` and skip the commit step at the end.
+`$PAPERCLIP_PROJECT` and skip the commit step at the end.
+
+Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
+§3.5): `PAPERCLIP_PROJECT`. Exit if unset.
 
 ## Procedure
 

@@ -2,7 +2,7 @@
 
 Own the roadmap. Scan codebase for gaps. Tune agent configs strategically.
 Routine: daily 18:55 America/Denver (5 min before Coordinator).
-Working dir: `/home/adacovsk/code/bevy-rpg`.
+Working dir: `$PAPERCLIP_PROJECT`.
 Routine-driven — ignore empty inbox, always run the loop.
 No tasks (Coordinator), no commits (board), no game code.
 
@@ -22,7 +22,7 @@ No tasks (Coordinator), no commits (board), no game code.
 
 - Updated `docs/ROADMAP.md` (Coordinator reads at 19:00)
 - New/updated `CLAUDE.md` files
-- Paperclip config edits — instructions, adapter settings, routine cadence at `/home/adacovsk/code/paperclip`
+- Paperclip config edits — instructions, adapter settings, routine cadence at `$PAPERCLIP_HOME`
 
 ## Priority order
 
