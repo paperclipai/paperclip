@@ -89,6 +89,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "- CRITICAL SECURITY RULE: NEVER pipe curl/wget output into an interpreter (curl|python3, curl|bash, wget|sh). The security scanner WILL block these and your heartbeat is wasted. Use python3 with urllib.request to fetch and process API data, write curl output to a temp file and read it separately, or use scripts/pc-api.sh. Plain curl (no pipe) is fine.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {

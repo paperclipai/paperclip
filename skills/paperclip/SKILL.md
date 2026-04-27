@@ -23,6 +23,38 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## ⛔ CRITICAL: No Pipe-to-Interpreter Patterns
+
+**NEVER pipe curl/wget output into an interpreter** (`curl | python3`, `curl | bash`, `wget | sh`, etc.). The security scanner blocks these patterns and your command will be denied, wasting the heartbeat. This rule has no exceptions.
+
+**Use one of these safe alternatives instead:**
+
+**A) Python with urllib (recommended for any API call that needs parsing):**
+```python
+python3 -c "
+import urllib.request, json, os
+url = os.environ['PAPERCLIP_API_URL'] + '/api/agents/me'
+req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['PAPERCLIP_API_KEY']})
+data = json.loads(urllib.request.urlopen(req).read())
+print(data['id'], data['name'])
+"
+```
+
+**B) Curl to temp file, then Python reads file:**
+```sh
+curl -sS -H "Authorization: Bearer $PAPER...KEY" "$PAPERCLIP_API_URL/api/agents/me" > /tmp/pc_resp.json
+python3 -c "import json; d=json.load(open('/tmp/pc_resp.json')); print(d['id'], d['name'])"
+```
+
+**C) Helper script (simplest):**
+```sh
+scripts/pc-api.sh get /api/agents/me
+scripts/pc-api.sh get "/api/companies/$PAPERCLIP_COMPANY_ID/issues?status=todo"
+```
+See `scripts/pc-api.sh` — it handles auth headers and env vars automatically. Pipe its stdout into python only via method B (temp file).
+
+**D) Plain curl (no pipe)** — fine for raw output you just want to read. The restriction only applies to piping curl output into an interpreter.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:

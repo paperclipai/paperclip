@@ -1,5 +1,7 @@
 # Company Skills Workflow
 
+> **⛔ Never pipe curl output into an interpreter** (`curl | python3`, `curl | bash`). The security scanner blocks these. Use `python3` with `urllib.request`, write curl output to a temp file first, or use `scripts/pc-api.sh`.
+
 Use this reference when a board user, CEO, or manager asks you to find a skill, install it into the company library, or assign it to an agent.
 
 ## What Exists

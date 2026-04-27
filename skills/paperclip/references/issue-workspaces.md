@@ -1,5 +1,7 @@
 # Issue Workspace Runtime Controls
 
+> **⛔ Never pipe curl output into an interpreter** (`curl | python3`, `curl | bash`). The security scanner blocks these. Use `python3` with `urllib.request`, write curl output to a temp file first, or use `scripts/pc-api.sh`.
+
 Use this reference when an issue has an isolated execution workspace and you need to inspect or run that workspace's services, especially for QA/browser verification.
 
 ## Discover the Workspace
