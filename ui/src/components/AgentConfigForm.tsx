@@ -43,6 +43,7 @@ import {
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
+import { SchemaConfigFields } from "../adapters/schema-config-fields";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
@@ -339,6 +340,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId && isLocal),
   });
   const detectedModel = detectedModelData?.model ?? null;
+  const detectedProvider = detectedModelData?.provider ?? null;
+  const detectedModelSource = detectedModelData?.source ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
 
   const { data: companyAgents = [] } = useQuery({
@@ -701,7 +704,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {/* Working directory */}
           {showLegacyWorkingDirectoryField && (
-            <Field label="Working directory (deprecated)" hint={help.cwd}>
+            <Field label="Working directory override (legacy)" hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <DraftInput
@@ -794,6 +797,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
+              {adapterType === "hermes_local" && (
+                <SchemaConfigFields
+                  {...adapterFieldProps}
+                  includeKeys={["provider"]}
+                />
+              )}
+
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -828,6 +838,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </p>
               )}
 
+              {adapterType === "hermes_local" && detectedModel && detectedProvider && !modelOpen && (
+                <p className="text-xs text-muted-foreground">
+                  Detected Hermes config: <span className="font-mono">{detectedProvider}</span>
+                  {" · "}
+                  <span className="font-mono">{detectedModel}</span>
+                  {detectedModelSource ? ` (${detectedModelSource})` : ""}
+                </p>
+              )}
               {showThinkingEffort && (
                 <>
                   <ThinkingEffortDropdown
@@ -879,7 +897,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
-              <uiAdapter.ConfigFields {...adapterFieldProps} />
+              {adapterType === "hermes_local"
+                ? <SchemaConfigFields {...adapterFieldProps} excludeKeys={["provider"]} />
+                : <uiAdapter.ConfigFields {...adapterFieldProps} />}
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput

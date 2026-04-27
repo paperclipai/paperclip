@@ -39,6 +39,12 @@ const mockAdapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+const mockGetServerAdapter = vi.hoisted(() =>
+  vi.fn(() => ({
+    supportsLocalAgentJwt: false,
+    execute: mockAdapterExecute,
+  })),
+);
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -58,10 +64,7 @@ vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
   return {
     ...actual,
-    getServerAdapter: vi.fn(() => ({
-      supportsLocalAgentJwt: false,
-      execute: mockAdapterExecute,
-    })),
+    getServerAdapter: mockGetServerAdapter,
   };
 });
 
@@ -254,6 +257,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
       signal: null,
@@ -262,6 +266,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "Recovered stranded heartbeat work.",
       provider: "test",
       model: "test-model",
+    }));
+    mockGetServerAdapter.mockReset();
+    mockGetServerAdapter.mockImplementation(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
     }));
     runningProcesses.clear();
     for (const child of childProcesses) {
@@ -460,6 +469,33 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
+  }
+
+  async function seedInvokableAgentFixture() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    return { companyId, agentId };
   }
 
   async function seedStrandedIssueFixture(input: {
@@ -1039,6 +1075,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("refreshes the running updatedAt timestamp from log activity after the throttle window", async () => {
+    const { agentId } = await seedInvokableAgentFixture();
+    const heartbeat = heartbeatService(db);
+
+    let releaseSecondLog: (() => void) | null = null;
+    const secondLogWritten = new Promise<void>((resolve) => {
+      releaseSecondLog = resolve;
+    });
+    let finishExecution: (() => void) | null = null;
+    const executionFinished = new Promise<void>((resolve) => {
+      finishExecution = resolve;
+    });
+    let expectedTouchedAt = 0;
+
+    mockAdapterExecute.mockImplementationOnce(async ({ onLog }) => {
+      const baselineMs = Date.now();
+      await onLog("stdout", "before throttle window\n");
+
+      expectedTouchedAt = baselineMs + 31_000;
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => expectedTouchedAt);
+      try {
+        await onLog("stdout", "after throttle window\n");
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      releaseSecondLog?.();
+      await executionFinished;
+
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const queuedRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: {},
+    });
+    expect(queuedRun?.id).toBeTruthy();
+
+    await secondLogWritten;
+
+    const runningRun = await heartbeat.getRun(queuedRun!.id);
+    expect(runningRun?.status).toBe("running");
+    expect(new Date(runningRun!.updatedAt).getTime()).toBe(expectedTouchedAt);
+
+    finishExecution?.();
+
+    const settledRun = await waitForRunToSettle(heartbeat, queuedRun!.id);
+    expect(settledRun?.status).toBe("succeeded");
   });
 
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {

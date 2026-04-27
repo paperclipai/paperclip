@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
 
@@ -295,14 +295,28 @@ export function SchemaConfigFields({
   config,
   eff,
   mark,
-}: AdapterConfigFieldsProps) {
+  includeKeys,
+  excludeKeys,
+}: AdapterConfigFieldsProps & {
+  includeKeys?: string[];
+  excludeKeys?: string[];
+}) {
   const schema = useConfigSchema(adapterType);
+
+  const filteredFields = useMemo(() => {
+    if (!schema) return [];
+    return schema.fields.filter((field) => {
+      if (includeKeys && includeKeys.length > 0 && !includeKeys.includes(field.key)) return false;
+      if (excludeKeys && excludeKeys.includes(field.key)) return false;
+      return true;
+    });
+  }, [schema, includeKeys, excludeKeys]);
 
   const [defaultsApplied, setDefaultsApplied] = useState(false);
   useEffect(() => {
-    if (!schema || !isCreate || defaultsApplied) return;
+    if (!schema || filteredFields.length === 0 || !isCreate || defaultsApplied) return;
     const defaults: Record<string, unknown> = {};
-    for (const field of schema.fields) {
+    for (const field of filteredFields) {
       const def = getDefaultValue(field);
       if (def !== undefined && def !== "") {
         defaults[field.key] = def;
@@ -314,16 +328,22 @@ export function SchemaConfigFields({
       });
     }
     setDefaultsApplied(true);
-  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
+  }, [schema, filteredFields, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
 
-  if (!schema || schema.fields.length === 0) return null;
+  if (!schema || filteredFields.length === 0) return null;
 
   function readValue(field: ConfigFieldSchema): unknown {
     if (isCreate) {
       return values?.adapterSchemaValues?.[field.key] ?? getDefaultValue(field);
     }
     const stored = config[field.key];
-    return eff("adapterConfig", field.key, (stored ?? getDefaultValue(field)) as string);
+    const normalizedStored =
+      typeof stored === "string" &&
+      stored.trim() === "" &&
+      (field.type === "select" || field.type === "combobox")
+        ? getDefaultValue(field)
+        : stored;
+    return eff("adapterConfig", field.key, (normalizedStored ?? getDefaultValue(field)) as string);
   }
 
   function writeValue(field: ConfigFieldSchema, value: unknown): void {
@@ -369,7 +389,7 @@ export function SchemaConfigFields({
 
   return (
     <>
-      {schema.fields.map((field) => {
+      {filteredFields.map((field: ConfigFieldSchema) => {
         switch (field.type) {
           case "select": {
             const currentVal = String(readValue(field) ?? "");
