@@ -25,6 +25,7 @@ import {
   ISSUE_SURFACE_VISIBILITIES,
 } from "../constants.js";
 import { routineVariableSchema } from "./routine.js";
+import type { WhenPredicate } from "../types/plugin-hooks.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – a permissive validator for JSON Schema objects
@@ -568,6 +569,56 @@ export const pluginApiRouteDeclarationSchema = z.object({
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 
 // ---------------------------------------------------------------------------
+// Plugin hook declarations (Phase 1a — MYO-50.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Zod schema for the declarative `when` predicate accepted in plugin hook
+ * manifest entries. Mirrors the {@link WhenPredicate} TypeScript type:
+ * leaves (`issueHasField`, `issueFieldEquals`, `agentRoleEquals`) plus
+ * recursive composites (`all`, `any`, `not`).
+ *
+ * The host evaluates the predicate without invoking plugin code.
+ */
+export const whenPredicateSchema: z.ZodType<WhenPredicate> = z.lazy(() =>
+  z.union([
+    z.object({ issueHasField: z.string().min(1) }).strict(),
+    z.object({
+      issueFieldEquals: z.object({
+        field: z.string().min(1),
+        value: z.unknown(),
+      }).strict(),
+    }).strict(),
+    z.object({ agentRoleEquals: z.string().min(1) }).strict(),
+    z.object({ all: z.array(whenPredicateSchema).min(1) }).strict(),
+    z.object({ any: z.array(whenPredicateSchema).min(1) }).strict(),
+    z.object({ not: whenPredicateSchema }).strict(),
+  ]),
+) as z.ZodType<WhenPredicate>;
+
+/**
+ * Single hook entry as declared in the plugin manifest. Carries optional
+ * priority and `when` predicate — handlers themselves are registered at worker
+ * boot, not in the manifest.
+ */
+export const pluginHookManifestEntrySchema = z.object({
+  priority: z.number().finite().optional(),
+  when: whenPredicateSchema.optional(),
+}).strict();
+
+export type PluginHookManifestEntryInput = z.infer<typeof pluginHookManifestEntrySchema>;
+
+/**
+ * Optional `manifest.hooks` block. Both kinds are independent and additive.
+ */
+export const pluginHooksDeclarationSchema = z.object({
+  wakePayloadTransformer: pluginHookManifestEntrySchema.optional(),
+  skillResolverTransformer: pluginHookManifestEntrySchema.optional(),
+}).strict();
+
+export type PluginHooksDeclarationInput = z.infer<typeof pluginHooksDeclarationSchema>;
+
+// ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
 
@@ -651,6 +702,7 @@ export const pluginManifestV1Schema = z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
+  hooks: pluginHooksDeclarationSchema.optional(),
 }).superRefine((manifest, ctx) => {
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the
