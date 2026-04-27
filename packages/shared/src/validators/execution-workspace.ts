@@ -9,6 +9,7 @@ export const executionWorkspaceStatusSchema = z.enum([
 ]);
 
 export const executionWorkspaceConfigSchema = z.object({
+  environmentId: z.string().uuid().optional().nullable(),
   provisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),

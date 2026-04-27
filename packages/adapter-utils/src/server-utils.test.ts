@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   renderPaperclipWakePrompt,
@@ -254,6 +255,7 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
@@ -326,6 +328,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
   });
 
+  it("renders loose review request instructions for execution handoffs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2011",
+        title: "Review request handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        reviewRequest: {
+          instructions: "Please focus on edge cases and leave a short risk summary.",
+        },
+        allowedActions: ["approve", "request_changes"],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Review request instructions:");
+    expect(prompt).toContain("Please focus on edge cases and leave a short risk summary.");
+    expect(prompt).toContain("You are waking as the active reviewer for this issue.");
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
@@ -393,6 +423,50 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("applyPaperclipWorkspaceEnv", () => {
+  it("adds shared workspace env vars including AGENT_HOME", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "/tmp/workspace",
+        workspaceSource: "project_primary",
+        workspaceStrategy: "git_worktree",
+        workspaceId: "workspace-1",
+        workspaceRepoUrl: "https://github.com/paperclipai/paperclip.git",
+        workspaceRepoRef: "main",
+        workspaceBranch: "feature/test",
+        workspaceWorktreePath: "/tmp/worktree",
+        agentHome: "/tmp/agent-home",
+      },
+    );
+
+    expect(env).toEqual({
+      PAPERCLIP_WORKSPACE_CWD: "/tmp/workspace",
+      PAPERCLIP_WORKSPACE_SOURCE: "project_primary",
+      PAPERCLIP_WORKSPACE_STRATEGY: "git_worktree",
+      PAPERCLIP_WORKSPACE_ID: "workspace-1",
+      PAPERCLIP_WORKSPACE_REPO_URL: "https://github.com/paperclipai/paperclip.git",
+      PAPERCLIP_WORKSPACE_REPO_REF: "main",
+      PAPERCLIP_WORKSPACE_BRANCH: "feature/test",
+      PAPERCLIP_WORKSPACE_WORKTREE_PATH: "/tmp/worktree",
+      AGENT_HOME: "/tmp/agent-home",
+    });
+  });
+
+  it("skips empty workspace env values", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "",
+        workspaceSource: null,
+        agentHome: "",
+      },
+    );
+
+    expect(env).toEqual({});
   });
 });
 
