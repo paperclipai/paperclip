@@ -2575,7 +2575,7 @@ class LiveTrader:
             #   critical → immediate (repeat-every-5-min handled by caller dedup=300s)
             self.alerts = AlertDispatcher(dedup_window_s=300.0)
             _console = ConsoleSink()
-            self.alerts.add_sink(_console, min_severity="error")
+            self.alerts.add_sink(_console, min_severity="warn")
 
             _tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             _tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
