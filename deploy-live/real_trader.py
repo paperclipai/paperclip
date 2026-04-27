@@ -3205,6 +3205,7 @@ async def main():
                 trader.state_conn, trader.fetcher,
                 exchanges=EXCHANGES,
                 interval_s=RECONCILE_INTERVAL_SEC,
+                alert_dispatcher=trader.alerts,
             )
             log.info("Reconciler sweep started (interval=%ss, exchanges=%s)",
                      RECONCILE_INTERVAL_SEC, EXCHANGES)
@@ -3401,10 +3402,12 @@ async def main():
                             _schedule_per_trade_reconcile(
                                 trader.state_conn, trader.fetcher,
                                 exchange=pos.exchange_short, symbol=pos.symbol,
+                                alert_dispatcher=trader.alerts,
                             )
                             _schedule_per_trade_reconcile(
                                 trader.state_conn, trader.fetcher,
                                 exchange=pos.exchange_long, symbol=pos.symbol,
+                                alert_dispatcher=trader.alerts,
                             )
                         if success:
                             # Update blacklist if loss
@@ -3569,10 +3572,12 @@ async def main():
                                 _schedule_per_trade_reconcile(
                                     trader.state_conn, trader.fetcher,
                                     exchange=pos.exchange_short, symbol=pos.symbol,
+                                    alert_dispatcher=trader.alerts,
                                 )
                                 _schedule_per_trade_reconcile(
                                     trader.state_conn, trader.fetcher,
                                     exchange=pos.exchange_long, symbol=pos.symbol,
+                                    alert_dispatcher=trader.alerts,
                                 )
 
                 # ---- RECONCILIATION ----

@@ -21,6 +21,7 @@ in the fixture directory.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -87,7 +88,7 @@ def run_fixture(fixture_dir: Path, db_path: Path) -> dict[str, list]:
                     bal = tick.get("balance", {"available_usd": 0.0, "locked_usd": 0.0})
                     fake.set_balance(ex, available_usd=bal["available_usd"],
                                      locked_usd=bal.get("locked_usd", 0.0))
-                reconcile_exchange(conn, fake, exchange=ex, since_ms=0)
+                asyncio.run(reconcile_exchange(conn, fake, exchange=ex, since_ms=0))
 
         # Capture results
         events = [

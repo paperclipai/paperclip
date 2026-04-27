@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from reconciler import ExchangeFetcher, FakeExchange
 
@@ -84,7 +86,7 @@ def test_reconcile_phantom_position(fresh_db):
     ])
     fake.set_balance("MEXC", available_usd=50.0)
     fake.set_recent_fills("MEXC", [])
-    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0))
     events = list_unresolved_recon_events(conn)
     cats = [e.category for e in events]
     assert "phantom_position" in cats
@@ -99,7 +101,7 @@ def test_reconcile_orphan_leg(fresh_db):
     fake.set_open_positions("BLOFIN", [])  # exchange shows no positions
     fake.set_balance("BLOFIN", available_usd=50.0)
     fake.set_recent_fills("BLOFIN", [])
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     events = list_unresolved_recon_events(conn)
     cats = [e.category for e in events]
     assert "orphan_leg" in cats
@@ -116,7 +118,7 @@ def test_reconcile_size_mismatch(fresh_db):
     ])
     fake.set_balance("BLOFIN", available_usd=38.0)
     fake.set_recent_fills("BLOFIN", [])
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     events = list_unresolved_recon_events(conn)
     cats = [e.category for e in events]
     assert "size_mismatch" in cats
@@ -132,7 +134,7 @@ def test_reconcile_balance_drift_warn(fresh_db):
     fake.set_open_positions("MEXC", [])
     fake.set_balance("MEXC", available_usd=30.0, locked_usd=0.0)
     fake.set_recent_fills("MEXC", [])
-    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0))
     events = list_unresolved_recon_events(conn)
     drift = [e for e in events if e.category == "balance_drift"]
     assert len(drift) == 1
@@ -149,7 +151,7 @@ def test_reconcile_balance_drift_info_within_rounding(fresh_db):
     fake.set_open_positions("MEXC", [])
     fake.set_balance("MEXC", available_usd=49.5, locked_usd=0.0)
     fake.set_recent_fills("MEXC", [])
-    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0))
     events = list_unresolved_recon_events(conn)
     drift = [e for e in events if e.category == "balance_drift"]
     assert len(drift) == 1
@@ -168,7 +170,7 @@ def test_reconcile_unlinked_fill(fresh_db):
          "size_usd": 25.0, "fill_price": 1.0, "fees_usd": 0.01,
          "filled_at_ms": 1700000000500},
     ])
-    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0))
     events = list_unresolved_recon_events(conn)
     cats = [e.category for e in events]
     assert "unlinked_fill" in cats
@@ -187,7 +189,7 @@ def test_reconcile_clean_state_writes_no_events(fresh_db):
     ])
     fake.set_balance("BLOFIN", available_usd=25.0, locked_usd=0.0)
     fake.set_recent_fills("BLOFIN", [])
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     events = list_unresolved_recon_events(conn)
     assert events == []
     conn.close()
@@ -202,7 +204,7 @@ def test_exchange_health_marked_ok_on_success(fresh_db):
     fake.set_open_positions("MEXC", [])
     fake.set_balance("MEXC", available_usd=50.0)
     fake.set_recent_fills("MEXC", [])
-    reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="MEXC", since_ms=0))
     h = get_exchange_health(conn, "MEXC")
     assert h.status == "ok"
     assert h.consecutive_errors == 0
@@ -214,7 +216,7 @@ def test_exchange_health_marked_degraded_on_first_failure(fresh_db):
     conn = open_db(fresh_db)
     fake = FakeExchange()
     fake.set_unreachable("BLOFIN", error="connection refused")
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     h = get_exchange_health(conn, "BLOFIN")
     assert h.status == "degraded"
     assert h.consecutive_errors == 1
@@ -226,7 +228,7 @@ def test_exchange_health_marked_down_after_three_failures(fresh_db):
     fake = FakeExchange()
     fake.set_unreachable("BLOFIN", error="timeout")
     for _ in range(3):
-        reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+        asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     h = get_exchange_health(conn, "BLOFIN")
     assert h.status == "down"
     assert h.consecutive_errors == 3
@@ -243,7 +245,7 @@ def test_unchecked_exchange_event_emitted_on_unreachable(fresh_db):
     conn = open_db(fresh_db)
     fake = FakeExchange()
     fake.set_unreachable("BLOFIN", error="connection refused")
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     events = list_unresolved_recon_events(conn, min_severity="info")
     cats = [e.category for e in events]
     assert "exchange_unreachable" in cats
@@ -258,20 +260,19 @@ def test_exchange_health_recovers_after_failure(fresh_db):
     conn = open_db(fresh_db)
     fake = FakeExchange()
     fake.set_unreachable("BLOFIN", error="timeout")
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     # Now exchange comes back
     fake._unreachable.pop("BLOFIN")
     fake.set_open_positions("BLOFIN", [])
     fake.set_balance("BLOFIN", available_usd=50.0)
     fake.set_recent_fills("BLOFIN", [])
-    reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0)
+    asyncio.run(reconcile_exchange(conn, fake, exchange="BLOFIN", since_ms=0))
     h = get_exchange_health(conn, "BLOFIN")
     assert h.status == "ok"
     assert h.consecutive_errors == 0
     conn.close()
 
 
-import asyncio
 from reconciler import start_periodic_sweep
 
 

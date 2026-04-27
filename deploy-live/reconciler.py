@@ -13,13 +13,17 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
-from typing import Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from state_store import (
     list_open_positions, list_recent_fills,
     snapshot_balance, upsert_recon_event,
     upsert_exchange_health, get_exchange_health,
 )
+
+if TYPE_CHECKING:
+    from alerts import AlertDispatcher
+    from schemas import ReconciliationEvent
 
 
 class ExchangeFetcher(Protocol):
@@ -96,13 +100,14 @@ _BALANCE_DRIFT_PCT_THRESHOLD = 1.0  # within 1% = info; otherwise warn
 _HEALTH_DOWN_THRESHOLD = 3  # consecutive errors before status flips to 'down'
 
 
-def reconcile_exchange(
+async def reconcile_exchange(
     conn: sqlite3.Connection,
     fetcher: ExchangeFetcher,
     *,
     exchange: str,
     since_ms: int,
     symbol_filter: Optional[str] = None,
+    alert_dispatcher: Optional["AlertDispatcher"] = None,
 ) -> None:
     """Diff one exchange's authoritative state against state_store.
 
@@ -118,6 +123,36 @@ def reconcile_exchange(
       - unlinked_fill       (recent exchange fill not in state_store)
       - balance_drift       (balance disagreement)
     """
+    # Lazy import avoids a circular dep at module load; only needed when dispatching.
+    from schemas import ReconciliationEvent as _ReconEvent  # noqa: PLC0415
+
+    async def _maybe_dispatch(
+        event_id: int, was_insert: bool, *,
+        category: str, severity: str,
+        symbol: Optional[str] = None,
+        position_id: Optional[int] = None,
+        expected: Optional[dict] = None,
+        actual: Optional[dict] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        """Dispatch on first insert only — avoids Telegram spam for repeat events."""
+        if alert_dispatcher is None or not was_insert:
+            return
+        event = _ReconEvent(
+            id=event_id,
+            timestamp_ms=now_ms,
+            source="reconciler",
+            category=category,
+            severity=severity,
+            exchange=exchange,
+            symbol=symbol,
+            position_id=position_id,
+            expected=expected,
+            actual=actual,
+            notes=notes,
+        )
+        await alert_dispatcher.dispatch(event)
+
     now_ms = int(time.time() * 1000)
     try:
         ex_positions = fetcher.get_open_positions(exchange)
@@ -133,20 +168,28 @@ def reconcile_exchange(
             consecutive_errors=consecutive,
         )
         severity = "critical" if consecutive >= _HEALTH_DOWN_THRESHOLD else "error"
-        upsert_recon_event(
+        eid, was_insert = upsert_recon_event(
             conn, timestamp_ms=now_ms, source="reconciler",
             category="exchange_unreachable", severity=severity,
             exchange=exchange, notes=str(e),
             actual={"consecutive_errors": consecutive},
         )
+        await _maybe_dispatch(
+            eid, was_insert, category="exchange_unreachable", severity=severity,
+            notes=str(e), actual={"consecutive_errors": consecutive},
+        )
         # Make the implicit "no comparison this cycle" gap visible. Info
         # severity — the underlying exchange_unreachable event already
         # alerts at error/critical. This event is for operators who want
         # to know *which* checks were skipped during an outage.
-        upsert_recon_event(
+        eid2, was_insert2 = upsert_recon_event(
             conn, timestamp_ms=now_ms, source="reconciler",
             category="unchecked_exchange", severity="info",
             exchange=exchange,
+            notes="diff checks (orphan_leg, size_mismatch, unlinked_fill, balance_drift) skipped this cycle",
+        )
+        await _maybe_dispatch(
+            eid2, was_insert2, category="unchecked_exchange", severity="info",
             notes="diff checks (orphan_leg, size_mismatch, unlinked_fill, balance_drift) skipped this cycle",
         )
         return
@@ -190,10 +233,16 @@ def reconcile_exchange(
     # Phantom: in exchange, not in state_store
     for key, ex_size in ex_index.items():
         if key not in sp_index:
-            upsert_recon_event(
+            eid, was_insert = upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="phantom_position", severity="error",
                 exchange=exchange, symbol=key[0],
+                expected={"present": False},
+                actual={"present": True, "side": key[1], "size_usd": ex_size},
+            )
+            await _maybe_dispatch(
+                eid, was_insert, category="phantom_position", severity="error",
+                symbol=key[0],
                 expected={"present": False},
                 actual={"present": True, "side": key[1], "size_usd": ex_size},
             )
@@ -201,20 +250,32 @@ def reconcile_exchange(
     # Orphan / size mismatch
     for key, (pid, sp_size) in sp_index.items():
         if key not in ex_index:
-            upsert_recon_event(
+            eid, was_insert = upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="orphan_leg", severity="error",
                 exchange=exchange, symbol=key[0], position_id=pid,
                 expected={"side": key[1], "size_usd": sp_size},
                 actual={"present": False},
             )
+            await _maybe_dispatch(
+                eid, was_insert, category="orphan_leg", severity="error",
+                symbol=key[0], position_id=pid,
+                expected={"side": key[1], "size_usd": sp_size},
+                actual={"present": False},
+            )
         else:
             ex_size = ex_index[key]
             if abs(ex_size - sp_size) > 0.01:
-                upsert_recon_event(
+                eid, was_insert = upsert_recon_event(
                     conn, timestamp_ms=now_ms, source="reconciler",
                     category="size_mismatch", severity="warn",
                     exchange=exchange, symbol=key[0], position_id=pid,
+                    expected={"size_usd": sp_size},
+                    actual={"size_usd": ex_size},
+                )
+                await _maybe_dispatch(
+                    eid, was_insert, category="size_mismatch", severity="warn",
+                    symbol=key[0], position_id=pid,
                     expected={"size_usd": sp_size},
                     actual={"size_usd": ex_size},
                 )
@@ -224,10 +285,15 @@ def reconcile_exchange(
     sp_order_ids = {f.order_id for f in sp_recent}
     for f in ex_fills:
         if str(f.get("order_id", "")) not in sp_order_ids:
-            upsert_recon_event(
+            eid, was_insert = upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="unlinked_fill", severity="warn",
                 exchange=exchange, symbol=str(f.get("symbol", "")),
+                actual={"order_id": f.get("order_id"), "size_usd": f.get("size_usd")},
+            )
+            await _maybe_dispatch(
+                eid, was_insert, category="unlinked_fill", severity="warn",
+                symbol=str(f.get("symbol", "")),
                 actual={"order_id": f.get("order_id"), "size_usd": f.get("size_usd")},
             )
 
@@ -247,10 +313,15 @@ def reconcile_exchange(
         # Always emit a balance_drift event so callers can audit; severity reflects materiality
         severity = "info" if (within_dollar and within_pct) else "warn"
         if abs(drift_usd) > 0.001:  # don't emit pure-zero drift events
-            upsert_recon_event(
+            eid, was_insert = upsert_recon_event(
                 conn, timestamp_ms=now_ms, source="reconciler",
                 category="balance_drift", severity=severity,
                 exchange=exchange,
+                expected={"total_usd": prev_total},
+                actual={"total_usd": cur_total, "drift_usd": drift_usd, "drift_pct": drift_pct},
+            )
+            await _maybe_dispatch(
+                eid, was_insert, category="balance_drift", severity=severity,
                 expected={"total_usd": prev_total},
                 actual={"total_usd": cur_total, "drift_usd": drift_usd, "drift_pct": drift_pct},
             )
@@ -262,6 +333,7 @@ def start_periodic_sweep(
     *,
     exchanges: list[str],
     interval_s: float = 300.0,
+    alert_dispatcher: Optional["AlertDispatcher"] = None,
 ) -> asyncio.Task:
     """Spawn a background task that reconciles each exchange every `interval_s`.
 
@@ -276,7 +348,10 @@ def start_periodic_sweep(
         while True:
             for exchange in exchanges:
                 try:
-                    reconcile_exchange(conn, fetcher, exchange=exchange, since_ms=0)
+                    await reconcile_exchange(
+                        conn, fetcher, exchange=exchange, since_ms=0,
+                        alert_dispatcher=alert_dispatcher,
+                    )
                 except Exception as e:  # noqa: BLE001
                     upsert_recon_event(
                         conn, timestamp_ms=int(time.time() * 1000),
@@ -294,6 +369,7 @@ def schedule_per_trade_reconcile(
     *,
     exchange: str,
     symbol: str,
+    alert_dispatcher: Optional["AlertDispatcher"] = None,
 ) -> asyncio.Task:
     """Fire-and-forget reconcile of one (exchange, symbol) after an order placement.
 
@@ -303,9 +379,10 @@ def schedule_per_trade_reconcile(
     """
     async def _go() -> None:
         try:
-            reconcile_exchange(
+            await reconcile_exchange(
                 conn, fetcher, exchange=exchange, since_ms=0,
                 symbol_filter=symbol,
+                alert_dispatcher=alert_dispatcher,
             )
         except Exception as e:  # noqa: BLE001
             upsert_recon_event(

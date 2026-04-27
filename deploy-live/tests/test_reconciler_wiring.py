@@ -20,9 +20,11 @@ import pytest
 from state_store import open_db, init_schema, get_exchange_health
 from reconciler import (
     FakeExchange,
+    reconcile_exchange,
     start_periodic_sweep,
     schedule_per_trade_reconcile,
 )
+from alerts import AlertDispatcher, MemorySink
 
 
 # ---------------------------------------------------------------------------
@@ -187,5 +189,99 @@ def test_feature_flag_off_skips_reconcile():
             calls.append("reconcile_called")  # must NOT happen
 
         assert calls == [], "reconcile should not be called when state_conn/fetcher are None"
+
+    asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# Test 6: alert_dispatcher.dispatch is called on first-insert discrepancy
+# ---------------------------------------------------------------------------
+
+def test_alert_dispatcher_called_on_first_insert_discrepancy():
+    """When alert_dispatcher is provided and a discrepancy is found, dispatch
+    is called with a ReconciliationEvent matching the discrepancy category."""
+    async def _go():
+        _, conn = _make_db()
+
+        # Phantom position: exchange has it, state_store doesn't
+        fake = FakeExchange()
+        fake.set_open_positions("OKX", [
+            {"symbol": "BTCUSDT", "side": "buy", "size_usd": 100.0},
+        ])
+        fake.set_balance("OKX", available_usd=100.0)
+        fake.set_recent_fills("OKX", [])
+
+        sink = MemorySink()
+        dispatcher = AlertDispatcher(dedup_window_s=0.0)
+        dispatcher.add_sink(sink, min_severity="info")
+
+        await reconcile_exchange(
+            conn, fake, exchange="OKX", since_ms=0,
+            alert_dispatcher=dispatcher,
+        )
+
+        categories = [e.category for e in sink.events]
+        assert "phantom_position" in categories, (
+            f"expected phantom_position in dispatched events; got {categories}"
+        )
+        # Verify the event shape is a ReconciliationEvent with correct fields
+        phantom_ev = next(e for e in sink.events if e.category == "phantom_position")
+        assert phantom_ev.exchange == "OKX"
+        assert phantom_ev.severity == "error"
+        conn.close()
+
+    asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# Test 7: repeat events (was_insert=False) do NOT re-dispatch
+# ---------------------------------------------------------------------------
+
+def test_repeat_events_do_not_redispatch():
+    """When the same discrepancy recurs (upsert_recon_event returns was_insert=False),
+    alert_dispatcher.dispatch is NOT called again — avoiding Telegram spam."""
+    async def _go():
+        _, conn = _make_db()
+
+        # Orphan leg: state_store has position, exchange shows nothing
+        from state_store import insert_position
+        insert_position(
+            conn, symbol="ETHUSDT",
+            exchange_a="OKX", exchange_b="MEXC",
+            side_a="buy", side_b="sell",
+            size_usd_a=50.0, size_usd_b=50.0,
+            entry_spread_pct=0.01, status="open", opened_at_ms=1700000000000,
+        )
+
+        fake = FakeExchange()
+        fake.set_open_positions("MEXC", [])  # exchange shows nothing — orphan
+        fake.set_balance("MEXC", available_usd=50.0)
+        fake.set_recent_fills("MEXC", [])
+
+        sink = MemorySink()
+        dispatcher = AlertDispatcher(dedup_window_s=0.0)
+        dispatcher.add_sink(sink, min_severity="info")
+
+        # First reconcile — inserts new event
+        await reconcile_exchange(
+            conn, fake, exchange="MEXC", since_ms=0,
+            alert_dispatcher=dispatcher,
+        )
+        first_count = len(sink.events)
+        assert first_count >= 1, "expected at least one dispatch on first insert"
+
+        # Second reconcile — same discrepancy, was_insert=False
+        await reconcile_exchange(
+            conn, fake, exchange="MEXC", since_ms=0,
+            alert_dispatcher=dispatcher,
+        )
+        second_count = len(sink.events)
+        # Dispatcher's own dedup_window_s=0 means it won't filter — so the
+        # guard must be was_insert=False in reconcile_exchange itself.
+        assert second_count == first_count, (
+            f"repeat event should NOT redispatch; count went from "
+            f"{first_count} to {second_count}"
+        )
+        conn.close()
 
     asyncio.run(_go())
