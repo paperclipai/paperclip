@@ -11,6 +11,33 @@ DATA_DIR = os.environ.get(
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 
 # ---------------------------------------------------------------------------
+# Data-source selector (Task 14.4)
+# When USE_SQLITE_STATE=true the dashboard reads from SQLite via state_store.
+# When false (default) it falls back to the existing file-based path.
+# ---------------------------------------------------------------------------
+
+USE_SQLITE_STATE = os.environ.get("USE_SQLITE_STATE", "false").lower() == "true"
+STATE_DB_PATH = os.environ.get(
+    "STATE_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "state.db"),
+)
+
+
+def _data_source():
+    """Return 'sqlite' when SQLite is enabled and the DB exists, else 'file'."""
+    if USE_SQLITE_STATE and os.path.exists(STATE_DB_PATH):
+        return "sqlite"
+    return "file"
+
+
+# ---------------------------------------------------------------------------
+# Register reconciliation blueprint
+# ---------------------------------------------------------------------------
+from dashboard_recon import recon_bp  # noqa: E402
+
+app.register_blueprint(recon_bp)
+
+# ---------------------------------------------------------------------------
 # Auth helper
 # ---------------------------------------------------------------------------
 
@@ -169,6 +196,8 @@ HTML = r"""<!DOCTYPE html>
     <span class="val" id="h-pnl">&#x2014;</span>
   </div>
   <span class="lupd" id="lupd">&#x2014;</span>
+  <a href="/recon/" style="font-size:12px;color:var(--acc);text-decoration:none;white-space:nowrap;"
+     title="Reconciliation events &amp; invariant status">Recon Panel</a>
 </div>
 
 <!-- CONTROLS -->
