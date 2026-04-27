@@ -5,6 +5,7 @@ Plan 3 wires TelegramSink with the live trader's existing bot token.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Optional, Protocol
@@ -90,6 +91,72 @@ class TelegramSink:
             r.raise_for_status()
         except Exception as e:  # noqa: BLE001
             log.warning("TelegramSink.send failed: %s", e)
+
+
+class DigestSink:
+    """Batches 'warn'-severity events and flushes them to an inner sink periodically.
+
+    Events at any severity other than 'warn' are forwarded immediately.
+    Warn events are accumulated and flushed as a single combined message every
+    `flush_interval_s` seconds (default 3600 — hourly).
+
+    Usage:
+        inner = TelegramSink(...)
+        digest = DigestSink(inner, flush_interval_s=3600)
+        digest_task = asyncio.create_task(digest.run())
+        dispatcher.add_sink(digest, min_severity="warn")
+        # at shutdown:
+        digest_task.cancel()
+        await digest.flush()
+    """
+
+    DIGEST_SEVERITY = "warn"
+
+    def __init__(self, inner: Any, *, flush_interval_s: float = 3600.0) -> None:
+        self._inner = inner
+        self._flush_interval_s = flush_interval_s
+        self._buffer: list[ReconciliationEvent] = []
+
+    async def send(self, event: ReconciliationEvent) -> None:
+        if event.severity == self.DIGEST_SEVERITY:
+            self._buffer.append(event)
+        else:
+            await self._inner.send(event)
+
+    async def flush(self) -> None:
+        """Send all buffered warn events as a single digest, then clear the buffer."""
+        if not self._buffer:
+            return
+        events, self._buffer = self._buffer, []
+        # Build a combined synthetic event carrying a summary in notes.
+        summary_lines = [
+            f"[{e.category}@{e.exchange or '-'}:{e.symbol or '-'}]"
+            for e in events
+        ]
+        digest_event = ReconciliationEvent(
+            timestamp_ms=int(time.time() * 1000),
+            source="reconciler",
+            category="warn_digest",
+            severity="warn",
+            notes=f"{len(events)} warn(s) in last digest window: " + ", ".join(summary_lines),
+        )
+        try:
+            await self._inner.send(digest_event)
+        except Exception as e:  # noqa: BLE001
+            log.warning("DigestSink.flush inner send failed: %s", e)
+
+    async def run(self) -> None:
+        """Background task: flush buffered warns every flush_interval_s seconds.
+
+        Call asyncio.create_task(digest.run()) at startup and cancel the
+        returned task at shutdown (followed by a final await digest.flush()).
+        """
+        try:
+            while True:
+                await asyncio.sleep(self._flush_interval_s)
+                await self.flush()
+        except asyncio.CancelledError:
+            pass
 
 
 _SEVERITY_LEVELS = {"info": 0, "warn": 1, "error": 2, "critical": 3}

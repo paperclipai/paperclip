@@ -57,6 +57,19 @@ except ImportError:
     _PydanticValidationError = Exception  # type: ignore[assignment,misc]
     _NORMALIZERS_AVAILABLE = False
 
+# Plan 3 — state_store + alerts (always imported; modules ship with the bot)
+try:
+    import state_store as _state_store
+    from alerts import AlertDispatcher, ConsoleSink, TelegramSink, DigestSink
+    _PLAN3_AVAILABLE = True
+except ImportError:
+    _state_store = None  # type: ignore[assignment]
+    AlertDispatcher = None  # type: ignore[assignment,misc]
+    ConsoleSink = None  # type: ignore[assignment,misc]
+    TelegramSink = None  # type: ignore[assignment,misc]
+    DigestSink = None  # type: ignore[assignment,misc]
+    _PLAN3_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Telegram config
 # ---------------------------------------------------------------------------
@@ -2545,6 +2558,51 @@ class LiveTrader:
         self.state_path = os.path.join(str(DATA_DIR), "real_state.json")
         self._load_state()
 
+        # -- Plan 3: SQLite state store (always open; harmless when flags off) --
+        self.state_conn = None
+        self._digest_task: Optional[asyncio.Task] = None
+        self.alerts = None
+        if _PLAN3_AVAILABLE:
+            _db_path = str(DATA_DIR / "state.db")
+            _state_store.init_schema(_db_path)
+            self.state_conn = _state_store.open_db(_db_path)
+            log.info("state_store opened: %s", _db_path)
+
+            # Build AlertDispatcher with severity routing per spec:
+            #   info  → silenced (no sink registered at info level)
+            #   warn  → digest sink (hourly flush, batched)
+            #   error → immediate
+            #   critical → immediate (repeat-every-5-min handled by caller dedup=300s)
+            self.alerts = AlertDispatcher(dedup_window_s=300.0)
+            _console = ConsoleSink()
+            self.alerts.add_sink(_console, min_severity="error")
+
+            _tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+            _tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+            if _tg_token and _tg_chat:
+                _tg_sink = TelegramSink(bot_token=_tg_token, chat_id=_tg_chat)
+                # immediate sink for error/critical
+                self.alerts.add_sink(_tg_sink, min_severity="error")
+                # digest sink for warns (hourly)
+                _digest = DigestSink(_tg_sink, flush_interval_s=3600.0)
+                self.alerts.add_sink(_digest, min_severity="warn")
+                # stash for startup task wiring
+                self._digest_sink: Optional[DigestSink] = _digest
+            else:
+                self._digest_sink = None
+
+            # Risk-gap acknowledgement log lines (PLAN3_HANDOFF.md §Risks)
+            log.info(
+                "LiveExchangeFetcher.get_recent_fills returns [] until per-exchange "
+                "fill endpoints are implemented; reconciler unlinked_fill detection inactive."
+            )
+            _shadow = os.environ.get("SHADOW_SQLITE", "false").lower() in ("1", "true", "yes")
+            if _shadow:
+                log.info(
+                    "SHADOW_SQLITE=true: shadow_writer connection has no automatic recovery; "
+                    "operator action required on write failures during watch window."
+                )
+
     # -- Canonical pair key --
     @staticmethod
     def _pair_key(symbol: str, ex_a: str, inst_a: str, ex_b: str, inst_b: str) -> str:
@@ -3104,6 +3162,9 @@ async def main():
 
         # -- Create LiveTrader + TelegramCommandListener --
         trader = LiveTrader(executors)
+        # Spawn hourly warn-digest background task (Plan 3 §9.3)
+        if trader._digest_sink is not None:
+            trader._digest_task = asyncio.create_task(trader._digest_sink.run())
         tg_listener = TelegramCommandListener(trader)
 
         # -- Discover symbols --
@@ -3548,6 +3609,17 @@ async def main():
             f"Trades: {p.total_trades}  |  DD: {p.max_drawdown_pct:.2f}%"
         )
         await send_telegram(session, final_msg)
+
+        # Plan 3 shutdown cleanup: cancel digest task, flush, close state_conn
+        if trader._digest_task is not None:
+            trader._digest_task.cancel()
+        if trader._digest_sink is not None:
+            await trader._digest_sink.flush()
+        if trader.state_conn is not None:
+            trader.state_conn.close()
+            trader.state_conn = None
+            log.info("state_store connection closed")
+
         log.info("Shutdown complete")
 
     finally:

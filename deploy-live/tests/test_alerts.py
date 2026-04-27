@@ -156,3 +156,94 @@ def test_dispatcher_continues_on_sink_failure():
         assert len(good.events) == 1
 
     asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# DigestSink tests (Task 9)
+# ---------------------------------------------------------------------------
+from alerts import DigestSink
+
+
+def test_digest_sink_buffers_warns_and_forwards_others():
+    """Warn events are buffered; non-warn events are forwarded immediately."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0)
+
+        await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        # Nothing forwarded yet
+        assert len(inner.events) == 0
+
+        # Non-warn is forwarded immediately
+        await digest.send(_sample_event(severity="error", category="orphan_leg"))
+        assert len(inner.events) == 1
+        assert inner.events[0].severity == "error"
+
+    asyncio.run(_go())
+
+
+def test_digest_sink_flush_sends_combined_message():
+    """flush() sends one digest event summarising all buffered warns."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0)
+
+        await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        await digest.send(_sample_event(severity="warn", category="stale_price"))
+        await digest.flush()
+
+        assert len(inner.events) == 1
+        ev = inner.events[0]
+        assert ev.category == "warn_digest"
+        assert ev.severity == "warn"
+        assert "balance_drift" in (ev.notes or "")
+        assert "stale_price" in (ev.notes or "")
+
+    asyncio.run(_go())
+
+
+def test_digest_sink_flush_clears_buffer():
+    """After flush, a second flush with no new events sends nothing."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0)
+
+        await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        await digest.flush()
+        assert len(inner.events) == 1
+
+        # Second flush — buffer is empty, no additional event
+        await digest.flush()
+        assert len(inner.events) == 1
+
+    asyncio.run(_go())
+
+
+def test_digest_sink_run_task_is_cancellable():
+    """The run() background task exits cleanly on cancellation."""
+    async def _go():
+        inner = MemorySink()
+        digest = DigestSink(inner, flush_interval_s=9999.0)
+        task = asyncio.create_task(digest.run())
+        await asyncio.sleep(0)  # let task start
+        task.cancel()
+        # Must not raise; CancelledError is swallowed inside run()
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+
+    asyncio.run(_go())
+
+
+def test_digest_sink_flush_on_inner_failure_does_not_raise():
+    """If the inner sink raises during flush, DigestSink logs and does not re-raise."""
+    class BrokenSink:
+        async def send(self, event):
+            raise RuntimeError("network down")
+
+    async def _go():
+        digest = DigestSink(BrokenSink(), flush_interval_s=9999.0)
+        await digest.send(_sample_event(severity="warn", category="balance_drift"))
+        # Must not raise even though inner.send() blows up
+        await digest.flush()
+
+    asyncio.run(_go())
