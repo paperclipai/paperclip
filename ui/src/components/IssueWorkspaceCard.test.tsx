@@ -58,6 +58,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
       provisionCommand: null,
       teardownCommand: null,
       cleanupCommand: null,
+      syncCommand: null,
       workspaceRuntime: null,
       desiredState: null,
     },
