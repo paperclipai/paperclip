@@ -70,11 +70,16 @@ export function goalService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
-    remove: (id: string) =>
-      db
+    remove: async (id: string) => {
+      // Delete child goals first to avoid FK constraint violation
+      await db.delete(goals).where(eq(goals.parentId, id));
+      
+      const deleted = await db
         .delete(goals)
         .where(eq(goals.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+      return deleted;
+    },
   };
 }
