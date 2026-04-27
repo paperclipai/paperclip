@@ -9,6 +9,7 @@ import type {
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
@@ -32,6 +33,7 @@ interface CommentWithRunMeta extends IssueComment {
   clientStatus?: "pending" | "queued";
   queueState?: "queued";
   queueTargetRunId?: string | null;
+  followUpRequested?: boolean;
 }
 
 interface LinkedRunItem {
@@ -40,6 +42,22 @@ interface LinkedRunItem {
   agentId: string;
   createdAt: Date | string;
   startedAt: Date | string | null;
+  environment?: {
+    id: string;
+    name: string;
+    driver: string;
+  } | null;
+  environmentLease?: {
+    id: string;
+    status: string;
+    leasePolicy: string;
+    provider: string | null;
+    providerLeaseId: string | null;
+    executionWorkspaceId: string | null;
+    workspacePath: string | null;
+    failureReason: string | null;
+    cleanupStatus: string | null;
+  } | null;
   finishedAt?: Date | string | null;
 }
 
@@ -117,6 +135,16 @@ function clearDraft(draftKey: string) {
   } catch {
     // Ignore localStorage failures.
   }
+}
+
+function BreakablePath({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  const segments = text.split(/(?<=[\/-])/);
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) parts.push(<wbr key={i} />);
+    parts.push(segments[i]);
+  }
+  return <>{parts}</>;
 }
 
 function parseReassignment(target: string): CommentReassignment | null {
@@ -315,6 +343,7 @@ function CommentCard({
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const followUpRequested = comment.followUpRequested === true;
 
   return (
     <div
@@ -344,6 +373,11 @@ function CommentCard({
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               Queued
             </span>
+          ) : null}
+          {followUpRequested ? (
+            <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+              Follow-up
+            </Badge>
           ) : null}
           {companyId && !isPending ? (
             <PluginSlotOutlet
@@ -452,6 +486,7 @@ function TimelineEventCard({
   currentUserId?: string | null;
 }) {
   const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
+  const actionLabel = event.followUpRequested ? "requested follow-up" : "updated this task";
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
@@ -462,7 +497,7 @@ function TimelineEventCard({
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">{actionLabel}</span>
           <a
             href={`#activity-${event.id}`}
             className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -611,6 +646,40 @@ const TimelineList = memo(function TimelineList({
                   </a>
                 </div>
               </div>
+              {run.environment || run.environmentLease ? (
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  {run.environment ? (
+                    <span>
+                      Environment <span className="text-foreground">{run.environment.name}</span>
+                      <span> · {run.environment.driver}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.provider ? (
+                    <span>
+                      Provider <span className="text-foreground">{run.environmentLease.provider}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease ? (
+                    <span>
+                      Lease{" "}
+                      <span className="font-mono text-foreground">
+                        {run.environmentLease.id.slice(0, 8)}
+                      </span>
+                      <span> · {run.environmentLease.status}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.workspacePath ? (
+                    <span className="min-w-0 font-mono" style={{ overflowWrap: "anywhere" }}>
+                      <BreakablePath text={run.environmentLease.workspacePath} />
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.failureReason ? (
+                    <span className="text-destructive">
+                      Failure: {run.environmentLease.failureReason}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           );
         }
@@ -682,12 +751,20 @@ export function CommentThread({
   const hasScrolledRef = useRef(false);
 
   const timeline = useMemo<TimelineItem[]>(() => {
-    const commentItems: TimelineItem[] = comments.map((comment) => ({
-      kind: "comment",
-      id: comment.id,
-      createdAtMs: new Date(comment.createdAt).getTime(),
-      comment,
-    }));
+    const followUpCommentIds = new Set(
+      timelineEvents
+        .filter((event) => event.followUpRequested && event.commentId)
+        .map((event) => event.commentId as string),
+    );
+    const commentItems: TimelineItem[] = comments.map((comment) => {
+      const followUpRequested = comment.followUpRequested === true || followUpCommentIds.has(comment.id);
+      return {
+        kind: "comment",
+        id: comment.id,
+        createdAtMs: new Date(comment.createdAt).getTime(),
+        comment: followUpRequested ? { ...comment, followUpRequested } : comment,
+      };
+    });
     const approvalItems: TimelineItem[] = linkedApprovals.map((approval) => ({
       kind: "approval",
       id: approval.id,

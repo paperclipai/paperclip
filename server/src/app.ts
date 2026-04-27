@@ -15,7 +15,9 @@ import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
+import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -42,7 +44,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
-import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
@@ -128,6 +130,7 @@ export async function createApp(
     hostVersion?: string;
     localPluginDir?: string;
     pluginMigrationDb?: Db;
+    pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -169,6 +172,9 @@ export async function createApp(
   }
   app.use(llmRoutes(db));
 
+  const hostServicesDisposers = new Map<string, () => void>();
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
@@ -183,18 +189,21 @@ export async function createApp(
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
-  api.use(agentRoutes(db));
+  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
   }));
-  api.use(routineRoutes(db));
+  api.use(issueTreeControlRoutes(db));
+  api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
-  api.use(approvalRoutes(db));
+  api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
-  api.use(costRoutes(db));
+  api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(userProfileRoutes(db));
@@ -205,8 +214,6 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
-  const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -252,7 +259,9 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker);
+        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
+          pluginWorkerManager: workerManager,
+        });
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({
           pluginId,

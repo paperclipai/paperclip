@@ -17,6 +17,9 @@ const mockProjectService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
 }));
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
@@ -26,10 +29,19 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  environmentService: () => mockEnvironmentService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
@@ -43,10 +55,19 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    environmentService: () => mockEnvironmentService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
@@ -121,12 +142,15 @@ describe("project env routes", () => {
     vi.doUnmock("../routes/projects.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/environments.js");
+    vi.doUnmock("../services/secrets.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockProjectService.createWorkspace.mockResolvedValue(null);
     mockProjectService.listWorkspaces.mockResolvedValue([]);
+    mockEnvironmentService.getById.mockReset();
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
   });
 

@@ -337,6 +337,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `api.routes.register` |
 | | `http.outbound` |
 | | `secrets.read-ref` |
+| | `environment.drivers.register` |
 | **Agent** | `agent.tools.register` |
 | | `agents.invoke` |
 | | `agent.sessions.create` |

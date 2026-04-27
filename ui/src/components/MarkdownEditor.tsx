@@ -68,6 +68,8 @@ interface MarkdownEditorProps {
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Called when a non-image file is dropped onto the editor (e.g. .zip). */
   onDropFile?: (file: File) => Promise<void>;
+  /** When set to `parent`, a wrapper owns drag/drop behavior and visuals. */
+  fileDropTarget?: "editor" | "parent";
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
@@ -126,6 +128,10 @@ function hasMeaningfulEditorContent(node: Node | null): boolean {
   return Array.from(element.childNodes).some((child) => hasMeaningfulEditorContent(child));
 }
 
+function hasMarkdownImage(value: string): boolean {
+  return /!\[[\s\S]*?\]\([^)]+\)/.test(value);
+}
+
 function isRichEditorDomEmpty(
   editable: HTMLElement,
   expectedValue: string,
@@ -133,9 +139,11 @@ function isRichEditorDomEmpty(
 ): boolean {
   const expectedText = expectedValue.trim();
   if (!expectedText) return false;
+  const expectedHasImage = hasMarkdownImage(expectedText);
 
   const visibleText = (editable.textContent ?? "").trim();
   if (visibleText.length === 0) {
+    if (expectedHasImage) return false;
     return !Array.from(editable.childNodes).some((child) => hasMeaningfulEditorContent(child));
   }
 
@@ -145,6 +153,7 @@ function isRichEditorDomEmpty(
     && visibleText === normalizedPlaceholder
     && expectedText !== normalizedPlaceholder
   ) {
+    if (expectedHasImage) return false;
     return true;
   }
 
@@ -491,6 +500,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onBlur,
   imageUploadHandler,
   onDropFile,
+  fileDropTarget = "editor",
   bordered = true,
   mentions,
   onSubmit,
@@ -897,8 +907,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
   }
 
-  const canDropImage = Boolean(imageUploadHandler);
-  const canDropFile = Boolean(imageUploadHandler || onDropFile);
+  const canDropFile = fileDropTarget === "editor" && Boolean(imageUploadHandler || onDropFile);
   const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
@@ -1082,6 +1091,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       <MDXEditor
         ref={setEditorRef}
         markdown={editorValue}
+        suppressHtmlProcessing
         placeholder={placeholder}
         readOnly={readOnly}
         onChange={(next) => {

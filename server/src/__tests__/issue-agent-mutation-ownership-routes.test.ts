@@ -238,7 +238,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockAccessService.canUser.mockReset();
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
