@@ -985,7 +985,12 @@ export async function syncReusedExecutionWorktree(input: {
   if (!syncCommand) return;
 
   const worktreePath = input.workspace.worktreePath ?? input.workspace.cwd;
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
+  // Use resolveGitOwnerRepoRoot (--git-common-dir based) so we land on the
+  // canonical main repo root in linked worktrees, matching the behaviour of
+  // realizeExecutionWorkspace. --show-toplevel would resolve to the worktree
+  // root, leaving REPO_ROOT and resolved script paths inconsistent between
+  // the reuse-recovery path and the initial provision path.
+  const repoRoot = await resolveGitOwnerRepoRoot(worktreePath).catch(() => null);
   if (!repoRoot) {
     if (input.recorder) {
       await input.recorder.recordOperation({
@@ -1032,7 +1037,10 @@ export async function provisionReusedExecutionWorktree(input: {
   if (!provisionCommand) return;
 
   const worktreePath = input.workspace.worktreePath ?? input.workspace.cwd;
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
+  // Same rationale as syncReusedExecutionWorktree: use resolveGitOwnerRepoRoot
+  // so REPO_ROOT and resolved script paths point at the main repo root, not
+  // the linked worktree root.
+  const repoRoot = await resolveGitOwnerRepoRoot(worktreePath).catch(() => null);
   if (!repoRoot) {
     if (input.recorder) {
       await input.recorder.recordOperation({
