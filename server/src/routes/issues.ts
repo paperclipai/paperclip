@@ -1269,6 +1269,37 @@ export function issueRoutes(
     res.json(workProducts);
   });
 
+  router.get("/companies/:companyId/documents", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const rawLimit = req.query.limit as string | undefined;
+    const parsedLimit = rawLimit ? Number.parseInt(rawLimit, 10) : null;
+    if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
+      return;
+    }
+
+    let updatedAfter: Date | undefined;
+    const updatedAfterRaw = req.query.updatedAfter as string | undefined;
+    if (updatedAfterRaw !== undefined) {
+      const parsed = new Date(updatedAfterRaw);
+      if (Number.isNaN(parsed.getTime())) {
+        res.status(400).json({ error: "updatedAfter must be a valid ISO 8601 timestamp" });
+        return;
+      }
+      updatedAfter = parsed;
+    }
+
+    const docs = await documentsSvc.listCompanyDocuments(companyId, {
+      projectId: req.query.projectId as string | undefined,
+      q: req.query.q as string | undefined,
+      updatedAfter,
+      limit: parsedLimit ?? undefined,
+    });
+    res.json(docs);
+  });
+
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
