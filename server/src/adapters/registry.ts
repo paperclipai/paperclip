@@ -253,6 +253,7 @@ const copilotLocalAdapter: ServerAdapterModule = {
   models: copilotModels,
   listSkills: listCopilotSkills,
   syncSkills: syncCopilotSkills,
+  supportsInstructionsBundle: true,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: copilotAgentConfigurationDoc,
   detectModel: () => copilotDetectModel(),
