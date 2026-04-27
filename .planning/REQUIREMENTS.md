@@ -32,10 +32,10 @@
 
 ### Phase 4: Settlement Governance Hardening
 
-- [ ] **SETTLE-01**: Unique constraint on `(companyId, workProductId)` prevents double materialization of P&L entries
-- [ ] **SETTLE-02**: Anti-gaming signals (repeated_self_review, abnormal_gold_farming, quality_score_bias) displayed in settlement approval UI
-- [ ] **SETTLE-03**: Settlement approval shows linked ledger entry and balanceAfter
-- [ ] **SETTLE-04**: Configurable anti-gaming threshold UI per company (signal triggers, score windows)
+- [x] **SETTLE-01**: Unique constraint on `(companyId, workProductId)` prevents double materialization of P&L entries
+- [x] **SETTLE-02**: Anti-gaming signals (repeated_self_review, abnormal_gold_farming, quality_score_bias) displayed in settlement approval UI
+- [x] **SETTLE-03**: Settlement approval shows linked ledger entry and balanceAfter
+- [x] **SETTLE-04**: Configurable anti-gaming threshold UI per company (signal triggers, score windows)
 
 ### Phase 5: Consistency Linting (Batch)
 
@@ -86,10 +86,10 @@
 | LEDGER-03 | Phase 3 | Pending |
 | LEDGER-04 | Phase 3 | Pending |
 | LEDGER-05 | Phase 3 | Pending |
-| SETTLE-01 | Phase 4 | Pending |
-| SETTLE-02 | Phase 4 | Pending |
-| SETTLE-03 | Phase 4 | Pending |
-| SETTLE-04 | Phase 4 | Pending |
+| SETTLE-01 | Phase 4 | Complete |
+| SETTLE-02 | Phase 4 | Complete |
+| SETTLE-03 | Phase 4 | Complete |
+| SETTLE-04 | Phase 4 | Complete |
 | LINT-01 | Phase 5 | Pending |
 | LINT-02 | Phase 5 | Pending |
 | LINT-03 | Phase 5 | Pending |

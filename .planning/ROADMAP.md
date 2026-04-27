@@ -6,7 +6,7 @@
 - [shipped] **v2.1 개발기획서 반영 및 운영자 채택** - Phase 8-13 완료, 2026-04-25 ([archive](milestones/v2.1-ROADMAP.md))
 - [shipped] **v2.2 개발기획서 완전 정합성 고도화** - Phase 14-18 완료, 2026-04-25 ([archive](milestones/v2.2-ROADMAP.md))
 - [shipped] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-24 완료, 2026-04-27 ([archive](milestones/v2.3-ROADMAP.md), [requirements](milestones/v2.3-REQUIREMENTS.md), [audit](milestones/v2.3-MILESTONE-AUDIT.md))
-- [active] **v2.4 Knowledge+Economy 심화** - Phase 25-29 진행 중
+- [active] **v2.4 Knowledge+Economy 심화** - Phase 25-29 진행 중 (Phase 27-28 complete)
 
 ## 완료됨
 
@@ -107,7 +107,7 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 5. User can view GRAPH_REPORT.md summarizing graph communities and edge distribution
 6. Leiden algorithm detects communities and clusters edges into topic groups
 
-**Plans**: TBD
+**Plans**: 1/1 complete
 **UI hint**: yes
 
 ### Phase 27: Coin Ledger Atomicity
@@ -125,7 +125,10 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 4. `rt2CoinLedger` has a `leg` column ('debit'/'credit') for transaction grouping
 5. `balance_after >= 0` check constraint prevents negative balance entries
 
-**Plans**: TBD
+**Plans**:
+- `27-01-PLAN.md` — leg column + balanceAfter atomic SQL subquery
+- `27-02-PLAN.md` — transaction-wrapped income/expense/transfer + reconciliation
+- `27-03-PLAN.md` — close T-27-02 with per-actor ledger write serialization
 
 ### Phase 28: Settlement Governance Hardening
 
@@ -190,8 +193,8 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 | 24. Phase 19 Verification Artifact Closure | v2.3 | 1/1 | Complete | 2026-04-27 |
 | 25. Daily Wiki Projector | v2.4 | 0/1 | Not started | - |
 | 26. Graphify Projector | v2.4 | 0/1 | Not started | - |
-| 27. Coin Ledger Atomicity | v2.4 | 0/1 | Not started | - |
-| 28. Settlement Governance Hardening | v2.4 | 0/1 | Not started | - |
+| 27. Coin Ledger Atomicity | v2.4 | 3/3 | Complete | 2026-04-28 |
+| 28. Settlement Governance Hardening | v2.4 | 1/1 | Complete | 2026-04-28 |
 | 29. Consistency Linting (Batch) | v2.4 | 0/1 | Not started | - |
 
 ## Archive
@@ -209,4 +212,4 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 - [v2.3 milestone audit](milestones/v2.3-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-27, v2.4 milestone started*
+*마지막 업데이트: 2026-04-28, Phase 28 settlement governance hardening complete*
