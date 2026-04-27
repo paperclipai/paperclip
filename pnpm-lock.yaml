@@ -507,8 +507,8 @@ importers:
   server:
     dependencies:
       '@asteasolutions/zod-to-openapi':
-        specifier: ^8.5.0
-        version: 8.5.0(zod@3.25.76)
+        specifier: ^7.3.4
+        version: 7.3.4(zod@3.25.76)
       '@aws-sdk/client-s3':
         specifier: ^3.888.0
         version: 3.994.0
@@ -937,10 +937,10 @@ packages:
       react:
         optional: true
 
-  '@asteasolutions/zod-to-openapi@8.5.0':
-    resolution: {integrity: sha512-SABbKiObg5dLRiTFnqiW1WWwGcg1BJfmHtT2asIBnBHg6Smy/Ms2KHc650+JI4Hw7lSkdiNebEGXpwoxfben8Q==}
+  '@asteasolutions/zod-to-openapi@7.3.4':
+    resolution: {integrity: sha512-/2rThQ5zPi9OzVwes6U7lK1+Yvug0iXu25olp7S0XsYmOqnyMfxH7gdSQjn/+DSOHRg7wnotwGJSyL+fBKdnEA==}
     peerDependencies:
-      zod: ^4.0.0
+      zod: ^3.20.2
 
   '@aws-crypto/crc32@5.2.0':
     resolution: {integrity: sha512-nLbCWqQNgUiwwtFsen1AdzAtvuLRsQS8rYgMuxCrdKf9kOssamGLuPwyTY9wyYblNr9+1XM8v6zoDTPPSIeANg==}
@@ -6881,7 +6881,7 @@ snapshots:
       '@types/react': 19.2.14
       react: 19.2.4
 
-  '@asteasolutions/zod-to-openapi@8.5.0(zod@3.25.76)':
+  '@asteasolutions/zod-to-openapi@7.3.4(zod@3.25.76)':
     dependencies:
       openapi3-ts: 4.5.0
       zod: 3.25.76

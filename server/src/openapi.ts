@@ -70,7 +70,7 @@ const registry = new OpenAPIRegistry();
 
 const ErrorSchema = registry.register(
   "Error",
-  z.object({ error: z.string() }).openapi("Error"),
+  z.object({ error: z.string() }).openapi({ title: "Error" }),
 );
 
 const responses = {
@@ -343,7 +343,7 @@ registry.registerPath({
   summary: "Update an agent",
   request: {
     params: z.object({ id: z.string() }),
-    body: jsonBody(updateAgentSchema),
+    body: jsonBody(updateAgentSchema.omit({ permissions: true })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
