@@ -408,7 +408,7 @@ describe("MarkdownEditor", () => {
     });
 
     expect(scope?.className).toContain("ring-1");
-    expect(container.textContent).toContain("Drop image to upload");
+    expect(container.textContent).toContain("Solte a imagem para enviar");
 
     act(() => {
       scope?.dispatchEvent(createFileDragEvent("dragleave"));
@@ -446,7 +446,7 @@ describe("MarkdownEditor", () => {
     });
 
     expect(scope?.className).not.toContain("ring-1");
-    expect(container.textContent).not.toContain("Drop image to upload");
+    expect(container.textContent).not.toContain("Solte a imagem para enviar");
 
     await act(async () => {
       root.unmount();

@@ -3716,7 +3716,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         if (result.nextOffset !== undefined) {
           setLogOffset(result.nextOffset);
         } else if (result.content.length > 0) {
-          setLogOffset((prev) => prev + result.content.length);
+          const byteLen = new Blob([result.content]).size;
+          setLogOffset((prev) => prev + byteLen);
         }
       } catch (err) {
         if (isRunLogUnavailable(err)) return;

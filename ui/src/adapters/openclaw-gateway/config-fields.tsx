@@ -98,7 +98,7 @@ export function OpenClawGatewayConfigFields({
 
   return (
     <>
-      <Field label="Gateway URL" hint={help.webhookUrl}>
+      <Field label="URL do Gateway" hint={help.webhookUrl}>
         <DraftInput
           value={
             isCreate
@@ -134,7 +134,7 @@ export function OpenClawGatewayConfigFields({
 
       {!isCreate && (
         <>
-          <Field label="Paperclip API URL override">
+          <Field label="Substituição da URL da API Paperclip">
             <DraftInput
               value={
                 eff(
@@ -150,7 +150,7 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Claimed API key path">
+          <Field label="Caminho da chave de API reivindicada">
             <DraftInput
               value={eff("adapterConfig", "claimedApiKeyPath", String(config.claimedApiKeyPath ?? ""))}
               onCommit={(v) => mark("adapterConfig", "claimedApiKeyPath", v || undefined)}
@@ -160,20 +160,20 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Session strategy">
+          <Field label="Estratégia de sessão">
             <select
               value={sessionStrategy}
               onChange={(e) => mark("adapterConfig", "sessionKeyStrategy", e.target.value)}
               className={inputClass}
             >
-              <option value="fixed">Fixed</option>
-              <option value="issue">Per issue</option>
-              <option value="run">Per run</option>
+              <option value="fixed">Fixo</option>
+              <option value="issue">Por tarefa</option>
+              <option value="run">Por execução</option>
             </select>
           </Field>
 
           {sessionStrategy === "fixed" && (
-            <Field label="Session key">
+            <Field label="Chave de sessão">
               <DraftInput
                 value={eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "paperclip"))}
                 onCommit={(v) => mark("adapterConfig", "sessionKey", v || undefined)}
@@ -185,13 +185,13 @@ export function OpenClawGatewayConfigFields({
           )}
 
           <SecretField
-            label="Gateway auth token (x-openclaw-token)"
+            label="Token de autenticação do gateway (x-openclaw-token)"
             value={effectiveGatewayToken}
             onCommit={commitGatewayToken}
-            placeholder="OpenClaw gateway token"
+            placeholder="Token do gateway OpenClaw"
           />
 
-          <Field label="Role">
+          <Field label="Função">
             <DraftInput
               value={eff("adapterConfig", "role", String(config.role ?? "operator"))}
               onCommit={(v) => mark("adapterConfig", "role", v || undefined)}
@@ -201,7 +201,7 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Scopes (comma-separated)">
+          <Field label="Escopos (separados por vírgula)">
             <DraftInput
               value={eff("adapterConfig", "scopes", parseScopes(config.scopes ?? ["operator.admin"]))}
               onCommit={(v) => {
@@ -217,7 +217,7 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Wait timeout (ms)">
+          <Field label="Tempo limite de espera (ms)">
             <DraftInput
               value={eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? "120000"))}
               onCommit={(v) => {
@@ -234,10 +234,9 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Device auth">
+          <Field label="Autenticação do dispositivo">
             <div className="text-xs text-muted-foreground leading-relaxed">
-              Always enabled for gateway agents. Paperclip persists a device key during onboarding so pairing approvals
-              remain stable across runs.
+              Sempre habilitado para agentes do gateway. O Paperclip persiste uma chave de dispositivo durante o onboarding para que as aprovações de pareamento permaneçam estáveis entre execuções.
             </div>
           </Field>
         </>

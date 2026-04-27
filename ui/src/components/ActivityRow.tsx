@@ -7,6 +7,70 @@ import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 
+const ACTION_VERBS: Record<string, string> = {
+  "issue.created": "criou",
+  "issue.updated": "atualizou",
+  "issue.checked_out": "assumiu",
+  "issue.released": "liberou",
+  "issue.comment_added": "comentou em",
+  "issue.attachment_added": "anexou arquivo em",
+  "issue.attachment_removed": "removeu anexo de",
+  "issue.document_created": "criou documento para",
+  "issue.document_updated": "atualizou documento em",
+  "issue.document_deleted": "excluiu documento de",
+  "issue.commented": "comentou em",
+  "issue.deleted": "excluiu",
+  "agent.created": "criou",
+  "agent.updated": "atualizou",
+  "agent.paused": "pausou",
+  "agent.resumed": "retomou",
+  "agent.terminated": "encerrou",
+  "agent.key_created": "criou chave API para",
+  "agent.budget_updated": "atualizou orçamento de",
+  "agent.runtime_session_reset": "reiniciou sessão de",
+  "heartbeat.invoked": "invocou heartbeat para",
+  "heartbeat.cancelled": "cancelou heartbeat para",
+  "approval.created": "solicitou aprovação",
+  "approval.approved": "aprovou",
+  "approval.rejected": "rejeitou",
+  "project.created": "criou",
+  "project.updated": "atualizou",
+  "project.deleted": "excluiu",
+  "goal.created": "criou",
+  "goal.updated": "atualizou",
+  "goal.deleted": "excluiu",
+  "cost.reported": "relatou custo para",
+  "cost.recorded": "registrou custo para",
+  "company.created": "criou empresa",
+  "company.updated": "atualizou empresa",
+  "company.archived": "arquivou",
+  "company.budget_updated": "atualizou orçamento de",
+};
+
+function humanizeValue(value: unknown): string {
+  if (typeof value !== "string") return String(value ?? "none");
+  return value.replace(/_/g, " ");
+}
+
+function formatVerb(action: string, details?: Record<string, unknown> | null): string {
+  if (action === "issue.updated" && details) {
+    const previous = (details._previous ?? {}) as Record<string, unknown>;
+    if (details.status !== undefined) {
+      const from = previous.status;
+      return from
+        ? `alterou status de ${humanizeValue(from)} para ${humanizeValue(details.status)} em`
+        : `alterou status para ${humanizeValue(details.status)} em`;
+    }
+    if (details.priority !== undefined) {
+      const from = previous.priority;
+      return from
+        ? `alterou prioridade de ${humanizeValue(from)} para ${humanizeValue(details.priority)} em`
+        : `alterou prioridade para ${humanizeValue(details.priority)} em`;
+    }
+  }
+  return ACTION_VERBS[action] ?? action.replace(/[._]/g, " ");
+}
+
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
     case "issue": return `/issues/${name ?? entityId}`;

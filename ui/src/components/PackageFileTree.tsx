@@ -150,18 +150,18 @@ export function parseFrontmatter(content: string): { data: FrontmatterData; body
 }
 
 export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
-  name: "Name",
-  title: "Title",
-  kind: "Kind",
-  reportsTo: "Reports to",
-  skills: "Skills",
+  name: "Nome",
+  title: "Título",
+  kind: "Tipo",
+  reportsTo: "Reporta para",
+  skills: "Habilidades",
   status: "Status",
-  description: "Description",
-  priority: "Priority",
-  assignee: "Assignee",
-  project: "Project",
-  recurring: "Recurring",
-  targetDate: "Target date",
+  description: "Descrição",
+  priority: "Prioridade",
+  assignee: "Responsável",
+  project: "Projeto",
+  recurring: "Recorrente",
+  targetDate: "Data alvo",
 };
 
 // ── File tree component ───────────────────────────────────────────────

@@ -20,28 +20,28 @@ const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
 const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
   mac: {
     steps: [
-      "Open Finder and navigate to the folder.",
-      "Right-click (or Control-click) the folder.",
-      "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
-      "Click \"Copy as Pathname\", then paste here.",
+      "Abra o Finder e navegue até a pasta.",
+      "Clique com o botão direito (ou Control-clique) na pasta.",
+      "Segure a tecla Option (⌥) — \"Copiar\" muda para \"Copiar como Caminho\".",
+      "Clique em \"Copiar como Caminho\" e cole aqui.",
     ],
-    tip: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
+    tip: "Você também pode abrir o Terminal, digitar cd, arrastar a pasta para a janela do terminal e pressionar Enter. Depois digite pwd para ver o caminho completo.",
   },
   windows: {
     steps: [
-      "Open File Explorer and navigate to the folder.",
-      "Click in the address bar at the top — the full path will appear.",
-      "Copy the path, then paste here.",
+      "Abra o Explorador de Arquivos e navegue até a pasta.",
+      "Clique na barra de endereço no topo — o caminho completo aparecerá.",
+      "Copie o caminho e cole aqui.",
     ],
-    tip: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
+    tip: "Alternativamente, segure Shift e clique com o botão direito na pasta, depois selecione \"Copiar como caminho\".",
   },
   linux: {
     steps: [
-      "Open a terminal and navigate to the directory with cd.",
-      "Run pwd to print the full path.",
-      "Copy the output and paste here.",
+      "Abra um terminal e navegue até o diretório com cd.",
+      "Execute pwd para exibir o caminho completo.",
+      "Copie a saída e cole aqui.",
     ],
-    tip: "In most file managers, Ctrl+L reveals the full path in the address bar.",
+    tip: "Na maioria dos gerenciadores de arquivos, Ctrl+L revela o caminho completo na barra de endereço.",
   },
 };
 
@@ -69,11 +69,11 @@ export function PathInstructionsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">Como obter o caminho completo</DialogTitle>
           <DialogDescription>
-            Paste the absolute path (e.g.{" "}
+            Cole o caminho absoluto (ex.{" "}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            ) no campo de entrada.
           </DialogDescription>
         </DialogHeader>
 
@@ -135,7 +135,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        Escolher
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

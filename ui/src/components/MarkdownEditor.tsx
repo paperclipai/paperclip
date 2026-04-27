@@ -674,7 +674,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : "Falha ao enviar imagem";
             setUploadError(message);
             throw err;
           }
@@ -990,7 +990,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       onKeyDownCapture={(e) => {
         if (readOnly) return;
         // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey) && !mentionActive) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();
@@ -1176,7 +1176,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 <span>{option.kind === "skill" ? `/${option.slug}` : option.name}</span>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Project
+                    Projeto
                   </span>
                 )}
                 {option.kind === "user" && (
@@ -1186,7 +1186,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 )}
                 {option.kind === "skill" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Skill
+                    Habilidade
                   </span>
                 )}
               </button>
@@ -1202,7 +1202,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop {onDropFile ? "file" : "image"} to upload
+          Solte {onDropFile ? "o arquivo" : "a imagem"} para enviar
         </div>
       )}
       {uploadError && (

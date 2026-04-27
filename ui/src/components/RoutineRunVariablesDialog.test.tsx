@@ -173,7 +173,7 @@ describe("RoutineRunVariablesDialog", () => {
     });
 
     expect(issueWorkspaceDraftCalls).toBeLessThanOrEqual(2);
-    expect(document.body.textContent).toContain("Run routine");
+    expect(document.body.textContent).toContain("Executar rotina");
     expect(document.body.textContent).not.toContain("Search agents...");
     expect(document.body.textContent).not.toContain("Search projects...");
 
@@ -242,7 +242,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(document.body.textContent).not.toContain("Missing: workspaceBranch");
 
     const runButton = Array.from(document.querySelectorAll("button"))
-      .find((button) => button.textContent === "Run routine");
+      .find((button) => button.textContent === "Executar rotina");
     expect(runButton).toBeTruthy();
 
     await act(async () => {

@@ -291,7 +291,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New sub-issue");
+    expect(container.textContent).toContain("Nova sub-tarefa");
     expect(container.textContent).toContain("Sub-issue of");
     expect(container.textContent).toContain("PAP-1");
     expect(container.textContent).toContain("Parent issue");
@@ -303,7 +303,7 @@ describe("NewIssueDialog", () => {
     const rerendered = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
+    expect(container.textContent).toContain("Nova tarefa");
     expect(container.textContent).toContain("Create Issue");
     expect(container.textContent).not.toContain("Sub-issue of");
 
@@ -419,7 +419,7 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
+    const titleInput = container.querySelector('textarea[placeholder="Título da tarefa"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),

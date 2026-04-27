@@ -124,7 +124,7 @@ export function OutputFeedbackButtons({
           onClick={() => handleVote("up")}
         >
           <ThumbsUp className="mr-1.5 h-3.5 w-3.5" />
-          Helpful
+          Útil
         </Button>
         <Button
           type="button"
@@ -135,17 +135,17 @@ export function OutputFeedbackButtons({
           onClick={() => handleVote("down")}
         >
           <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />
-          Needs work
+          Precisa melhorar
         </Button>
         {rightSlot ? <div className="ml-auto">{rightSlot}</div> : null}
       </div>
       {collectingDownvoteReason ? (
         <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">O que poderia ter sido melhor?</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder="Adicione uma nota breve"
             className="min-h-20 resize-y bg-background"
             disabled={disabled || isSaving}
           />
@@ -161,7 +161,7 @@ export function OutputFeedbackButtons({
                 setDownvoteAllowSharing(undefined);
               }}
             >
-              Dismiss
+              Dispensar
             </Button>
             <Button
               type="button"
@@ -174,7 +174,7 @@ export function OutputFeedbackButtons({
                 });
               }}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? "Salvando..." : "Salvar nota"}
             </Button>
           </div>
         </div>
@@ -191,24 +191,24 @@ export function OutputFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>Salvar preferência de compartilhamento de feedback</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
+              Escolha se as saídas de IA votadas podem ser compartilhadas com a Paperclip Labs. Esta
+              resposta se torna o padrão para futuros votos positivos e negativos.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>
-              This vote is always saved locally.
+              Este voto é sempre salvo localmente.
             </p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
+              Escolha <span className="font-medium text-foreground">Sempre permitir</span> para compartilhar
+              este voto e futuras saídas de IA votadas. Escolha{" "}
+              <span className="font-medium text-foreground">Não permitir</span> para manter este voto
+              e futuros votos locais.
             </p>
             <p>
-              You can change this later in Instance Settings &gt; General.
+              Você pode alterar isso depois em Configurações da Instância &gt; Geral.
             </p>
             {termsUrl ? (
               <a
@@ -217,7 +217,7 @@ export function OutputFeedbackButtons({
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
               >
-                Read our terms of service
+                Leia nossos termos de serviço
               </a>
             ) : null}
           </div>
@@ -238,7 +238,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? "Salvando..." : "Não permitir"}
             </Button>
             <Button
               type="button"
@@ -258,7 +258,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? "Salvando..." : "Sempre permitir"}
             </Button>
           </DialogFooter>
         </DialogContent>

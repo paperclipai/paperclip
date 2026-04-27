@@ -228,7 +228,11 @@ export function useLiveRunTranscripts({
           return;
         }
         if (result.content.length > 0) {
-          logOffsetByRunRef.current.set(run.id, offset + result.content.length);
+          // Use byte length (not JS string length) since the server offset is byte-based.
+          // new Blob is used because TextEncoder().encode().byteLength would also work but
+          // Blob is available in all browsers and avoids allocating a full Uint8Array.
+          const byteLength = new Blob([result.content]).size;
+          logOffsetByRunRef.current.set(run.id, offset + byteLength);
         }
       } catch (error) {
         if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {

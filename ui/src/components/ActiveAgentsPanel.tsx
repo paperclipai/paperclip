@@ -155,7 +155,7 @@ const AgentRunCard = memo(function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>{isActive ? "Ao vivo" : run.finishedAt ? `Finalizado ${relativeTime(run.finishedAt)}` : `Iniciado ${relativeTime(run.createdAt)}`}</span>
             </div>
           </div>
 
