@@ -191,7 +191,8 @@ export async function startServer(): Promise<StartedServer> {
     if (!rawUrl) return undefined;
     try {
       const parsed = new URL(rawUrl);
-      if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+      // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
+      if (!parsed.port) return rawUrl;
       parsed.port = String(port);
       return parsed.toString();
     } catch {
@@ -467,6 +468,12 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   }
+
+  const requestedListenPort = config.port;
+  const listenPort = await detectPort(requestedListenPort);
+  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+  }
   
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
@@ -487,7 +494,7 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
-    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
+    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
       .map((value) => value.trim())
@@ -512,16 +519,9 @@ export async function startServer(): Promise<StartedServer> {
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
-  
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
-    config.port = listenPort;
-  }
+
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
-  }
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
   maybePersistWorktreeRuntimePorts({
     serverPort: listenPort,
@@ -626,8 +626,8 @@ export async function startServer(): Promise<StartedServer> {
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedListenPort) {
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
   }
   
   const runtimeListenHost = config.host;
@@ -820,7 +820,7 @@ export async function startServer(): Promise<StartedServer> {
           deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
-        requestedPort: config.port,
+        requestedPort: requestedListenPort,
         listenPort,
         uiMode,
         db: startupDbInfo,

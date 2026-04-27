@@ -187,16 +187,17 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
   });
 
-  it("rewrites full issue URLs to internal issue links", () => {
-    const html = renderMarkdown("See http://localhost:3100/PAP/issues/PAP-1179.", [
-      { identifier: "PAP-1179", status: "blocked" },
+  it("preserves absolute issue URLs as external links", () => {
+    const url = "http://remote.example.test:3103/PAPA/issues/PAPA-115#comment-850083f3-24de-43e7-a8cd-bc01f7cc9f0d";
+    const html = renderMarkdown(`See ${url}.`, [
+      { identifier: "PAPA-115", status: "blocked" },
     ]);
 
-    expect(html).toContain('href="/issues/PAP-1179"');
-    expect(html).toContain("text-red-600");
-    expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
-    expect(html).toContain('data-mention-kind="issue"');
-    expect(html).not.toContain("paperclip-mention-chip--issue");
+    expect(html).toContain(`href="${url}"`);
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain("lucide-external-link");
+    expect(html).not.toContain('href="/issues/PAPA-115"');
+    expect(html).not.toContain("paperclip-markdown-issue-ref");
   });
 
   it("linkifies plain internal issue paths in markdown text", () => {
@@ -316,12 +317,16 @@ describe("MarkdownBody", () => {
     expect(html).toContain('rel="noreferrer"');
   });
 
-  it("prefixes GitHub markdown links with the GitHub icon", () => {
+  it("prefixes GitHub markdown links with the GitHub icon glued to the first character", () => {
     const html = renderMarkdown("[https://github.com/paperclipai/paperclip/pull/4099](https://github.com/paperclipai/paperclip/pull/4099)");
 
     expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/pull/4099"');
     expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
-    expect(html).toContain(">https://github.com/paperclipai/paperclip/pull/4099</a>");
+    // The icon and first character "h" must sit in a no-wrap span so the
+    // icon can never be orphaned on the previous line from the URL text.
+    expect(html).toMatch(/<span style="white-space:nowrap">.*lucide-github.*?<\/svg>h<\/span>/);
+    expect(html).toContain("ttps://github.com/paperclipai/paperclip/pull/4099");
+    expect(html).not.toContain("lucide-external-link");
   });
 
   it("prefixes GitHub autolinks with the GitHub icon", () => {
@@ -336,6 +341,22 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain('<a href="https://example.com/docs"');
     expect(html).not.toContain("lucide-github");
+  });
+
+  it("suffixes external links with a new-tab icon glued to the last character", () => {
+    const html = renderMarkdown("[docs](https://example.com/docs)");
+
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain("lucide-external-link");
+    // Last character "s" must sit in a no-wrap span with the icon so the
+    // indicator never wraps away from the link text.
+    expect(html).toMatch(/<span style="white-space:nowrap">s<svg[^>]*lucide-external-link/);
+  });
+
+  it("does not render the new-tab icon on internal links", () => {
+    const html = renderMarkdown("[settings](/company/settings)");
+
+    expect(html).not.toContain("lucide-external-link");
   });
 
   it("keeps fenced code blocks width-bounded and horizontally scrollable", () => {

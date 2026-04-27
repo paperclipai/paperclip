@@ -56,6 +56,7 @@ describe("findReusableSandboxLeaseId", () => {
           metadata: {
             provider: "fake-plugin",
             image: "template-a",
+            timeoutMs: 300000,
             reuseLease: true,
           },
         },
@@ -64,13 +65,14 @@ describe("findReusableSandboxLeaseId", () => {
           metadata: {
             provider: "fake-plugin",
             image: "template-b",
+            timeoutMs: 300000,
             reuseLease: true,
           },
         },
       ],
     });
 
-    expect(selected).toBe("sandbox-template-a");
+    expect(selected).toBe("sandbox-template-b");
   });
 
   it("requires image identity for reusable fake sandbox leases", () => {
@@ -476,7 +478,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string, params: any) => {
-        expect(params.config).toEqual(expect.objectContaining(fakePluginConfig));
+        expect(params.config).toEqual(expect.objectContaining({
+          image: "fake:test",
+          timeoutMs: 1234,
+          reuseLease: false,
+        }));
+        expect(params.config).not.toHaveProperty("provider");
         if (method === "environmentAcquireLease") {
           return {
             providerLeaseId: "sandbox-1",
@@ -499,12 +506,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           };
         }
         if (method === "environmentReleaseLease") {
-          expect(params.config).toEqual(fakePluginConfig);
+          expect(params.config).toEqual({
+            image: "fake:test",
+            timeoutMs: 1234,
+            reuseLease: false,
+          });
           expect(params.config).not.toHaveProperty("driver");
           expect(params.config).not.toHaveProperty("executionWorkspaceMode");
           expect(params.config).not.toHaveProperty("pluginId");
           expect(params.config).not.toHaveProperty("pluginKey");
           expect(params.config).not.toHaveProperty("providerMetadata");
+          expect(params.config).not.toHaveProperty("provider");
           expect(params.config).not.toHaveProperty("sandboxProviderPlugin");
           return undefined;
         }
@@ -541,6 +553,270 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(released[0]?.lease.status).toBe("released");
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.anything());
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything());
+  });
+
+  it("uses resolved secret-ref config for plugin-backed sandbox execute and release", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `secure-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
+    const providerConfig = {
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Secure Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.secure-sandbox-provider",
+      packageName: "@acme/secure-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.secure-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Secure Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "secure-plugin",
+            kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        expect(params.config.apiKey).toBe("resolved-provider-key");
+        expect(params.config).not.toHaveProperty("provider");
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "secure-plugin",
+              template: "base",
+              apiKey: "resolved-provider-key",
+              timeoutMs: 1234,
+              reuseLease: false,
+              sandboxId: "sandbox-1",
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentExecute") {
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "ok\n",
+            stderr: "",
+          };
+        }
+        if (method === "environmentReleaseLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+    expect(acquired.lease.metadata).toMatchObject({
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
+      timeoutMs: 1234,
+      sandboxId: "sandbox-1",
+    });
+    const executed = await runtimeWithPlugin.execute({
+      environment,
+      lease: acquired.lease,
+      command: "printf",
+      args: ["ok"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+    });
+
+    await environmentService(db).update(environment.id, {
+      driver: "local",
+      config: {},
+    });
+    const released = await runtimeWithPlugin.releaseRunLeases(runId);
+
+    expect(executed.stdout).toBe("ok\n");
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease.status).toBe("released");
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.objectContaining({
+      config: expect.objectContaining({
+        apiKey: "resolved-provider-key",
+      }),
+    }));
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.objectContaining({
+      config: expect.objectContaining({
+        apiKey: "resolved-provider-key",
+      }),
+    }));
+  });
+
+  it("falls back to acquire when plugin-backed sandbox lease resume throws", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Reusable Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.fake-sandbox-provider",
+      packageName: "@acme/fake-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.fake-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake-plugin",
+      providerLeaseId: "stale-plugin-lease",
+      metadata: {
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentResumeLease") {
+          throw new Error("stale sandbox");
+        }
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
+      driverKey: "fake-plugin",
+      providerLeaseId: "stale-plugin-lease",
+    }));
+    expect(workerManager.call).toHaveBeenNthCalledWith(2, pluginId, "environmentAcquireLease", expect.objectContaining({
+      driverKey: "fake-plugin",
+      config: {
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+      },
+      runId,
+    }));
   });
 
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {

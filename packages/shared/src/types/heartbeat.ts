@@ -77,6 +77,7 @@ export interface HeartbeatRunOutputSilence {
   snoozedUntil: Date | string | null;
   evaluationIssueId: string | null;
   evaluationIssueIdentifier: string | null;
+  evaluationIssueAssigneeAgentId: string | null;
 }
 
 export interface AgentWakeupSkipped {

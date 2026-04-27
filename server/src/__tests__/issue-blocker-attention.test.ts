@@ -253,6 +253,109 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("flags a chain whose leaf is in_review without an action path as stalled", async () => {
+    const { companyId, agentId } = await createCompany("PBV");
+    const parentId = await insertIssue({ companyId, identifier: "PBV-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBV-2",
+      title: "Stalled review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBV-2",
+      sampleStalledBlockerIdentifier: "PBV-2",
+    });
+  });
+
+  it("does not flag an in_review leaf as stalled when an active run is still progressing it", async () => {
+    const { companyId, agentId } = await createCompany("PBW");
+    const parentId = await insertIssue({ companyId, identifier: "PBW-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBW-2",
+      title: "Active review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: reviewLeafId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      stalledBlockerCount: 0,
+    });
+  });
+
+  it("flags a deep chain whose leaf is stalled in_review through multiple layers", async () => {
+    const { companyId, agentId } = await createCompany("PBZ");
+    const rootId = await insertIssue({ companyId, identifier: "PBZ-1", title: "Root", status: "blocked" });
+    const midId = await insertIssue({ companyId, identifier: "PBZ-2", title: "Mid blocker", status: "blocked" });
+    const leafId = await insertIssue({
+      companyId,
+      identifier: "PBZ-3",
+      title: "Stalled leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: midId, blockedIssueId: rootId });
+    await block({ companyId, blockerIssueId: leafId, blockedIssueId: midId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      stalledBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBZ-3",
+    });
+  });
+
+  it("prefers needs_attention over stalled when the chain also has a hard attention case", async () => {
+    const { companyId, agentId } = await createCompany("PBQ");
+    const parentId = await insertIssue({ companyId, identifier: "PBQ-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBQ-2",
+      title: "Stalled review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    const cancelledLeafId = await insertIssue({
+      companyId,
+      identifier: "PBQ-3",
+      title: "Cancelled blocker",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      attentionBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBQ-2",
+    });
+  });
+
   it("does not treat a scheduled retry as actively covered work", async () => {
     const { companyId, agentId } = await createCompany("PBY");
     const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });

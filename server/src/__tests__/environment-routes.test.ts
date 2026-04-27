@@ -38,6 +38,7 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValue: vi.fn(),
 }));
 const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
+const mockValidatePluginSandboxProviderConfig = vi.hoisted(() => vi.fn());
 const mockListReadyPluginEnvironmentDrivers = vi.hoisted(() => vi.fn());
 const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
 
@@ -69,6 +70,7 @@ vi.mock("../services/execution-workspaces.js", () => ({
 vi.mock("../services/plugin-environment-driver.js", () => ({
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   validatePluginEnvironmentDriverConfig: mockValidatePluginEnvironmentDriverConfig,
+  validatePluginSandboxProviderConfig: mockValidatePluginSandboxProviderConfig,
 }));
 
 function createEnvironment() {
@@ -148,6 +150,18 @@ describe("environment routes", () => {
     });
     mockValidatePluginEnvironmentDriverConfig.mockReset();
     mockValidatePluginEnvironmentDriverConfig.mockImplementation(async ({ config }) => config);
+    mockValidatePluginSandboxProviderConfig.mockReset();
+    mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ provider, config }) => ({
+      normalizedConfig: config,
+      pluginId: `plugin-${provider}`,
+      pluginKey: `plugin.${provider}`,
+      driver: {
+        driverKey: provider,
+        kind: "sandbox_provider",
+        displayName: provider,
+        configSchema: { type: "object" },
+      },
+    }));
     mockListReadyPluginEnvironmentDrivers.mockReset();
     mockListReadyPluginEnvironmentDrivers.mockResolvedValue([]);
   });
@@ -183,6 +197,52 @@ describe("environment routes", () => {
     expect(res.body.drivers.ssh).toBe("supported");
     expect(res.body.sandboxProviders.fake.supportsRunExecution).toBe(false);
     expect(res.body.sandboxProviders).not.toHaveProperty("fake-plugin");
+  });
+
+  it("returns installed plugin-backed sandbox capabilities for environment creation", async () => {
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.secure-sandbox-provider",
+        driverKey: "secure-plugin",
+        displayName: "Secure Sandbox",
+        description: "Provisions schema-driven cloud sandboxes.",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+          },
+        },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["secure-plugin"]).toMatchObject({
+      status: "supported",
+      supportsRunExecution: true,
+      supportsReusableLeases: true,
+      displayName: "Secure Sandbox",
+      source: "plugin",
+      pluginKey: "acme.secure-sandbox-provider",
+      pluginId: "plugin-1",
+      configSchema: {
+        type: "object",
+        properties: {
+          template: { type: "string" },
+          apiKey: { type: "string", format: "secret-ref" },
+        },
+      },
+    });
+    expect(res.body.adapters.find((row: any) => row.adapterType === "codex_local").sandboxProviders["secure-plugin"])
+      .toBe("supported");
   });
 
   it("redacts config and metadata for unprivileged agent list reads", async () => {
@@ -453,11 +513,12 @@ describe("environment routes", () => {
       },
     };
     mockEnvironmentService.create.mockResolvedValue(environment);
+    const pluginWorkerManager = {};
     const app = createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
-    });
+    }, { pluginWorkerManager });
 
     const res = await request(app)
       .post("/api/companies/company-1/environments")
@@ -531,11 +592,12 @@ describe("environment routes", () => {
       },
     };
     mockEnvironmentService.create.mockResolvedValue(environment);
+    const pluginWorkerManager = {};
     const app = createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
-    });
+    }, { pluginWorkerManager });
 
     const res = await request(app)
       .post("/api/companies/company-1/environments")
@@ -551,6 +613,16 @@ describe("environment routes", () => {
       });
 
     expect(res.status).toBe(201);
+    expect(mockValidatePluginSandboxProviderConfig).toHaveBeenCalledWith({
+      db: expect.anything(),
+      workerManager: pluginWorkerManager,
+      provider: "fake-plugin",
+      config: {
+        image: "fake:test",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    });
     expect(mockEnvironmentService.create).toHaveBeenCalledWith("company-1", {
       name: "Fake plugin Sandbox",
       driver: "sandbox",
@@ -563,6 +635,101 @@ describe("environment routes", () => {
       },
     });
     expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("creates a schema-driven sandbox environment with secret-ref fields persisted as secrets", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox-secure-plugin",
+      name: "Secure Sandbox",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: "11111111-1111-1111-1111-111111111111",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    mockValidatePluginSandboxProviderConfig.mockResolvedValue({
+      normalizedConfig: {
+        template: "base",
+        apiKey: "test-provider-key",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+            timeoutMs: { type: "number" },
+            reuseLease: { type: "boolean" },
+          },
+        },
+      },
+    });
+    const pluginWorkerManager = {};
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "Secure Sandbox",
+        driver: "sandbox",
+        config: {
+          provider: "secure-plugin",
+          template: "  base  ",
+          apiKey: "  test-provider-key  ",
+          timeoutMs: "450000",
+          reuseLease: true,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockValidatePluginSandboxProviderConfig).toHaveBeenCalledWith({
+      db: expect.anything(),
+      workerManager: pluginWorkerManager,
+      provider: "secure-plugin",
+      config: {
+        template: "  base  ",
+        apiKey: "  test-provider-key  ",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    });
+    expect(mockEnvironmentService.create).toHaveBeenCalledWith("company-1", {
+      name: "Secure Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: "11111111-1111-1111-1111-111111111111",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    });
+    expect(JSON.stringify(mockEnvironmentService.create.mock.calls[0][1])).not.toContain("test-provider-key");
+    expect(mockSecretService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        provider: "local_encrypted",
+        value: "test-provider-key",
+      }),
+      expect.any(Object),
+    );
   });
 
   it("validates plugin environment config through the plugin driver host", async () => {
@@ -997,12 +1164,13 @@ describe("environment routes", () => {
       summary: "Fake plugin sandbox provider is ready.",
       details: { provider: "fake-plugin" },
     });
+    const pluginWorkerManager = {};
     const app = createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
       runId: "run-1",
-    });
+    }, { pluginWorkerManager });
 
     const res = await request(app)
       .post("/api/companies/company-1/environments/probe-config")
@@ -1031,7 +1199,7 @@ describe("environment routes", () => {
         }),
       }),
       expect.objectContaining({
-        pluginWorkerManager: undefined,
+        pluginWorkerManager,
         resolvedConfig: expect.objectContaining({
           driver: "sandbox",
         }),

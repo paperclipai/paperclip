@@ -56,9 +56,37 @@ vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
   assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
 }));
 
+function registerWorkspaceRouteMocks() {
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    environmentService: () => mockEnvironmentService,
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    secretService: () => mockSecretService,
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/workspace-runtime.js", () => ({
+    cleanupExecutionWorkspaceArtifacts: vi.fn(),
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForExecutionWorkspace: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
+
+  vi.doMock("../routes/workspace-runtime-service-authz.js", () => ({
+    assertCanManageProjectWorkspaceRuntimeServices: mockAssertCanManageProjectWorkspaceRuntimeServices,
+    assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
+  }));
+}
+
 let appImportCounter = 0;
 
 async function createProjectApp(actor: Record<string, unknown>) {
+  registerWorkspaceRouteMocks();
   appImportCounter += 1;
   const routeModulePath = `../routes/projects.js?workspace-runtime-routes-authz-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?workspace-runtime-routes-authz-${appImportCounter}`;
@@ -78,6 +106,7 @@ async function createProjectApp(actor: Record<string, unknown>) {
 }
 
 async function createExecutionWorkspaceApp(actor: Record<string, unknown>) {
+  registerWorkspaceRouteMocks();
   appImportCounter += 1;
   const routeModulePath = `../routes/execution-workspaces.js?workspace-runtime-routes-authz-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?workspace-runtime-routes-authz-${appImportCounter}`;

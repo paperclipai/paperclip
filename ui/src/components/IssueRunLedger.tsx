@@ -1,14 +1,17 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Issue, Agent } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
+import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { activityApi, type RunForIssue, type RunLivenessState } from "../api/activity";
+import { ApiError } from "../api/client";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
   type LiveRunForIssue,
   type WatchdogDecisionInput,
 } from "../api/heartbeats";
+import { useToastActions } from "../context/ToastContext";
 import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
@@ -16,6 +19,7 @@ import { describeRunRetryState } from "../lib/runRetryState";
 
 type IssueRunLedgerProps = {
   issueId: string;
+  companyId: string;
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Agent>;
@@ -30,6 +34,8 @@ type IssueRunLedgerContentProps = {
   childIssues: Issue[];
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
+  canRecordWatchdogDecisions?: boolean;
+  watchdogDecisionError?: string | null;
   onWatchdogDecision?: (input: WatchdogDecisionInput) => void;
 };
 
@@ -309,14 +315,45 @@ function formatSilenceAge(ms: number | null | undefined) {
   return `${hours}h ${minutes}m`;
 }
 
+function canBoardRecordWatchdogDecision(
+  companyId: string,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!boardAccess) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+
+  const membership = boardAccess.memberships?.find(
+    (item) => item.companyId === companyId && item.status === "active",
+  );
+  if (!membership) return boardAccess.companyIds.includes(companyId) && !boardAccess.memberships;
+  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+function watchdogDecisionErrorMessage(error: unknown) {
+  if (error instanceof ApiError && error.status === 403) {
+    return "Only the board or the assigned recovery owner can record watchdog decisions";
+  }
+  return error instanceof Error && error.message.trim().length > 0
+    ? error.message
+    : "Paperclip could not record the watchdog decision.";
+}
+
 export function IssueRunLedger({
   issueId,
+  companyId,
   issueStatus,
   childIssues,
   agentMap,
   hasLiveRuns,
 }: IssueRunLedgerProps) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [watchdogDecisionError, setWatchdogDecisionError] = useState<string | null>(null);
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
@@ -339,9 +376,24 @@ export function IssueRunLedger({
   });
   const watchdogDecision = useMutation({
     mutationFn: (input: WatchdogDecisionInput) => heartbeatsApi.recordWatchdogDecision(input),
+    onMutate: () => {
+      setWatchdogDecisionError(null);
+    },
     onSuccess: () => {
+      setWatchdogDecisionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
+    },
+    onError: (error) => {
+      const message = watchdogDecisionErrorMessage(error);
+      const dedupeSuffix = error instanceof ApiError ? String(error.status) : "error";
+      setWatchdogDecisionError(message);
+      pushToast({
+        title: "Watchdog decision not recorded",
+        body: message,
+        tone: "error",
+        dedupeKey: `watchdog-decision:${issueId}:${dedupeSuffix}`,
+      });
     },
   });
 
@@ -354,6 +406,8 @@ export function IssueRunLedger({
       childIssues={childIssues}
       agentMap={agentMap}
       pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
+      canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
+      watchdogDecisionError={watchdogDecisionError}
       onWatchdogDecision={(input) => watchdogDecision.mutate(input)}
     />
   );
@@ -367,6 +421,8 @@ export function IssueRunLedgerContent({
   childIssues,
   agentMap,
   pendingWatchdogDecision,
+  canRecordWatchdogDecisions = true,
+  watchdogDecisionError,
   onWatchdogDecision,
 }: IssueRunLedgerContentProps) {
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
@@ -468,7 +524,7 @@ export function IssueRunLedgerContent({
               </>
             ) : null}
           </p>
-          {onWatchdogDecision ? (
+          {onWatchdogDecision && canRecordWatchdogDecisions ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               <button
                 type="button"
@@ -513,6 +569,11 @@ export function IssueRunLedgerContent({
                 Mark false positive
               </button>
             </div>
+          ) : null}
+          {watchdogDecisionError ? (
+            <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-900 dark:text-red-200">
+              {watchdogDecisionError}
+            </p>
           ) : null}
         </div>
       ) : null}
