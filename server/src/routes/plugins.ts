@@ -259,8 +259,8 @@ interface PluginToolExecuteRequest {
   tool: string;
   /** Parameters matching the tool's declared JSON Schema. */
   parameters?: unknown;
-  /** Agent run context. */
-  runContext: ToolRunContext;
+  /** Agent run context. projectId is optional for agents without a project assignment. */
+  runContext: Omit<ToolRunContext, "projectId"> & { projectId?: string };
 }
 
 /**
@@ -483,6 +483,8 @@ export function pluginRoutes(
    * GET /api/plugins/tools
    *
    * List all available plugin-contributed tools in an agent-friendly format.
+   * Accessible to both board users and agents (agents can only see tools for
+   * their own company).
    *
    * Query params:
    * - `pluginId` (optional): Filter to tools from a specific plugin
@@ -491,7 +493,10 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoard(req);
+    if (req.actor.type === "none") {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -509,23 +514,28 @@ export function pluginRoutes(
    *
    * Execute a plugin-contributed tool by its namespaced name.
    *
-   * This is the primary endpoint used by the agent service to invoke
-   * plugin tools during an agent run.
+   * This endpoint is accessible to both board users and agents. When called
+   * by an agent, the agent may only execute tools for its own company and
+   * must supply its own agentId in runContext.
    *
    * Request body:
    * - `tool`: Fully namespaced tool name (e.g., "acme.linear:search-issues")
    * - `parameters`: Parameters matching the tool's declared JSON Schema
-   * - `runContext`: Agent run context with agentId, runId, companyId, projectId
+   * - `runContext`: Agent run context with agentId, runId, companyId, projectId (projectId optional for agents without a project)
    *
    * Response: `ToolExecutionResult`
    * Errors:
    * - 400 if request validation fails
+   * - 403 if agent tries to execute as a different agent
    * - 404 if tool is not found
    * - 501 if tool dispatcher is not configured
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoard(req);
+    if (req.actor.type === "none") {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -551,14 +561,30 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    if (!runContext.agentId || !runContext.runId || !runContext.companyId) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error: '"runContext" must include agentId, runId, and companyId',
+      });
+      return;
+    }
+
+    // When called by an agent, enforce that the agent can only act as itself
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId !== runContext.agentId) {
+      res.status(403).json({
+        error: "Agent may only execute tools using its own agentId in runContext",
       });
       return;
     }
 
     assertCompanyAccess(req, runContext.companyId);
+
+    // Normalize runContext: projectId is optional for agents without a project
+    const normalizedRunContext: ToolRunContext = {
+      agentId: runContext.agentId,
+      runId: runContext.runId,
+      companyId: runContext.companyId,
+      projectId: runContext.projectId ?? "",
+    };
 
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
@@ -571,7 +597,7 @@ export function pluginRoutes(
       const result = await toolDeps.toolDispatcher.executeTool(
         tool,
         parameters ?? {},
-        runContext,
+        normalizedRunContext,
       );
       res.json(result);
     } catch (err) {

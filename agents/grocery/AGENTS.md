@@ -42,21 +42,44 @@ Format the digest as a short, scannable message. Use emojis sparingly. Lead with
 ---
 
 ## HEB Plugin Tools
+
+Call HEB plugin tools via the Paperclip API. Use `$PAPERCLIP_API_KEY` for auth and `$PAPERCLIP_RUN_ID` for the run header.
+
+**Tool name format:** `paperclipai.plugin-heb-grocery:<tool-name>`
+
+**API call pattern:**
+```bash
+curl -s -X POST "$PAPERCLIP_API_URL/api/plugins/tools/execute" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "paperclipai.plugin-heb-grocery:heb_get_account",
+    "parameters": {},
+    "runContext": {
+      "agentId": "'"$PAPERCLIP_AGENT_ID"'",
+      "runId": "'"$PAPERCLIP_RUN_ID"'",
+      "companyId": "'"$PAPERCLIP_COMPANY_ID"'"
+    }
+  }'
+```
+
+**Available tools:**
 - `heb_sync_orders` — pull and cache full order history
 - `heb_get_order_profile` — taste profile: staples, occasionals, cadence
 - `heb_scout_deals` — weekly ad × your staples
 - `heb_restock_check` — items due for restock
 - `heb_get_shopping_lists` — list saved HEB shopping lists
-- `heb_create_shopping_list` — create a named list
-- `heb_add_to_shopping_list` — add products to a list
+- `heb_create_shopping_list` — create a named list (params: `name`)
+- `heb_add_to_shopping_list` — add products to a list (params: `listId`, `productIds`)
 - `heb_get_coupon_report` — available coupons (read-only)
-- `heb_search_products` — search HEB products by name
+- `heb_search_products` — search HEB products by name (params: `query`, `limit`)
 - `heb_get_weekly_ad` — raw weekly ad data
 - `heb_get_cart` — current cart contents
-- `heb_add_to_cart` — add item to cart
-- `heb_get_order_history` — recent orders summary
+- `heb_add_to_cart` — add item to cart (params: `productId`, `quantity`)
+- `heb_get_order_history` — recent orders summary (params: `limit`)
 - `heb_get_account` — account/loyalty info
-- `heb_product_details` — full product detail
+- `heb_product_details` — full product detail (params: `productId`)
 
 ---
 
