@@ -7,37 +7,37 @@
 
 ### Semantic Index
 
-- [ ] **SEM-01**: Operator can enable a company-scoped semantic index without replacing the existing wiki/graph/projector storage.
-- [ ] **SEM-02**: System can store embeddings for daily wiki pages, graph nodes, and work artifacts with source IDs, freshness timestamps, and projector provenance.
-- [ ] **SEM-03**: System can run deterministic local embedding fallback for tests and development when provider-backed embedding is unavailable.
-- [ ] **SEM-04**: Operator can trigger and inspect an incremental semantic reindex that only refreshes changed sources.
+- [x] **SEM-01**: Operator can enable a company-scoped semantic index without replacing the existing wiki/graph/projector storage.
+- [x] **SEM-02**: System can store embeddings for daily wiki pages, graph nodes, and work artifacts with source IDs, freshness timestamps, and projector provenance.
+- [x] **SEM-03**: System can run deterministic local embedding fallback for tests and development when provider-backed embedding is unavailable.
+- [x] **SEM-04**: Operator can trigger and inspect an incremental semantic reindex that only refreshes changed sources.
 
 ### Semantic Search
 
-- [ ] **SEARCH-01**: Operator can search RT2 knowledge semantically across daily wiki, graph evidence, work board artifacts, and deliverables from one company-scoped surface.
-- [ ] **SEARCH-02**: Search results show source type, source date, confidence, matched evidence, and stale/needs-refresh indicators.
-- [ ] **SEARCH-03**: Operator can filter semantic results by company, project/work object, date range, source type, confidence, and contradiction status.
-- [ ] **SEARCH-04**: Search API can combine lexical fallback and semantic ranking without requiring pgvector in local development.
+- [x] **SEARCH-01**: Operator can search RT2 knowledge semantically across daily wiki, graph evidence, work board artifacts, and deliverables from one company-scoped surface.
+- [x] **SEARCH-02**: Search results show source type, source date, confidence, matched evidence, and stale/needs-refresh indicators.
+- [x] **SEARCH-03**: Operator can filter semantic results by company, project/work object, date range, source type, confidence, and contradiction status.
+- [x] **SEARCH-04**: Search API can combine lexical fallback and semantic ranking without requiring pgvector in local development.
 
 ### Contradiction Review
 
-- [ ] **CONTRA-01**: System can generate contradiction candidates by comparing new wiki/graph facts against prior evidence and deterministic lint output.
-- [ ] **CONTRA-02**: System can optionally use provider-backed analysis to explain contradiction candidates while keeping raw evidence and deterministic reason codes.
-- [ ] **CONTRA-03**: Operator can review contradiction candidates, mark false positive, accept newer evidence, keep older evidence, or request follow-up work.
-- [ ] **CONTRA-04**: Resolution decisions are written to an audit/event trail and reflected in wiki/graph/search freshness indicators.
+- [x] **CONTRA-01**: System can generate contradiction candidates by comparing new wiki/graph facts against prior evidence and deterministic lint output.
+- [x] **CONTRA-02**: System can optionally use provider-backed analysis to explain contradiction candidates while keeping raw evidence and deterministic reason codes.
+- [x] **CONTRA-03**: Operator can review contradiction candidates, mark false positive, accept newer evidence, keep older evidence, or request follow-up work.
+- [x] **CONTRA-04**: Resolution decisions are written to an audit/event trail and reflected in wiki/graph/search freshness indicators.
 
 ### Jarvis Grounding
 
-- [ ] **JARVIS-01**: Jarvis answers can retrieve semantic context from RT2 knowledge and expose cited evidence instead of unsupported summaries.
-- [ ] **JARVIS-02**: Jarvis can warn when retrieved context contains unresolved contradiction candidates or stale evidence.
-- [ ] **JARVIS-03**: Operator can open cited work object, wiki page, graph node, or contradiction review item directly from a Jarvis answer.
-- [ ] **JARVIS-04**: Jarvis semantic retrieval respects company boundary and existing permission assumptions.
+- [x] **JARVIS-01**: Jarvis answers can retrieve semantic context from RT2 knowledge and expose cited evidence instead of unsupported summaries.
+- [x] **JARVIS-02**: Jarvis can warn when retrieved context contains unresolved contradiction candidates or stale evidence.
+- [x] **JARVIS-03**: Operator can open cited work object, wiki page, graph node, or contradiction review item directly from a Jarvis answer.
+- [x] **JARVIS-04**: Jarvis semantic retrieval respects company boundary and existing permission assumptions.
 
 ### Knowledge Operations
 
-- [ ] **OPS-01**: Operator can see semantic index health, queue status, stale source count, provider/fallback mode, and last successful run.
-- [ ] **OPS-02**: System exposes batch health checks that fail clearly when semantic index, contradiction review, or Jarvis grounding loses traceability.
-- [ ] **OPS-03**: Milestone verification artifacts can prove all semantic knowledge requirements with tests, route evidence, and user-facing flow notes.
+- [x] **OPS-01**: Operator can see semantic index health, queue status, stale source count, provider/fallback mode, and last successful run.
+- [x] **OPS-02**: System exposes batch health checks that fail clearly when semantic index, contradiction review, or Jarvis grounding loses traceability.
+- [x] **OPS-03**: Milestone verification artifacts can prove all semantic knowledge requirements with tests, route evidence, and user-facing flow notes.
 
 ## Future Requirements
 
@@ -80,10 +80,10 @@
 | CONTRA-02 | Phase 35 | Complete |
 | CONTRA-03 | Phase 35 | Complete |
 | CONTRA-04 | Phase 35 | Complete |
-| JARVIS-01 | Phase 36 / Phase 38 | Pending artifact closure |
-| JARVIS-02 | Phase 36 / Phase 38 | Pending artifact closure |
-| JARVIS-03 | Phase 36 / Phase 38 | Pending artifact closure |
-| JARVIS-04 | Phase 36 / Phase 38 | Pending artifact closure |
+| JARVIS-01 | Phase 36 / Phase 38 | Complete |
+| JARVIS-02 | Phase 36 / Phase 38 | Complete |
+| JARVIS-03 | Phase 36 / Phase 38 | Complete |
+| JARVIS-04 | Phase 36 / Phase 38 | Complete |
 | OPS-01 | Phase 37 | Complete |
 | OPS-02 | Phase 37 | Complete |
 | OPS-03 | Phase 37 | Complete |
@@ -92,9 +92,9 @@
 - v2.5 requirements: 19 total
 - Mapped to phases: 19
 - Unmapped: 0
-- Audit-satisfied before gap closure: 15/19
-- Pending artifact closure: 4 JARVIS requirements via Phase 38
+- Audit-satisfied after artifact closure: 19/19
+- Pending artifact closure: 0
 
 ---
 *Requirements defined: 2026-04-28*
-*Last updated: 2026-04-29 after v2.5 audit gap planning*
+*Last updated: 2026-04-29 after Phase 38 artifact closure*
