@@ -28,4 +28,10 @@ export const defaultCreateValues: CreateConfigValues = {
   maxTurnsPerRun: 1000,
   heartbeatEnabled: false,
   intervalSec: 300,
+  openClawToken: "",
+  openClawPaperclipApiUrl: "",
+  openClawSessionKeyStrategy: "issue",
+  openClawWaitTimeoutMs: "120000",
+  openClawRole: "operator",
+  openClawScopes: "operator.admin",
 };

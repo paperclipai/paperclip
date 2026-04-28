@@ -132,7 +132,75 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
-      {!isCreate && (
+      {isCreate ? (
+        <>
+          <SecretField
+            label="Gateway auth token (x-openclaw-token)"
+            value={values!.openClawToken ?? ""}
+            onCommit={(v) => set!({ openClawToken: v })}
+            placeholder="OpenClaw gateway token"
+          />
+
+          <Field label="Paperclip API URL override">
+            <DraftInput
+              value={values!.openClawPaperclipApiUrl ?? ""}
+              onCommit={(v) => set!({ openClawPaperclipApiUrl: v })}
+              immediate
+              className={inputClass}
+              placeholder="https://paperclip.example"
+            />
+          </Field>
+
+          <Field label="Session strategy">
+            <select
+              value={values!.openClawSessionKeyStrategy ?? "issue"}
+              onChange={(e) => set!({ openClawSessionKeyStrategy: e.target.value })}
+              className={inputClass}
+            >
+              <option value="fixed">Fixed</option>
+              <option value="issue">Per issue</option>
+              <option value="run">Per run</option>
+            </select>
+          </Field>
+
+          <Field label="Role">
+            <DraftInput
+              value={values!.openClawRole ?? "operator"}
+              onCommit={(v) => set!({ openClawRole: v })}
+              immediate
+              className={inputClass}
+              placeholder="operator"
+            />
+          </Field>
+
+          <Field label="Scopes (comma-separated)">
+            <DraftInput
+              value={values!.openClawScopes ?? "operator.admin"}
+              onCommit={(v) => set!({ openClawScopes: v })}
+              immediate
+              className={inputClass}
+              placeholder="operator.admin"
+            />
+          </Field>
+
+          <Field label="Wait timeout (ms)">
+            <DraftInput
+              value={values!.openClawWaitTimeoutMs ?? "120000"}
+              onCommit={(v) => set!({ openClawWaitTimeoutMs: v })}
+              immediate
+              className={inputClass}
+              placeholder="120000"
+            />
+          </Field>
+
+          <Field label="Device auth">
+            <div className="text-xs text-muted-foreground leading-relaxed">
+              Always enabled for gateway agents. Paperclip persists a device key during onboarding so pairing approvals
+              remain stable across runs.
+            </div>
+          </Field>
+        </>
+      ) : (
         <>
           <Field label="Paperclip API URL override">
             <DraftInput
