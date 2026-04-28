@@ -1531,7 +1531,6 @@ export function IssueDetail() {
             currentUserId={currentUserId}
             issueStatus={issue.status}
             agentMap={agentMap}
-            currentUserId={currentUserId}
             draftKey={`paperclip:issue-comment-draft:${issue.id}`}
             enableReassign
             reassignOptions={commentReassignOptions}

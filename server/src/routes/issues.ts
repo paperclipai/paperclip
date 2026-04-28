@@ -3,7 +3,7 @@ import multer from "multer";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { issueAttachments } from "@paperclipai/db";
+import { assets, issueAttachments } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -463,7 +463,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       svc.getAncestors(issue.id),
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
-      db.select().from(issueAttachments).where(eq(issueAttachments.issueId, issue.id)),
+      db
+        .select({
+          id: issueAttachments.id,
+          createdAt: issueAttachments.createdAt,
+          originalFilename: assets.originalFilename,
+          contentType: assets.contentType,
+          byteSize: assets.byteSize,
+        })
+        .from(issueAttachments)
+        .innerJoin(assets, eq(assets.id, issueAttachments.assetId))
+        .where(eq(issueAttachments.issueId, issue.id)),
     ]);
 
     res.json({

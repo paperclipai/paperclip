@@ -471,7 +471,6 @@ const TimelineList = memo(function TimelineList({
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   votingTargetId?: string | null;
-  currentUserId?: string | null;
   highlightCommentId?: string | null;
 }) {
   const COLLAPSE_THRESHOLD = 10;
