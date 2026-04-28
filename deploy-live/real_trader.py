@@ -366,11 +366,16 @@ class LivePosition:
     exchange_long: str
     instrument_short: str
     instrument_long: str
-    entry_spread_pct: float
+    entry_spread_pct: float          # detection-time spread from order book bid/ask
     entry_price_short: float
     entry_price_long: float
     size_usd: float
     entry_time: datetime
+    # Realized entry spread = (entry_price_short - entry_price_long) / entry_price_long
+    # i.e., the spread implied by the actual fill prices. Differs from
+    # entry_spread_pct under any slippage; can be NEGATIVE if orders cross the
+    # book (fill quality bug). Set in open_position; persisted via _pos_to_dict.
+    realized_entry_spread_pct: float = 0.0
     # Real order tracking
     order_id_short: str = ""
     order_id_long: str = ""
@@ -841,6 +846,23 @@ class BybitExecutor(ExchangeExecutor):
         except Exception as e:
             self._mark_error(str(e))
             return []
+
+
+def compute_realized_entry_spread_pct(
+    fill_price_short: float, fill_price_long: float
+) -> float:
+    """Spread implied by the actual fill prices on entry.
+
+    Distinct from `pos.entry_spread_pct`, which is the detection-time spread
+    from order book bid/ask. This is what really happened at the orders' fill
+    prices. Negative means orders crossed the book — a fill-quality bug.
+
+    Returns 0.0 if fill_price_long is non-positive (degenerate input; treat
+    as "unknown" rather than fabricating a number).
+    """
+    if fill_price_long <= 0:
+        return 0.0
+    return (fill_price_short - fill_price_long) / fill_price_long * 100
 
 
 def _translate_mexc_fill_for_normalizer(fill: dict, order_id: str, symbol: str) -> dict:
@@ -2354,6 +2376,35 @@ class TradeExecutor:
             # Use actual fill prices, or market quotes as fallback (DRY_RUN returns 0)
             fill_price_short = result_short.fill_price if result_short.fill_price > 0 else q_high.bid
             fill_price_long = result_long.fill_price if result_long.fill_price > 0 else q_low.ask
+
+            # Post-fill realized-spread sanity check.
+            # entry_spread_pct (above) is the DETECTION-time spread from bid/ask
+            # quotes; it's gated >= 0 by the candidate scanner. realized_spread is
+            # what actually happened at the orders' fill prices. They can disagree
+            # under slippage. If realized < 0 the SHORT leg filled CHEAPER than
+            # the LONG leg — orders crossed the book and the trade is starting
+            # underwater. Convergence cannot recover this; abort and emergency-
+            # close both legs immediately.
+            realized_spread_pct = compute_realized_entry_spread_pct(
+                fill_price_short, fill_price_long
+            )
+            if realized_spread_pct < 0:
+                log.error(
+                    f"ENTRY #{pos_id} {symbol}: BAD-FILL ABORT — "
+                    f"detection={spread_pct:.3f}% realized={realized_spread_pct:.3f}% "
+                    f"(short@{fill_price_short:.6f} on {q_high.exchange}, "
+                    f"long@{fill_price_long:.6f} on {q_low.exchange})"
+                )
+                # Reverse both filled legs. Same sequential pattern as the
+                # actual_size<5 branch above.
+                await self._emergency_close_leg(
+                    ex_short, symbol, "buy", result_short.filled_usd, pos_id
+                )
+                await self._emergency_close_leg(
+                    ex_long, symbol, "sell", result_long.filled_usd, pos_id
+                )
+                return None
+
             pos = LivePosition(
                 id=pos_id, symbol=symbol,
                 exchange_short=q_high.exchange, exchange_long=q_low.exchange,
@@ -2361,6 +2412,7 @@ class TradeExecutor:
                 entry_spread_pct=spread_pct,
                 entry_price_short=fill_price_short,
                 entry_price_long=fill_price_long,
+                realized_entry_spread_pct=realized_spread_pct,
                 size_usd=actual_size,
                 entry_time=datetime.now(timezone.utc),
                 order_id_short=result_short.order_id,
@@ -2897,6 +2949,7 @@ class LiveTrader:
             "exchange_short": pos.exchange_short, "exchange_long": pos.exchange_long,
             "instrument_short": pos.instrument_short, "instrument_long": pos.instrument_long,
             "entry_spread_pct": round(pos.entry_spread_pct, 4),
+            "realized_entry_spread_pct": round(pos.realized_entry_spread_pct, 4),
             "current_spread_pct": round(pos.current_spread_pct, 4),
             "peak_spread_pct": round(pos.peak_spread_pct, 4),
             "entry_price_short": pos.entry_price_short,
@@ -2935,6 +2988,10 @@ class LiveTrader:
             entry_price_long=d.get("entry_price_long", 0),
             size_usd=d.get("size_usd", 0),
             entry_time=entry_time,
+            # New field — older state files won't have it, fall back to 0.0.
+            # (Loading older positions will leave this at 0 which is harmless;
+            # the dashboard will just show "0.000%" until the next entry.)
+            realized_entry_spread_pct=d.get("realized_entry_spread_pct", 0.0),
             order_id_short=d.get("order_id_short", ""),
             order_id_long=d.get("order_id_long", ""),
             order_id_close_short=d.get("order_id_close_short", ""),
