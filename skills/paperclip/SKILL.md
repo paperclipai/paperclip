@@ -24,6 +24,53 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 Follow these steps every time you wake up:
 
+### 운영감사 Gatekeeper 모드 (downstream 방지/운영통제)
+
+이 모드는 각 heartbeat 시작 시 최우선으로 실행된다. 목적: CMP 포함 모든 할당 작업이 조기 실행되지 않게 보장하고, 산출물/blocked 근거를 통해 다음 실행 가능 상태를 판단한다.
+
+**Heartbeat 시작 즉시 점검 항목 (순차):**
+1. **이슈 상태 스냅샷:** 대상 이슈의 `status`를 조회/기록한다.
+2. **산출물 존재 확인:** `GET /api/issues/{issueId}/documents` 실행
+   - 핵심 산출물(최소 1개) 존재 여부를 확인하고, 없다면 `blocked` 사유 생성 대상.
+   - 권장 핵심 키: `plan`, `design`, `requirements`, `spec`, `result`.
+3. **blocked 이유 점검:** 최신 코멘트에서 블로커, 담당자, 요구 액션(누가/무엇/언제)을 추출한다.
+4. **다운스트림 후보 탐색:**
+   - `GET /api/companies/{companyId}/issues?parentId={issueId}`로 하위 이슈(후속) 존재 여부 확인
+   - `GET /api/issues/{issueId}/heartbeat-context` 또는 ancestors로 상위 의존 상태 확인
+
+**게이트키핑 규칙 (반드시 준수):**
+- 상위 이슈(ancestor)가 완료되지 않았거나, 산출물 부재/근거 불명확한 경우: 본 이슈를 `blocked` 처리 후 작업 진입 금지
+- 현재 이슈가 `blocked`면 해제 가능한 조치가 보일 때만 언블록 시도.
+- **최우선 금지 규칙:** 선행 의존이 해결되지 않은 상태에서 downstream(하위/후속) 이슈는 절대 실행하지 않는다.
+- blocked 코멘트는 "무엇이 막는지, 누가 풀어야 하는지, 다음 언블록 후보(관련 상위 이슈/필요 산출물)는 무엇인지"를 명시한다.
+
+### MCP 운영통제: Paperclip MCP Registry 선결 조건
+
+`trusted tool`에 MCP 서버를 바로 등록하지 않는다. MCP 서버를 활성화(allowlist)하기 전 다음을 반드시 거쳐야 한다.
+
+1. **Registry 등록 (상태= `pending`):**
+   - 신규 MCP 서버는 먼저 Paperclip MCP Registry에 후보로 등록한다.
+   - `server_id`, `endpoint`, `transport`, `owner`, `risk_owner`, `capability_scope`를 남긴다.
+   - `allowlist` 미등록 상태는 실행 컨텍스트에서 사용 불가.
+
+2. **Quarantine 점검:**
+   - 보안 점검 자동 룰(허용되지 않은 transport, 로컬 파일/시크릿 노출 패턴, 과도한 권한 요구, 비인가 네트워크 도메인)은 `quarantine` 상태로 분리.
+   - quarantine 항목은 담당자 확인 전까지 실행 금지.
+   - quarantine 사유는 `BLOCKED` 유형 코멘트에 명확히 남긴다.
+
+3. **Allowlist 승인:**
+   - `security` 또는 `board-admin` 승인자만 `allowlist`로 승격 가능.
+   - 승인 시 `reviewer`, `approved_at`, `runId`, 승인 근거(`reason`, ticket/PR 링크), 적용 만료일을 기록.
+
+4. **Audit log 기록:**
+   - Registry 상태 전이(등록/격리/승인/폐기)마다 Paperclip 감사 로그에 남긴다.
+   - 로그 필드는 최소 `action`, `actor`, `server_id`, `before`, `after`, `run_id`, `evidence`를 포함.
+   - 감사 로그를 보고 전/후속 실행 가능 판단 시 사용한다.
+
+5. **Downstream 실행 방지:**
+   - allowlist 미승인/quarantine 상태 MCP에 의존한 issue는 `blocked` 처리 후 진행 금지.
+   - 승인되지 않은 MCP를 호출한 로그(도구 실행 오류 포함)가 있으면 즉시 상위 이슈 및 감사 채널에 escalation comment.
+
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:

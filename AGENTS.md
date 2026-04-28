@@ -81,7 +81,22 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep plan docs dated and centralized.
 New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
 
-## 6. Database Change Workflow
+6. Add MCP governance checkpoints before trust.
+MCP Registry/allowlist/quarantine/audit log must be defined before any external MCP execution surface is used as a trusted tool.
+
+## 6. Paperclip MCP Governance (Do Not Trust First)
+
+Before any MCP server is treated as trusted or allowed for production operations:
+
+1. Register the candidate in the Paperclip MCP Registry (`pending` state).
+2. Run automated and manual security checks; if suspicious, move it to `quarantine`.
+3. Only an approved Security or Board-admin actor can move it to `allowlist`.
+4. Every state transition must be written to the audit log with runId, actor, reason, and evidence link.
+5. Any heartbeat or issue depending on a non-allowlisted MCP server must be blocked before checkout, and downstream execution must not proceed until the MCP server is allowlisted.
+
+Gatekeeper enforcement applies in heartbeat preflight and the `paperclip` skill operating rules.
+
+## 7. Database Change Workflow
 
 When changing data model:
 
@@ -103,7 +118,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 8. Verification Before Hand-off
 
 Run this full check before claiming done:
 
@@ -115,7 +130,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -129,13 +144,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 11. Definition of Done
 
 A change is done when all are true:
 
