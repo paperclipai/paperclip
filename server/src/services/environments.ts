@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, environments } from "@paperclipai/db";
 import {
@@ -130,6 +130,7 @@ export function environmentService(db: Db) {
         })
         .onConflictDoNothing({
           target: [environments.companyId, environments.driver],
+          where: sql`${environments.driver} = 'local'`,
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -183,6 +184,15 @@ export function environmentService(db: Db) {
       const row = await db
         .update(environments)
         .set(values)
+        .where(eq(environments.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? toEnvironment(row) : null;
+    },
+
+    remove: async (id: string): Promise<Environment | null> => {
+      const row = await db
+        .delete(environments)
         .where(eq(environments.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -250,7 +260,7 @@ export function environmentService(db: Db) {
 
     releaseLease: async (
       id: string,
-      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
+      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained"> = "released",
       options?: {
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;
@@ -261,7 +271,7 @@ export function environmentService(db: Db) {
         .update(environmentLeases)
         .set({
           status,
-          releasedAt: now,
+          releasedAt: status === "retained" ? null : now,
           lastUsedAt: now,
           updatedAt: now,
           ...(options?.failureReason !== undefined ? { failureReason: options.failureReason } : {}),

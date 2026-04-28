@@ -221,4 +221,31 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows[0]?.driver).toBe("local");
     expect(rows[0]?.status).toBe("active");
   });
+
+  it("allows multiple SSH environments for the same company", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const first = await svc.create(companyId, {
+      name: "Production SSH",
+      driver: "ssh",
+      config: { host: "prod.example.com", username: "deploy" },
+    });
+    const second = await svc.create(companyId, {
+      name: "Staging SSH",
+      driver: "ssh",
+      config: { host: "staging.example.com", username: "deploy" },
+    });
+
+    expect(first.id).not.toBe(second.id);
+
+    const rows = await db.select().from(environments).where(eq(environments.companyId, companyId));
+    expect(rows.filter((row) => row.driver === "ssh")).toHaveLength(2);
+  });
 });

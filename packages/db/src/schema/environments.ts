@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
@@ -17,7 +18,9 @@ export const environments = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("environments_company_status_idx").on(table.companyId, table.status),
-    companyDriverIdx: uniqueIndex("environments_company_driver_idx").on(table.companyId, table.driver),
+    companyDriverIdx: uniqueIndex("environments_company_driver_idx")
+      .on(table.companyId, table.driver)
+      .where(sql`${table.driver} = 'local'`),
     companyNameIdx: index("environments_company_name_idx").on(table.companyId, table.name),
   }),
 );

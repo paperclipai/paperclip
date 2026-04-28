@@ -355,6 +355,110 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
   });
 
+  it("filters issue lists to the full descendant tree for a root issue", async () => {
+    const companyId = randomUUID();
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+    const siblingId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: rootId,
+        companyId,
+        title: "Root",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: childId,
+        companyId,
+        parentId: rootId,
+        title: "Child",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: grandchildId,
+        companyId,
+        parentId: childId,
+        title: "Grandchild",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: siblingId,
+        companyId,
+        title: "Sibling",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, { descendantOf: rootId });
+
+    expect(new Set(result.map((issue) => issue.id))).toEqual(new Set([childId, grandchildId]));
+  });
+
+  it("combines descendant filtering with search", async () => {
+    const companyId = randomUUID();
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+    const outsideMatchId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: rootId,
+        companyId,
+        title: "Root",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: childId,
+        companyId,
+        parentId: rootId,
+        title: "Relevant parent",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: grandchildId,
+        companyId,
+        parentId: childId,
+        title: "Needle grandchild",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: outsideMatchId,
+        companyId,
+        title: "Needle outside",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, { descendantOf: rootId, q: "needle" });
+
+    expect(result.map((issue) => issue.id)).toEqual([grandchildId]);
+  });
+
   it("accepts issue identifiers through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -789,6 +893,127 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.find((issue) => issue.id === olderIssueId)?.lastActivityAt?.toISOString()).toBe(
       "2026-03-26T10:00:00.000Z",
     );
+  });
+
+  it("paginates earlier comments in descending order from an anchor comment", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstCommentId = randomUUID();
+    const anchorCommentId = randomUUID();
+    const latestCommentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Paged comments issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: firstCommentId,
+        companyId,
+        issueId,
+        body: "First comment",
+        createdAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: anchorCommentId,
+        companyId,
+        issueId,
+        body: "Anchor comment",
+        createdAt: new Date("2026-03-26T11:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+      },
+      {
+        id: latestCommentId,
+        companyId,
+        issueId,
+        body: "Latest comment",
+        createdAt: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T12:00:00.000Z"),
+      },
+    ]);
+
+    const comments = await svc.listComments(issueId, {
+      afterCommentId: anchorCommentId,
+      order: "desc",
+      limit: 50,
+    });
+
+    expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
+  });
+
+  it("includes blockedBy summaries on list rows in one batched pass", async () => {
+    const companyId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    const unblockedId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker issue",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: unblockedId,
+        companyId,
+        title: "Unblocked issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedId,
+      type: "blocks",
+    });
+
+    const defaultResult = await svc.list(companyId);
+    expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
+
+    const result = await svc.list(companyId, { includeBlockedBy: true });
+    const byId = new Map(result.map((issue) => [issue.id, issue]));
+
+    expect(byId.get(blockedId)?.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blockerId,
+        identifier: null,
+        title: "Blocker issue",
+        status: "todo",
+        priority: "high",
+      }),
+    ]);
+    expect(byId.get(blockerId)?.blockedBy).toEqual([]);
+    expect(byId.get(unblockedId)?.blockedBy).toEqual([]);
   });
 
   it("trims list payload fields that can grow large on issue index routes", async () => {
@@ -1295,6 +1520,49 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     expect(blockerRelations.blocks.map((relation) => relation.id)).toEqual([blockedId]);
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
+  });
+
+  it("adds terminal blockers to immediate blocked-by summaries", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    const issueC = randomUUID();
+    const issueD = randomUUID();
+    await db.insert(issues).values([
+      { id: issueA, companyId, identifier: "PAP-1", title: "Issue A", status: "blocked", priority: "medium" },
+      { id: issueB, companyId, identifier: "PAP-2", title: "Issue B", status: "blocked", priority: "medium" },
+      { id: issueC, companyId, identifier: "PAP-3", title: "Issue C", status: "blocked", priority: "medium" },
+      { id: issueD, companyId, identifier: "PAP-4", title: "Issue D", status: "todo", priority: "high" },
+    ]);
+
+    await svc.update(issueC, { blockedByIssueIds: [issueD] });
+    await svc.update(issueB, { blockedByIssueIds: [issueC] });
+    await svc.update(issueA, { blockedByIssueIds: [issueB] });
+
+    const relations = await svc.getRelationSummaries(issueA);
+
+    expect(relations.blockedBy).toHaveLength(1);
+    expect(relations.blockedBy[0]).toMatchObject({
+      id: issueB,
+      identifier: "PAP-2",
+      title: "Issue B",
+      terminalBlockers: [
+        expect.objectContaining({
+          id: issueD,
+          identifier: "PAP-4",
+          title: "Issue D",
+          status: "todo",
+          priority: "high",
+        }),
+      ],
+    });
   });
 
   it("rejects blocking cycles", async () => {

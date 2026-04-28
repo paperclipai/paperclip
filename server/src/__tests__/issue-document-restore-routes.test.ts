@@ -177,7 +177,7 @@ describe("issue document revision routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,

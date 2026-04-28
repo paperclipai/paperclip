@@ -5,8 +5,10 @@ export {
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
 export {
@@ -31,8 +33,10 @@ export {
   environmentLeaseCleanupStatusSchema,
   createEnvironmentSchema,
   updateEnvironmentSchema,
+  probeEnvironmentConfigSchema,
   type CreateEnvironment,
   type UpdateEnvironment,
+  type ProbeEnvironmentConfig,
 } from "./environment.js";
 export {
   feedbackDataSharingPreferenceSchema,
@@ -149,6 +153,7 @@ export {
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
+  issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
@@ -196,6 +201,17 @@ export {
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
 } from "./issue.js";
+
+export {
+  createIssueTreeHoldSchema,
+  issueTreeControlModeSchema,
+  issueTreeHoldReleasePolicySchema,
+  previewIssueTreeControlSchema,
+  releaseIssueTreeHoldSchema,
+  type CreateIssueTreeHold,
+  type PreviewIssueTreeControl,
+  type ReleaseIssueTreeHold,
+} from "./issue-tree-control.js";
 
 export {
   createIssueWorkProductSchema,
@@ -330,6 +346,7 @@ export {
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
+  pluginEnvironmentDriverDeclarationSchema,
   pluginUiSlotDeclarationSchema,
   pluginLauncherActionDeclarationSchema,
   pluginLauncherRenderDeclarationSchema,
@@ -348,6 +365,7 @@ export {
   type PluginJobDeclarationInput,
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
+  type PluginEnvironmentDriverDeclarationInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
   type PluginLauncherRenderDeclarationInput,

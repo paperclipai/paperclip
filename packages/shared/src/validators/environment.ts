@@ -32,3 +32,12 @@ export const updateEnvironmentSchema = z.object({
   metadata: z.record(z.unknown()).optional().nullable(),
 }).strict();
 export type UpdateEnvironment = z.infer<typeof updateEnvironmentSchema>;
+
+export const probeEnvironmentConfigSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().optional().nullable(),
+  driver: environmentDriverSchema,
+  config: z.record(z.unknown()).optional().default({}),
+  metadata: z.record(z.unknown()).optional().nullable(),
+}).strict();
+export type ProbeEnvironmentConfig = z.infer<typeof probeEnvironmentConfigSchema>;

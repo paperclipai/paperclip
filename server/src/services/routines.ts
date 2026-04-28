@@ -45,6 +45,7 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -356,10 +357,18 @@ function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
     || extractRoutineVariableNames([routine.title, routine.description]).includes(WORKSPACE_BRANCH_ROUTINE_VARIABLE);
 }
 
-export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+export function routineService(
+  db: Db,
+  deps: {
+    heartbeat?: IssueAssignmentWakeupDeps;
+    pluginWorkerManager?: PluginWorkerManager;
+  } = {},
+) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
-  const heartbeat = deps.heartbeat ?? heartbeatService(db);
+  const heartbeat = deps.heartbeat ?? heartbeatService(db, {
+    pluginWorkerManager: deps.pluginWorkerManager,
+  });
 
   async function getRoutineById(id: string) {
     return db
