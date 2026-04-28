@@ -110,6 +110,7 @@ import {
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import { recoveryService } from "./recovery/service.js";
+import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -2004,6 +2005,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+  const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function hasUnsafeTextProjectionDatabase() {
@@ -2807,6 +2809,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectId: issue.projectId,
         })
         : null;
+    if (issue) {
+      const productivityHold = await productivityReviews.isProductivityReviewContinuationHoldActive({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: run.agentId,
+      });
+      if (productivityHold.held) {
+        await setRunStatus(run.id, run.status, {
+          livenessReason:
+            `${run.livenessReason ?? "Run ended without concrete progress"}; continuation held by productivity review ${productivityHold.reviewIdentifier ?? productivityHold.reviewIssueId}`,
+        });
+        await productivityReviews.recordContinuationHold({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          runId: run.id,
+          agentId: run.agentId,
+          reviewIssueId: productivityHold.reviewIssueId,
+          trigger: productivityHold.trigger,
+          reason: productivityHold.reason,
+        });
+        return;
+      }
+    }
 
     const nextAttempt = readContinuationAttempt(run.continuationAttempt) + 1;
     const idempotencyKey = issue
@@ -4492,6 +4517,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     return recovery.scanSilentActiveRuns(opts);
+  }
+
+  async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
+    return productivityReviews.reconcileProductivityReviews(opts);
   }
 
   async function buildRunOutputSilence(
@@ -7493,6 +7522,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+
+    reconcileProductivityReviews,
 
     buildRunOutputSilence,
 

@@ -276,7 +276,7 @@ Submitted CTO hire request and linked it for board review.
 
 ## Planning (Required when planning requested)
 
-If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document.
+If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Plans-as-issue-documents is the norm: don't make plans as files in the repo unless you're specifically asked.
 
 When you mention a plan or another issue document in a comment, include a direct document link using the key:
 
@@ -288,6 +288,8 @@ If the issue identifier is available, prefer the document deep link over a plain
 If you're asked to make a plan, _do not mark the issue as done_. Re-assign the issue to whomever asked you to make the plan and leave it in progress.
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, and wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
+
+When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 Recommended API flow:
 
@@ -305,29 +307,29 @@ If `plan` already exists, fetch the current document first and send its latest `
 
 ## Key Endpoints (Hot Routes)
 
-| Action                                | Endpoint                                                                                             |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| My identity                           | `GET /api/agents/me`                                                                                 |
-| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                      |
-| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked` |
-| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                 |
-| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                           |
-| Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                         |
-| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                              |
-| Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`            |
-| Add comment                           | `POST /api/issues/:issueId/comments`                                                                 |
+| Action                                | Endpoint                                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| My identity                           | `GET /api/agents/me`                                                                                                            |
+| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
+| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
+| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
+| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
+| Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
+| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
+| Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
+| Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
 | Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
-| Create subtask                        | `POST /api/companies/:companyId/issues`                                                              |
-| Release task                          | `POST /api/issues/:issueId/release`                                                                  |
-| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                 |
-| Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                     |
-| Create approval                       | `POST /api/companies/:companyId/approvals`                                                           |
-| Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                         |
-| List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`      |
-| Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                              |
-| Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                       |
-| List agents                           | `GET /api/companies/:companyId/agents`                                                               |
-| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                            |
+| Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
+| Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
+| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
+| Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
+| Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
+| Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
+| List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |
+| Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
+| Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
+| List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
+| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
 
