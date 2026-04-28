@@ -8,8 +8,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
   authUsers,
+  companyMemberships,
   companies,
   createDb,
+  instanceUserRoles,
   issueComments,
   issues,
   projects,
@@ -597,6 +599,226 @@ describe("worktree helpers", () => {
       } finally {
         process.chdir(originalCwd);
         await sourceDb.cleanup();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  itEmbeddedPostgres(
+    "uses the current runtime DATABASE_URL for authenticated full-seed worktree clones",
+    async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-full-seed-"));
+      const worktreeRoot = path.join(tempRoot, "PAP-999-auth-full-seed");
+      const sourceHome = path.join(tempRoot, "source-home");
+      const sourceConfigDir = path.join(sourceHome, "instances", "source");
+      const sourceConfigPath = path.join(sourceConfigDir, "config.json");
+      const sourceEnvPath = path.join(sourceConfigDir, ".env");
+      const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
+      const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+      const originalCwd = process.cwd();
+      const liveDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-live-source-");
+      const staleDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-stale-source-");
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const inProgressIssueId = randomUUID();
+      const todoIssueId = randomUUID();
+      const reviewIssueId = randomUUID();
+      const userId = "user-live-admin";
+      const liveDbClient = createDb(liveDb.connectionString);
+
+      try {
+        await liveDbClient.insert(authUsers).values({
+          id: userId,
+          email: "admin@paperclip.ing",
+          name: "Admin User",
+          emailVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await liveDbClient.insert(instanceUserRoles).values({
+          userId,
+          role: "instance_admin",
+        });
+        await liveDbClient.insert(companies).values({
+          id: companyId,
+          name: "Paperclip",
+          issuePrefix: "PAP",
+          issueCounter: 3,
+          requireBoardApprovalForNewAgents: false,
+        });
+        await liveDbClient.insert(agents).values({
+          id: agentId,
+          companyId,
+          name: "CodexCoder",
+          role: "engineer",
+          status: "running",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            heartbeat: { enabled: true, intervalSec: 60 },
+          },
+          permissions: {},
+        });
+        await liveDbClient.insert(companyMemberships).values({
+          companyId,
+          principalType: "user",
+          principalId: userId,
+          status: "active",
+          membershipRole: "owner",
+        });
+        await liveDbClient.insert(issues).values([
+          {
+            id: inProgressIssueId,
+            companyId,
+            title: "Copied in-flight issue",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: agentId,
+            issueNumber: 1,
+            identifier: "PAP-1",
+            executionAgentNameKey: "codexcoder",
+            executionLockedAt: new Date("2026-04-28T00:00:00.000Z"),
+          },
+          {
+            id: todoIssueId,
+            companyId,
+            title: "Copied todo issue",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: agentId,
+            issueNumber: 2,
+            identifier: "PAP-2",
+          },
+          {
+            id: reviewIssueId,
+            companyId,
+            title: "Copied review issue",
+            status: "in_review",
+            priority: "medium",
+            assigneeAgentId: agentId,
+            issueNumber: 3,
+            identifier: "PAP-3",
+          },
+        ]);
+
+        fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+        fs.mkdirSync(worktreeRoot, { recursive: true });
+
+        const sourceConfig = buildSourceConfig();
+        sourceConfig.database = {
+          mode: "postgres",
+          embeddedPostgresDataDir: path.join(sourceConfigDir, "db"),
+          embeddedPostgresPort: 54329,
+          backup: {
+            enabled: true,
+            intervalMinutes: 60,
+            retentionDays: 30,
+            dir: path.join(sourceConfigDir, "backups"),
+          },
+          connectionString: staleDb.connectionString,
+        };
+        sourceConfig.logging.logDir = path.join(sourceConfigDir, "logs");
+        sourceConfig.storage.localDisk.baseDir = path.join(sourceConfigDir, "storage");
+        sourceConfig.secrets.localEncrypted.keyFilePath = sourceKeyPath;
+
+        fs.writeFileSync(sourceConfigPath, JSON.stringify(sourceConfig, null, 2) + "\n", "utf8");
+        fs.writeFileSync(sourceEnvPath, `DATABASE_URL=${JSON.stringify(staleDb.connectionString)}\n`, "utf8");
+        fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+
+        process.env.PAPERCLIP_CONFIG = sourceConfigPath;
+        process.env.DATABASE_URL = liveDb.connectionString;
+        process.chdir(worktreeRoot);
+
+        await worktreeInitCommand({
+          name: "PAP-999-auth-full-seed",
+          home: worktreeHome,
+          fromConfig: sourceConfigPath,
+          force: true,
+          seedMode: "full",
+        });
+
+        const targetConfig = JSON.parse(
+          fs.readFileSync(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8"),
+        ) as PaperclipConfig;
+        const { default: EmbeddedPostgres } = await import("embedded-postgres");
+        const targetPg = new EmbeddedPostgres({
+          databaseDir: targetConfig.database.embeddedPostgresDataDir,
+          user: "paperclip",
+          password: "paperclip",
+          port: targetConfig.database.embeddedPostgresPort,
+          persistent: true,
+          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          onLog: () => {},
+          onError: () => {},
+        });
+
+        await targetPg.start();
+        try {
+          const targetDb = createDb(
+            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+          );
+
+          const seededCompanies = await targetDb.select().from(companies);
+          expect(seededCompanies).toHaveLength(1);
+          expect(seededCompanies[0]?.id).toBe(companyId);
+
+          const seededUsers = await targetDb.select().from(authUsers);
+          expect(seededUsers.some((row) => row.id === userId)).toBe(true);
+
+          const seededRoles = await targetDb.select().from(instanceUserRoles);
+          expect(seededRoles).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                userId,
+                role: "instance_admin",
+              }),
+            ]),
+          );
+
+          const memberships = await targetDb.select().from(companyMemberships);
+          expect(memberships).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                companyId,
+                principalType: "user",
+                principalId: userId,
+              }),
+            ]),
+          );
+
+          const [seededAgent] = await targetDb.select().from(agents).where(eq(agents.id, agentId));
+          expect(seededAgent?.companyId).toBe(companyId);
+          expect(seededAgent?.status).toBe("idle");
+          expect(seededAgent?.runtimeConfig).toMatchObject({
+            heartbeat: { enabled: false, intervalSec: 60 },
+          });
+
+          const [inProgressIssue] = await targetDb.select().from(issues).where(eq(issues.id, inProgressIssueId));
+          expect(inProgressIssue?.status).toBe("blocked");
+          expect(inProgressIssue?.assigneeAgentId).toBeNull();
+
+          const [todoIssue] = await targetDb.select().from(issues).where(eq(issues.id, todoIssueId));
+          expect(todoIssue?.status).toBe("todo");
+          expect(todoIssue?.assigneeAgentId).toBeNull();
+
+          const [reviewIssue] = await targetDb.select().from(issues).where(eq(issues.id, reviewIssueId));
+          expect(reviewIssue?.status).toBe("in_review");
+          expect(reviewIssue?.assigneeAgentId).toBeNull();
+
+          const comments = await targetDb.select().from(issueComments).where(eq(issueComments.issueId, inProgressIssueId));
+          expect(comments).toHaveLength(1);
+          expect(comments[0]?.body).toContain("Quarantined during worktree seed");
+
+          await targetDb.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+        } finally {
+          await targetPg.stop();
+        }
+      } finally {
+        process.chdir(originalCwd);
+        await liveDbClient.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+        await liveDb.cleanup();
+        await staleDb.cleanup();
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },

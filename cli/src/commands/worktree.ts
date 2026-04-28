@@ -984,15 +984,28 @@ async function ensureRepairTargetWorktree(input: {
   };
 }
 
-function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Record<string, string>, portOverride?: number): string {
-  if (config.database.mode === "postgres") {
-    const connectionString = nonEmpty(envEntries.DATABASE_URL) ?? nonEmpty(config.database.connectionString);
-    if (!connectionString) {
-      throw new Error(
-        "Source instance uses postgres mode but has no connection string in config or adjacent .env.",
-      );
-    }
+function resolveSourceConnectionString(
+  sourceConfigPath: string,
+  config: PaperclipConfig,
+  envEntries: Record<string, string>,
+  portOverride?: number,
+): string {
+  const runtimeEnvConnectionString = isCurrentSourceConfigPath(sourceConfigPath)
+    ? nonEmpty(process.env.DATABASE_URL)
+    : null;
+  const fileEnvConnectionString = nonEmpty(envEntries.DATABASE_URL);
+  const configConnectionString =
+    config.database.mode === "postgres" ? nonEmpty(config.database.connectionString) : null;
+  const connectionString = runtimeEnvConnectionString ?? fileEnvConnectionString ?? configConnectionString;
+
+  if (connectionString) {
     return connectionString;
+  }
+
+  if (config.database.mode === "postgres") {
+    throw new Error(
+      "Source instance uses postgres mode but has no connection string in runtime env, config, or adjacent .env.",
+    );
   }
 
   const port = portOverride ?? config.database.embeddedPostgresPort;
@@ -1302,6 +1315,7 @@ async function seedWorktreeDatabase(input: {
       await ensurePostgresDatabase(sourceAdminConnectionString, "paperclip");
     }
     const sourceConnectionString = resolveSourceConnectionString(
+      input.sourceConfigPath,
       input.sourceConfig,
       sourceEnvEntries,
       sourceHandle?.port,
@@ -1931,7 +1945,7 @@ async function openConfiguredDb(configPath: string): Promise<OpenDbHandle> {
         config.database.embeddedPostgresPort,
       );
     }
-    const connectionString = resolveSourceConnectionString(config, envEntries, embeddedHandle?.port);
+    const connectionString = resolveSourceConnectionString(configPath, config, envEntries, embeddedHandle?.port);
     const migrationState = await inspectMigrations(connectionString);
     if (migrationState.status !== "upToDate") {
       const pending =
