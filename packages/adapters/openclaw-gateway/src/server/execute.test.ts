@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,5 +48,30 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
+  });
+});
+
+describe("resolveClaimedApiKeyPath", () => {
+  const DEFAULT_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+
+  it("returns the configured per-agent path when set", () => {
+    expect(
+      resolveClaimedApiKeyPath("~/.openclaw/workspace/paperclip-keys/happy.json"),
+    ).toBe("~/.openclaw/workspace/paperclip-keys/happy.json");
+  });
+
+  it("falls back to the shared default when value is empty", () => {
+    expect(resolveClaimedApiKeyPath("")).toBe(DEFAULT_PATH);
+    expect(resolveClaimedApiKeyPath("   ")).toBe(DEFAULT_PATH);
+  });
+
+  it("falls back to the shared default when value is missing", () => {
+    expect(resolveClaimedApiKeyPath(undefined)).toBe(DEFAULT_PATH);
+    expect(resolveClaimedApiKeyPath(null)).toBe(DEFAULT_PATH);
+  });
+
+  it("falls back to the shared default when value is not a string", () => {
+    expect(resolveClaimedApiKeyPath(42)).toBe(DEFAULT_PATH);
+    expect(resolveClaimedApiKeyPath({})).toBe(DEFAULT_PATH);
   });
 });
