@@ -36,6 +36,7 @@ import {
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
+import { pilotApplyRoutes } from "./routes/pilot-apply.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -281,6 +282,7 @@ export async function createApp(
       { workerManager },
     ),
   );
+  api.use(pilotApplyRoutes(db));
   api.use(adapterRoutes());
   api.use(
     accessRoutes(db, {
