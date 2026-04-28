@@ -221,7 +221,6 @@ export function OnboardingWizard() {
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
-    pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
   };

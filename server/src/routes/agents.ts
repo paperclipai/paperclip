@@ -112,7 +112,6 @@ export function agentRoutes(
     hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
-    pi_local: "instructionsFilePath",
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
 
@@ -783,7 +782,6 @@ export function agentRoutes(
     "cursor",
     "gemini_local",
     "opencode_local",
-    "pi_local",
   ]);
 
   function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {

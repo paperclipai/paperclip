@@ -58,17 +58,6 @@ import {
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
-  execute as piExecute,
-  listPiSkills,
-  syncPiSkills,
-  testEnvironment as piTestEnvironment,
-  sessionCodec as piSessionCodec,
-  listPiModels,
-} from "@paperclipai/adapter-pi-local/server";
-import {
-  agentConfigurationDoc as piAgentConfigurationDoc,
-} from "@paperclipai/adapter-pi-local";
-import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
@@ -215,23 +204,6 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
-const piLocalAdapter: ServerAdapterModule = {
-  type: "pi_local",
-  execute: piExecute,
-  testEnvironment: piTestEnvironment,
-  listSkills: listPiSkills,
-  syncSkills: syncPiSkills,
-  sessionCodec: piSessionCodec,
-  sessionManagement: getAdapterSessionManagement("pi_local") ?? undefined,
-  models: [],
-  listModels: listPiModels,
-  supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: true,
-  instructionsPathKey: "instructionsFilePath",
-  requiresMaterializedRuntimeSkills: true,
-  agentConfigurationDoc: piAgentConfigurationDoc,
-};
-
 // hermes-paperclip-adapter v0.2.0 predates the authToken field; cast is
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
@@ -314,7 +286,6 @@ function registerBuiltInAdapters() {
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
-    piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,

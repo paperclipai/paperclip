@@ -79,11 +79,6 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Hermes CLI agent",
     icon: HermesIcon,
   },
-  pi_local: {
-    label: "Pi",
-    description: "Local Pi agent",
-    icon: Terminal,
-  },
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",

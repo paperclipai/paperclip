@@ -1,0 +1,149 @@
+---
+name: competitor-monitor
+description: Monitor Bobby Tours' 5 mapped competitors (Altezza, Micato, Nomad, Asilia, Singita) for content changes, pricing shifts, SERP ranking moves, and social media activity. Weekly cadence. Reads seed data from /srv/newpaperclip/bobby-tours-data/competitors.json. Note: SafariBookings is IGNORED (we are blocked + on waitlist per Don's directive, 2026-04-20). TripAdvisor response is parent-managed via bobbytours.com (not per-site).
+---
+
+# Competitor Monitor
+
+## Competitors (seed list)
+
+Defined in `/srv/newpaperclip/bobby-tours-data/competitors.json`. Current 5:
+
+| ID | Name | Primary Domain | Positioning |
+|---|---|---|---|
+| altezza | Altezza Travel | altezzatravel.com + tanzania-specialist.com | Main competitor, Russian-owned, 250+ employees |
+| micato | Micato | micato.com | Ultra-luxury premium |
+| nomad | Nomad Tanzania | nomadtanzania.com | Mid-premium |
+| asilia | Asilia Africa | asiliaafrica.com | Luxury tented camps |
+| singita | Singita | singita.com | Ultra-luxury, premium |
+
+All 5 are **hook v12 P9 forbidden names** — never mention by name on our sites. Track internally only.
+
+## When to use
+
+- Weekly (Tuesday 14:00 EAT — after Monday's SEO audit) as part of a dedicated competitor-monitor routine
+- Monthly deeper audit (first Tuesday of month)
+- On-demand when CEO requests positioning intel
+
+## What to monitor
+
+### 1. Website content changes
+
+For each competitor's primary domain, track:
+- New blog posts / itineraries (check their sitemap.xml / /blog / /itineraries changes week-over-week)
+- Pricing shifts (if pricing is on-site)
+- New campaigns / hero changes (curl homepage + diff text)
+- New destinations or packages added
+
+Method: curl each competitor homepage + sitemap weekly. Store hash + key metrics. Alert on material change.
+
+### 2. SERP ranking per target keyword
+
+Use SerpAPI (token in `RESEND_API_KEY` neighbor — actually `SERPAPI_KEY` is in bobby-tours.env):
+
+```bash
+source /root/.newpaperclip/instances/default/bobby-tours.env
+for kw in "tanzania safari" "tanzania luxury safari" "kilimanjaro climb" "tanzania honeymoon"; do
+  curl -sS "https://serpapi.com/search?q=$(echo "$kw" | jq -sRr @uri)&api_key=$SERPAPI_KEY&hl=en&gl=us&num=20" \
+    | jq '.organic_results[] | {position, title, link}' | head -30
+done
+```
+
+For each keyword, record:
+- Our site's position (if in top 20)
+- Each of 5 competitors' positions
+- New entrants (top 20 sites we don't track yet)
+
+### 3. TripAdvisor listings
+
+From competitors.json, each has a `tripadvisor_listing` URL. Fetch:
+- Review count (changes month-over-month)
+- Overall rating (1–5 stars)
+- Recent review sentiment (parse first page of reviews)
+
+```bash
+# Simple approach: curl + grep review count
+COUNT=$(curl -sSL --max-time 15 "$TRIP_URL" | grep -oP '(?<=reviewCount":")[0-9,]+' | head -1 | tr -d ',')
+echo "$competitor reviews: $COUNT"
+```
+
+### 4. Social media activity (Instagram)
+
+For each competitor with a public IG account, check:
+- Post count (scraping, if possible)
+- Engagement: likes+comments on recent posts
+- Story cadence
+
+Given IG limits scraping heavily, MVP = just note their handle + check periodically. Advanced: use Buffer's listening feature (if available in plan).
+
+### 5. Content-gap analysis
+
+Compare their sitemap URL paths to ours. Find:
+- Topics they cover that we don't → content gap
+- Topics we cover better → our strength (reinforce)
+
+## Report format
+
+```
+## Competitor Monitor — Week of 2026-04-20
+
+### SERP Ranking Movement (top 5 target keywords)
+
+| Keyword | Our site | Our pos | Altezza pos | Micato pos | Nomad pos | New entrant? |
+|---|---|---|---|---|---|---|
+| tanzania safari | safaris-tanzania.com | 24 (→18 ↑6) | 3 (→3) | 14 (→12) | 6 (→5) | no |
+| tanzania luxury safari | bobbysafaris.com | 11 (→8 ↑3) | 4 (→4) | 2 (→1) | 9 (→9) | yes: "africanbudgetsafaris.com" at #7 |
+
+### Content Activity (last 7 days)
+
+- **Altezza**: 2 new itinerary pages (/tours/new-north-tanzania-safari, /tours/southern-circuit-8days). Topic gap we should consider.
+- **Micato**: 1 new blog post on Ngorongoro — benchmarked against our page. Their depth > ours.
+- **Nomad**: No changes.
+- **Asilia**: Pricing update on 4 camp-page headers.
+- **Singita**: New video on homepage.
+
+### TripAdvisor Changes
+
+| Competitor | Reviews 4 wks ago | Reviews now | Growth |
+|---|---|---|---|
+| Altezza | 1,842 | 1,889 | +47 |
+| Micato | 312 | 315 | +3 |
+| Nomad | 587 | 598 | +11 |
+| Asilia | 892 | 903 | +11 |
+| Singita | 1,102 | 1,112 | +10 |
+
+Our sites (from competitors.json → bobby_tours_sites):
+- Shared TripAdvisor listing → 4,067 reviews (unchanged this week)
+
+### Action Items
+
+- [ ] Consider new content: "Southern Circuit 8-day" (Altezza gap)
+- [ ] Benchmark our Ngorongoro page depth vs Micato's — file content brief
+- [ ] Monitor africanbudgetsafaris.com (new SERP entrant) — new competitor?
+
+### Next monthly deep-dive: first Tuesday of May
+```
+
+## Pitfalls
+
+- **Scraping TripAdvisor / competitor sites**: rate-limit carefully. Use `--max-time 15` + `sleep 1` between calls. If they block us, respect robots.txt — no repeated hits.
+- **Don't mention competitor names in our site copy**: even incidentally. All analysis is internal — tickets, comments, memory. Never in commits or site pages.
+- **SerpAPI is paid** (~$50/month for 5,000 queries). Be frugal: 5 keywords × weekly = 260 queries/year. Well within budget.
+- **Position 20+ for our site**: if we're ranking >20 for a target keyword, the skill should still report it (via GSC data, not SerpAPI) — but we shouldn't treat as "ranking".
+
+## Data persistence
+
+Store monitoring data at `/srv/newpaperclip/bobby-tours-data/competitor-monitor/`:
+- `serp-history.jsonl` — one line per run, one object per keyword (for trend analysis)
+- `tripadvisor-counts.jsonl` — same
+- `content-hashes.json` — last-seen hash of each competitor's homepage, updated weekly
+
+## Related skills
+
+- `gsc-audit` — our OWN SERP performance (complementary)
+- `content-brief-template` — output of competitor gaps → content briefs
+- `meta-description-writer` — competitor meta patterns inform our drafts
+
+## Budget
+
+$0.30–$0.80 per weekly run. SerpAPI spend ≈ $0.10 per run (5 keywords). Total: ~$1/week, ~$52/year.
