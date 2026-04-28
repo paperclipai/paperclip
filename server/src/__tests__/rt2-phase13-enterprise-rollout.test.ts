@@ -3,6 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   budgetPolicies,
   companies,
   createDb,
@@ -39,6 +40,7 @@ describeEmbeddedPostgres("rt2 phase 13 enterprise rollout", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(routineTriggers);
     await db.delete(routines);
     await db.delete(budgetPolicies);
@@ -125,10 +127,13 @@ describeEmbeddedPostgres("rt2 phase 13 enterprise rollout", () => {
       tenantPolicy: expect.objectContaining({ dataResidency: "kr", retentionDays: 730 }),
       templates: [expect.objectContaining({ name: "iSens RT2 운영 템플릿", category: "enterprise" })],
       evidence: expect.objectContaining({
-        overallStatus: "ready",
-        readyCount: 4,
+        overallStatus: "partial",
+        readyCount: 3,
+        partialCount: 1,
+        missingCount: 1,
         items: expect.arrayContaining([
-          expect.objectContaining({ area: "sso", status: "ready" }),
+          expect.objectContaining({ area: "sso", status: "missing" }),
+          expect.objectContaining({ area: "scim", status: "partial" }),
           expect.objectContaining({ area: "binding", status: "ready" }),
           expect.objectContaining({ area: "policy", status: "ready" }),
           expect.objectContaining({ area: "template", status: "ready" }),
