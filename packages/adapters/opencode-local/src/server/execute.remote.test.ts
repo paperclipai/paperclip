@@ -222,4 +222,68 @@ describe("opencode remote execution", () => {
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("session-123");
   });
+
+  it("skips initialization when wake issue status is blocked", async () => {
+    const onLog = vi.fn(async () => {});
+    const result = await execute({
+      runId: "run-blocked",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", model: "opencode/gpt-5-nano" },
+      context: { paperclipWake: { issue: { status: "blocked" } } },
+      onLog,
+    });
+
+    expect(runChildProcess).not.toHaveBeenCalled();
+    expect(result.summary).toContain("wake issue is blocked");
+    expect(onLog).toHaveBeenCalledWith("stdout", "[paperclip][init] blocked issue detected; skipping adapter initialization\n");
+  });
+
+  it("clamps timeoutSec to 110 seconds", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-timeout-clamp-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-timeout-clamp",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", model: "opencode/gpt-5-nano", timeoutSec: 600 },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[], { timeoutSec?: number }] | undefined;
+    expect(call?.[3].timeoutSec).toBe(110);
+  });
 });

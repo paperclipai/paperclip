@@ -356,4 +356,46 @@ describe("codex remote execution", () => {
     expect(call?.[3].env.CODEX_HOME).toBe("/remote/workspace/.paperclip-runtime/codex/home");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
   });
+
+  it("skips initialization when wake issue status is blocked", async () => {
+    const onLog = vi.fn(async () => {});
+    const result = await execute({
+      runId: "run-blocked",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "codex" },
+      context: { paperclipWake: { issue: { status: "blocked" } } },
+      onLog,
+    });
+
+    expect(runChildProcess).not.toHaveBeenCalled();
+    expect(result.summary).toContain("wake issue is blocked");
+    expect(onLog).toHaveBeenCalledWith("stdout", "[paperclip][init] blocked issue detected; skipping adapter initialization\n");
+  });
+
+  it("clamps timeoutSec to 110 seconds", async () => {
+    await execute({
+      runId: "run-timeout-clamp",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "codex", timeoutSec: 600 },
+      context: {},
+      onLog: async () => {},
+    });
+
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[], { timeoutSec?: number }] | undefined;
+    expect(call?.[3].timeoutSec).toBe(110);
+  });
 });
