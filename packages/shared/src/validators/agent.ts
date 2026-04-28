@@ -246,6 +246,13 @@ export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
   adapterConfig: adapterConfigSchema.optional().default({}),
+  /**
+   * Environment id the agent runs against. When provided and the environment
+   * resolves to a remote driver (SSH/sandbox), the adapter's testEnvironment
+   * impl probes that target instead of the local host — needed because the
+   * pod has no per-user codex/claude credentials.
+   */
+  environmentId: z.string().uuid().nullable().optional(),
 });
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;

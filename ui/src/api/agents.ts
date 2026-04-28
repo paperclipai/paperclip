@@ -175,7 +175,7 @@ export const agentsApi = {
   testEnvironment: (
     companyId: string,
     type: string,
-    data: { adapterConfig: Record<string, unknown> },
+    data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,

@@ -55,6 +55,8 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { secretService } from "../services/secrets.js";
 import {
   detectAdapterModel,
@@ -986,10 +988,42 @@ export function agentRoutes(
         normalizedAdapterConfig,
       );
 
+      // Resolve the agent's environment to an executionTarget so adapter
+      // tests probe the place the agent will actually run (SSH host) and
+      // not the host process. Without this redirection, every SSH-backed
+      // agent false-positives as "auth missing" because the pod has no
+      // codex/claude credentials.
+      const environmentId = (req.body as { environmentId?: string | null })?.environmentId ?? null;
+      let executionTarget: AdapterExecutionTarget | null = null;
+      if (environmentId) {
+        const environment = await environmentsSvc.getById(environmentId);
+        if (environment && environment.companyId === companyId) {
+          try {
+            executionTarget = await resolveEnvironmentExecutionTarget({
+              db,
+              companyId,
+              adapterType: type,
+              environment: {
+                id: environment.id,
+                driver: environment.driver,
+                config: (environment.config as Record<string, unknown> | null) ?? null,
+              },
+              leaseId: null,
+              leaseMetadata: null,
+            });
+          } catch {
+            // Resolution failure (bad env config, missing secrets) is a soft
+            // signal — fall through to local probing rather than 500.
+            executionTarget = null;
+          }
+        }
+      }
+
       const result = await adapter.testEnvironment({
         companyId,
         adapterType: type,
         config: runtimeAdapterConfig,
+        executionTarget,
       });
 
       res.json(result);

@@ -397,8 +397,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select a company to test adapter environment");
       }
+      // Pass the agent's selected environment so the server can probe via
+      // SSH instead of locally in the pod (where codex/claude credentials
+      // don't exist).
+      const environmentId = isCreate
+        ? val?.defaultEnvironmentId ?? null
+        : eff("identity", "defaultEnvironmentId", props.agent?.defaultEnvironmentId ?? null) || null;
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
         adapterConfig: buildAdapterConfigForTest(),
+        environmentId: environmentId || undefined,
       });
     },
   });
