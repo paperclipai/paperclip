@@ -1024,20 +1024,7 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const currentExecutionWorkspacePromise = issue.executionWorkspaceId
-      ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : Promise.resolve(null);
-    const [
-      { project, goal },
-      ancestors,
-      commentCursor,
-      wakeComment,
-      relations,
-      blockerAttention,
-      attachments,
-      continuationSummary,
-      currentExecutionWorkspace,
-    ] =
+    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, blockerAttention, attachments, continuationSummary] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
         svc.getAncestors(issue.id),
@@ -1047,8 +1034,16 @@ export function issueRoutes(
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
-        currentExecutionWorkspacePromise,
       ]);
+
+    const currentExecutionWorkspace = await executionWorkspacesSvc.resolveSnapshotForIssue(
+      issue.companyId,
+      {
+        executionWorkspaceId: issue.executionWorkspaceId ?? null,
+        projectWorkspaceId: issue.projectWorkspaceId ?? null,
+      },
+      project?.primaryWorkspace?.id ?? null,
+    );
 
     res.json({
       issue: {
@@ -1141,9 +1136,14 @@ export function issueRoutes(
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
-    const currentExecutionWorkspace = issue.executionWorkspaceId
-      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : null;
+    const currentExecutionWorkspace = await executionWorkspacesSvc.resolveSnapshotForIssue(
+      issue.companyId,
+      {
+        executionWorkspaceId: issue.executionWorkspaceId ?? null,
+        projectWorkspaceId: issue.projectWorkspaceId ?? null,
+      },
+      project?.primaryWorkspace?.id ?? null,
+    );
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,

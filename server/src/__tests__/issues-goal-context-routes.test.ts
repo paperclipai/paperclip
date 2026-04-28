@@ -32,6 +32,7 @@ const mockDocumentsService = vi.hoisted(() => ({
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
+  resolveSnapshotForIssue: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -167,6 +168,9 @@ const projectGoal = {
 describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockExecutionWorkspaceService.resolveSnapshotForIssue.mockImplementation(async (_companyId: string, issue: { executionWorkspaceId: string | null; projectWorkspaceId: string | null }) =>
+      issue.executionWorkspaceId ? mockExecutionWorkspaceService.getById(issue.executionWorkspaceId) : null,
+    );
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -325,6 +329,104 @@ describe.sequential("issue goal context routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.issue.projectWorkspaceId).toBe(pwId);
     expect(res.body.issue.executionWorkspaceId).toBeNull();
+  });
+
+  it("passes fallback primary projectWorkspaceId into resolveSnapshotForIssue when the issue omits it (heartbeat-context)", async () => {
+    const primaryPw = "77777777-7777-4777-8777-777777777777";
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectWorkspaceId: null,
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: legacyProjectLinkedIssue.projectId,
+      companyId: "company-1",
+      urlKey: "onboarding",
+      goalId: projectGoal.id,
+      goalIds: [projectGoal.id],
+      goals: [{ id: projectGoal.id, title: projectGoal.title }],
+      name: "Onboarding",
+      description: null,
+      status: "in_progress",
+      leadAgentId: null,
+      targetDate: null,
+      color: null,
+      pauseReason: null,
+      pausedAt: null,
+      executionWorkspacePolicy: null,
+      codebase: {
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        defaultRef: null,
+        repoName: null,
+        localFolder: null,
+        managedFolder: "/tmp/company-1/project-1",
+        effectiveLocalFolder: "/tmp/company-1/project-1",
+        origin: "managed_checkout",
+      },
+      workspaces: [],
+      primaryWorkspace: { id: primaryPw } as import("@paperclipai/shared").ProjectWorkspace,
+      archivedAt: null,
+      createdAt: new Date("2026-03-20T00:00:00Z"),
+      updatedAt: new Date("2026-03-20T00:00:00Z"),
+    });
+
+    await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context");
+
+    expect(mockExecutionWorkspaceService.resolveSnapshotForIssue).toHaveBeenCalledWith(
+      "company-1",
+      { executionWorkspaceId: null, projectWorkspaceId: null },
+      primaryPw,
+    );
+  });
+
+  it("passes fallback primary projectWorkspaceId into resolveSnapshotForIssue when the issue omits it (GET /issues/:id)", async () => {
+    const primaryPw = "77777777-7777-4777-8777-777777777777";
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectWorkspaceId: null,
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: legacyProjectLinkedIssue.projectId,
+      companyId: "company-1",
+      urlKey: "onboarding",
+      goalId: projectGoal.id,
+      goalIds: [projectGoal.id],
+      goals: [{ id: projectGoal.id, title: projectGoal.title }],
+      name: "Onboarding",
+      description: null,
+      status: "in_progress",
+      leadAgentId: null,
+      targetDate: null,
+      color: null,
+      pauseReason: null,
+      pausedAt: null,
+      executionWorkspacePolicy: null,
+      codebase: {
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        defaultRef: null,
+        repoName: null,
+        localFolder: null,
+        managedFolder: "/tmp/company-1/project-1",
+        effectiveLocalFolder: "/tmp/company-1/project-1",
+        origin: "managed_checkout",
+      },
+      workspaces: [],
+      primaryWorkspace: { id: primaryPw } as import("@paperclipai/shared").ProjectWorkspace,
+      archivedAt: null,
+      createdAt: new Date("2026-03-20T00:00:00Z"),
+      updatedAt: new Date("2026-03-20T00:00:00Z"),
+    });
+
+    await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(mockExecutionWorkspaceService.resolveSnapshotForIssue).toHaveBeenCalledWith(
+      "company-1",
+      { executionWorkspaceId: null, projectWorkspaceId: null },
+      primaryPw,
+    );
   });
 
   it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {
