@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  fetchWithRetry,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -477,5 +478,172 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("fetchWithRetry", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  function makeResponse(status: number, headers: Record<string, string> = {}) {
+    return new Response("", { status, headers });
+  }
+
+  it("returns the first successful response without retrying", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(200));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await fetchWithRetry("https://example.test", {});
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries on 429 and returns the eventual 200", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(429))
+      .mockResolvedValueOnce(makeResponse(200));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await fetchWithRetry(
+      "https://example.test",
+      {},
+      { baseDelayMs: 1, maxDelayMs: 1 },
+    );
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns the last failed response after exhausting retries", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(503));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await fetchWithRetry(
+      "https://example.test",
+      {},
+      { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 1 },
+    );
+
+    expect(res.status).toBe(503);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry on non-retryable status codes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(400));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await fetchWithRetry(
+      "https://example.test",
+      {},
+      { baseDelayMs: 1, maxDelayMs: 1 },
+    );
+
+    expect(res.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("invokes onRetry with attempt metadata before each wait", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(429, { "retry-after": "0" }))
+      .mockResolvedValueOnce(makeResponse(200));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const onRetry = vi.fn();
+
+    await fetchWithRetry(
+      "https://example.test",
+      {},
+      {
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+        onRetry,
+      },
+    );
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 1,
+        maxRetries: 3,
+        status: 429,
+        retryAfterHeader: "0",
+      }),
+    );
+  });
+
+  it("treats custom retryableStatuses as retryable (e.g. 403)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(403))
+      .mockResolvedValueOnce(makeResponse(200));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await fetchWithRetry(
+      "https://example.test",
+      {},
+      { baseDelayMs: 1, maxDelayMs: 1, retryableStatuses: [403, 429] },
+    );
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps Retry-After header value at maxDelayMs", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(429, { "retry-after": "60" }))
+      .mockResolvedValueOnce(makeResponse(200));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const onRetry = vi.fn();
+    const start = Date.now();
+
+    const res = await fetchWithRetry(
+      "https://example.test",
+      {},
+      { baseDelayMs: 1, maxDelayMs: 5, onRetry },
+    );
+
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ delayMs: 5 }),
+    );
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it("aborts the request when the per-attempt timeout fires", async () => {
+    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }
+      });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(
+      fetchWithRetry(
+        "https://example.test",
+        {},
+        { maxRetries: 0, timeoutMs: 5 },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
