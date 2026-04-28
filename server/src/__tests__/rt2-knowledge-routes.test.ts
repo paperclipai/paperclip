@@ -158,15 +158,18 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
         }),
       ]),
     );
+    const importFiles = vaultResponse.body.files.map((file: { path: string; content: string }) => ({
+      path: file.path,
+      content: file.path === "index.md"
+        ? `${file.content}\n\nImported operator note.\n`
+        : file.content,
+    }));
 
     const importPreviewResponse = await request(app)
       .post(`/api/companies/${companyId}/rt2/knowledge/vault-import-preview`)
       .send({
         vaultName: vaultResponse.body.vaultName,
-        files: vaultResponse.body.files.map((file: { path: string; content: string }) => ({
-          path: file.path,
-          content: file.content,
-        })),
+        files: importFiles,
       });
     expect(importPreviewResponse.status).toBe(200);
     expect(importPreviewResponse.body).toEqual(
@@ -196,10 +199,7 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
       .send({
         vaultName: vaultResponse.body.vaultName,
         projectId,
-        files: vaultResponse.body.files.map((file: { path: string; content: string }) => ({
-          path: file.path,
-          content: file.content,
-        })),
+        files: importFiles,
         approvedCandidateIds,
       });
     expect(applyResponse.status).toBe(200);
