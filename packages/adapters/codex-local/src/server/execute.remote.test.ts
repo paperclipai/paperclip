@@ -201,6 +201,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--skip-git-repo-check",
       "-",
     ]);
   });
@@ -271,6 +272,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--skip-git-repo-check",
       "resume",
       "session-123",
       "-",
@@ -349,6 +351,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--skip-git-repo-check",
       "resume",
       "session-123",
       "-",
