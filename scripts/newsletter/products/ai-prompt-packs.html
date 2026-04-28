@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Prompt Packs — 50 Ready-to-Sell Digital Products</title>
+  <meta name="description" content="50 battle-tested ChatGPT & Claude prompt packs engineered for results. Set your price. Every sale is 100% margin. No inventory. No returns." />
+  <meta property="og:title" content="AI Prompt Packs — 50 Ready-to-Sell Digital Products" />
+  <meta property="og:description" content="Build a passive income stream in a weekend. No audience required." />
+
+  <!--
+    ════════════════════════════════════════════════════════
+    SUPABASE CONFIG — fill in before deploying
+    Get these from your Supabase project → Settings → API
+    ════════════════════════════════════════════════════════
+  -->
+  <script>
+    window.SUPABASE_URL      = 'REPLACE_WITH_SUPABASE_URL';       // e.g. https://xxxx.supabase.co
+    window.SUPABASE_ANON_KEY = 'REPLACE_WITH_SUPABASE_ANON_KEY';  // public anon key — safe for client-side
+    window.CAMPAIGN_SLUG     = 'ai-prompt-packs';                  // identifies this page in email_waitlist
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --border: #222222;
+      --text: #e8e8e8;
+      --muted: #888;
+      --accent: #4ade80;
+      --accent-dim: rgba(74, 222, 128, 0.12);
+      --error: #f87171;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 20px;
+    }
+
+    .container { max-width: 600px; width: 100%; padding: 64px 0 80px; }
+
+    .source-tag {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(74, 222, 128, 0.25);
+      border-radius: 4px;
+      padding: 4px 10px;
+      margin-bottom: 32px;
+    }
+
+    h1 {
+      font-size: clamp(26px, 5vw, 38px);
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      margin-bottom: 20px;
+    }
+    h1 span { color: var(--accent); }
+
+    .subtitle {
+      font-size: 18px;
+      color: var(--muted);
+      margin-bottom: 40px;
+      line-height: 1.5;
+    }
+
+    .proof-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 40px; }
+    .proof-pill {
+      font-size: 13px;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 14px;
+    }
+
+    .signup-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 40px;
+    }
+    .signup-card h2 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+    .signup-card .card-sub {
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
+
+    .form-row { display: flex; gap: 10px; }
+    .form-row input[type="email"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 15px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .form-row input[type="email"]:focus { border-color: var(--accent); }
+    .form-row input[type="email"]::placeholder { color: var(--muted); }
+    .form-row button {
+      background: var(--accent);
+      color: #000;
+      font-size: 14px;
+      font-weight: 700;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 20px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+    }
+    .form-row button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .form-msg {
+      margin-top: 12px;
+      font-size: 13px;
+      min-height: 18px;
+    }
+    .form-msg.error { color: var(--error); }
+    .form-msg.success { color: var(--accent); }
+
+    .success-state {
+      display: none;
+      text-align: center;
+      padding: 20px 0;
+    }
+    .success-state .check {
+      font-size: 36px;
+      margin-bottom: 12px;
+    }
+    .success-state p {
+      font-size: 15px;
+      color: var(--muted);
+    }
+    .success-state strong { color: var(--text); }
+
+    .bullets { list-style: none; display: flex; flex-direction: column; gap: 14px; }
+    .bullets li { display: flex; gap: 12px; font-size: 15px; }
+    .bullets li::before { content: "→"; color: var(--accent); flex-shrink: 0; margin-top: 1px; }
+
+    .divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+    .pack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 40px;
+    }
+    .pack-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .pack-card .pack-label {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .pack-card .pack-name { font-size: 14px; font-weight: 600; }
+
+    .faq-block { display: flex; flex-direction: column; gap: 24px; }
+    .faq-item h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .faq-item p { font-size: 14px; color: var(--muted); }
+
+    footer { padding: 24px 0; text-align: center; font-size: 12px; color: #555; }
+    footer a { color: #555; text-decoration: underline; }
+
+    @media (max-width: 480px) {
+      .signup-card { padding: 24px 20px; }
+      .form-row { flex-direction: column; }
+      .form-row button { width: 100%; }
+      .pack-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="source-tag" id="source-tag">Digital Products</div>
+
+    <h1>50 AI prompt packs.<br><span>Built to sell. No audience needed.</span></h1>
+
+    <p class="subtitle">
+      Each pack tested for conversion. Set your price. Deliver automatically. Every sale is 100% margin — no inventory, no returns, no overhead.
+    </p>
+
+    <div class="proof-row">
+      <span class="proof-pill">50 packs ready to sell</span>
+      <span class="proof-pill">ChatGPT + Claude</span>
+      <span class="proof-pill">$0 setup cost</span>
+      <span class="proof-pill">Instant digital delivery</span>
+    </div>
+
+    <!-- ── Signup card ────────────────────────────────── -->
+    <div class="signup-card">
+      <h2>Get early access</h2>
+      <p class="card-sub">Drop your email. We'll send you the full pack list + pricing guide.</p>
+
+      <div id="signup-form-wrap">
+        <div class="form-row">
+          <input type="email" id="email-input" placeholder="you@example.com" autocomplete="email" />
+          <button id="submit-btn" onclick="handleSignup()">Get Access</button>
+        </div>
+        <div class="form-msg" id="form-msg"></div>
+      </div>
+
+      <div class="success-state" id="success-state">
+        <div class="check">✓</div>
+        <p>You're on the list. <strong>Check your inbox</strong> — the pack list is on its way.</p>
+      </div>
+    </div>
+
+    <!-- ── Pack sample grid ──────────────────────────── -->
+    <div class="pack-grid">
+      <div class="pack-card"><div class="pack-label">Pack #1</div><div class="pack-name">Cold Email Outreach Suite</div></div>
+      <div class="pack-card"><div class="pack-label">Pack #2</div><div class="pack-name">YouTube Script Factory</div></div>
+      <div class="pack-card"><div class="pack-label">Pack #3</div><div class="pack-name">Landing Page Copywriter</div></div>
+      <div class="pack-card"><div class="pack-label">Pack #4</div><div class="pack-name">Reddit Post Generator</div></div>
+      <div class="pack-card"><div class="pack-label">Pack #5</div><div class="pack-name">SEO Content Engine</div></div>
+      <div class="pack-card"><div class="pack-label">Pack #6</div><div class="pack-name">SaaS Onboarding Emails</div></div>
+    </div>
+
+    <ul class="bullets">
+      <li>Made $800 this month reselling a single $49 prompt pack — no audience, no following</li>
+      <li>Demand is proven: AI tools are mainstream, prompts are the leverage</li>
+      <li>Gumroad or Lemon Squeezy handle delivery + payments — zero maintenance</li>
+      <li>Each pack is engineered for a specific use case, not generic filler</li>
+      <li>We tell you exactly what to charge and how to list it</li>
+    </ul>
+
+    <hr class="divider" />
+
+    <div class="faq-block">
+      <div class="faq-item">
+        <h3>Do I need an audience to sell these?</h3>
+        <p>No. Prompt packs sell on product quality alone. Proven demand via AI communities, Reddit, and organic SEO — no follower count required.</p>
+      </div>
+      <div class="faq-item">
+        <h3>What tools do buyers need?</h3>
+        <p>Just ChatGPT or Claude — both free tiers work. No special setup. That's why the conversion rate is high.</p>
+      </div>
+      <div class="faq-item">
+        <h3>How do I deliver them?</h3>
+        <p>Upload the PDF/ZIP to Gumroad, set a price, share the link. Gumroad emails the file automatically after purchase. You never touch it again.</p>
+      </div>
+      <div class="faq-item">
+        <h3>What's the catch?</h3>
+        <p>There isn't one. You get 50 finished packs. We take nothing from your sales. You own your Gumroad store 100%.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <p>— The 3vo team &nbsp;·&nbsp; <a href="mailto:hi@3vo.ai">hi@3vo.ai</a></p>
+  </footer>
+
+  <script>
+    (function () {
+      // ── UTM capture ───────────────────────────────────────────────────────
+      const params = new URLSearchParams(window.location.search);
+      const utm = {
+        utm_source:   params.get('utm_source')   || '',
+        utm_medium:   params.get('utm_medium')   || '',
+        utm_campaign: params.get('utm_campaign') || '',
+        utm_content:  params.get('utm_content')  || '',
+      };
+      // Persist to sessionStorage so it survives soft navigations
+      if (Object.values(utm).some(v => v)) {
+        try { sessionStorage.setItem('utm_3vo', JSON.stringify(utm)); } catch (_) {}
+      }
+
+      // Source tag
+      const tag = document.getElementById('source-tag');
+      if (utm.utm_source === 'reddit') tag.textContent = 'From Reddit';
+      else if (utm.utm_source === 'youtube') tag.textContent = 'From YouTube';
+
+      // ── Supabase write ────────────────────────────────────────────────────
+      async function writeWaitlist(email) {
+        const url  = window.SUPABASE_URL;
+        const key  = window.SUPABASE_ANON_KEY;
+        if (!url || url.startsWith('REPLACE')) throw new Error('Supabase not configured');
+
+        // Merge URL params with sessionStorage fallback
+        const stored = JSON.parse(sessionStorage.getItem('utm_3vo') || '{}');
+        const final_utm = {
+          utm_source:   utm.utm_source   || stored.utm_source   || '',
+          utm_medium:   utm.utm_medium   || stored.utm_medium   || '',
+          utm_campaign: utm.utm_campaign || stored.utm_campaign || '',
+        };
+
+        const res = await fetch(`${url}/rest/v1/email_waitlist`, {
+          method: 'POST',
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+          body: JSON.stringify({
+            email,
+            campaign_id:  final_utm.utm_campaign || window.CAMPAIGN_SLUG,
+            utm_source:   final_utm.utm_source,
+            utm_medium:   final_utm.utm_medium,
+            utm_campaign: final_utm.utm_campaign,
+            page:         window.CAMPAIGN_SLUG,
+            created_at:   new Date().toISOString(),
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          throw new Error(`Supabase ${res.status}: ${body.slice(0, 120)}`);
+        }
+      }
+
+      // ── Form handler ──────────────────────────────────────────────────────
+      window.handleSignup = async function () {
+        const emailEl = document.getElementById('email-input');
+        const btn     = document.getElementById('submit-btn');
+        const msgEl   = document.getElementById('form-msg');
+        const email   = emailEl.value.trim();
+
+        msgEl.className = 'form-msg';
+        msgEl.textContent = '';
+
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          msgEl.className = 'form-msg error';
+          msgEl.textContent = 'Please enter a valid email address.';
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Joining…';
+
+        try {
+          await writeWaitlist(email);
+          document.getElementById('signup-form-wrap').style.display = 'none';
+          document.getElementById('success-state').style.display = 'block';
+        } catch (err) {
+          console.error('Waitlist write failed:', err);
+          msgEl.className = 'form-msg error';
+          msgEl.textContent = 'Something went wrong. Please try again.';
+          btn.disabled = false;
+          btn.textContent = 'Get Access';
+        }
+      };
+
+      // Allow Enter key in email field
+      document.getElementById('email-input').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') window.handleSignup();
+      });
+    })();
+  </script>
+</body>
+</html>

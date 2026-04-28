@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automation Workflow Templates — Copy, Paste, Automate</title>
+  <meta name="description" content="Pre-built automation workflows for n8n, Make, and Zapier. Copy the template, connect your tools, and automate in 15 minutes." />
+  <meta property="og:title" content="Automation Workflow Templates — Copy, Paste, Automate" />
+  <meta property="og:description" content="Skip months of trial and error. Proven workflows engineered for passive income operators." />
+
+  <!--
+    ════════════════════════════════════════════════════════
+    SUPABASE CONFIG — fill in before deploying
+    Get these from your Supabase project → Settings → API
+    ════════════════════════════════════════════════════════
+  -->
+  <script>
+    window.SUPABASE_URL      = 'REPLACE_WITH_SUPABASE_URL';
+    window.SUPABASE_ANON_KEY = 'REPLACE_WITH_SUPABASE_ANON_KEY';
+    window.CAMPAIGN_SLUG     = 'automation-workflow-templates';
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --border: #222222;
+      --text: #e8e8e8;
+      --muted: #888;
+      --accent: #4ade80;
+      --accent-dim: rgba(74, 222, 128, 0.12);
+      --error: #f87171;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 20px;
+    }
+
+    .container { max-width: 600px; width: 100%; padding: 64px 0 80px; }
+
+    .source-tag {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(74, 222, 128, 0.25);
+      border-radius: 4px;
+      padding: 4px 10px;
+      margin-bottom: 32px;
+    }
+
+    h1 {
+      font-size: clamp(26px, 5vw, 38px);
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      margin-bottom: 20px;
+    }
+    h1 span { color: var(--accent); }
+
+    .subtitle {
+      font-size: 18px;
+      color: var(--muted);
+      margin-bottom: 40px;
+      line-height: 1.5;
+    }
+
+    .proof-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 40px; }
+    .proof-pill {
+      font-size: 13px;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 14px;
+    }
+
+    .signup-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 40px;
+    }
+    .signup-card h2 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+    .signup-card .card-sub { font-size: 14px; color: var(--muted); margin-bottom: 24px; }
+
+    .form-row { display: flex; gap: 10px; }
+    .form-row input[type="email"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 15px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .form-row input[type="email"]:focus { border-color: var(--accent); }
+    .form-row input[type="email"]::placeholder { color: var(--muted); }
+    .form-row button {
+      background: var(--accent);
+      color: #000;
+      font-size: 14px;
+      font-weight: 700;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 20px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+    }
+    .form-row button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .form-msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
+    .form-msg.error { color: var(--error); }
+    .form-msg.success { color: var(--accent); }
+
+    .success-state { display: none; text-align: center; padding: 20px 0; }
+    .success-state .check { font-size: 36px; margin-bottom: 12px; }
+    .success-state p { font-size: 15px; color: var(--muted); }
+    .success-state strong { color: var(--text); }
+
+    .workflow-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 40px;
+    }
+    .workflow-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .workflow-icon {
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+    .workflow-name { font-size: 14px; font-weight: 600; }
+    .workflow-desc { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .workflow-badge {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border-radius: 4px;
+      padding: 3px 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .bullets { list-style: none; display: flex; flex-direction: column; gap: 14px; }
+    .bullets li { display: flex; gap: 12px; font-size: 15px; }
+    .bullets li::before { content: "→"; color: var(--accent); flex-shrink: 0; margin-top: 1px; }
+
+    .divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+    .faq-block { display: flex; flex-direction: column; gap: 24px; }
+    .faq-item h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .faq-item p { font-size: 14px; color: var(--muted); }
+
+    footer { padding: 24px 0; text-align: center; font-size: 12px; color: #555; }
+    footer a { color: #555; text-decoration: underline; }
+
+    @media (max-width: 480px) {
+      .signup-card { padding: 24px 20px; }
+      .form-row { flex-direction: column; }
+      .form-row button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="source-tag" id="source-tag">Automation Tools</div>
+
+    <h1>Stop building workflows from scratch.<br><span>Copy ours. Launch in 15 minutes.</span></h1>
+
+    <p class="subtitle">
+      Battle-tested automation templates for n8n, Make, and Zapier. Built by operators who run passive income systems — not agencies selling retainers.
+    </p>
+
+    <div class="proof-row">
+      <span class="proof-pill">n8n · Make · Zapier</span>
+      <span class="proof-pill">Plug-and-play setup</span>
+      <span class="proof-pill">No code required</span>
+      <span class="proof-pill">One-time fee</span>
+    </div>
+
+    <!-- ── Signup card ──────────────────────────────────────────────────── -->
+    <div class="signup-card">
+      <h2>Get the template library</h2>
+      <p class="card-sub">Drop your email. Get the full workflow catalogue + setup guides.</p>
+
+      <div id="signup-form-wrap">
+        <div class="form-row">
+          <input type="email" id="email-input" placeholder="you@example.com" autocomplete="email" />
+          <button id="submit-btn" onclick="handleSignup()">Get Templates</button>
+        </div>
+        <div class="form-msg" id="form-msg"></div>
+      </div>
+
+      <div class="success-state" id="success-state">
+        <div class="check">✓</div>
+        <p>You're in. <strong>Check your inbox</strong> — the template library is on its way.</p>
+      </div>
+    </div>
+
+    <!-- ── Workflow samples ────────────────────────────────────────────── -->
+    <div class="workflow-grid">
+      <div class="workflow-item">
+        <div class="workflow-icon">📧</div>
+        <div>
+          <div class="workflow-name">Cold Email Drip Automator</div>
+          <div class="workflow-desc">Sequence contacts, track opens, follow up automatically</div>
+        </div>
+        <div class="workflow-badge">n8n</div>
+      </div>
+      <div class="workflow-item">
+        <div class="workflow-icon">🛒</div>
+        <div>
+          <div class="workflow-name">Gumroad → Airtable Sync</div>
+          <div class="workflow-desc">Log every digital product sale + customer data</div>
+        </div>
+        <div class="workflow-badge">Make</div>
+      </div>
+      <div class="workflow-item">
+        <div class="workflow-icon">📱</div>
+        <div>
+          <div class="workflow-name">Reddit Post Scheduler</div>
+          <div class="workflow-desc">Queue posts across subreddits, avoid rate limits</div>
+        </div>
+        <div class="workflow-badge">n8n</div>
+      </div>
+      <div class="workflow-item">
+        <div class="workflow-icon">📊</div>
+        <div>
+          <div class="workflow-name">Revenue Dashboard Builder</div>
+          <div class="workflow-desc">Pull from Stripe, Gumroad, Lemon Squeezy into one sheet</div>
+        </div>
+        <div class="workflow-badge">Zapier</div>
+      </div>
+    </div>
+
+    <ul class="bullets">
+      <li>Skip 3–6 months of trial-and-error — the workflows are already tested</li>
+      <li>Each template includes step-by-step connection guides and variable reference</li>
+      <li>Compatible with free tiers of n8n (self-hosted), Make, and Zapier</li>
+      <li>Templates are yours to modify, resell, and extend</li>
+    </ul>
+
+    <hr class="divider" />
+
+    <div class="faq-block">
+      <div class="faq-item">
+        <h3>Do I need coding skills?</h3>
+        <p>No. Import the template JSON, connect your credentials, and it runs. Most people are live in under 20 minutes.</p>
+      </div>
+      <div class="faq-item">
+        <h3>Which tools are supported?</h3>
+        <p>n8n (self-hosted and cloud), Make.com, and Zapier. We specify which platform each workflow runs on.</p>
+      </div>
+      <div class="faq-item">
+        <h3>Can I resell the templates?</h3>
+        <p>Yes. Each pack comes with a resale license. Package them with your own service or bundle them as a digital product.</p>
+      </div>
+      <div class="faq-item">
+        <h3>What if a template breaks?</h3>
+        <p>We update for major API changes and version bumps. You get lifetime updates on anything you buy.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <p>— The 3vo team &nbsp;·&nbsp; <a href="mailto:hi@3vo.ai">hi@3vo.ai</a></p>
+  </footer>
+
+  <script>
+    (function () {
+      // ── UTM capture ───────────────────────────────────────────────────────
+      const params = new URLSearchParams(window.location.search);
+      const utm = {
+        utm_source:   params.get('utm_source')   || '',
+        utm_medium:   params.get('utm_medium')   || '',
+        utm_campaign: params.get('utm_campaign') || '',
+        utm_content:  params.get('utm_content')  || '',
+      };
+      if (Object.values(utm).some(v => v)) {
+        try { sessionStorage.setItem('utm_3vo', JSON.stringify(utm)); } catch (_) {}
+      }
+
+      const tag = document.getElementById('source-tag');
+      if (utm.utm_source === 'reddit') tag.textContent = 'From Reddit';
+      else if (utm.utm_source === 'youtube') tag.textContent = 'From YouTube';
+
+      // ── Supabase write ────────────────────────────────────────────────────
+      async function writeWaitlist(email) {
+        const url = window.SUPABASE_URL;
+        const key = window.SUPABASE_ANON_KEY;
+        if (!url || url.startsWith('REPLACE')) throw new Error('Supabase not configured');
+
+        const stored = JSON.parse(sessionStorage.getItem('utm_3vo') || '{}');
+        const final_utm = {
+          utm_source:   utm.utm_source   || stored.utm_source   || '',
+          utm_medium:   utm.utm_medium   || stored.utm_medium   || '',
+          utm_campaign: utm.utm_campaign || stored.utm_campaign || '',
+        };
+
+        const res = await fetch(`${url}/rest/v1/email_waitlist`, {
+          method: 'POST',
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+          body: JSON.stringify({
+            email,
+            campaign_id:  final_utm.utm_campaign || window.CAMPAIGN_SLUG,
+            utm_source:   final_utm.utm_source,
+            utm_medium:   final_utm.utm_medium,
+            utm_campaign: final_utm.utm_campaign,
+            page:         window.CAMPAIGN_SLUG,
+            created_at:   new Date().toISOString(),
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          throw new Error(`Supabase ${res.status}: ${body.slice(0, 120)}`);
+        }
+      }
+
+      // ── Form handler ──────────────────────────────────────────────────────
+      window.handleSignup = async function () {
+        const emailEl = document.getElementById('email-input');
+        const btn     = document.getElementById('submit-btn');
+        const msgEl   = document.getElementById('form-msg');
+        const email   = emailEl.value.trim();
+
+        msgEl.className = 'form-msg';
+        msgEl.textContent = '';
+
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          msgEl.className = 'form-msg error';
+          msgEl.textContent = 'Please enter a valid email address.';
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Joining…';
+
+        try {
+          await writeWaitlist(email);
+          document.getElementById('signup-form-wrap').style.display = 'none';
+          document.getElementById('success-state').style.display = 'block';
+        } catch (err) {
+          console.error('Waitlist write failed:', err);
+          msgEl.className = 'form-msg error';
+          msgEl.textContent = 'Something went wrong. Please try again.';
+          btn.disabled = false;
+          btn.textContent = 'Get Templates';
+        }
+      };
+
+      document.getElementById('email-input').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') window.handleSignup();
+      });
+    })();
+  </script>
+</body>
+</html>
