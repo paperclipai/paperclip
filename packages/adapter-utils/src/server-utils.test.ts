@@ -2687,6 +2687,8 @@ describe("buildPaperclipEnv", () => {
       const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
       expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
     });
+  });
+});
 
 describe("fetchWithRetry", () => {
   let originalFetch: typeof fetch;
@@ -2784,8 +2786,30 @@ describe("fetchWithRetry", () => {
         attempt: 1,
         maxRetries: 3,
         status: 429,
+        delayMs: 0,
         retryAfterHeader: "0",
       }),
+    );
+  });
+
+  it("treats Retry-After: 0 as 'retry immediately' (delayMs: 0)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(429, { "retry-after": "0" }))
+      .mockResolvedValueOnce(makeResponse(200));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const onRetry = vi.fn();
+
+    const res = await fetchWithRetry(
+      "https://example.test",
+      {},
+      { baseDelayMs: 60_000, maxDelayMs: 60_000, onRetry },
+    );
+
+    expect(res.status).toBe(200);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ delayMs: 0, retryAfterHeader: "0" }),
     );
   });
 
