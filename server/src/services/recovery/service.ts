@@ -291,7 +291,7 @@ function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; cancelRun: (runId: string, reason: string) => Promise<unknown> }) {
+export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; cancelRun?: (runId: string, reason: string) => Promise<unknown> }) {
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
@@ -1084,9 +1084,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; c
         continue;
       }
       if (!runningProcesses.has(run.id) && run.processPid && !isProcessAlive(run.processPid)) {
-        logger.info({ runId: run.id, pid: run.processPid }, "Dead pid detected by stale-run scanner — reaping run");
-        await deps.cancelRun(run.id, "Dead pid detected by stale-run scanner");
-        result.reaped += 1;
+        if (deps.cancelRun) {
+          logger.info({ runId: run.id, pid: run.processPid }, "Dead pid detected by stale-run scanner — reaping run");
+          await deps.cancelRun(run.id, "Dead pid detected by stale-run scanner");
+          result.reaped += 1;
+        } else {
+          logger.warn({ runId: run.id, pid: run.processPid }, "Dead pid detected but cancelRun not available — skipping reap");
+        }
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
