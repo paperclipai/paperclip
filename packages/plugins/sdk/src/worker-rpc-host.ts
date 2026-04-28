@@ -580,6 +580,22 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async getWorkspaceForIssue(issueId: string, companyId: string) {
           return callHost("projects.getWorkspaceForIssue", { issueId, companyId });
         },
+
+        // Lucitra extension
+        async create(input) {
+          return callHost("projects.create", {
+            companyId: input.companyId,
+            name: input.name,
+            description: input.description,
+            status: input.status,
+            targetDate: input.targetDate,
+            color: input.color,
+          });
+        },
+
+        async update(projectId: string, patch: Record<string, unknown>, companyId: string) {
+          return callHost("projects.update", { projectId, patch, companyId });
+        },
       },
 
       companies: {
@@ -639,6 +655,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             actorAgentId: input.actor?.actorAgentId,
             actorUserId: input.actor?.actorUserId,
             actorRunId: input.actor?.actorRunId,
+            // Lucitra extension: pass through labelIds if provided
+            ...((input as any).labelIds ? { labelIds: (input as any).labelIds } : {}),
           });
         },
 
@@ -834,6 +852,26 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async getOrchestration(input) {
             return callHost("issues.summaries.getOrchestration", input);
           },
+        },
+      },
+
+      // Lucitra extension: labels API
+      labels: {
+        async list(companyId: string) {
+          return callHost("labels.list" as any, { companyId });
+        },
+        async create(companyId: string, name: string, color: string) {
+          return callHost("labels.create" as any, { companyId, name, color });
+        },
+      },
+
+      // Lucitra extension: plugin management API
+      plugins: {
+        async list(options?: { status?: string }) {
+          return callHost("plugins.list" as any, options ?? {});
+        },
+        async upgrade(pluginId: string, version?: string) {
+          return callHost("plugins.upgrade" as any, { pluginId, version });
         },
       },
 

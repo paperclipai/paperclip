@@ -288,6 +288,11 @@ function rewriteBareSpecifiers(source: string): string {
     "'@paperclipai/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
     '"@paperclipai/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
     "'@paperclipai/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
+    // Lucitra fork SDK — same shim, different package name
+    '"@lucitra/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@lucitra/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
+    '"@lucitra/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@lucitra/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
     '"react/jsx-runtime"': `"${getShimBlobUrl("react/jsx-runtime")}"`,
     "'react/jsx-runtime'": `'${getShimBlobUrl("react/jsx-runtime")}'`,
     '"react-dom/client"': `"${getShimBlobUrl("react-dom/client")}"`,

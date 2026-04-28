@@ -214,6 +214,7 @@ export type {
   AgentSessionEvent,
   AgentSessionSendResult,
   PluginGoalsClient,
+  PluginPluginsClient,
   PluginDataClient,
   PluginActionsClient,
   PluginStreamsClient,

@@ -769,6 +769,7 @@ export interface WorkerToHostMethods {
       actorAgentId?: string | null;
       actorUserId?: string | null;
       actorRunId?: string | null;
+      labelIds?: string[]; // Lucitra extension
     },
     result: Issue,
   ];
@@ -889,6 +890,58 @@ export interface WorkerToHostMethods {
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,
+  ];
+
+  // Projects write (Lucitra extension)
+  "projects.create": [
+    params: {
+      companyId: string;
+      name: string;
+      description?: string;
+      status?: string;
+      targetDate?: string;
+      color?: string;
+    },
+    result: Project,
+  ];
+  "projects.update": [
+    params: {
+      projectId: string;
+      companyId: string;
+      patch: Record<string, unknown>;
+    },
+    result: Project,
+  ];
+
+  // Labels (Lucitra extension)
+  "labels.list": [
+    params: { companyId: string },
+    result: Array<{ id: string; name: string; color: string; companyId: string }>,
+  ];
+  "labels.create": [
+    params: { companyId: string; name: string; color: string },
+    result: { id: string; name: string; color: string; companyId: string } | null,
+  ];
+
+  // Plugins (Lucitra extension)
+  "plugins.list": [
+    params: { status?: string },
+    result: Array<{
+      id: string;
+      pluginKey: string;
+      packageName: string;
+      version: string;
+      status: string;
+    }>,
+  ];
+  "plugins.upgrade": [
+    params: { pluginId: string; version?: string },
+    result: {
+      oldVersion: string;
+      newVersion: string;
+      status: string;
+      addedCapabilities: string[];
+    },
   ];
 
   // Issue Documents

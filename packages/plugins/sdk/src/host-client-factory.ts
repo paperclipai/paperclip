@@ -165,6 +165,8 @@ export interface HostServices {
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
+    create(params: WorkerToHostMethods["projects.create"][0]): Promise<WorkerToHostMethods["projects.create"][1]>;
+    update(params: WorkerToHostMethods["projects.update"][0]): Promise<WorkerToHostMethods["projects.update"][1]>;
   };
 
   /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
@@ -185,6 +187,18 @@ export interface HostServices {
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
+  };
+
+  /** Lucitra extension: labels API. */
+  labels: {
+    list(params: WorkerToHostMethods["labels.list"][0]): Promise<WorkerToHostMethods["labels.list"][1]>;
+    create(params: WorkerToHostMethods["labels.create"][0]): Promise<WorkerToHostMethods["labels.create"][1]>;
+  };
+
+  /** Lucitra extension: plugin management API. */
+  plugins: {
+    list(params: WorkerToHostMethods["plugins.list"][0]): Promise<WorkerToHostMethods["plugins.list"][1]>;
+    upgrade(params: WorkerToHostMethods["plugins.upgrade"][0]): Promise<WorkerToHostMethods["plugins.upgrade"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -344,6 +358,18 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+
+  // Projects write (Lucitra extension)
+  "projects.create": "projects.create",
+  "projects.update": "projects.update",
+
+  // Labels (Lucitra extension)
+  "labels.list": "labels.read",
+  "labels.create": "labels.create",
+
+  // Plugins (Lucitra extension)
+  "plugins.list": "plugins.read",
+  "plugins.upgrade": "plugins.upgrade",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -579,6 +605,30 @@ export function createHostClientHandlers(
     }),
     "issues.createInteraction": gated("issues.createInteraction", async (params) => {
       return services.issues.createInteraction(params);
+    }),
+
+    // Projects write (Lucitra extension)
+    "projects.create": gated("projects.create", async (params) => {
+      return services.projects.create(params);
+    }),
+    "projects.update": gated("projects.update", async (params) => {
+      return (services.projects as any).update(params);
+    }),
+
+    // Labels (Lucitra extension)
+    "labels.list": gated("labels.list", async (params) => {
+      return services.labels.list(params);
+    }),
+    "labels.create": gated("labels.create", async (params) => {
+      return services.labels.create(params);
+    }),
+
+    // Plugins (Lucitra extension)
+    "plugins.list": gated("plugins.list", async (params) => {
+      return services.plugins.list(params);
+    }),
+    "plugins.upgrade": gated("plugins.upgrade", async (params) => {
+      return services.plugins.upgrade(params);
     }),
 
     // Issue Documents

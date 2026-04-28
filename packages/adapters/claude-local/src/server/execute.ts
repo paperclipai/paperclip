@@ -43,6 +43,7 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudeQuotaExhausted,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
@@ -742,10 +743,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
-      errorMessage,
       errorCode: resolvedErrorCode,
       errorFamily: transientUpstream ? "transient_upstream" : null,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      errorMessage:
+        (proc.exitCode ?? 0) === 0
+          ? null
+          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
+      errorCode: loginMeta.requiresLogin
+        ? resolvedErrorCode 
+        : isClaudeQuotaExhausted(parsed)
+          ? "provider_quota_exhausted"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

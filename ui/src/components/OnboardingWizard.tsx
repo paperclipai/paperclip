@@ -505,12 +505,8 @@ export function OnboardingWizard() {
         setCreatedCompanyGoalId(null);
       }
 
-      // Show Linear connect prompt only if the server has Linear OAuth configured
-      if (linearAvailable) {
-        setShowLinearConnect(true);
-      } else {
-        setStep(2);
-      }
+      // Linear integration is now handled by the plugin settings page
+      setStep(2);
       setLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");

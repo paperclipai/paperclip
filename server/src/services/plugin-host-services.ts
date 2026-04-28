@@ -9,6 +9,8 @@ import {
   pluginLogs,
 } from "@paperclipai/db";
 import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
+import { pluginLogs, agentTaskSessions as agentTaskSessionsTable, labels as labelsTable } from "@paperclipai/db";
+import { eq, and, like, desc } from "drizzle-orm";
 import type {
   HostServices,
   Company,
@@ -44,6 +46,7 @@ import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -460,6 +463,7 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
+  lifecycleManager?: PluginLifecycleManager,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
@@ -989,6 +993,25 @@ export function buildHostServices(
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
+      },
+
+      // Lucitra extension: project create/update
+      async create(params: { companyId: string; name: string; description?: string; status?: string; targetDate?: string; color?: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return (await projects.create(companyId, {
+          name: params.name,
+          description: params.description,
+          status: params.status as any ?? "backlog",
+          targetDate: params.targetDate,
+          color: params.color,
+        })) as Project;
+      },
+      async update(params: { projectId: string; companyId: string; patch: Record<string, unknown> }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Project", await projects.getById(params.projectId), companyId);
+        return (await projects.update(params.projectId, params.patch as any)) as Project;
       },
 
       async getWorkspaceForIssue(params) {
@@ -1533,6 +1556,69 @@ export function buildHostServices(
           },
         });
         return interaction as any;
+      },
+    },
+
+    // Lucitra extension: labels API for plugin use (not in upstream SDK)
+    labels: {
+      async list(params: { companyId: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await db.select().from(labelsTable)
+          .where(eq(labelsTable.companyId, companyId))
+          .orderBy(labelsTable.name);
+        return rows;
+      },
+      async create(params: { companyId: string; name: string; color: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const [created] = await db.insert(labelsTable)
+          .values({ companyId, name: params.name, color: params.color })
+          .onConflictDoNothing()
+          .returning();
+        if (created) return created;
+        // Already exists — fetch it
+        const [existing] = await db.select().from(labelsTable)
+          .where(and(eq(labelsTable.companyId, companyId), eq(labelsTable.name, params.name)))
+          .limit(1);
+        return existing ?? null;
+      },
+    },
+
+    // Lucitra extension: plugin management API
+    plugins: {
+      async list(params: { status?: string }) {
+        const rows = params.status
+          ? await registry.listByStatus(params.status as any)
+          : await registry.listInstalled();
+        return rows.map((r: any) => ({
+          id: r.id,
+          pluginKey: r.pluginKey,
+          packageName: r.packageName,
+          version: r.version,
+          status: r.status,
+        }));
+      },
+      async upgrade(params: { pluginId: string; version?: string }) {
+        if (!lifecycleManager) {
+          throw new Error("Plugin upgrade is not available — lifecycle manager not configured");
+        }
+        const before = await registry.getById(params.pluginId);
+        if (!before) throw new Error(`Plugin not found: ${params.pluginId}`);
+        const oldVersion = before.version;
+        const result = await lifecycleManager.upgrade(params.pluginId, params.version);
+        // Compute added capabilities by comparing old vs new manifest
+        const oldCaps = before.manifestJson?.capabilities ?? [];
+        const newCaps = result.manifestJson?.capabilities ?? [];
+        const addedCapabilities = (newCaps as string[]).filter(
+          (cap: string) => !(oldCaps as string[]).includes(cap),
+        );
+        return {
+          oldVersion,
+          newVersion: result.version,
+          status: result.status,
+          addedCapabilities,
+        };
       },
     },
 

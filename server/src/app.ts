@@ -38,7 +38,6 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
-import { linearAuthRoutes } from "./routes/linear-auth.js";
 import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -187,6 +186,7 @@ export async function createApp(
     });
   });
   // Integrations discovery — tells the UI which optional features are available
+  // Linear integration is now fully handled by the paperclip-plugin-linear plugin.
   const appConfig = loadConfig();
   app.get("/api/integrations", (_req, res) => {
     res.json({
@@ -194,15 +194,26 @@ export async function createApp(
     });
   });
 
-  // Linear OAuth routes — must be mounted BEFORE Better-Auth's catch-all
-  if (appConfig.linearOAuthClientId) {
-    app.use("/api/auth/linear", linearAuthRoutes(db, {
-      clientId: appConfig.linearOAuthClientId,
-      clientSecret: appConfig.linearOAuthClientSecret,
-      redirectUri: appConfig.linearOAuthRedirectUri,
-      secretsProvider: appConfig.secretsProvider,
-    }));
-  }
+  // Minimal OAuth callback page — captures the code from Linear and sends it
+  // back to the opener window via postMessage. The plugin settings UI listens
+  // for this message and exchanges the code for a token via the plugin action.
+  app.get("/api/auth/linear/callback", (req, res) => {
+    const code = req.query.code as string | undefined;
+    const state = req.query.state as string | undefined;
+    const error = req.query.error as string | undefined;
+    res.status(200).set("Content-Type", "text/html").send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Linear OAuth</title>
+<style>body{background:#0a0a0a;color:#a1a1aa;font-family:ui-monospace,monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{text-align:center;padding:2rem}.icon{font-size:48px;margin-bottom:1rem}h1{font-size:14px;font-weight:500;margin:0 0 .5rem}p{font-size:12px;color:#52525b;margin:0}</style></head>
+<body><div class="card">
+<div class="icon">${error ? "&#10007;" : "&#10003;"}</div>
+<h1>${error ? "OAuth Error: " + error : "Connecting to Linear..."}</h1>
+<p>${error ? "Please try again." : "This window will close automatically."}</p>
+</div>
+<script>
+if(window.opener){window.opener.postMessage({type:"linear-oauth-callback",code:${JSON.stringify(code ?? null)},state:${JSON.stringify(state ?? null)},error:${JSON.stringify(error ?? null)}},"*")}
+${error ? "" : "setTimeout(function(){window.close()},2000)"}
+</script></body></html>`);
+  });
 
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
@@ -314,7 +325,7 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
+        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, lifecycle, {
           pluginWorkerManager: workerManager,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());

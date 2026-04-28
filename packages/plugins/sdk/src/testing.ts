@@ -647,6 +647,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const workspaces = projectWorkspaces.get(projectId) ?? [];
         return workspaces.find((workspace) => workspace.isPrimary) ?? null;
       },
+      // Lucitra extension
+      async create(input) {
+        requireCapability(manifest, capabilitySet, "projects.create" as any);
+        return { id: `test-${Date.now()}`, ...input } as any;
+      },
+      async update(_projectId, _patch, _companyId) {
+        requireCapability(manifest, capabilitySet, "projects.update" as any);
+        return projects.get(_projectId) as any;
+      },
     },
     companies: {
       async list(input) {
@@ -1011,6 +1020,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             invocationBlocks: [],
           };
         },
+      },
+    },
+    // Lucitra extension: labels
+    labels: {
+      async list(_companyId: string) { return []; },
+      async create(_companyId: string, _name: string, _color: string) { return null; },
+    },
+    // Lucitra extension: plugin management
+    plugins: {
+      async list(_options?: { status?: string }) { return []; },
+      async upgrade(_pluginId: string, _version?: string) {
+        return { oldVersion: "0.0.0", newVersion: "0.0.0", status: "ready", addedCapabilities: [] };
       },
     },
     agents: {

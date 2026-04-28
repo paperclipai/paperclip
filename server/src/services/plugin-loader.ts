@@ -79,6 +79,14 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
+/**
+ * Path to the monorepo's pnpm virtual store node_modules, which contains
+ * workspace-linked packages like @paperclipai/plugin-sdk. Used as NODE_PATH
+ * for plugin workers so they resolve the local SDK build (with fork extensions)
+ * instead of the npm-published version that may be out of date.
+ */
+const MONOREPO_NODE_MODULES = path.resolve(__dirname, "../../../node_modules/.pnpm/node_modules");
+
 // ---------------------------------------------------------------------------
 // Discovery result types
 // ---------------------------------------------------------------------------
@@ -837,9 +845,11 @@ export function pluginLoader(
         // Use execFile (not exec) to avoid shell injection from package name/version.
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
+        // --cache uses a writable temp dir to avoid EPERM on root-owned ~/.npm cache.
+        const npmCacheDir = path.join(os.tmpdir(), "paperclip-npm-cache");
         await execFileAsync(
           "npm",
-          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
+          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts", "--cache", npmCacheDir],
           { timeout: 120_000 }, // 2 minute timeout for npm install
         );
       } catch (err) {
@@ -1403,9 +1413,10 @@ export function pluginLoader(
       const packageJsonPath = path.join(localPluginDir, "package.json");
       if (existsSync(packageJsonPath)) {
         try {
+          const npmCacheDir = path.join(os.tmpdir(), "paperclip-npm-cache");
           await execFileAsync(
             "npm",
-            ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
+            ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts", "--cache", npmCacheDir],
             { timeout: 120_000 },
           );
         } catch (err) {
@@ -1753,6 +1764,20 @@ export function pluginLoader(
       // the tsx loader so first-party example plugins work in development.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      }
+
+      // Prepend the monorepo's pnpm node_modules to NODE_PATH so plugin
+      // workers resolve @paperclipai/plugin-sdk from the local workspace
+      // build (which includes fork extensions like projects.create/update)
+      // rather than the npm-published version.
+      if (existsSync(MONOREPO_NODE_MODULES)) {
+        const existing = process.env.NODE_PATH ?? "";
+        workerOptions.env = {
+          ...workerOptions.env,
+          NODE_PATH: existing
+            ? `${MONOREPO_NODE_MODULES}:${existing}`
+            : MONOREPO_NODE_MODULES,
+        };
       }
 
       await workerManager.startWorker(pluginId, workerOptions);

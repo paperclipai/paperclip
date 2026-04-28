@@ -1770,6 +1770,28 @@ export function issueService(db: Db) {
 
       return Boolean(updated);
     });
+  async function clearStaleExecutionLock(issueId: string, expectedExecutionRunId: string) {
+    const stale = await isTerminalOrMissingHeartbeatRun(expectedExecutionRunId);
+    if (!stale) return false;
+
+    const cleared = await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, expectedExecutionRunId),
+        ),
+      )
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+
+    return cleared != null;
   }
 
   return {
@@ -2426,11 +2448,7 @@ export function issueService(db: Db) {
           .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
         const issueNumber = company.issueCounter;
-        // Use P-prefix for Paperclip-native issues to avoid collision with Linear numbering
-        const isLinearOrigin = issueData.originKind === "linear";
-        const identifier = isLinearOrigin
-          ? `${company.issuePrefix}-${issueNumber}`
-          : `${company.issuePrefix}-P${issueNumber}`;
+        const identifier = `${company.issuePrefix}-${issueNumber}`;
 
         const values = {
           ...issueData,
@@ -2839,6 +2857,42 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      // If an executionRunId is blocking checkout but its run is dead, clear it and retry
+      if (
+        current.executionRunId &&
+        current.executionRunId !== checkoutRunId &&
+        (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
+      ) {
+        const cleared = await clearStaleExecutionLock(id, current.executionRunId);
+        if (cleared) {
+          const now = new Date();
+          const retried = await db
+            .update(issues)
+            .set({
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              status: "in_progress",
+              startedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                inArray(issues.status, expectedStatuses),
+                isNull(issues.executionRunId),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (retried) {
+            const [enriched] = await withIssueLabels(db, [retried]);
+            return enriched;
+          }
+        }
+      }
+
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,
@@ -2912,6 +2966,45 @@ export function issueService(db: Db) {
             ...adopted,
             adoptedFromRunId: current.checkoutRunId,
           };
+        }
+      }
+
+      // Clear stale execution lock from a dead run before giving up
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.executionRunId &&
+        current.executionRunId !== actorRunId
+      ) {
+        const cleared = await clearStaleExecutionLock(id, current.executionRunId);
+        if (cleared) {
+          const refreshed = await db
+            .update(issues)
+            .set({
+              checkoutRunId: actorRunId,
+              executionRunId: actorRunId,
+              executionLockedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.status, "in_progress"),
+                eq(issues.assigneeAgentId, actorAgentId),
+                isNull(issues.executionRunId),
+              ),
+            )
+            .returning({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+            })
+            .then((rows) => rows[0] ?? null);
+          if (refreshed) {
+            return { ...refreshed, adoptedFromRunId: current.executionRunId };
+          }
         }
       }
 
@@ -3019,6 +3112,36 @@ export function issueService(db: Db) {
           },
         };
       }),
+    forceRelease: async (id: string) => {
+      const existing = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!existing) return null;
+
+      const patch: Partial<typeof issues.$inferInsert> = {
+        checkoutRunId: null,
+        executionRunId: null,
+        executionLockedAt: null,
+        executionAgentNameKey: null,
+        updatedAt: new Date(),
+      };
+      if (existing.status === "in_progress") {
+        patch.status = "todo";
+      }
+
+      const updated = await db
+        .update(issues)
+        .set(patch)
+        .where(eq(issues.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
 
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),

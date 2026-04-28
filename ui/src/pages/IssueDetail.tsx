@@ -2886,18 +2886,6 @@ export function IssueDetail() {
             </Link>
           )}
 
-          {issue.originKind === "linear" && issue.identifier && (
-            <a
-              href={`https://linear.app/lucitra/issue/${issue.identifier}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 px-2 py-0.5 text-[10px] font-medium text-indigo-600 dark:text-indigo-400 shrink-0 hover:bg-indigo-500/20 transition-colors"
-            >
-              <ExternalLink className="h-3 w-3" />
-              Linear
-            </a>
-          )}
-
           {issue.projectId ? (
             <Link
               to={`/projects/${issue.projectId}`}

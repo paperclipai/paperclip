@@ -595,6 +595,14 @@ export const PLUGIN_CAPABILITIES = [
   "telemetry.track",
   "database.namespace.migrate",
   "database.namespace.write",
+  // Labels & Projects write (Lucitra extension)
+  "labels.read",
+  "labels.create",
+  "projects.create",
+  "projects.update",
+  // Plugin management (Lucitra extension)
+  "plugins.read",
+  "plugins.upgrade",
   // Plugin State
   "plugin.state.read",
   "plugin.state.write",

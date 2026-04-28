@@ -610,13 +610,15 @@ export function createPluginWorkerHandle(
     // receive a minimal, controlled environment to prevent leaking host
     // secrets (like DATABASE_URL, internal API keys, etc.).
     const workerEnv: Record<string, string> = {
-      ...options.env,
       HOME: process.env.HOME ?? "",
       PATH: process.env.PATH ?? "",
       NODE_PATH: process.env.NODE_PATH ?? "",
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
+      // options.env is spread last so per-plugin overrides (like NODE_PATH
+      // pointing to a local SDK build) take precedence over defaults.
+      ...options.env,
     };
 
     const child = fork(options.entrypointPath, [], {
