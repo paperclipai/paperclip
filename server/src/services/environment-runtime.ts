@@ -223,24 +223,6 @@ function summarizeProbeAttempt(attempt: PaperclipApiProbeAttempt): string {
   return parts.join(" ");
 }
 
-function logProbeFailures(input: {
-  config: { username: string; host: string };
-  environmentId: string;
-  attempts: PaperclipApiProbeAttempt[];
-}): void {
-  const failed = input.attempts.filter((attempt) => !attempt.ok);
-  if (failed.length === 0) return;
-  for (const attempt of failed) {
-    // warn — failures are expected during a candidate sweep on a degraded
-    // upstream; we only escalate to an error when ALL candidates fail (caller
-    // throws in that case). Each line carries enough detail to root-cause
-    // without hunting through the SSH host.
-    console.warn(
-      `[ssh-probe] env=${input.environmentId} target=${input.config.username}@${input.config.host} ${summarizeProbeAttempt(attempt)}`,
-    );
-  }
-}
-
 function dedupeProbedCandidates(attempts: PaperclipApiProbeAttempt[]): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
@@ -319,11 +301,9 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         candidates: candidateUrls,
         preferredCandidate,
       });
-      logProbeFailures({
-        config: parsed.config,
-        environmentId: input.environment.id,
-        attempts: probeResult.attempts,
-      });
+      // Per-attempt failures are logged at info inside the probe (BLO-1490
+      // spec); the all-fail thrown error below carries the full attempts
+      // trail for the orchestrator's structured error log.
       const paperclipApiUrl = probeResult.url;
       if (!paperclipApiUrl) {
         throw createUnreachablePaperclipApiError({
