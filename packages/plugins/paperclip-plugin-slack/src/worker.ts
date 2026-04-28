@@ -20,6 +20,8 @@ import {
   LIST_WATCH_TEMPLATES_DECLARATION,
 } from "./tool-declarations.js";
 import {
+  authTest,
+  conversationsInfo,
   postMessage,
   respondToAction,
   respondEphemeral,
@@ -447,6 +449,83 @@ async function handleApproveCommand(
       text: `:x: Failed to approve \`${approvalId}\`. Check the ID and try again.`,
     });
   }
+}
+
+async function validateSlackConfig(
+  rawConfig: Record<string, unknown>,
+): Promise<{ ok: boolean; warnings?: string[]; errors?: string[] }> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const config = rawConfig as unknown as SlackPluginConfig;
+
+  if (!pluginCtx) {
+    errors.push("Plugin worker not initialized");
+    return { ok: false, errors };
+  }
+
+  if (!config.slackTokenRef) {
+    errors.push("Slack Bot Token (secret reference) is required");
+    return { ok: false, errors };
+  }
+
+  let token: string;
+  try {
+    token = await pluginCtx.secrets.resolve(config.slackTokenRef);
+  } catch (err) {
+    errors.push(
+      `Could not resolve Slack Bot Token secret: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { ok: false, errors };
+  }
+
+  const auth = await authTest(pluginCtx, token);
+  if (!auth.ok) {
+    errors.push(`Slack auth.test failed: ${auth.error ?? "unknown error"}`);
+    return { ok: false, errors };
+  }
+
+  warnings.push(`Connected as ${auth.user ?? "?"} on team ${auth.team ?? "?"}`);
+
+  if (!config.slackSigningSecretRef) {
+    warnings.push("No signing secret configured — incoming webhook signature verification is disabled");
+  } else {
+    try {
+      await pluginCtx.secrets.resolve(config.slackSigningSecretRef);
+    } catch (err) {
+      errors.push(
+        `Could not resolve Slack Signing Secret: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  if (!config.slackUserTokenRef) {
+    warnings.push("No user token — slack_search_messages tool is disabled");
+  }
+
+  const channelChecks: Array<{ key: keyof SlackPluginConfig; label: string }> = [
+    { key: "defaultChannelId", label: "Default channel" },
+    { key: "approvalsChannelId", label: "Approvals channel" },
+    { key: "errorsChannelId", label: "Errors channel" },
+    { key: "pipelineChannelId", label: "Pipeline channel" },
+    { key: "escalationChatId", label: "Escalation channel" },
+  ];
+
+  if (!config.defaultChannelId) {
+    warnings.push("No default channel — notifications will not post anywhere by default");
+  }
+
+  for (const { key, label } of channelChecks) {
+    const channelId = config[key];
+    if (typeof channelId !== "string" || channelId.length === 0) continue;
+    const info = await conversationsInfo(pluginCtx, token, channelId);
+    if (!info.ok) {
+      errors.push(`${label} (${channelId}): ${info.error ?? "not accessible"}`);
+    } else if (info.channel?.is_archived) {
+      warnings.push(`${label} (${channelId}) is archived`);
+    }
+  }
+
+  return { ok: errors.length === 0, warnings, errors };
 }
 
 // --- Plugin definition ---
@@ -1586,18 +1665,7 @@ const plugin = definePlugin({
       }
     }
   },
-  async onValidateConfig(config) {
-    if (!config.slackTokenRef || typeof config.slackTokenRef !== "string") {
-      return { ok: false, errors: ["slackTokenRef is required"] };
-    }
-    if (
-      !config.defaultChannelId ||
-      typeof config.defaultChannelId !== "string"
-    ) {
-      return { ok: false, errors: ["defaultChannelId is required"] };
-    }
-    return { ok: true };
-  },
+  onValidateConfig: validateSlackConfig,
   async onHealth() {
     return { status: "ok" };
   },

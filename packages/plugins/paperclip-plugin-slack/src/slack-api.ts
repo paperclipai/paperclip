@@ -339,6 +339,62 @@ export async function usersList(
   return body;
 }
 
+export async function authTest(
+  ctx: SlackCtx,
+  token: string,
+): Promise<{
+  ok: boolean;
+  error?: string;
+  team?: string;
+  team_id?: string;
+  user?: string;
+  user_id?: string;
+  bot_id?: string;
+}> {
+  const response = await fetchWithRetry(ctx, `${SLACK_API_BASE}/auth.test`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body = (await response.json()) as {
+    ok: boolean;
+    error?: string;
+    team?: string;
+    team_id?: string;
+    user?: string;
+    user_id?: string;
+    bot_id?: string;
+  };
+  if (!body.ok) {
+    ctx.logger.warn("Slack API error", { error: body.error, endpoint: "auth.test" });
+  }
+  return body;
+}
+
+export async function conversationsInfo(
+  ctx: SlackCtx,
+  token: string,
+  channel: string,
+): Promise<{ ok: boolean; error?: string; channel?: { id: string; name?: string; is_archived?: boolean } }> {
+  const params = new URLSearchParams({ channel });
+  const response = await fetchWithRetry(
+    ctx,
+    `${SLACK_API_BASE}/conversations.info?${params.toString()}`,
+    {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  const body = (await response.json()) as {
+    ok: boolean;
+    error?: string;
+    channel?: { id: string; name?: string; is_archived?: boolean };
+  };
+  if (!body.ok) {
+    ctx.logger.warn("Slack API error", { error: body.error, channel, endpoint: "conversations.info" });
+  }
+  return body;
+}
+
 export async function usersInfo(
   ctx: SlackCtx,
   token: string,
