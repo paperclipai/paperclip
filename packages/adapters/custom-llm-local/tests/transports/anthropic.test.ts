@@ -23,10 +23,14 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-async function call(signal = new AbortController().signal, overrides: Partial<CustomLlmLocalConfig> = {}) {
+async function call(
+  signal = new AbortController().signal,
+  overrides: Partial<CustomLlmLocalConfig> = {},
+  apiKey = "secret-key",
+) {
   return callAnthropicMessages({
     config: config(overrides),
-    apiKey: "secret-key",
+    apiKey,
     systemPrompt: "system rules",
     userPrompt: "hello",
     onLog,
@@ -65,6 +69,22 @@ describe("callAnthropicMessages", () => {
       system: "system rules",
       messages: [{ role: "user", content: "hello" }],
     });
+  });
+
+  it("omits x-api-key when no API key is configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        model: "upstream-model",
+        content: [{ type: "text", text: "pong" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await call(undefined, {}, "");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toMatchObject({ "anthropic-version": "2023-06-01" });
+    expect(init.headers).not.toHaveProperty("x-api-key");
   });
 
   it("parses text content and usage from the response", async () => {

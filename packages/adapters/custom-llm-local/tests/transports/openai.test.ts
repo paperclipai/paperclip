@@ -23,10 +23,14 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-async function call(signal = new AbortController().signal, overrides: Partial<CustomLlmLocalConfig> = {}) {
+async function call(
+  signal = new AbortController().signal,
+  overrides: Partial<CustomLlmLocalConfig> = {},
+  apiKey = "secret-key",
+) {
   return callOpenAiChatCompletions({
     config: config(overrides),
-    apiKey: "secret-key",
+    apiKey,
     systemPrompt: "system rules",
     userPrompt: "hello",
     onLog,
@@ -64,6 +68,21 @@ describe("callOpenAiChatCompletions", () => {
         { role: "user", content: "hello" },
       ],
     });
+  });
+
+  it("omits Authorization when no API key is configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        model: "upstream-model",
+        choices: [{ message: { content: "pong" }, finish_reason: "stop" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await call(undefined, {}, "");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).not.toHaveProperty("Authorization");
   });
 
   it("parses assistant content and usage from the response", async () => {

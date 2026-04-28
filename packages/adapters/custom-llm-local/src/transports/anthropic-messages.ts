@@ -36,10 +36,12 @@ export async function callAnthropicMessages(input: AnthropicCallInput): Promise<
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "x-api-key": apiKey,
     "anthropic-version": ANTHROPIC_VERSION,
     ...config.extraHeaders,
   };
+  if (apiKey.trim()) {
+    headers["x-api-key"] = apiKey;
+  }
 
   const safeHeaders = redactSensitive(headers);
   await onLog("stdout", `[custom-llm-local] POST ${url} (transport=anthropic_messages, model=${config.model}, headers=${JSON.stringify(safeHeaders)})\n`);

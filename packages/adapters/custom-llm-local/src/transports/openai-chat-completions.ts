@@ -43,9 +43,11 @@ export async function callOpenAiChatCompletions(input: OAICallInput): Promise<Ad
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`,
     ...config.extraHeaders,
   };
+  if (apiKey.trim()) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
 
   const safeHeaders = redactSensitive(headers);
   await onLog("stdout", `[custom-llm-local] POST ${url} (transport=openai_chat_completions, model=${config.model}, headers=${JSON.stringify(safeHeaders)})\n`);
