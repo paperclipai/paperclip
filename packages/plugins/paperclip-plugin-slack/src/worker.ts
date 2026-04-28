@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   definePlugin,
-  runWorker,
+  startWorkerRpcHost,
   type PluginContext,
   type PluginEvent,
   type PluginWebhookInput,
@@ -1604,4 +1604,10 @@ const plugin = definePlugin({
 });
 
 export default plugin;
-runWorker(plugin, import.meta.url);
+
+// Start the RPC host unconditionally. The SDK's runWorker(plugin, import.meta.url)
+// helper gates on a path match between argv[1] and the module URL, which fails
+// when the host spawns the worker via a symlinked install dir (the symlink target
+// resolves but argv[1] stays as the symlink path). startWorkerRpcHost bypasses
+// that check; safe because this file is only ever loaded as the worker entrypoint.
+startWorkerRpcHost({ plugin });
