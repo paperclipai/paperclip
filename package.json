@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
+    "hermes:verify": "node cli/node_modules/tsx/dist/cli.mjs scripts/hermes-local-verify.ts",
+    "hermes:demo": "node cli/node_modules/tsx/dist/cli.mjs scripts/hermes-local-demo.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
