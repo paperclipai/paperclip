@@ -287,7 +287,11 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; cancelRun: (runId: string, reason: string) => Promise<unknown> }) {
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
@@ -614,7 +618,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
           eq(issues.originId, runId),
           isNull(issues.hiddenAt),
-          notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
       .limit(1);
@@ -1070,6 +1073,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existing: 0,
       escalated: 0,
       snoozed: 0,
+      reaped: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
@@ -1077,6 +1081,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      if (!runningProcesses.has(run.id) && run.processPid && !isProcessAlive(run.processPid)) {
+        logger.info({ runId: run.id, pid: run.processPid }, "Dead pid detected by stale-run scanner — reaping run");
+        await deps.cancelRun(run.id, "Dead pid detected by stale-run scanner");
+        result.reaped += 1;
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
