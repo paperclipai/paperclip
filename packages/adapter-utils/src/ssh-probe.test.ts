@@ -57,7 +57,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["https://api.example.test"],
-      retries: 3,
+      attempts: 3,
       backoffMs: [0, 0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -81,7 +81,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["https://api.example.test"],
-      retries: 3,
+      attempts: 3,
       backoffMs: [0, 0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -101,7 +101,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["https://broken.example.test", "https://good.example.test"],
-      retries: 3,
+      attempts: 3,
       backoffMs: [0, 0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -130,7 +130,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["https://api.example.test"],
-      retries: 2,
+      attempts: 2,
       backoffMs: [0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -150,7 +150,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["https://a.example.test", "https://b.example.test"],
-      retries: 2,
+      attempts: 2,
       backoffMs: [0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -180,7 +180,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
       config: SSH_CONFIG,
       candidates: ["https://other.example.test"],
       preferredCandidate: "https://cached.example.test",
-      retries: 3,
+      attempts: 3,
       backoffMs: [0, 0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -206,7 +206,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
       config: SSH_CONFIG,
       candidates: ["https://other.example.test"],
       preferredCandidate: "https://cached.example.test",
-      retries: 2,
+      attempts: 2,
       backoffMs: [0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -232,7 +232,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
       config: SSH_CONFIG,
       candidates: ["https://api.example.test"],
       preferredCandidate: "https://api.example.test",
-      retries: 2,
+      attempts: 2,
       backoffMs: [0],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -242,9 +242,9 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("respects PAPERCLIP_RUNTIME_API_PROBE_RETRIES env var", async () => {
-    const previous = process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES;
-    process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES = "5";
+  it("respects PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS env var", async () => {
+    const previous = process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS;
+    process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS = "5";
     try {
       const { run } = makeProbeRunner({
         "https://api.example.test/api/health": [
@@ -267,9 +267,90 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
       expect(result.url).toBe("https://api.example.test");
       expect(result.attempts).toHaveLength(5);
     } finally {
-      if (previous === undefined) delete process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES;
-      else process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES = previous;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS;
+      else process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS = previous;
     }
+  });
+
+  it("caps the entire candidate sweep at totalBudgetMs (BLO-1490)", async () => {
+    // Two candidates, 5 attempts each, all transient. With a deterministic
+    // clock advanced 20 ms per probe + sleep, total budget = 60 ms means we
+    // get ~3 attempts before the budget cuts the sweep. Returns null with
+    // the partial attempts trail intact.
+    let nowMs = 0;
+    const advanceClockBy = (ms: number): void => {
+      nowMs += ms;
+    };
+    const { run } = makeProbeRunner({
+      "https://a.example.test/api/health": [
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+      ],
+      "https://b.example.test/api/health": [
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 503 },
+      ],
+    });
+
+    const wrapped: typeof run = async (probeInput) => {
+      // Each probe takes 15 ms of wall clock.
+      advanceClockBy(15);
+      return run(probeInput);
+    };
+
+    const result = await findReachablePaperclipApiUrlOverSsh({
+      config: SSH_CONFIG,
+      candidates: ["https://a.example.test", "https://b.example.test"],
+      attempts: 5,
+      backoffMs: [5, 5, 5, 5],
+      sleep: async (ms) => {
+        advanceClockBy(ms);
+      },
+      now: () => nowMs,
+      totalBudgetMs: 60,
+      runProbe: wrapped,
+    });
+
+    expect(result.url).toBeNull();
+    // Probe 1 (15 ms elapsed), sleep 5 (20), probe 2 (35), sleep 5 (40),
+    // probe 3 (55), sleep 5 (60) → next budget check sees 60 >= 60 → break.
+    expect(result.attempts).toHaveLength(3);
+    expect(result.attempts.every((a) => a.candidate === "https://a.example.test")).toBe(true);
+  });
+
+  it("uses jittered default backoff when no backoff array is supplied", async () => {
+    // Don't actually sleep — just confirm that the function reaches into
+    // randomBackoffMs (the spec'd 250–750 ms jitter source) when callers
+    // don't pin a deterministic backoff array.
+    let randomCalls = 0;
+    const { run } = makeProbeRunner({
+      "https://api.example.test/api/health": [
+        { exitCode: 0, httpStatus: 503 },
+        { exitCode: 0, httpStatus: 200 },
+      ],
+    });
+
+    const result = await findReachablePaperclipApiUrlOverSsh({
+      config: SSH_CONFIG,
+      candidates: ["https://api.example.test"],
+      attempts: 2,
+      sleep: NO_SLEEP,
+      runProbe: run,
+      randomBackoffMs: () => {
+        randomCalls++;
+        return 0;
+      },
+    });
+
+    expect(result.url).toBe("https://api.example.test");
+    // Sampled exactly once: between attempt 1 (503) and attempt 2 (200).
+    expect(randomCalls).toBe(1);
   });
 
   it("ignores a malformed PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON instead of crashing", async () => {
@@ -304,7 +385,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["", "not a url", "ftp://wrong.scheme/", "https://valid.example.test"],
-      retries: 1,
+      attempts: 1,
       backoffMs: [],
       sleep: NO_SLEEP,
       runProbe: run,
@@ -324,7 +405,7 @@ describe("findReachablePaperclipApiUrlOverSsh", () => {
     const result = await findReachablePaperclipApiUrlOverSsh({
       config: SSH_CONFIG,
       candidates: ["https://api.example.test"],
-      retries: 1,
+      attempts: 1,
       backoffMs: [],
       sleep: NO_SLEEP,
       runProbe: run,
