@@ -121,6 +121,22 @@ TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 # ---------------------------------------------------------------------------
 DRY_RUN: bool = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
+# DRY_RUN slippage simulation. When > 0 and DRY_RUN=true, each entry leg's
+# fill price is moved adversely by this many basis points (10 bps = 0.10%).
+# Lets operators exercise the realized-spread / asymmetric-fill / bad-fill
+# abort paths without real exchange access. Default 0 = no simulation
+# (legacy DRY_RUN behavior unchanged).
+try:
+    DRY_RUN_SLIPPAGE_BPS: float = float(os.environ.get("DRY_RUN_SLIPPAGE_BPS", "0") or 0)
+except ValueError:
+    DRY_RUN_SLIPPAGE_BPS = 0.0
+
+# Asymmetric-fill tolerance. When the two legs of an entry fill at sizes
+# that differ by more than this percentage of the larger leg, the trade
+# is aborted via concurrent emergency-close — leaving an unhedged residual
+# on the larger exchange would create directional exposure.
+MAX_FILL_ASYMMETRY_PCT: float = 5.0
+
 # ---------------------------------------------------------------------------
 # Exchange API keys
 # ---------------------------------------------------------------------------
@@ -2544,14 +2560,75 @@ class TradeExecutor:
         # Both filled
         if result_short.success and result_long.success:
             actual_size = min(result_short.filled_usd, result_long.filled_usd)
+
+            # A1: asymmetric-fill abort. min() alone leaves the difference
+            # unhedged on the larger leg — e.g., short=$25, long=$5 records
+            # a $5 position but $20 of short exposure is stranded. Abort
+            # whenever the gap exceeds the tolerance.
+            larger_filled = max(result_short.filled_usd, result_long.filled_usd)
+            if larger_filled > 0:
+                asym_pct = (larger_filled - actual_size) / larger_filled * 100
+            else:
+                asym_pct = 0.0
+            if asym_pct > MAX_FILL_ASYMMETRY_PCT:
+                log.error(
+                    f"ENTRY #{pos_id} {symbol}: ASYMMETRIC FILL ABORT — "
+                    f"short=${result_short.filled_usd:.2f} long=${result_long.filled_usd:.2f} "
+                    f"asymmetry={asym_pct:.1f}% (tolerance {MAX_FILL_ASYMMETRY_PCT:.1f}%)"
+                )
+                # A2: notify Telegram. Wrapped because alert failure must not
+                # block the close path. session may be None in some test paths.
+                try:
+                    if session is not None:
+                        await send_telegram(
+                            session,
+                            f"⚠️ #{pos_id} {symbol} ASYMMETRIC FILL ABORT — "
+                            f"short ${result_short.filled_usd:.2f}, long ${result_long.filled_usd:.2f} "
+                            f"({asym_pct:.1f}% gap)"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    log.warning(f"Telegram alert failed in asymmetric-fill abort: {e}")
+                await asyncio.gather(
+                    self._emergency_close_leg(
+                        ex_short, symbol, "buy", result_short.filled_usd, pos_id
+                    ),
+                    self._emergency_close_leg(
+                        ex_long, symbol, "sell", result_long.filled_usd, pos_id
+                    ),
+                    return_exceptions=True,
+                )
+                return None
+
             if actual_size < 5:
                 log.warning(f"ENTRY #{pos_id} filled too small: ${actual_size:.2f}")
-                await self._emergency_close_leg(ex_short, symbol, "buy", result_short.filled_usd, pos_id)
-                await self._emergency_close_leg(ex_long, symbol, "sell", result_long.filled_usd, pos_id)
+                # Concurrent close — same time-to-close concern as the bad-fill
+                # branch. Both legs are filled and exposed; closing in parallel
+                # halves the abort window.
+                await asyncio.gather(
+                    self._emergency_close_leg(
+                        ex_short, symbol, "buy", result_short.filled_usd, pos_id
+                    ),
+                    self._emergency_close_leg(
+                        ex_long, symbol, "sell", result_long.filled_usd, pos_id
+                    ),
+                    return_exceptions=True,
+                )
                 return None
             # Use actual fill prices, or market quotes as fallback (DRY_RUN returns 0)
             fill_price_short = result_short.fill_price if result_short.fill_price > 0 else q_high.bid
             fill_price_long = result_long.fill_price if result_long.fill_price > 0 else q_low.ask
+
+            # A3: simulate slippage in DRY_RUN so realized-spread / bad-fill
+            # paths can be exercised without real exchanges. Each entry leg's
+            # price is moved adversely by DRY_RUN_SLIPPAGE_BPS basis points:
+            #   - short was meant to sell at q_high.bid; "fills" lower
+            #   - long was meant to buy at q_low.ask; "fills" higher
+            # Default DRY_RUN_SLIPPAGE_BPS=0 means the legacy fallback
+            # behavior is preserved.
+            if DRY_RUN and DRY_RUN_SLIPPAGE_BPS > 0:
+                slip_pct = DRY_RUN_SLIPPAGE_BPS / 10000.0
+                fill_price_short *= (1 - slip_pct)
+                fill_price_long *= (1 + slip_pct)
 
             # Post-fill realized-spread sanity check.
             # entry_spread_pct (above) is the DETECTION-time spread from bid/ask
@@ -2571,6 +2648,19 @@ class TradeExecutor:
                     f"(short@{fill_price_short:.6f} on {q_high.exchange}, "
                     f"long@{fill_price_long:.6f} on {q_low.exchange})"
                 )
+                # A2: Telegram alert so operators see this without tailing logs.
+                # Wrapped because alert failure must not block the close path.
+                try:
+                    if session is not None:
+                        await send_telegram(
+                            session,
+                            f"⚠️ #{pos_id} {symbol} BAD-FILL ABORT — "
+                            f"detection {spread_pct:.3f}% / realized {realized_spread_pct:.3f}% "
+                            f"(short {q_high.exchange} @ {fill_price_short:.6f}, "
+                            f"long {q_low.exchange} @ {fill_price_long:.6f})"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    log.warning(f"Telegram alert failed in bad-fill abort: {e}")
                 # Reverse both filled legs concurrently. Time-to-close matters
                 # here more than for the actual_size<5 branch above — the
                 # bot has just opened a wrong-side position and is exposed
