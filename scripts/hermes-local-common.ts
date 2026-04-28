@@ -110,6 +110,165 @@ export interface HermesVersionInfo {
   pythonVersion: string | null;
 }
 
+export type DoctorSeverity = "pass" | "warn" | "fail";
+
+export interface LocalDoctorItem {
+  id: string;
+  label: string;
+  severity: DoctorSeverity;
+  detail: string;
+  hint?: string;
+}
+
+export interface LocalDoctorAutomationSummary {
+  launchAgents: string[];
+  serviceLoaded: boolean;
+  healthcheckLoaded: boolean;
+  patchRefreshLoaded: boolean;
+  upstreamUpgradeLoaded: boolean;
+}
+
+export interface LocalDoctorInput {
+  apiBase: string;
+  apiReachable: boolean;
+  authTokenAvailable: boolean;
+  health?: Record<string, unknown> | null;
+  adapters: AdapterSummary[];
+  companies: CompanyRecord[];
+  selectedCompanyId?: string | null;
+  hermesVersion?: HermesVersionInfo | null;
+  testEnvironment?: TestEnvironmentResult | null;
+  automation?: LocalDoctorAutomationSummary | null;
+}
+
+export interface LocalDoctorReport {
+  status: DoctorSeverity;
+  summary: string;
+  items: LocalDoctorItem[];
+}
+
+export function classifyLocalDoctorReport(severities: DoctorSeverity[]): DoctorSeverity {
+  if (severities.includes("fail")) return "fail";
+  if (severities.includes("warn")) return "warn";
+  return "pass";
+}
+
+export function buildLocalDoctorReport(input: LocalDoctorInput): LocalDoctorReport {
+  const items: LocalDoctorItem[] = [];
+  items.push({
+    id: "api_health",
+    label: "Paperclip API",
+    severity: input.apiReachable ? "pass" : "fail",
+    detail: input.apiReachable
+      ? `API reachable at ${input.apiBase}${formatHealthDetail(input.health)}`
+      : `Cannot reach Paperclip API at ${input.apiBase}`,
+    hint: input.apiReachable ? undefined : "Start the local Paperclip service, then rerun pnpm hermes:doctor.",
+  });
+
+  items.push({
+    id: "board_auth",
+    label: "Board auth token",
+    severity: input.authTokenAvailable ? "pass" : "warn",
+    detail: input.authTokenAvailable
+      ? "Board auth token is available from environment or local auth store."
+      : "No Board auth token found in environment or local auth store.",
+    hint: input.authTokenAvailable
+      ? undefined
+      : "Run Paperclip login/bootstrap flow or set PAPERCLIP_BOARD_AUTH_TOKEN/PAPERCLIP_API_KEY. Never print the token.",
+  });
+
+  const hermesAdapter = input.adapters.find((adapter) => adapter.type === "hermes_local");
+  items.push({
+    id: "hermes_adapter",
+    label: "hermes_local adapter",
+    severity: hermesAdapter && !hermesAdapter.disabled ? "pass" : "fail",
+    detail: hermesAdapter
+      ? `found loaded=${String(hermesAdapter.loaded)} disabled=${String(hermesAdapter.disabled)} modelsCount=${String(hermesAdapter.modelsCount ?? "unknown")}`
+      : "hermes_local adapter is not listed by /api/adapters.",
+    hint: hermesAdapter ? undefined : "Load the Hermes adapter through Board → Adapter manager or ~/.paperclip/adapter-plugins.json.",
+  });
+
+  items.push({
+    id: "companies",
+    label: "Accessible companies",
+    severity: input.companies.length > 0 ? "pass" : "fail",
+    detail: input.companies.length > 0
+      ? `${input.companies.length} visible; selected=${input.selectedCompanyId ?? input.companies[0]?.id}`
+      : "No accessible companies returned by /api/companies.",
+    hint: input.companies.length > 0 ? undefined : "Create/bootstrap a company or fix Board access before running demo.",
+  });
+
+  items.push({
+    id: "hermes_cli",
+    label: "Hermes CLI",
+    severity: input.hermesVersion ? "pass" : "fail",
+    detail: input.hermesVersion
+      ? `${input.hermesVersion.versionLine}${input.hermesVersion.pythonVersion ? `; Python ${input.hermesVersion.pythonVersion}` : ""}`
+      : "hermes --version failed or was not run.",
+    hint: input.hermesVersion ? undefined : "Install/fix Hermes CLI before using hermes_local.",
+  });
+
+  if (input.testEnvironment) {
+    const errors = input.testEnvironment.checks.filter((check) => check.level === "error");
+    items.push({
+      id: "test_environment",
+      label: "Adapter test-environment",
+      severity: errors.length > 0 || input.testEnvironment.status === "fail" ? "fail" : input.testEnvironment.status === "warn" ? "warn" : "pass",
+      detail: `status=${input.testEnvironment.status}; checks=${input.testEnvironment.checks.length}`,
+      hint: errors.length > 0 ? errors.map(summarizeCheck).join("; ") : undefined,
+    });
+    for (const check of input.testEnvironment.checks) {
+      if (check.level === "warn" || check.level === "error") {
+        items.push({
+          id: check.code ?? `test_environment_${check.level}`,
+          label: `test-environment ${check.level}`,
+          severity: check.level === "error" ? "fail" : "warn",
+          detail: summarizeCheck(check),
+          hint: check.hint,
+        });
+      }
+    }
+  } else {
+    items.push({
+      id: "test_environment",
+      label: "Adapter test-environment",
+      severity: "warn",
+      detail: "test-environment was not available or was skipped.",
+      hint: "Run pnpm hermes:verify for the stricter adapter readiness check.",
+    });
+  }
+
+  if (input.automation) {
+    const missing = [
+      ["service", input.automation.serviceLoaded],
+      ["healthcheck", input.automation.healthcheckLoaded],
+      ["patch-refresh", input.automation.patchRefreshLoaded],
+      ["upstream-upgrade", input.automation.upstreamUpgradeLoaded],
+    ].filter(([, loaded]) => !loaded).map(([name]) => name);
+    items.push({
+      id: "automation_launchagents",
+      label: "macOS LaunchAgents",
+      severity: missing.includes("service") || missing.includes("healthcheck") ? "warn" : "pass",
+      detail: missing.length > 0 ? `missing/not detected: ${missing.join(", ")}` : "service, healthcheck, patch-refresh, and upstream-upgrade LaunchAgents detected.",
+      hint: missing.length > 0 ? "Install/load LaunchAgents if you want Paperclip to be self-healing and upgrade-aware." : undefined,
+    });
+  }
+
+  const status = classifyLocalDoctorReport(items.map((item) => item.severity));
+  return {
+    status,
+    summary: status === "pass" ? "本地 Paperclip + Hermes 工作流健康。" : status === "warn" ? "本地 Paperclip + Hermes 工作流可用但有非阻塞 warning。" : "本地 Paperclip + Hermes 工作流存在阻塞项。",
+    items,
+  };
+}
+
+function formatHealthDetail(health: Record<string, unknown> | null | undefined): string {
+  if (!health) return "";
+  const status = typeof health.status === "string" ? health.status : undefined;
+  const mode = typeof health.deploymentMode === "string" ? health.deploymentMode : undefined;
+  return [status ? `status=${status}` : null, mode ? `mode=${mode}` : null].filter(Boolean).join("; ").replace(/^/, " (").replace(/$/, ")");
+}
+
 function normalizeApiBase(apiBase: string): string {
   return apiBase.replace(/\/$/, "");
 }
@@ -245,6 +404,10 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     throw new Error(`Paperclip API ${response.status} ${response.statusText} for ${url}${detail ? `: ${detail}` : ""}`);
   }
   return data as T;
+}
+
+export async function getHealth(): Promise<Record<string, unknown>> {
+  return await apiRequest<Record<string, unknown>>("/health");
 }
 
 export async function getAdapters(): Promise<AdapterSummary[]> {
