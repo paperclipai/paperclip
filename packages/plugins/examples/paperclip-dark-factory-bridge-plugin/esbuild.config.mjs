@@ -15,4 +15,3 @@ if (watch) {
   await Promise.all([workerCtx.rebuild(), manifestCtx.rebuild(), uiCtx.rebuild()]);
   await Promise.all([workerCtx.dispose(), manifestCtx.dispose(), uiCtx.dispose()]);
 }
-

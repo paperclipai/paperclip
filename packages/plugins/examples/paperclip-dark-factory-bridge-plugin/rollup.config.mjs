@@ -26,4 +26,3 @@ export default [
   withPlugins(presets.rollup.worker),
   withPlugins(presets.rollup.ui),
 ].filter(Boolean);
-
