@@ -273,10 +273,60 @@ function deriveBundleState(agent: AgentLike): BundleState {
   };
 }
 
+/**
+ * When a manager agent (e.g. CEO) creates instruction files for a new agent directly on disk,
+ * it may use the agent's name (e.g. "CTO") as the directory name instead of the agent's UUID.
+ * The system expects instructions at `agents/{agent.id}/instructions`, so these name-based
+ * directories are invisible. This function detects such misplaced directories and migrates
+ * the files to the correct UUID-based path.
+ */
+async function migrateNameBasedInstructionsIfFound(agent: AgentLike): Promise<void> {
+  if (!agent.name || typeof agent.name !== "string" || agent.name.trim().length === 0) return;
+  // Avoid false positives for UUID-like names
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (UUID_PATTERN.test(agent.name)) return;
+
+  const nameBasedPath = path.resolve(
+    resolvePaperclipInstanceRoot(),
+    "companies",
+    agent.companyId,
+    "agents",
+    agent.name,
+    "instructions",
+  );
+  const nameStat = await statIfExists(nameBasedPath);
+  if (!nameStat?.isDirectory()) return;
+
+  const files = await listFilesRecursive(nameBasedPath);
+  if (files.length === 0) return;
+
+  const managedRootPath = resolveManagedInstructionsRoot(agent);
+  await fs.mkdir(managedRootPath, { recursive: true });
+
+  for (const relativePath of files) {
+    const srcPath = resolvePathWithinRoot(nameBasedPath, relativePath);
+    const dstPath = resolvePathWithinRoot(managedRootPath, relativePath);
+    const dstExists = await statIfExists(dstPath);
+    if (dstExists?.isFile()) continue; // don't overwrite existing files
+    await fs.mkdir(path.dirname(dstPath), { recursive: true });
+    await fs.copyFile(srcPath, dstPath);
+  }
+
+  // Remove the now-migrated name-based directory
+  await fs.rm(path.dirname(nameBasedPath), { recursive: true, force: true });
+}
+
 async function recoverManagedBundleState(agent: AgentLike, state: BundleState): Promise<BundleState> {
   const managedRootPath = resolveManagedInstructionsRoot(agent);
   const stat = await statIfExists(managedRootPath);
-  if (!stat?.isDirectory()) return state;
+  if (!stat?.isDirectory()) {
+    // No UUID-based instructions directory exists — check for a misplaced agent-name-based
+    // directory (e.g. when the CEO agent wrote instruction files using the agent name instead
+    // of the agent UUID). If found, migrate the files to the correct UUID-based path.
+    await migrateNameBasedInstructionsIfFound(agent);
+  }
+  const reStat = await statIfExists(managedRootPath);
+  if (!reStat?.isDirectory()) return state;
 
   const files = await listFilesRecursive(managedRootPath);
   if (files.length === 0) return state;
