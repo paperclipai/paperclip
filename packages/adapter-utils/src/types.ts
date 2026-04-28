@@ -139,6 +139,15 @@ export interface AdapterExecutionContext {
   authToken?: string;
 }
 
+export interface AdapterCancelRunContext {
+  runId: string;
+  agent: AdapterAgent;
+  config: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  reason?: string;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}
+
 export interface AdapterModel {
   id: string;
   label: string;
@@ -307,6 +316,7 @@ export interface AdapterConfigSchema {
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
+  cancelRun?: (ctx: AdapterCancelRunContext) => Promise<void>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;

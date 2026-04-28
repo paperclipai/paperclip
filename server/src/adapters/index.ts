@@ -14,6 +14,7 @@ export type {
   ServerAdapterModule,
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterCancelRunContext,
   AdapterInvocationMeta,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
