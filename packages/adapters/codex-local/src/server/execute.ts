@@ -322,6 +322,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  // When running on a remote SSH host, opt out of Paperclip's CODEX_HOME sync
+  // and let codex use the host's native ~/.codex/. Useful when the host runs
+  // ccrotate (or another credential manager) that owns auth.json directly.
+  // Set via the agent's adapterConfig.env or as a pod-wide env var.
+  const isHostNativeOptIn = (value: unknown): boolean =>
+    typeof value === "boolean"
+      ? value
+      : typeof value === "string" && value.trim().toLowerCase() === "true";
+  const useHostNativeCodexHome =
+    executionTargetIsRemote &&
+    (isHostNativeOptIn(envConfig.PAPERCLIP_CODEX_USE_HOST_HOME) ||
+      isHostNativeOptIn(process.env.PAPERCLIP_CODEX_USE_HOST_HOME));
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -350,26 +362,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? await (async () => {
         await onLog(
           "stdout",
-          `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          useHostNativeCodexHome
+            ? `[paperclip] Syncing workspace to ${describeAdapterExecutionTarget(executionTarget)} (using host's native CODEX_HOME).\n`
+            : `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
         );
         return await prepareAdapterExecutionTargetRuntime({
           target: executionTarget,
           adapterKey: "codex",
           workspaceLocalDir: cwd,
-          assets: [
-            {
-              key: "home",
-              localDir: effectiveCodexHome,
-              followSymlinks: true,
-            },
-          ],
+          assets: useHostNativeCodexHome
+            ? []
+            : [
+                {
+                  key: "home",
+                  localDir: effectiveCodexHome,
+                  followSymlinks: true,
+                },
+              ],
         });
       })()
     : null;
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace()
     : null;
-  const remoteCodexHome = executionTargetIsRemote
+  const remoteCodexHome = executionTargetIsRemote && !useHostNativeCodexHome
     ? preparedExecutionTargetRuntime?.assetDirs.home ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
     : null;
@@ -452,7 +468,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
-  env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+  if (useHostNativeCodexHome) {
+    delete env.CODEX_HOME;
+  } else {
+    env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+  }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
