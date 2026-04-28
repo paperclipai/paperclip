@@ -145,6 +145,7 @@ const legacyProjectLinkedIssue = {
   assigneeAgentId: "33333333-3333-4333-8333-333333333333",
   assigneeUserId: null,
   updatedAt: new Date("2026-03-24T12:00:00Z"),
+  projectWorkspaceId: null,
   executionWorkspaceId: null,
   labels: [],
   labelIds: [],
@@ -308,6 +309,22 @@ describe.sequential("issue goal context routes", () => {
         identifier: "PAP-580",
       }),
     ]);
+  });
+
+  it("surfaces projectWorkspaceId on the compact issue from GET /issues/:id/heartbeat-context", async () => {
+    const pwId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectWorkspaceId: pwId,
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.projectWorkspaceId).toBe(pwId);
+    expect(res.body.issue.executionWorkspaceId).toBeNull();
   });
 
   it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {

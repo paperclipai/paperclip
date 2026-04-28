@@ -1062,6 +1062,8 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        projectWorkspaceId: issue.projectWorkspaceId ?? null,
+        executionWorkspaceId: issue.executionWorkspaceId ?? null,
         blockedBy: relations.blockedBy,
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
