@@ -264,6 +264,13 @@ function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function recordBody(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") return null;
+  if (Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.data.register("projection-summary", async (params) => {
@@ -319,7 +326,7 @@ const plugin = definePlugin({
     }
 
     if (input.routeKey === "rehydrate-request") {
-      const body = input.body as Record<string, unknown> | null;
+      const body = recordBody(input.body);
       return {
         status: 202,
         body: buildRehydrateReceipt(issueId, stringField(body?.reason)),

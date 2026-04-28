@@ -6,8 +6,18 @@ import manifest from "../src/manifest.js";
 import plugin, { PROJECTION_DISCLAIMER } from "../src/worker.js";
 
 type ApiResponseBody<T> = { body: T };
+type RehydrateReceiptBody = {
+  receipt: {
+    receiptId: string;
+    status: string;
+    terminalStateAdvanced: boolean;
+    idempotencyKey: string;
+    reason: string;
+  };
+  requestSemantics: string;
+};
 
-function apiInput(routeKey: string, issueId: string, companyId: string, method: "GET" | "POST" = "GET", body: Record<string, unknown> | null = null) {
+function apiInput(routeKey: string, issueId: string, companyId: string, method: "GET" | "POST" = "GET", body: unknown = null) {
   return {
     routeKey,
     method,
@@ -201,11 +211,39 @@ describe("Dark Factory bridge projection plugin", () => {
         }),
       },
     });
-    type RehydrateReceiptBody = { receipt: { receiptId: string; status: string; terminalStateAdvanced: boolean; idempotencyKey: string }; requestSemantics: string };
     const rehydrateBody = (rehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
     const repeatedRehydrateBody = (repeatedRehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
     expect(repeatedRehydrateBody.receipt).toMatchObject(rehydrateBody.receipt);
     expect(repeatedRehydrateBody.requestSemantics).toBe("receipt_only_not_terminal_success");
+  });
+
+  it("treats non-object rehydrate request route bodies as receipt-only requests with the default reason", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    for (const body of ["operator refresh", ["operator refresh"], null]) {
+      const response = await plugin.definition.onApiRequest?.(apiInput("rehydrate-request", issueId, companyId, "POST", body));
+      const responseBody = (response as ApiResponseBody<RehydrateReceiptBody>).body;
+
+      expect(response).toMatchObject({
+        status: 202,
+        body: {
+          source: "dark-factory-projection",
+          truthSource: "dark-factory-journal",
+          authoritative: false,
+          requestSemantics: "receipt_only_not_terminal_success",
+          receipt: {
+            status: "requested",
+            terminalStateAdvanced: false,
+            reason: "operator_requested_projection_refresh",
+          },
+        },
+      });
+      expect(responseBody.receipt.terminalStateAdvanced).toBe(false);
+      expect(responseBody.requestSemantics).toBe("receipt_only_not_terminal_success");
+    }
   });
 
   it("surfaces stale projection metadata without treating the projection as authoritative", async () => {

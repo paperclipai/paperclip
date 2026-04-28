@@ -1,4 +1,7 @@
 import {
+  useState,
+} from "react";
+import {
   usePluginAction,
   usePluginData,
   type PluginDetailTabProps,
@@ -112,6 +115,18 @@ const buttonStyle = {
   cursor: "pointer",
 } satisfies React.CSSProperties;
 
+const errorStyle = {
+  border: "1px solid #fecaca",
+  background: "#fef2f2",
+  color: "#991b1b",
+  borderRadius: 6,
+  padding: "6px 8px",
+} satisfies React.CSSProperties;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
 function Disclaimer() {
   return <div style={noticeStyle}>{DISCLAIMER}</div>;
 }
@@ -183,6 +198,8 @@ export function IssuePanel({ context }: PluginDetailTabProps) {
     issueId: context.entityId,
   });
   const requestRehydrate = usePluginAction("request-rehydrate");
+  const [rehydrateError, setRehydrateError] = useState<string | null>(null);
+  const [rehydratePending, setRehydratePending] = useState(false);
 
   if (loading) return <div>Loading Dark Factory projection...</div>;
   if (error) return <div>Dark Factory bridge error: {error.message}</div>;
@@ -195,16 +212,26 @@ export function IssuePanel({ context }: PluginDetailTabProps) {
         <button
           style={buttonStyle}
           title="Submits a receipt-only rehydrate intention; it does not mean terminal success."
+          disabled={rehydratePending}
           onClick={async () => {
-            await requestRehydrate({ companyId: context.companyId, issueId: context.entityId, reason: "operator refresh from task detail tab" });
-            refresh();
+            setRehydrateError(null);
+            setRehydratePending(true);
+            try {
+              await requestRehydrate({ companyId: context.companyId, issueId: context.entityId, reason: "operator refresh from task detail tab" });
+              refresh();
+            } catch (error) {
+              setRehydrateError(errorMessage(error));
+            } finally {
+              setRehydratePending(false);
+            }
           }}
         >
-          Request rehydrate (receipt only)
+          {rehydratePending ? "Requesting..." : "Request rehydrate (receipt only)"}
         </button>
       </div>
       <Disclaimer />
       <div style={noticeStyle}>Request Rehydrate only submits an intention/receipt. It does not advance terminal success and does not make this projection authoritative.</div>
+      {rehydrateError ? <div role="alert" style={errorStyle}>Rehydrate request failed: {rehydrateError}</div> : null}
       <ProjectionRows data={data} />
       <ProviderHealthRows data={data} />
     </div>
