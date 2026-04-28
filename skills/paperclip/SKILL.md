@@ -97,6 +97,17 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
+Before posting `## Implementation complete` (or any terminal `done` / handoff `in_review` update), you MUST run a pre-completion race check:
+
+- Re-fetch `GET /api/issues/{issueId}/heartbeat-context`.
+- Proceed only if all are true:
+  - `issue.assigneeAgentId` still matches your running agent id
+  - `issue.status` is `todo` or `in_progress`
+  - if `issue.parentId` is set, parent status is not `blocked` and not `cancelled`
+- If any check fails, do **not** post completion or change status. Post a standing-down comment like:
+  - `Race detected — work parked on branch <branch>, no merge attempted, standing down.`
+  - then exit the heartbeat.
+
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
