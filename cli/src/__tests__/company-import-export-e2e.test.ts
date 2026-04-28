@@ -417,6 +417,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(importedAgents.map((agent) => agent.name)).toContain(sourceAgent.name);
     expect(importedProjects.map((project) => project.name)).toContain(sourceProject.name);
     expect(importedIssues.map((issue) => issue.title)).toContain(sourceIssue.title);
+    const importedIssueCount = importedIssues.length;
 
     const previewExisting = await runCliJson<{
       errors: string[];
@@ -448,7 +449,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(previewExisting.plan.companyAction).toBe("none");
     expect(previewExisting.plan.agentPlans.some((plan) => plan.action === "create")).toBe(true);
     expect(previewExisting.plan.projectPlans.some((plan) => plan.action === "create")).toBe(true);
-    expect(previewExisting.plan.issuePlans.some((plan) => plan.action === "create")).toBe(true);
+    expect(previewExisting.plan.issuePlans.some((plan) => plan.action === "skip")).toBe(true);
 
     const importedExisting = await runCliJson<{
       company: { id: string; action: string };
@@ -490,7 +491,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(twiceImportedAgents).toHaveLength(2);
     expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(2);
     expect(twiceImportedProjects).toHaveLength(2);
-    expect(twiceImportedIssues).toHaveLength(2);
+    expect(twiceImportedIssues).toHaveLength(importedIssueCount);
 
     const zipPath = path.join(tempRoot, "exported-company.zip");
     const portableFiles: Record<string, string> = {};
