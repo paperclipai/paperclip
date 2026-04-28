@@ -20,6 +20,30 @@ const SLACK_API_BASE = "https://slack.com/api";
 const MAX_RETRIES = 3;
 const RETRYABLE_STATUS = new Set<number>([429, 500, 502, 503]);
 
+// Slack error codes that signal a configuration gap the operator was already
+// warned about at Test Configuration time (see validateSlackConfig in worker.ts).
+// Demote to debug at runtime to avoid log spam — the validator owns the user-
+// visible signal.
+const LOW_SIGNAL_SLACK_ERRORS = new Set<string>([
+  "missing_scope",
+  "not_in_channel",
+  "channel_not_visible",
+]);
+
+function logSlackApiError(
+  ctx: SlackCtx,
+  message: string,
+  error: string | undefined,
+  meta: Record<string, unknown>,
+): void {
+  const payload = { ...meta, error };
+  if (error && LOW_SIGNAL_SLACK_ERRORS.has(error)) {
+    ctx.logger.debug(message, payload);
+    return;
+  }
+  ctx.logger.warn(message, payload);
+}
+
 async function fetchWithRetry(
   ctx: SlackCtx,
   url: string,
@@ -68,7 +92,7 @@ export async function postMessage(
   });
   const body = (await response.json()) as { ok: boolean; ts?: string; error?: string };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, channelId });
+    logSlackApiError(ctx, "Slack API error", body.error, { channelId });
   }
   return body;
 }
@@ -98,7 +122,7 @@ export async function updateMessage(
   });
   const body = (await response.json()) as { ok: boolean; error?: string };
   if (!body.ok) {
-    ctx.logger.warn("Slack chat.update failed", { error: body.error, channelId, ts });
+    logSlackApiError(ctx, "Slack chat.update failed", body.error, { channelId, ts });
   }
   return body;
 }
@@ -123,7 +147,7 @@ export async function respondToAction(
   });
   const body = (await response.json()) as { ok: boolean; error?: string };
   if (!body.ok) {
-    ctx.logger.warn("Slack action response error", { error: body.error, responseUrl });
+    logSlackApiError(ctx, "Slack action response error", body.error, { responseUrl });
   }
   return body;
 }
@@ -195,7 +219,7 @@ export async function reactionsAdd(
   });
   const body = (await response.json()) as { ok: boolean; error?: string };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, channel, timestamp, name });
+    logSlackApiError(ctx, "Slack API error", body.error, { channel, timestamp, name });
   }
   return body;
 }
@@ -231,7 +255,7 @@ export async function conversationsList(
     response_metadata?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, endpoint: "conversations.list" });
+    logSlackApiError(ctx, "Slack API error", body.error, { endpoint: "conversations.list" });
   }
   return body;
 }
@@ -260,7 +284,7 @@ export async function conversationsReplies(
     response_metadata?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, channel, ts });
+    logSlackApiError(ctx, "Slack API error", body.error, { channel, ts });
   }
   return body;
 }
@@ -284,7 +308,7 @@ export async function conversationsJoin(
     channel?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, channel });
+    logSlackApiError(ctx, "Slack API error", body.error, { channel });
   }
   return body;
 }
@@ -308,7 +332,7 @@ export async function conversationsOpen(
     channel?: { id?: string };
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, users });
+    logSlackApiError(ctx, "Slack API error", body.error, { users });
   }
   return body;
 }
@@ -334,7 +358,7 @@ export async function usersList(
     response_metadata?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, endpoint: "users.list" });
+    logSlackApiError(ctx, "Slack API error", body.error, { endpoint: "users.list" });
   }
   return body;
 }
@@ -365,7 +389,7 @@ export async function authTest(
     bot_id?: string;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, endpoint: "auth.test" });
+    logSlackApiError(ctx, "Slack API error", body.error, { endpoint: "auth.test" });
   }
   return body;
 }
@@ -390,7 +414,7 @@ export async function conversationsInfo(
     channel?: { id: string; name?: string; is_archived?: boolean };
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, channel, endpoint: "conversations.info" });
+    logSlackApiError(ctx, "Slack API error", body.error, { channel, endpoint: "conversations.info" });
   }
   return body;
 }
@@ -415,7 +439,7 @@ export async function usersInfo(
     user?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, user });
+    logSlackApiError(ctx, "Slack API error", body.error, { user });
   }
   return body;
 }
@@ -440,7 +464,7 @@ export async function usersLookupByEmail(
     user?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, email });
+    logSlackApiError(ctx, "Slack API error", body.error, { email });
   }
   return body;
 }
@@ -466,7 +490,7 @@ export async function searchMessages(
     messages?: unknown;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, endpoint: "search.messages" });
+    logSlackApiError(ctx, "Slack API error", body.error, { endpoint: "search.messages" });
   }
   return body;
 }
@@ -495,7 +519,7 @@ export async function filesGetUploadURLExternal(
     file_id?: string;
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, filename });
+    logSlackApiError(ctx, "Slack API error", body.error, { filename });
   }
   return body;
 }
@@ -523,7 +547,7 @@ export async function filesCompleteUploadExternal(
     files?: unknown[];
   };
   if (!body.ok) {
-    ctx.logger.warn("Slack API error", { error: body.error, channel });
+    logSlackApiError(ctx, "Slack API error", body.error, { channel });
   }
   return body;
 }

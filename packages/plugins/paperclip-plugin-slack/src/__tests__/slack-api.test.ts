@@ -62,6 +62,23 @@ describe("postMessage", () => {
     );
   });
 
+  it("demotes low-signal Slack errors (missing_scope) from warn to debug", async () => {
+    const ctx = mkCtx();
+    ctx.http.fetch.mockResolvedValueOnce({
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ ok: false, error: "missing_scope" }),
+    });
+    const result = await postMessage(ctx as any, "xoxb-test", "C0", { text: "hi" });
+    expect(result).toEqual({ ok: false, error: "missing_scope" });
+    expect(ctx.logger.warn).not.toHaveBeenCalled();
+    expect(ctx.logger.debug).toHaveBeenCalledTimes(1);
+    expect(ctx.logger.debug).toHaveBeenCalledWith(
+      "Slack API error",
+      expect.objectContaining({ error: "missing_scope", channelId: "C0" }),
+    );
+  });
+
   it("retries on 429 honoring Retry-After then returns the success body", async () => {
     const ctx = mkCtx();
     ctx.http.fetch
