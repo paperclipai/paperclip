@@ -85,7 +85,7 @@ class TestEmptyStateNoSQLite:
         r = client.get("/recon/invariants")
         assert r.status_code == 200
         d = r.get_json()
-        assert len(d["invariants"]) == 12
+        assert len(d["invariants"]) == 13
         assert all(iv["status"] == "unknown" for iv in d["invariants"])
 
     def test_events_db_missing_returns_empty(self, client, monkeypatch):
@@ -103,7 +103,7 @@ class TestEmptyStateNoSQLite:
         r = client.get("/recon/invariants")
         assert r.status_code == 200
         d = r.get_json()
-        assert len(d["invariants"]) == 12
+        assert len(d["invariants"]) == 13
         assert all(iv["status"] == "unknown" for iv in d["invariants"])
 
 
@@ -208,18 +208,20 @@ class TestEventsRoute:
 
 
 # ---------------------------------------------------------------------------
-# 14.1b  /recon/invariants -- 12 invariants with green/red status
+# 14.1b  /recon/invariants -- 13 invariants with green/red status
+# (Invariant 13 negative_realized_entry_spread added in commit
+# following 72ee1bbb's runtime guard.)
 # ---------------------------------------------------------------------------
 
 class TestInvariantsRoute:
-    def test_returns_exactly_12_invariants(self, client, monkeypatch, sqlite_db):
+    def test_returns_exactly_13_invariants(self, client, monkeypatch, sqlite_db):
         monkeypatch.setattr(_dr, "_USE_SQLITE", True)
         monkeypatch.setattr(_dr, "_DB_PATH", sqlite_db)
 
         r = client.get("/recon/invariants")
         assert r.status_code == 200
         d = r.get_json()
-        assert len(d["invariants"]) == 12
+        assert len(d["invariants"]) == 13
 
     def test_all_green_when_no_unresolved_events(self, client, monkeypatch, sqlite_db):
         monkeypatch.setattr(_dr, "_USE_SQLITE", True)
@@ -276,7 +278,7 @@ class TestInvariantsRoute:
         assert by_cat["fill_quality"] == "green"
 
     def test_invariant_categories_match_module(self, client, monkeypatch, sqlite_db):
-        """All 12 categories in the response must match _INVARIANT_CATEGORIES."""
+        """All 13 categories in the response must match _INVARIANT_CATEGORIES."""
         monkeypatch.setattr(_dr, "_USE_SQLITE", True)
         monkeypatch.setattr(_dr, "_DB_PATH", sqlite_db)
 

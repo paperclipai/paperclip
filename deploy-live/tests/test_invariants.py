@@ -351,3 +351,90 @@ def test_rate_limiter_allows_different_categories_independently():
     assert rl.allow(v1, now_s=1000.0) is True
     assert rl.allow(v2, now_s=1000.0) is True  # different category
     assert rl.allow(v3, now_s=1000.0) is True  # different position_id
+
+
+# ---------------------------------------------------------------------------
+# Invariant 13 — negative_realized_entry_spread
+# ---------------------------------------------------------------------------
+
+def test_invariant_negative_realized_entry_spread_fires_when_orders_crossed(fresh_db):
+    """Recreate trade #530 in state_store: SHORT filled cheaper than LONG.
+    The invariant must surface this as a 'negative_realized_entry_spread' violation."""
+    conn = open_db(fresh_db)
+    pid = _seed_open_position(conn, symbol="ENJUSDT")
+    # Short leg at 0.9984 (sell side); long leg at 1.0000 (buy side).
+    # realized = (0.9984 - 1.0000)/1.0000 * 100 = -0.16%
+    _seed_fill(conn, pid, exchange="BLOFIN", leg="b", side="sell",
+               fill_price=0.9984, order_id="b-bad-1", filled_at_ms=2)
+    _seed_fill(conn, pid, exchange="MEXC", leg="a", side="buy",
+               fill_price=1.0000, order_id="m-bad-1", filled_at_ms=3)
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "negative_realized_entry_spread" in cats
+    v = next(x for x in violations if x.category == "negative_realized_entry_spread")
+    assert v.severity == "error"
+    assert v.position_id == pid
+    assert v.actual["realized_entry_spread_pct"] == -0.16
+    conn.close()
+
+
+def test_invariant_negative_realized_entry_spread_passes_for_normal_trade(fresh_db):
+    """Positive realized spread is the strategy's expected case; no violation."""
+    conn = open_db(fresh_db)
+    pid = _seed_open_position(conn)
+    # SHORT at 1.0050 > LONG at 1.0000 → +0.5% realized (good)
+    _seed_fill(conn, pid, exchange="BLOFIN", leg="b", side="sell",
+               fill_price=1.0050, order_id="b-good-1", filled_at_ms=2)
+    _seed_fill(conn, pid, exchange="MEXC", leg="a", side="buy",
+               fill_price=1.0000, order_id="m-good-1", filled_at_ms=3)
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "negative_realized_entry_spread" not in cats
+    conn.close()
+
+
+def test_invariant_negative_realized_entry_spread_skips_partial_fills(fresh_db):
+    """If only one entry leg has filled, the GROUP BY HAVING clause filters
+    the position out — invariant 1 (open_position_missing_legs) handles it."""
+    conn = open_db(fresh_db)
+    pid = _seed_open_position(conn)
+    # Only the buy leg, no sell
+    _seed_fill(conn, pid, exchange="MEXC", leg="a", side="buy",
+               fill_price=1.0000, order_id="m-only-1", filled_at_ms=2)
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    # Invariant 13 should not flag this (incomplete data); invariant 1 will.
+    assert "negative_realized_entry_spread" not in cats
+    assert "open_position_missing_legs" in cats
+    conn.close()
+
+
+def test_invariant_negative_realized_entry_spread_skips_closed_positions(fresh_db):
+    """Closed positions are out of scope for this invariant — by then it's
+    too late to act and the loss is already booked. Only open/opening positions
+    are checked so that runtime corrections (Phase 1) can intervene."""
+    conn = open_db(fresh_db)
+    pid = _seed_open_position(conn, symbol="ENJUSDT", status="closed")
+    _seed_fill(conn, pid, exchange="BLOFIN", leg="b", side="sell",
+               fill_price=0.9984, order_id="b-closed-1", filled_at_ms=2)
+    _seed_fill(conn, pid, exchange="MEXC", leg="a", side="buy",
+               fill_price=1.0000, order_id="m-closed-1", filled_at_ms=3)
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "negative_realized_entry_spread" not in cats
+    conn.close()
+
+
+def test_invariant_negative_realized_entry_spread_zero_is_allowed(fresh_db):
+    """Realized spread of exactly 0 is a no-arbitrage entry — wasteful but
+    not "underwater". Invariant fires only on strictly negative."""
+    conn = open_db(fresh_db)
+    pid = _seed_open_position(conn)
+    _seed_fill(conn, pid, exchange="BLOFIN", leg="b", side="sell",
+               fill_price=1.0000, order_id="b-flat-1", filled_at_ms=2)
+    _seed_fill(conn, pid, exchange="MEXC", leg="a", side="buy",
+               fill_price=1.0000, order_id="m-flat-1", filled_at_ms=3)
+    violations = check_all(conn)
+    cats = [v.category for v in violations]
+    assert "negative_realized_entry_spread" not in cats
+    conn.close()

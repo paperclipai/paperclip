@@ -26,7 +26,7 @@ import state_store as _ss
 
 # ---------------------------------------------------------------------------
 # Invariant category registry -- derived from invariants.py, not hardcoded.
-# check_all() covers invariants 1-8, 10-12; check_inmem_consistency() adds 9.
+# check_all() covers invariants 1-8, 10-13; check_inmem_consistency() adds 9.
 # ---------------------------------------------------------------------------
 _INVARIANT_CATEGORIES: list[str] = [
     "open_position_missing_legs",
@@ -41,6 +41,7 @@ _INVARIANT_CATEGORIES: list[str] = [
     "exposure_exceeds_balance",
     "stale_unresolved_recon_event",
     "stale_ok_exchange_health",
+    "negative_realized_entry_spread",
 ]
 
 _STALE_THRESHOLD_MS = 5 * 60 * 1000  # 5 minutes

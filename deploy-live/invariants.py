@@ -73,6 +73,7 @@ def check_all(conn: sqlite3.Connection) -> list[Violation]:
     out += _check_exposure_vs_balance(conn)
     out += _check_stale_unresolved_recon_events(conn)
     out += _check_stale_ok_exchange_health(conn)
+    out += _check_negative_realized_entry_spread(conn)
     return out
 
 
@@ -332,6 +333,63 @@ def _check_stale_ok_exchange_health(conn: sqlite3.Connection) -> list[Violation]
             actual={"last_ok_age_minutes": age_min,
                     "limit_minutes": _OK_HEALTH_FRESHNESS_LIMIT_MIN},
         ))
+    return out
+
+
+def _check_negative_realized_entry_spread(conn: sqlite3.Connection) -> list[Violation]:
+    """Invariant 13: every open/opening position's realized entry spread must be ≥ 0.
+
+    Realized spread is (sell-side fill_price − buy-side fill_price) / buy-side
+    fill_price × 100. A negative value means the SHORT leg filled CHEAPER than
+    the LONG leg — orders crossed the book and the trade is starting underwater.
+    Convergence cannot recover this.
+
+    Defense-in-depth: real_trader.py's open_position already aborts on this
+    condition before the position is committed (commit 72ee1bbb). This
+    invariant catches anything that slips through (shadow-mode mirror, manual
+    state injection, external state writes, future code paths). Severity is
+    error rather than critical because the runtime guard is the primary
+    defense; this is the safety net.
+    """
+    placeholders = ",".join("?" * len(_OPEN_LIKE_STATUSES))
+    rows = conn.execute(
+        f"""SELECT
+                p.id           AS position_id,
+                p.symbol       AS symbol,
+                p.exchange_a   AS exchange_a,
+                p.exchange_b   AS exchange_b,
+                MAX(CASE WHEN f.side='sell' THEN f.fill_price END) AS short_fill,
+                MAX(CASE WHEN f.side='buy'  THEN f.fill_price END) AS long_fill
+            FROM positions p
+            JOIN fills f ON f.position_id = p.id AND f.intent = 'entry'
+            WHERE p.status IN ({placeholders})
+            GROUP BY p.id
+            HAVING short_fill IS NOT NULL AND long_fill IS NOT NULL""",
+        _OPEN_LIKE_STATUSES,
+    ).fetchall()
+    out: list[Violation] = []
+    for r in rows:
+        long_fill = r["long_fill"]
+        short_fill = r["short_fill"]
+        if long_fill is None or long_fill <= 0:
+            continue  # _check_fill_quality (invariant 3) handles bad prices
+        realized_pct = (short_fill - long_fill) / long_fill * 100
+        if realized_pct < 0:
+            out.append(Violation(
+                category="negative_realized_entry_spread",
+                severity="error",
+                position_id=r["position_id"],
+                symbol=r["symbol"],
+                expected={"realized_entry_spread_pct_min": 0.0},
+                actual={
+                    "realized_entry_spread_pct": round(realized_pct, 4),
+                    "short_fill": short_fill,
+                    "long_fill": long_fill,
+                    "exchange_short_or_a": r["exchange_a"],
+                    "exchange_long_or_b": r["exchange_b"],
+                },
+                notes="orders crossed the book at fill — trade started underwater",
+            ))
     return out
 
 

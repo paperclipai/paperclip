@@ -2395,13 +2395,22 @@ class TradeExecutor:
                     f"(short@{fill_price_short:.6f} on {q_high.exchange}, "
                     f"long@{fill_price_long:.6f} on {q_low.exchange})"
                 )
-                # Reverse both filled legs. Same sequential pattern as the
-                # actual_size<5 branch above.
-                await self._emergency_close_leg(
-                    ex_short, symbol, "buy", result_short.filled_usd, pos_id
-                )
-                await self._emergency_close_leg(
-                    ex_long, symbol, "sell", result_long.filled_usd, pos_id
+                # Reverse both filled legs concurrently. Time-to-close matters
+                # here more than for the actual_size<5 branch above — the
+                # bot has just opened a wrong-side position and is exposed
+                # to whatever way the spread is moving. asyncio.gather cuts
+                # the abort window roughly in half vs the sequential pattern.
+                # return_exceptions=True ensures one leg's failure doesn't
+                # prevent the other's close attempt; _emergency_close_leg
+                # handles its own retries internally.
+                await asyncio.gather(
+                    self._emergency_close_leg(
+                        ex_short, symbol, "buy", result_short.filled_usd, pos_id
+                    ),
+                    self._emergency_close_leg(
+                        ex_long, symbol, "sell", result_long.filled_usd, pos_id
+                    ),
+                    return_exceptions=True,
                 )
                 return None
 
