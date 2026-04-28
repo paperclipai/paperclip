@@ -92,6 +92,8 @@ spec:
               value: {{ .Values.persistence.mountPath | quote }}
             - name: PAPERCLIP_INSTANCE_ID
               value: {{ .Values.env.instanceId | quote }}
+            - name: PAPERCLIP_ALLOWED_HOSTNAMES
+              value: {{ prepend (.Values.env.extraAllowedHostnames | default list) "127.0.0.1" | join "," | quote }}
             - name: PAPERCLIP_AGENT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
