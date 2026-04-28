@@ -1,0 +1,98 @@
+# Requirements: RealTycoon2 v2.5 Semantic Knowledge Intelligence
+
+**Defined:** 2026-04-28  
+**Core Value:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
+
+## v2.5 Requirements
+
+### Semantic Index
+
+- [ ] **SEM-01**: Operator can enable a company-scoped semantic index without replacing the existing wiki/graph/projector storage.
+- [ ] **SEM-02**: System can store embeddings for daily wiki pages, graph nodes, and work artifacts with source IDs, freshness timestamps, and projector provenance.
+- [ ] **SEM-03**: System can run deterministic local embedding fallback for tests and development when provider-backed embedding is unavailable.
+- [ ] **SEM-04**: Operator can trigger and inspect an incremental semantic reindex that only refreshes changed sources.
+
+### Semantic Search
+
+- [ ] **SEARCH-01**: Operator can search RT2 knowledge semantically across daily wiki, graph evidence, work board artifacts, and deliverables from one company-scoped surface.
+- [ ] **SEARCH-02**: Search results show source type, source date, confidence, matched evidence, and stale/needs-refresh indicators.
+- [ ] **SEARCH-03**: Operator can filter semantic results by company, project/work object, date range, source type, confidence, and contradiction status.
+- [ ] **SEARCH-04**: Search API can combine lexical fallback and semantic ranking without requiring pgvector in local development.
+
+### Contradiction Review
+
+- [ ] **CONTRA-01**: System can generate contradiction candidates by comparing new wiki/graph facts against prior evidence and deterministic lint output.
+- [ ] **CONTRA-02**: System can optionally use provider-backed analysis to explain contradiction candidates while keeping raw evidence and deterministic reason codes.
+- [ ] **CONTRA-03**: Operator can review contradiction candidates, mark false positive, accept newer evidence, keep older evidence, or request follow-up work.
+- [ ] **CONTRA-04**: Resolution decisions are written to an audit/event trail and reflected in wiki/graph/search freshness indicators.
+
+### Jarvis Grounding
+
+- [ ] **JARVIS-01**: Jarvis answers can retrieve semantic context from RT2 knowledge and expose cited evidence instead of unsupported summaries.
+- [ ] **JARVIS-02**: Jarvis can warn when retrieved context contains unresolved contradiction candidates or stale evidence.
+- [ ] **JARVIS-03**: Operator can open cited work object, wiki page, graph node, or contradiction review item directly from a Jarvis answer.
+- [ ] **JARVIS-04**: Jarvis semantic retrieval respects company boundary and existing permission assumptions.
+
+### Knowledge Operations
+
+- [ ] **OPS-01**: Operator can see semantic index health, queue status, stale source count, provider/fallback mode, and last successful run.
+- [ ] **OPS-02**: System exposes batch health checks that fail clearly when semantic index, contradiction review, or Jarvis grounding loses traceability.
+- [ ] **OPS-03**: Milestone verification artifacts can prove all semantic knowledge requirements with tests, route evidence, and user-facing flow notes.
+
+## Future Requirements
+
+### Knowledge Federation
+
+- **FED-01**: Operator can federate sanitized knowledge across trusted companies.
+- **FED-02**: System can merge semantic signals across companies with explicit data-sharing policy.
+
+### Autonomous Knowledge Maintenance
+
+- **AUTO-01**: Jarvis can propose automatic wiki edits from contradiction resolution patterns.
+- **AUTO-02**: System can apply low-risk knowledge corrections after policy-approved review thresholds.
+
+### Native Surfaces
+
+- **MOBILE-01**: Mobile/native capture review can surface semantic duplicates and contradiction hints inline.
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Cross-company semantic federation | Trusted company ecosystem and sharing policy are not ready for v2.5 |
+| Automatic wiki rewrite without approval | Contradiction review must be approval-first before autonomous maintenance |
+| Mandatory live embedding or LLM provider | Local development and CI must remain deterministic and provider-optional |
+| Native mobile distribution | Web operator loop remains the validation surface for this milestone |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| SEM-01 | Phase 33 | Pending |
+| SEM-02 | Phase 33 | Pending |
+| SEM-03 | Phase 33 | Pending |
+| SEM-04 | Phase 33 | Pending |
+| SEARCH-01 | Phase 34 | Pending |
+| SEARCH-02 | Phase 34 | Pending |
+| SEARCH-03 | Phase 34 | Pending |
+| SEARCH-04 | Phase 34 | Pending |
+| CONTRA-01 | Phase 35 | Pending |
+| CONTRA-02 | Phase 35 | Pending |
+| CONTRA-03 | Phase 35 | Pending |
+| CONTRA-04 | Phase 35 | Pending |
+| JARVIS-01 | Phase 36 | Pending |
+| JARVIS-02 | Phase 36 | Pending |
+| JARVIS-03 | Phase 36 | Pending |
+| JARVIS-04 | Phase 36 | Pending |
+| OPS-01 | Phase 37 | Pending |
+| OPS-02 | Phase 37 | Pending |
+| OPS-03 | Phase 37 | Pending |
+
+**Coverage:**
+- v2.5 requirements: 19 total
+- Mapped to phases: 19
+- Unmapped: 0
+
+---
+*Requirements defined: 2026-04-28*
+*Last updated: 2026-04-28 after v2.5 milestone initialization*

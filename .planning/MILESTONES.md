@@ -8,6 +8,7 @@
 | v2.2 | 개발기획서 완전 정합성 고도화 | Shipped | 2026-04-25 | 2026-04-25 | 일일업무일지/Trello형 업무 보드/identity hardening/Knowledge Bridge/P&L/rollout evidence로 개발기획서 정합성을 약 94%까지 끌어올림 |
 | v2.3 | 운영 검증 및 외부 연동 실체화 | Shipped | 2026-04-25 | 2026-04-27 | Phase 19-24 완료. 요구사항 17/17, integration 5/5, flows 5/5 충족. strict Nyquist validation debt는 tech debt로 이월 |
 | v2.4 | Knowledge+Economy 심화 | Shipped | 2026-04-27 | 2026-04-28 | Phase 25-32 완료. 요구사항 24/24, phases 5/5, integration 5/5, flows 5/5 충족. 초기 audit gaps는 Phase 30-32 closure로 닫고 re-audit `passed` |
+| v2.5 | Semantic Knowledge Intelligence | Active | 2026-04-28 | - | Phase 33-37 planned. Semantic index, semantic search, contradiction review, Jarvis grounding, knowledge operations 요구사항 19개 |
 
 ## v2.0 RT2 Refoundation
 
@@ -235,5 +236,48 @@ Phase 30-32 closure 후 re-audit 결과:
 | lint | live provider-backed contradiction detection | deterministic local analyzer and injectable tests accepted for v2.4 |
 | postgres | embedded Postgres tests in default Windows run | selected embedded cases remain opt-in |
 
+## v2.5 Semantic Knowledge Intelligence
+
+**상태:** 2026-04-28 시작  
+**시작:** 2026-04-28  
+**완료:** -  
+**Phases:** 5 planned  
+**Requirements:** 19 planned  
+**Artifacts:**
+
+- `.planning/REQUIREMENTS.md`
+- `.planning/ROADMAP.md`
+
+### 목표
+
+Daily wiki/graph knowledge를 embedding-backed semantic retrieval, contradiction review, Jarvis answer grounding, operator-facing knowledge health로 고도화한다.
+
+### 계획된 Phase
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 33 | Semantic Index Foundation | SEM-01, SEM-02, SEM-03, SEM-04 | Planned |
+| 34 | Semantic Knowledge Search | SEARCH-01, SEARCH-02, SEARCH-03, SEARCH-04 | Planned |
+| 35 | Contradiction Review Workflow | CONTRA-01, CONTRA-02, CONTRA-03, CONTRA-04 | Planned |
+| 36 | Jarvis Grounded Answers | JARVIS-01, JARVIS-02, JARVIS-03, JARVIS-04 | Planned |
+| 37 | Knowledge Intelligence Operations | OPS-01, OPS-02, OPS-03 | Planned |
+
+### 범위
+
+- pgvector-ready semantic index를 추가하되 local dev와 CI는 deterministic embedding fallback으로 검증 가능해야 한다.
+- Semantic search는 daily wiki, graph evidence, work board artifact, deliverable source를 company boundary 안에서 통합한다.
+- Contradiction detection은 provider-backed explanation을 허용하되 deterministic reason code와 raw evidence를 항상 보존한다.
+- Jarvis answer는 cited evidence, freshness, contradiction warning을 operator에게 노출해야 한다.
+- Knowledge operations dashboard와 batch health gate가 milestone close 전 traceability loss를 잡아야 한다.
+
+### 알려진 Deferred Items
+
+| Category | Item | Reason |
+|----------|------|--------|
+| federation | cross-company knowledge federation | trusted company ecosystem 밖 |
+| autonomy | automatic wiki rewrites without approval | contradiction review loop가 먼저 안정화되어야 함 |
+| provider | mandatory live provider dependency | deterministic fallback이 local/CI 기본이어야 함 |
+| mobile | native mobile semantic search UX | web operator loop가 먼저 검증되어야 함 |
+
 ---
-*마지막 업데이트: 2026-04-28, v2.4 milestone shipped*
+*마지막 업데이트: 2026-04-28, v2.5 milestone initialized*

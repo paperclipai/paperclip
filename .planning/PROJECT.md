@@ -14,11 +14,22 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화
 
-**현재 마일스톤:** 다음 마일스톤 계획 대기
+**현재 마일스톤:** v2.5 Semantic Knowledge Intelligence
 
 **최근 완료:** v2.4는 daily wiki projector, graphify projector, coin ledger atomicity, settlement governance hardening, scheduled consistency linting을 완료하고 Phase 30-32 closure로 milestone audit gaps를 닫았다. 최종 re-audit은 requirements 24/24, phases 5/5, integration 5/5, flows 5/5로 `passed`다.
 
-**현재 진행:** fresh `REQUIREMENTS.md`는 삭제된 상태다. 다음 작업은 `$gsd-new-milestone`으로 새 milestone scope, 요구사항, roadmap을 정의하는 것이다.
+**현재 진행:** v2.5는 v2.4에서 deliberately deferred한 vector embedding + semantic search와 live provider-backed contradiction detection을 RT2-controlled knowledge loop에 붙이는 milestone이다. 새 `REQUIREMENTS.md`와 `ROADMAP.md`는 Phase 33-37로 scope를 제한한다.
+
+## 현재 마일스톤: v2.5 Semantic Knowledge Intelligence
+
+**Goal:** Daily wiki/graph knowledge를 embedding-backed semantic retrieval, contradiction review, Jarvis answer grounding, operator-facing knowledge health로 고도화한다.
+
+**Target features:**
+- pgvector-ready embedding storage와 deterministic fallback을 갖춘 semantic index pipeline.
+- daily wiki, graph node, work artifact를 company-scoped semantic search로 찾는 운영자 경험.
+- provider-backed contradiction 후보 탐지와 approval-first resolution workflow.
+- Jarvis 답변이 retrieved evidence, contradiction warnings, source freshness를 노출하는 grounded assistance.
+- knowledge intelligence 운영 대시보드와 batch health gate.
 
 **v2.4 delivered:**
 - Board/domain event를 daily wiki page, date index, chronological log, per-user page로 project한다.
@@ -84,15 +95,15 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- 다음 마일스톤 요구사항은 아직 정의하지 않았다.
+- [ ] v2.5 Semantic Knowledge Intelligence 요구사항 19개.
 
 ### 범위 밖
 
 - backend/data platform greenfield rewrite. 작동 중인 server, db, auth, approval, audit invariant를 보존한다.
 - web One-Liner와 operator loop가 내부 사용에서 안정화되기 전 native mobile app distribution.
 - trusted company ecosystem 밖의 public/open marketplace.
-- v2.4 이후 vector embedding + semantic search는 pgvector 준비 후 별도 milestone으로 다룬다.
-- live provider-backed contradiction detection은 deterministic lint analyzer가 안정화된 뒤 hardening한다.
+- v2.5 이후 cross-company knowledge federation은 trusted company ecosystem 밖이므로 제외한다.
+- v2.5 이후 autonomous knowledge rewrites는 approval-first contradiction review가 안정화된 뒤 다룬다.
 
 ## Context
 
@@ -127,7 +138,24 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-다음 마일스톤은 아직 정의하지 않았다. `$gsd-new-milestone`으로 새 `REQUIREMENTS.md`와 `ROADMAP.md` scope를 생성한다.
+v2.5는 semantic knowledge intelligence milestone이다. 핵심은 RT2 work signal이 wiki/graph에 쌓인 뒤 다시 semantic retrieval, contradiction review, Jarvis grounding, operator health signal로 돌아오는 닫힌 지식 루프를 만드는 것이다.
+
+## Evolution
+
+이 문서는 phase transition과 milestone boundary에서 갱신한다.
+
+**각 phase transition 후** (`$gsd-transition`):
+1. 무효화된 요구사항은 이유와 함께 범위 밖으로 이동한다.
+2. 검증된 요구사항은 phase reference와 함께 검증 완료로 이동한다.
+3. 새 요구사항이 생기면 진행 중에 추가한다.
+4. 결정 사항은 주요 결정에 기록한다.
+5. "이 프로젝트가 무엇인가"가 현실과 어긋나면 갱신한다.
+
+**각 milestone 후** (`$gsd-complete-milestone`):
+1. 전체 섹션을 재검토한다.
+2. 핵심 가치가 여전히 우선순위 기준인지 확인한다.
+3. 범위 밖 항목의 이유가 여전히 맞는지 감사한다.
+4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-28, v2.4 milestone shipped*
+*마지막 업데이트: 2026-04-28, v2.5 milestone initialized*
