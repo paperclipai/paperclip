@@ -6,7 +6,7 @@
 - [shipped] **v2.1 개발기획서 반영 및 운영자 채택** - Phase 8-13 완료, 2026-04-25 ([archive](milestones/v2.1-ROADMAP.md))
 - [shipped] **v2.2 개발기획서 완전 정합성 고도화** - Phase 14-18 완료, 2026-04-25 ([archive](milestones/v2.2-ROADMAP.md))
 - [shipped] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-24 완료, 2026-04-27 ([archive](milestones/v2.3-ROADMAP.md), [requirements](milestones/v2.3-REQUIREMENTS.md), [audit](milestones/v2.3-MILESTONE-AUDIT.md))
-- [active] **v2.4 Knowledge+Economy 심화** - Phase 25-29 진행 중 (Phase 27-28 complete)
+- [active] **v2.4 Knowledge+Economy 심화** - Phase 25-32 진행 중 (Phase 27-30 complete; Phase 31-32 gap closure planned)
 
 ## 완료됨
 
@@ -68,7 +68,7 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 
 **상태:** 진행 중  
 **시작:** 2026-04-27  
-**Phase:** 25-29  
+**Phase:** 25-32
 **Requirements:** 24 total (5+6+5+4+4)
 
 ## Phase Details
@@ -89,7 +89,7 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 5. Running the projector twice does not duplicate content in wiki pages (idempotent)
 6. Daily wiki projector appends to existing knowledge_core chain via `appendAndProject()`
 
-**Plans**: TBD
+**Plans**: 1/1 complete
 
 ### Phase 26: Graphify Projector
 
@@ -144,7 +144,7 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 3. Settlement approval screen shows linked ledger entry and balanceAfter value
 4. User can configure anti-gaming signal thresholds per company (trigger values, score windows)
 
-**Plans**: TBD
+**Plans**: 1/1 complete
 **UI hint**: yes
 
 ### Phase 29: Consistency Linting (Batch)
@@ -160,6 +160,60 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 2. Lint issues are flagged with evidence snippets — system does not auto-modify wiki content
 3. `rt2WikiLintService` includes an `embedding_consistency` check comparing semantic similarity
 4. Lint runner executes on a schedule (cron/timer), not triggered on every wiki write
+
+**Plans**: 1/1 complete
+
+### Phase 30: Knowledge Artifact and Verification Closure
+
+**Goal**: Close milestone audit gaps for Daily Wiki Projector and Graphify Projector by reconstructing missing summaries, verification artifacts, and Nyquist validation evidence
+
+**Depends on**: Phase 25 and Phase 26 implementation evidence
+
+**Requirements**: WIKI-01, WIKI-02, WIKI-03, WIKI-04, WIKI-05, GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04, GRAPH-05, GRAPH-06
+
+**Gap Closure**: Closes v2.4 audit gaps for Phase 25 and Phase 26 orphaned requirements, plus blocked knowledge accumulation integration from board events to daily wiki to graph
+
+**Success Criteria** (what must be TRUE):
+1. Phase 25 has SUMMARY.md, VERIFICATION.md, and VALIDATION.md with WIKI-01..WIKI-05 accepted or explicit execution gaps identified
+2. Phase 26 has SUMMARY.md, VERIFICATION.md, and VALIDATION.md with GRAPH-01..GRAPH-06 accepted or explicit execution gaps identified
+3. Verification artifacts cite code and test evidence for daily wiki projection, graph projection, incremental refresh, and UI/report surfaces
+4. Summary frontmatter includes requirements-completed for all accepted WIKI and GRAPH requirements
+
+**Plans**: TBD
+
+### Phase 31: Economy Artifact and Verification Closure
+
+**Goal**: Close milestone audit gaps for ledger atomicity and settlement governance by turning existing implementation, summary, and UAT evidence into accepted verification artifacts
+
+**Depends on**: Phase 27 and Phase 28 implementation evidence
+
+**Requirements**: LEDGER-01, LEDGER-02, LEDGER-03, LEDGER-04, LEDGER-05, SETTLE-01, SETTLE-02, SETTLE-03, SETTLE-04
+
+**Gap Closure**: Closes v2.4 audit gaps for Phase 27 and Phase 28 orphaned requirements, plus economic feedback integration from settlement approval to linked ledger balanceAfter evidence
+
+**Success Criteria** (what must be TRUE):
+1. Phase 27 has VERIFICATION.md and VALIDATION.md using 27-UAT.md plus code/test evidence for atomic ledger behavior
+2. Phase 28 has VERIFICATION.md and VALIDATION.md using summary, focused tests, and code evidence for settlement governance behavior
+3. Phase 27 and Phase 28 summaries include requirements-completed frontmatter for accepted requirements
+4. Re-audit can trace LEDGER and SETTLE requirements through requirements, summaries, and verification artifacts
+
+**Plans**: TBD
+
+### Phase 32: Lint Traceability and Milestone Acceptance Closure
+
+**Goal**: Close remaining consistency lint traceability and Nyquist gaps, then make v2.4 ready for milestone re-audit
+
+**Depends on**: Phase 30 and Phase 31 closure artifacts
+
+**Requirements**: LINT-01, LINT-02, LINT-03, LINT-04
+
+**Gap Closure**: Closes v2.4 audit partial gaps for Phase 29 summary frontmatter and missing VALIDATION.md, plus downstream graph/wiki lint integration acceptance
+
+**Success Criteria** (what must be TRUE):
+1. Phase 29 summary includes requirements-completed frontmatter for LINT-01..LINT-04
+2. Phase 29 has VALIDATION.md covering Nyquist validation expectations
+3. Cross-phase evidence links graph/wiki content stabilization to scheduled consistency linting
+4. v2.4 re-audit can pass requirements, phase artifact, integration, and flow gates or isolate only explicitly deferred tech debt
 
 **Plans**: TBD
 
@@ -191,11 +245,14 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 | 22. Settlement Governance and Anti-Gaming | v2.3 | 1/1 | Complete | 2026-04-25 |
 | 23. Advanced Work Board and Native Capture | v2.3 | 1/1 | Complete | 2026-04-25 |
 | 24. Phase 19 Verification Artifact Closure | v2.3 | 1/1 | Complete | 2026-04-27 |
-| 25. Daily Wiki Projector | v2.4 | 0/1 | Not started | - |
-| 26. Graphify Projector | v2.4 | 0/1 | Not started | - |
+| 25. Daily Wiki Projector | v2.4 | 1/1 | Complete | 2026-04-28 |
+| 26. Graphify Projector | v2.4 | 1/1 | Complete | 2026-04-28 |
 | 27. Coin Ledger Atomicity | v2.4 | 3/3 | Complete | 2026-04-28 |
 | 28. Settlement Governance Hardening | v2.4 | 1/1 | Complete | 2026-04-28 |
-| 29. Consistency Linting (Batch) | v2.4 | 0/1 | Not started | - |
+| 29. Consistency Linting (Batch) | v2.4 | 1/1 | Complete | 2026-04-28 |
+| 30. Knowledge Artifact and Verification Closure | v2.4 | 1/1 | Complete | 2026-04-28 |
+| 31. Economy Artifact and Verification Closure | v2.4 | 1/1 | Complete | 2026-04-28 |
+| 32. Lint Traceability and Milestone Acceptance Closure | v2.4 | 1/1 | Complete | 2026-04-28 |
 
 ## Archive
 
@@ -212,4 +269,4 @@ Audit status: `tech_debt`. Requirements 17/17, phases 6/6, integration 5/5, flow
 - [v2.3 milestone audit](milestones/v2.3-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-28, Phase 28 settlement governance hardening complete*
+*마지막 업데이트: 2026-04-28, Phase 32 milestone acceptance closure complete*
