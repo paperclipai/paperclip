@@ -116,6 +116,18 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
+      {!isCreate && (
+        <Field label="Transport profile">
+          <DraftInput
+            value={eff("adapterConfig", "transportProfile", String(config.transportProfile ?? ""))}
+            onCommit={(v) => mark("adapterConfig", "transportProfile", v || undefined)}
+            immediate
+            className={inputClass}
+            placeholder="cluster:openclaw"
+          />
+        </Field>
+      )}
+
       <PayloadTemplateJsonField
         isCreate={isCreate}
         values={values}
