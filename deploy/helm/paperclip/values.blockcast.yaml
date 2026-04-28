@@ -1,0 +1,93 @@
+# Production overrides for the paperclip.blockcast.net deployment.
+#
+# Pass to helm with `--values deploy/helm/paperclip/values.blockcast.yaml` so
+# the values persist across helm upgrades instead of relying on stored release
+# state and `--set` flags.
+#
+# Do not commit secrets here — `paperclip-credentials` and
+# `paperclip-database-url` Secrets are pre-created out of band.
+
+image:
+  repository: registry.blockcast.net/paperclip
+  pullPolicy: IfNotPresent
+  # Override `image.tag` per release (e.g. `--set image.tag=sha-<commit>`).
+
+imagePullSecrets:
+  - name: registry-blockcast-net-pull
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-blockcast-net
+    nginx.ingress.kubernetes.io/proxy-body-size: 50m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: paperclip.blockcast.net
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - paperclip.blockcast.net
+      secretName: paperclip-tls
+
+env:
+  host: "0.0.0.0"
+  port: 3100
+  serveUi: true
+  instanceId: default
+  extra:
+    - name: PAPERCLIP_AGENT_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-credentials
+          key: agentJwtSecret
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-database-url
+          key: url
+    # PAPERCLIP_PUBLIC_URL pins the auth base so plugin UIs do not fall back
+    # to window.location.origin (which would break behind cloudflared / when
+    # iframed). PAPERCLIP_AUTH_BASE_URL_MODE=explicit makes the server treat
+    # PAPERCLIP_PUBLIC_URL as authoritative.
+    - name: PAPERCLIP_PUBLIC_URL
+      value: https://paperclip.blockcast.net
+    - name: PAPERCLIP_AUTH_BASE_URL_MODE
+      value: explicit
+    - name: PAPERCLIP_DEPLOYMENT_MODE
+      value: authenticated
+    - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
+      value: private
+    - name: PAPERCLIP_UI_DEV_MIDDLEWARE
+      value: "false"
+    - name: PAPERCLIP_CODEX_USE_HOST_HOME
+      value: "true"
+    - name: PAPERCLIP_RUNTIME_API_CANDIDATES_JSON
+      value: '["https://paperclip.blockcast.net"]'
+
+persistence:
+  enabled: true
+  storageClassName: local-path
+  accessMode: ReadWriteOnce
+  size: 20Gi
+  mountPath: /paperclip
+
+secret:
+  existingSecret: paperclip-credentials
+
+networkPolicy:
+  enabled: true
+  allowFromNamespaces:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: paperclip
+
+pdb:
+  enabled: true
+  maxUnavailable: 1
