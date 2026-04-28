@@ -133,9 +133,13 @@ export const createIssueSchema = z.object({
   // S-CRIT-8 (2026-04-28 fuzz): unbounded title hangs the server on huge
   // inputs. 500 chars is plenty for an issue title (UI truncates at ~80).
   title: z.string().min(1).max(500),
-  // Keep upstream's multilineTextSchema (line-break normalization) but cap
-  // length at 64 KiB. Anything bigger should attach as a file.
-  description: multilineTextSchema.pipe(z.string().max(65_536)).optional().nullable(),
+  // Keep upstream's multilineTextSchema (line-break normalization) and cap
+  // length at 1 MiB. The DoS we patched (S-CRIT-8) was an unbounded TITLE that
+  // hung the event loop in cosmetic rendering paths; descriptions are stored
+  // as text and not rendered inline, so 1 MiB is safely beyond the
+  // company-import/export e2e test's 168 KiB usage and still bounded against
+  // multi-megabyte abuse.
+  description: multilineTextSchema.pipe(z.string().max(1_048_576)).optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
