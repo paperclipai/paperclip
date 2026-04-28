@@ -1149,6 +1149,46 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function pathDelimiterForPlatform() {
+  return process.platform === "win32" ? ";" : ":";
+}
+
+function resolveHomeDir(env: NodeJS.ProcessEnv): string | null {
+  const candidate =
+    typeof env.HOME === "string" && env.HOME.trim().length > 0
+      ? env.HOME
+      : typeof process.env.HOME === "string" && process.env.HOME.trim().length > 0
+        ? process.env.HOME
+        : typeof env.USERPROFILE === "string" && env.USERPROFILE.trim().length > 0
+          ? env.USERPROFILE
+          : typeof process.env.USERPROFILE === "string" && process.env.USERPROFILE.trim().length > 0
+            ? process.env.USERPROFILE
+            : null;
+  return candidate ? candidate.trim() : null;
+}
+
+function dedupePathEntries(entries: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const key = process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function supplementalPathEntries(env: NodeJS.ProcessEnv): string[] {
+  const entries = defaultPathForPlatform().split(pathDelimiterForPlatform()).filter(Boolean);
+  if (process.platform === "win32") return entries;
+  const homeDir = resolveHomeDir(env);
+  if (!homeDir) return entries;
+  return [path.join(homeDir, ".local", "bin"), ...entries];
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -1277,9 +1317,15 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const pathKey = typeof env.PATH === "string" ? "PATH" : typeof env.Path === "string" ? "Path" : "PATH";
+  const currentValue = typeof env[pathKey] === "string" ? env[pathKey] : "";
+  const entries = dedupePathEntries([
+    ...currentValue.split(pathDelimiterForPlatform()),
+    ...supplementalPathEntries(env),
+  ]);
+  const nextValue = entries.join(pathDelimiterForPlatform());
+  if (currentValue === nextValue && pathKey in env) return env;
+  return { ...env, [pathKey]: nextValue };
 }
 
 export async function ensureAbsoluteDirectory(

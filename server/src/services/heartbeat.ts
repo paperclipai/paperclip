@@ -5785,6 +5785,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return issuesSvc.listDependencyReadiness(companyId, issueIds);
   }
 
+  /**
+   * Most deferred wake reasons are tied to the current assignee. If ownership changes
+   * before promotion, drop the stale deferred wake instead of reviving execution for
+   * the previous assignee.
+   */
+  function deferredWakeRequiresCurrentAssigneeMatch(wakeReason: string | null) {
+    if (!wakeReason) return false;
+    if (wakeReason === "issue_comment_mentioned") return false;
+    if (wakeReason.startsWith("execution_")) return false;
+    return true;
+  }
+
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
@@ -8316,6 +8328,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               identifier: reopenedIssue.identifier,
               status: reopenedIssue.status,
               executionRunId: reopenedIssue.executionRunId,
+              assigneeAgentId: reopenedIssue.assigneeAgentId,
+              assigneeUserId: reopenedIssue.assigneeUserId,
             };
             if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
               promotedContextSeed.reopenedFrom = reopenedFromStatus;
@@ -8345,6 +8359,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
         const promotedTriggerDetail =
           (readNonEmptyString(deferred.triggerDetail) as WakeupOptions["triggerDetail"]) ?? null;
+        const wakeReason =
+          readNonEmptyString(promotedContextSeed.wakeReason) ??
+          readNonEmptyString((deferredPayload as Record<string, unknown> | null)?.wakeReason);
+        const requiresAssigneeMatch = deferredWakeRequiresCurrentAssigneeMatch(wakeReason);
+
+        if (requiresAssigneeMatch) {
+          const assigneeChanged =
+            issue.assigneeUserId !== null ||
+            !issue.assigneeAgentId ||
+            issue.assigneeAgentId !== deferred.agentId;
+          if (assigneeChanged) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "failed",
+                finishedAt: new Date(),
+                error: "Deferred wake could not be promoted: issue assignee changed",
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, deferred.id));
+            continue;
+          }
+        }
+
         const promotedPayload = deferredPayload;
         delete promotedPayload[DEFERRED_WAKE_CONTEXT_KEY];
 
