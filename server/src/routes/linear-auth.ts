@@ -486,12 +486,19 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       try {
         const triggered = await config.triggerPluginJob("initial-import");
         if (triggered) {
+          // Include zero-valued legacy fields so the UI's
+          // `${imported} issues, ${projects} projects, ${labels} labels`
+          // template renders cleanly. The job runs async; real counts arrive
+          // via webhook sync over time.
           res.json({
             ok: true,
             triggered: true,
             runId: triggered.runId,
             jobId: triggered.jobId,
-            message: "Initial import job started; results will arrive via webhook sync.",
+            imported: 0,
+            projects: 0,
+            labels: 0,
+            message: "Initial import job started in background. Issues will appear as the plugin syncs them.",
           });
           return;
         }
@@ -900,7 +907,9 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             triggered: true,
             runId: triggered.runId,
             jobId: triggered.jobId,
-            message: "Sync job started; results will arrive via webhook sync.",
+            synced: 0,
+            errors: 0,
+            message: "Sync job started in background. Linked issues will refresh as the plugin processes them.",
           });
           return;
         }
