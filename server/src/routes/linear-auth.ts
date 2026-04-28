@@ -39,6 +39,16 @@ export interface LinearAuthConfig {
   clientSecret: string;
   redirectUri: string;
   secretsProvider: SecretProvider;
+  /**
+   * When provided, /import and /sync delegate to a plugin job (initial-import
+   * and periodic-sync respectively) instead of running their own legacy
+   * GraphQL fetch path. Returns the new run id, or null if the linear plugin
+   * or its job rows aren't installed yet. The legacy path is kept as a
+   * fallback only when this callback is omitted (e.g. tests).
+   */
+  triggerPluginJob?: (jobKey: "initial-import" | "periodic-sync") => Promise<
+    { runId: string; jobId: string } | null
+  >;
 }
 
 export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
@@ -470,6 +480,32 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
     }
     assertCompanyAccess(req, companyId);
 
+    // Prefer the plugin's initial-import job — it shares secrets/teamId with
+    // the working webhook sync and avoids the legacy team-key derivation bug.
+    if (config.triggerPluginJob) {
+      try {
+        const triggered = await config.triggerPluginJob("initial-import");
+        if (triggered) {
+          res.json({
+            ok: true,
+            triggered: true,
+            runId: triggered.runId,
+            jobId: triggered.jobId,
+            message: "Initial import job started; results will arrive via webhook sync.",
+          });
+          return;
+        }
+        res.status(503).json({
+          error: "Linear plugin's initial-import job is not installed yet. Try reconnecting Linear first.",
+        });
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(502).json({ error: `Failed to trigger initial-import: ${message}` });
+        return;
+      }
+    }
+
     try {
       const { issues, pluginState } = await import("@paperclipai/db");
 
@@ -850,6 +886,34 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       return;
     }
     assertCompanyAccess(req, companyId);
+
+    // Prefer the plugin's periodic-sync job — same reason as /import above.
+    // The legacy fetch derives teamKey from the first issue's identifier
+    // prefix and uses a separate token store, which produces "0 synced, N
+    // errors" when the legacy token is stale or the team key doesn't line up.
+    if (config.triggerPluginJob) {
+      try {
+        const triggered = await config.triggerPluginJob("periodic-sync");
+        if (triggered) {
+          res.json({
+            ok: true,
+            triggered: true,
+            runId: triggered.runId,
+            jobId: triggered.jobId,
+            message: "Sync job started; results will arrive via webhook sync.",
+          });
+          return;
+        }
+        res.status(503).json({
+          error: "Linear plugin's periodic-sync job is not installed yet. Try reconnecting Linear first.",
+        });
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(502).json({ error: `Failed to trigger periodic-sync: ${message}` });
+        return;
+      }
+    }
 
     try {
       const { issues: issuesTable } = await import("@paperclipai/db");

@@ -2,7 +2,8 @@ import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { Db } from "@paperclipai/db";
+import { plugins, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -313,24 +314,11 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
 </script></body></html>`);
   });
 
-  // Mount the legacy linear-auth router AFTER the inline /callback above so
-  // Express's first-match precedence keeps the postMessage page in front of
-  // the router's server-side token exchange. The router still handles
-  // /import, /sync, /start, /status, /configure, /disconnect — endpoints the
-  // @lucitra/paperclip-plugin-linear UI bundle calls directly.
-  app.use(
-    "/api/auth/linear",
-    linearAuthRoutes(db, {
-      clientId: appConfig.linearOAuthClientId,
-      clientSecret: appConfig.linearOAuthClientSecret,
-      redirectUri: appConfig.linearOAuthRedirectUri,
-      secretsProvider: appConfig.secretsProvider,
-    }),
-  );
-
-  if (opts.betterAuthHandler) {
-    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
-  }
+  // The /api/auth/{*authPath} catch-all that routes everything else to
+  // betterAuthHandler is mounted further down, after the linear-auth router
+  // is wired with its plugin-job dependencies (see "Mount linear-auth router"
+  // below). Mounting the catch-all here would 404 the linear endpoints before
+  // the scheduler-aware router gets a chance to handle them.
 
   app.use(llmRoutes(db));
 
@@ -412,6 +400,38 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     scheduler,
     jobStore,
   });
+
+  // Mount linear-auth router. Delegates /import and /sync to the linear
+  // plugin's initial-import / periodic-sync jobs (see linear-auth.ts), so the
+  // UI buttons share secrets/teamId with the working webhook sync code path
+  // instead of the legacy GraphQL fetch (which derived teamKey from the first
+  // issue's identifier prefix and ran against a separate token store —
+  // produced "0 synced, N errors" in the BLO Linear deployment).
+  const triggerLinearPluginJob = async (jobKey: "initial-import" | "periodic-sync") => {
+    const [pluginRow] = await db
+      .select({ id: plugins.id })
+      .from(plugins)
+      .where(eq(plugins.pluginKey, "paperclip-plugin-linear"))
+      .limit(1);
+    if (!pluginRow) return null;
+    const job = await jobStore.getJobByKey(pluginRow.id, jobKey);
+    if (!job) return null;
+    return await scheduler.triggerJob(job.id, "manual");
+  };
+  app.use(
+    "/api/auth/linear",
+    linearAuthRoutes(db, {
+      clientId: appConfig.linearOAuthClientId,
+      clientSecret: appConfig.linearOAuthClientSecret,
+      redirectUri: appConfig.linearOAuthRedirectUri,
+      secretsProvider: appConfig.secretsProvider,
+      triggerPluginJob: triggerLinearPluginJob,
+    }),
+  );
+  if (opts.betterAuthHandler) {
+    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
+  }
+
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
