@@ -49,6 +49,7 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  capacityCritical: boolean;
   variables: RoutineVariable[];
   createdByAgentId: string | null;
   createdByUserId: string | null;

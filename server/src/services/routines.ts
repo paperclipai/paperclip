@@ -359,6 +359,53 @@ function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
     || extractRoutineVariableNames([routine.title, routine.description]).includes(WORKSPACE_BRANCH_ROUTINE_VARIABLE);
 }
 
+interface CapacityBand {
+  band: "green" | "amber" | "orange" | "red";
+  percentageUsed: number;
+}
+
+async function readCapacityBand(companyId: string): Promise<CapacityBand> {
+  // Fail open if unable to read capacity. In production, this reads from ../../../USAGE.md
+  // For now, we assume green band as default. In implementation, parse USAGE.md for:
+  // all_models_weekly_usage_pct and cross-reference with SHUTDOWN_TIERS.md thresholds.
+  // Amber = >=70%, Orange = >=85%, Red = >=95%
+  try {
+    // This would read from a runtime cache or file system in production
+    // For now, return green as safe default
+    return { band: "green", percentageUsed: 0 };
+  } catch {
+    // Fail open: allow routine to fire if we can't read capacity
+    return { band: "green", percentageUsed: 0 };
+  }
+}
+
+async function shouldSkipRoutineFireDueToCapacity(routine: typeof routines.$inferSelect, capacityBand: CapacityBand): Promise<boolean> {
+  // Skip fire if band >= Amber (70%) unless routine is capacity_critical
+  if (capacityBand.percentageUsed >= 70 && !routine.capacityCritical) {
+    return true;
+  }
+  return false;
+}
+
+async function createSkippedRoutineRun(db: Db, input: {
+  routine: typeof routines.$inferSelect;
+  trigger: typeof routineTriggers.$inferSelect | null;
+  failureReason: string;
+}) {
+  return db.insert(routineRuns).values({
+    id: crypto.randomUUID(),
+    companyId: input.routine.companyId,
+    routineId: input.routine.id,
+    triggerId: input.trigger?.id ?? null,
+    source: "schedule",
+    status: "skipped",
+    triggeredAt: new Date(),
+    failureReason: input.failureReason,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }).returning();
+}
+
 export function routineService(
   db: Db,
   deps: {
