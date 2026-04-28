@@ -406,6 +406,69 @@ class LivePosition:
 
 
 @dataclass
+class TradeDiagnostic:
+    """Forensic snapshot of a trade — captures the data needed to answer
+    'why did this trade lose money / behave this way' without going back
+    to logs.
+
+    Tier 1 fields (per design spec): detection-time bid/ask snapshot,
+    quote age, funding rates, candidate context, per-leg slippage on
+    entry and exit, per-leg PnL decomposition, exchange health snapshot.
+
+    Tier 2 (per-step latency breakdown) and Tier 3 (order book depth
+    at decision) are deferred — see Plan 3 follow-up notes.
+
+    One TradeDiagnostic per LivePosition, linked by position_id.
+    """
+    position_id: int
+
+    # ---- Decision-time snapshot ----
+    decided_at_ms: int
+    detection_short_bid: float
+    detection_short_ask: float
+    detection_long_bid: float
+    detection_long_ask: float
+    detection_short_quote_age_ms: int   # ms between q.timestamp and decision
+    detection_long_quote_age_ms: int
+    detection_funding_short: float       # funding rate at short exchange
+    detection_funding_long: float        # funding rate at long exchange
+    detection_short_healthy: bool        # executor.healthy at decision
+    detection_long_healthy: bool
+
+    # ---- Candidate context (set when caller has it; 0/empty otherwise) ----
+    candidate_score: float = 0.0
+    candidate_rank: int = 0              # 1 = top-ranked candidate this cycle
+    n_competing_candidates: int = 0
+    pair_recent_wins: int = 0
+    pair_recent_losses: int = 0
+
+    # ---- Entry slippage (filled when fills come back) ----
+    # For SHORT leg: bot expected to sell at q_high.bid; actual fill_price.
+    # Slippage USD = (expected - actual) × size. Positive means worse for bot
+    # (sold below expected). Negative means better than expected.
+    short_entry_slippage_usd: float = 0.0
+    long_entry_slippage_usd: float = 0.0
+
+    # ---- Exit-time fields (filled at close) ----
+    exit_short_bid: float = 0.0
+    exit_short_ask: float = 0.0
+    exit_long_bid: float = 0.0
+    exit_long_ask: float = 0.0
+    exit_realized_spread_pct: float = 0.0
+    short_exit_slippage_usd: float = 0.0
+    long_exit_slippage_usd: float = 0.0
+
+    # ---- PnL decomposition (filled at close) ----
+    short_pnl_usd: float = 0.0
+    long_pnl_usd: float = 0.0
+    funding_paid_short_usd: float = 0.0   # > 0 = bot paid; < 0 = bot received
+    funding_paid_long_usd: float = 0.0
+
+    # ---- Hold context ----
+    hold_minutes: float = 0.0
+
+
+@dataclass
 class Portfolio:
     starting_capital: float
     cash: float
@@ -417,6 +480,10 @@ class Portfolio:
     total_pnl_usd: float = 0.0
     peak_equity: float = 0.0
     max_drawdown_pct: float = 0.0
+    # Diagnostics keyed by position_id. Bounded by closed_positions cap
+    # (last 200) — stale diagnostics for older closed positions are pruned
+    # at save time.
+    diagnostics: Dict[int, "TradeDiagnostic"] = field(default_factory=dict)
 
     @property
     def open_positions(self) -> List[LivePosition]:
@@ -863,6 +930,75 @@ def compute_realized_entry_spread_pct(
     if fill_price_long <= 0:
         return 0.0
     return (fill_price_short - fill_price_long) / fill_price_long * 100
+
+
+def compute_short_slippage_usd(
+    expected_price: float, fill_price: float, size_usd: float
+) -> float:
+    """Slippage on a SHORT leg (selling at exchange's bid).
+
+    Bot expected to sell at `expected_price` (typically q_high.bid). Actual
+    fill came back at `fill_price`. If fill_price < expected, the bot got
+    LESS for the sell than it hoped — that's adverse slippage (positive
+    USD here, meaning "cost").
+
+    A return value > 0 means the leg got a worse fill than expected.
+    < 0 means a better fill (price improvement).
+    """
+    if expected_price <= 0 or fill_price <= 0:
+        return 0.0
+    # Number of contracts = size_usd / expected_price (approx).
+    # Cost difference per contract = expected_price - fill_price.
+    # Adverse if fill < expected.
+    contracts = size_usd / expected_price
+    return (expected_price - fill_price) * contracts
+
+
+def compute_long_slippage_usd(
+    expected_price: float, fill_price: float, size_usd: float
+) -> float:
+    """Slippage on a LONG leg (buying at exchange's ask).
+
+    Bot expected to buy at `expected_price` (typically q_low.ask). Actual
+    fill came back at `fill_price`. If fill_price > expected, the bot
+    PAID more than it hoped — adverse slippage.
+
+    Convention matches compute_short_slippage_usd: > 0 = adverse.
+    """
+    if expected_price <= 0 or fill_price <= 0:
+        return 0.0
+    contracts = size_usd / expected_price
+    return (fill_price - expected_price) * contracts
+
+
+# Perpetuals fund every 8 hours by exchange convention.
+_FUNDING_INTERVAL_HOURS = 8.0
+
+
+def compute_funding_paid_usd(
+    funding_rate: float, size_usd: float, hours_held: float, *, is_short: bool
+) -> float:
+    """Approximate funding paid over `hours_held` for a perp position.
+
+    `funding_rate` is the per-interval rate (e.g. 0.0001 = 0.01% / 8h).
+    Convention: when funding_rate > 0, LONG holders pay SHORT holders.
+
+    Returns USD with sign convention:
+      > 0  ->  bot PAID funding
+      < 0  ->  bot RECEIVED funding
+      = 0  ->  no held interval, or rate was zero
+
+    Approximation: assumes constant funding rate across the hold.  Real
+    funding fluctuates each interval; this gives the right order of
+    magnitude for diagnostic purposes.  For accurate per-trade funding,
+    we'd need to query the exchange's funding history at exit (Tier 2/3).
+    """
+    if hours_held <= 0 or size_usd <= 0:
+        return 0.0
+    intervals_held = hours_held / _FUNDING_INTERVAL_HOURS
+    nominal_paid = funding_rate * size_usd * intervals_held
+    # Short receives when rate > 0; long pays when rate > 0.
+    return -nominal_paid if is_short else nominal_paid
 
 
 def _translate_mexc_fill_for_normalizer(fill: dict, order_id: str, symbol: str) -> dict:
@@ -2346,7 +2482,14 @@ class TradeExecutor:
 
     async def open_position(self, symbol: str, q_high: PriceQuote, q_low: PriceQuote,
                             spread_pct: float, size_usd: float,
-                            session: aiohttp.ClientSession) -> Optional[LivePosition]:
+                            session: aiohttp.ClientSession,
+                            *, candidate_ctx: Optional[dict] = None) -> Optional[LivePosition]:
+        """Open a hedged convergence position.
+
+        candidate_ctx (optional): caller may pass {'score', 'rank',
+        'n_candidates', 'pair_recent_wins', 'pair_recent_losses'} to
+        enrich the TradeDiagnostic record. Missing fields default to 0.
+        """
         size_usd = min(size_usd, MAX_POSITION_USD)
         ex_short = self.executors.get(q_high.exchange)
         ex_long = self.executors.get(q_low.exchange)
@@ -2357,6 +2500,39 @@ class TradeExecutor:
         self.portfolio.next_id += 1
         log.info(f"EXEC ENTRY #{pos_id} {symbol}: SHORT {q_high.exchange} / LONG {q_low.exchange} "
                  f"spread={spread_pct:.3f}% size=${size_usd:.2f}")
+
+        # Capture decision-time snapshot for the diagnostic. We do this
+        # BEFORE placing orders so the snapshot reflects the state the
+        # bot decided on, not the state after fills. Diagnostic isn't
+        # committed to portfolio.diagnostics until/unless the trade
+        # commits — for aborts we throw it away.
+        decided_at_ms = int(time.time() * 1000)
+        ctx = candidate_ctx or {}
+        diag = TradeDiagnostic(
+            position_id=pos_id,
+            decided_at_ms=decided_at_ms,
+            detection_short_bid=q_high.bid,
+            detection_short_ask=q_high.ask,
+            detection_long_bid=q_low.bid,
+            detection_long_ask=q_low.ask,
+            detection_short_quote_age_ms=max(
+                0,
+                decided_at_ms - int(q_high.timestamp.timestamp() * 1000)
+            ),
+            detection_long_quote_age_ms=max(
+                0,
+                decided_at_ms - int(q_low.timestamp.timestamp() * 1000)
+            ),
+            detection_funding_short=q_high.funding_rate,
+            detection_funding_long=q_low.funding_rate,
+            detection_short_healthy=getattr(ex_short, "healthy", True),
+            detection_long_healthy=getattr(ex_long, "healthy", True),
+            candidate_score=ctx.get("score", 0.0),
+            candidate_rank=ctx.get("rank", 0),
+            n_competing_candidates=ctx.get("n_candidates", 0),
+            pair_recent_wins=ctx.get("pair_recent_wins", 0),
+            pair_recent_losses=ctx.get("pair_recent_losses", 0),
+        )
 
         result_short, result_long = await asyncio.gather(
             ex_short.place_market_order(symbol, "sell", size_usd),
@@ -2430,6 +2606,20 @@ class TradeExecutor:
             )
             self.portfolio.positions.append(pos)
             self.portfolio.total_trades += 1
+
+            # Complete entry-side diagnostic with realized slippage and
+            # commit it. Wrapped to isolate any failure from the trade
+            # path — diagnostics are never load-bearing.
+            try:
+                diag.short_entry_slippage_usd = compute_short_slippage_usd(
+                    q_high.bid, fill_price_short, actual_size
+                )
+                diag.long_entry_slippage_usd = compute_long_slippage_usd(
+                    q_low.ask, fill_price_long, actual_size
+                )
+                self.portfolio.diagnostics[pos_id] = diag
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"Failed to record TradeDiagnostic for #{pos_id}: {e}")
             log.info(f"OPEN #{pos_id} {symbol} spread={spread_pct:.3f}% size=${actual_size:.2f} "
                      f"latency={result_short.latency_ms:.0f}ms/{result_long.latency_ms:.0f}ms")
             return pos
@@ -2509,7 +2699,10 @@ class TradeExecutor:
                     result_long.symbol, result_long.side, result_long.size_usd,
                     result_long.filled_usd, q_long.bid, result_long.fees_usd,
                     result_long.timestamp, result_long.latency_ms, result_long.error)
-            self._finalize_close(pos, result_short, result_long, current_spread, reason)
+            self._finalize_close(
+                pos, result_short, result_long, current_spread, reason,
+                q_short=q_short, q_long=q_long,
+            )
             return True
 
         # Handle partial failure — enter degraded state
@@ -2590,7 +2783,9 @@ class TradeExecutor:
 
     def _finalize_close(self, pos: LivePosition,
                         result_short: OrderResult, result_long: OrderResult,
-                        current_spread: float, reason: str):
+                        current_spread: float, reason: str,
+                        q_short: Optional[PriceQuote] = None,
+                        q_long: Optional[PriceQuote] = None):
         pos.status = "CLOSED"
         pos.exit_time = datetime.now(timezone.utc)
         pos.exit_spread_pct = current_spread
@@ -2599,10 +2794,14 @@ class TradeExecutor:
         pos.exit_fees_usd = result_short.fees_usd + result_long.fees_usd
         pos.exit_reason = reason
 
+        # Per-leg PnL — these were computed as locals before; persist so
+        # the diagnostic can show "short made +X, long lost Y" for forensics.
+        short_pnl_pct = 0.0
+        long_pnl_pct = 0.0
         if pos.entry_price_short > 0 and pos.entry_price_long > 0:
-            short_pnl = (pos.entry_price_short - pos.exit_price_short) / pos.entry_price_short
-            long_pnl = (pos.exit_price_long - pos.entry_price_long) / pos.entry_price_long
-            pos.gross_pnl_usd = (short_pnl + long_pnl) * pos.size_usd
+            short_pnl_pct = (pos.entry_price_short - pos.exit_price_short) / pos.entry_price_short
+            long_pnl_pct = (pos.exit_price_long - pos.entry_price_long) / pos.entry_price_long
+            pos.gross_pnl_usd = (short_pnl_pct + long_pnl_pct) * pos.size_usd
         pos.net_pnl_usd = pos.gross_pnl_usd - pos.entry_fees_usd - pos.exit_fees_usd
 
         self.portfolio.cash += pos.net_pnl_usd
@@ -2619,8 +2818,87 @@ class TradeExecutor:
         if dd > self.portfolio.max_drawdown_pct:
             self.portfolio.max_drawdown_pct = dd
 
+        # Update the trade diagnostic with exit-side data. Wrapped to
+        # isolate any failure from the close path — diagnostics never
+        # block trade lifecycle.
+        try:
+            self._finalize_diagnostic(
+                pos, result_short, result_long,
+                short_pnl_pct, long_pnl_pct,
+                q_short, q_long,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Failed to finalize TradeDiagnostic for #{pos.id}: {e}")
+
         log.info(f"CLOSE #{pos.id} {pos.symbol} reason={reason} "
                  f"pnl=${pos.net_pnl_usd:+.4f} equity=${equity:.2f}")
+
+    def _finalize_diagnostic(
+        self, pos: LivePosition,
+        result_short: OrderResult, result_long: OrderResult,
+        short_pnl_pct: float, long_pnl_pct: float,
+        q_short: Optional[PriceQuote], q_long: Optional[PriceQuote],
+    ) -> None:
+        """Populate exit-side fields on the TradeDiagnostic when a position closes."""
+        diag = self.portfolio.diagnostics.get(pos.id)
+        if diag is None:
+            # Position opened before this commit (no entry-side diagnostic).
+            return
+
+        # Hold duration in minutes.
+        if pos.entry_time and pos.exit_time:
+            hold_seconds = (pos.exit_time - pos.entry_time).total_seconds()
+            diag.hold_minutes = round(hold_seconds / 60.0, 4)
+        hours_held = diag.hold_minutes / 60.0
+
+        # Per-leg USD PnL (multiplying the percentage returns by size).
+        diag.short_pnl_usd = round(short_pnl_pct * pos.size_usd, 6)
+        diag.long_pnl_usd = round(long_pnl_pct * pos.size_usd, 6)
+
+        # Funding paid per leg, using the rates snapshotted at entry.
+        diag.funding_paid_short_usd = compute_funding_paid_usd(
+            diag.detection_funding_short, pos.size_usd, hours_held, is_short=True
+        )
+        diag.funding_paid_long_usd = compute_funding_paid_usd(
+            diag.detection_funding_long, pos.size_usd, hours_held, is_short=False
+        )
+
+        # Exit-time bid/ask snapshot from the quotes used for the close.
+        if q_short is not None:
+            diag.exit_short_bid = q_short.bid
+            diag.exit_short_ask = q_short.ask
+        if q_long is not None:
+            diag.exit_long_bid = q_long.bid
+            diag.exit_long_ask = q_long.ask
+
+        # Realized exit spread — same shape as entry but using exit fills.
+        if pos.exit_price_short > 0 and pos.exit_price_long > 0:
+            diag.exit_realized_spread_pct = round(
+                compute_realized_entry_spread_pct(
+                    pos.exit_price_short, pos.exit_price_long
+                ),
+                6,
+            )
+
+        # Exit slippage. Closing a SHORT means BUYING — bot expected to
+        # pay q_short.ask, actual fill is exit_price_short. Using the
+        # long_slippage formula because semantics match (buying side):
+        # > 0 means bot paid more than expected.
+        if q_short is not None and pos.exit_price_short > 0:
+            diag.short_exit_slippage_usd = round(
+                compute_long_slippage_usd(
+                    q_short.ask, pos.exit_price_short, pos.size_usd
+                ),
+                6,
+            )
+        # Closing a LONG means SELLING — bot expected to receive q_long.bid.
+        if q_long is not None and pos.exit_price_long > 0:
+            diag.long_exit_slippage_usd = round(
+                compute_short_slippage_usd(
+                    q_long.bid, pos.exit_price_long, pos.size_usd
+                ),
+                6,
+            )
 
 
 # Convenience aliases used throughout strategy and Telegram code
@@ -3022,9 +3300,55 @@ class LiveTrader:
             close_retry_count=d.get("close_retry_count", 0),
         )
 
+    @staticmethod
+    def _diag_to_dict(d: TradeDiagnostic) -> dict:
+        """Serialize a TradeDiagnostic to a JSON-safe dict.
+
+        Plain field copy. Floats rounded to 6 decimals to keep state.json
+        compact (price-level precision is enough for forensics).
+        """
+        out = {}
+        for k, v in d.__dict__.items():
+            if isinstance(v, float):
+                out[k] = round(v, 6)
+            else:
+                out[k] = v
+        return out
+
+    @staticmethod
+    def _diag_from_dict(d: dict) -> TradeDiagnostic:
+        """Deserialize a dict back to TradeDiagnostic. Tolerates missing
+        fields (older saves) by relying on dataclass defaults — only
+        position_id and decided_at_ms are required."""
+        # Filter to known field names so unknown extras don't crash.
+        known = {f for f in TradeDiagnostic.__dataclass_fields__.keys()}
+        kwargs = {k: v for k, v in d.items() if k in known}
+        # Required fields with sensible fallbacks for older state files
+        # that pre-date this commit.
+        kwargs.setdefault("position_id", 0)
+        kwargs.setdefault("decided_at_ms", 0)
+        for required_zero in (
+            "detection_short_bid", "detection_short_ask",
+            "detection_long_bid", "detection_long_ask",
+            "detection_short_quote_age_ms", "detection_long_quote_age_ms",
+            "detection_funding_short", "detection_funding_long",
+        ):
+            kwargs.setdefault(required_zero, 0)
+        kwargs.setdefault("detection_short_healthy", True)
+        kwargs.setdefault("detection_long_healthy", True)
+        return TradeDiagnostic(**kwargs)
+
     def _save_state(self):
         """Persist full trader state to JSON."""
         p = self.portfolio
+        # Prune diagnostics to those still referenced by an in-memory position
+        # (open or in the recent closed window). Without pruning, the dict
+        # grows unboundedly across the bot's lifetime.
+        live_pids = {pos.id for pos in p.positions}
+        live_pids |= {pos.id for pos in p.closed_positions[-200:]}
+        p.diagnostics = {
+            pid: diag for pid, diag in p.diagnostics.items() if pid in live_pids
+        }
         state = {
             "cash": p.cash,
             "next_id": p.next_id,
@@ -3037,6 +3361,9 @@ class LiveTrader:
             "equity_history": self.equity_history[-10000:],
             "open_positions": [self._pos_to_dict(pos) for pos in p.positions],
             "closed_positions": [self._pos_to_dict(pos) for pos in p.closed_positions[-200:]],
+            "diagnostics": {
+                str(pid): self._diag_to_dict(d) for pid, d in p.diagnostics.items()
+            },
             "symbol_blacklist": {s: t for s, t in self.symbol_blacklist.items() if t > time.time()},
             "balance_cache": self.risk_mgr.balance_cache,
             "order_audit_log": self.trade_executor.order_audit_log[-200:],
@@ -3083,8 +3410,18 @@ class LiveTrader:
                     p.closed_positions.append(pos)
                 except Exception:
                     pass
+            # Restore diagnostics. Older state files won't have this key;
+            # treat as empty. Bad rows are skipped (forensic data is
+            # nice-to-have, not critical to bot operation).
+            for pid_str, d in state.get("diagnostics", {}).items():
+                try:
+                    diag = self._diag_from_dict(d)
+                    p.diagnostics[int(pid_str)] = diag
+                except Exception as e:
+                    log.warning(f"Failed to restore diagnostic for {pid_str}: {e}")
             log.info(f"State loaded: equity=${p.equity:.2f} trades={p.total_trades} "
-                     f"open={len(p.open_positions)} pnl=${p.total_pnl_usd:+.2f}")
+                     f"open={len(p.open_positions)} pnl=${p.total_pnl_usd:+.2f} "
+                     f"diagnostics={len(p.diagnostics)}")
         except FileNotFoundError:
             log.info("No saved state found — starting fresh")
         except (json.JSONDecodeError, Exception) as e:
@@ -3674,12 +4011,15 @@ async def main():
                     candidates.sort(key=lambda c: c["score"], reverse=True)
                     # Deduplicate by symbol (only one entry per symbol)
                     seen_symbols = set()
+                    n_candidates_total = len(candidates)
+                    rank_index = 0
                     for cand in candidates:
                         if cand["symbol"] in seen_symbols:
                             continue
                         if len(trader.portfolio.open_positions) >= MAX_CONCURRENT:
                             break
 
+                        rank_index += 1
                         seen_symbols.add(cand["symbol"])
                         log.info(
                             f"CANDIDATE {cand['symbol']} "
@@ -3689,9 +4029,20 @@ async def main():
                             f"score={cand['score']:.3f}"
                         )
 
+                        # Build candidate context for the trade diagnostic.
+                        ps = trader.pair_stats.get(cand["pair_key"], {})
+                        candidate_ctx = {
+                            "score": cand["score"],
+                            "rank": rank_index,
+                            "n_candidates": n_candidates_total,
+                            "pair_recent_wins": ps.get("wins", 0),
+                            "pair_recent_losses": ps.get("losses", 0),
+                        }
+
                         pos = await trader.trade_executor.open_position(
                             cand["symbol"], cand["q_high"], cand["q_low"],
                             cand["spread_pct"], cand["size_usd"], session,
+                            candidate_ctx=candidate_ctx,
                         )
                         if pos:
                             open_msg = format_live_open_msg(pos, trader.portfolio)
