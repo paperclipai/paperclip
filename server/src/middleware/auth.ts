@@ -16,11 +16,40 @@ function hashToken(token: string) {
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+  /**
+   * Random per-process token. When set, requests that arrive on loopback with
+   * `x-paperclip-internal-bootstrap: <token>` are treated as instance admin
+   * regardless of deploymentMode. This is the channel index.ts uses to
+   * auto-install bundled plugins by hitting its own /api/plugins/install route
+   * before the auth bootstrap completes — without it, the loopback POST 403s.
+   */
+  internalBootstrapToken?: string;
+}
+
+function isLoopback(req: Request): boolean {
+  const ip = req.ip ?? req.socket?.remoteAddress ?? "";
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
+    if (
+      opts.internalBootstrapToken &&
+      isLoopback(req) &&
+      req.header("x-paperclip-internal-bootstrap") === opts.internalBootstrapToken
+    ) {
+      req.actor = {
+        type: "board",
+        userId: "internal-bootstrap",
+        userName: "Internal Bootstrap",
+        userEmail: null,
+        isInstanceAdmin: true,
+        source: "local_implicit",
+      };
+      next();
+      return;
+    }
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? {

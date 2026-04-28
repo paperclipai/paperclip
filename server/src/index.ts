@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { resolve } from "node:path";
 import os from "node:os";
+import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -66,15 +67,32 @@ const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-secrets",
 ];
 
-async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
+async function autoInstallBundledPlugins(
+  _db: import("@paperclipai/db").Db,
+  internalBootstrapToken: string,
+) {
   // Wait for the server to be fully up before calling the install API
   const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
   const baseUrl = `http://127.0.0.1:${port}`;
+  // The /api/plugins/install route requires assertInstanceAdmin. Loopback
+  // requests carrying this token are accepted as instance admin (see
+  // actorMiddleware -> internalBootstrapToken). Without it we'd 403 here.
+  const internalHeaders = {
+    "x-paperclip-internal-bootstrap": internalBootstrapToken,
+  } as const;
+  // Wrap fetch to auto-attach the bootstrap header for every loopback call
+  // we make in this function. External calls (npm registry) should still use
+  // plain fetch so we don't leak the token.
+  const fetchInternal = (input: string | URL, init?: RequestInit) =>
+    fetch(input, {
+      ...init,
+      headers: { ...(init?.headers ?? {}), ...internalHeaders },
+    });
 
   // Install npm-based bundled plugins
   for (const pkg of BUNDLED_PLUGINS) {
     try {
-      const listRes = await fetch(`${baseUrl}/api/plugins`);
+      const listRes = await fetchInternal(`${baseUrl}/api/plugins`);
       if (listRes.ok) {
         const plugins = (await listRes.json()) as Array<{ packageName: string; pluginKey: string; status: string }>;
         const existing = plugins.find((p) => p.packageName === pkg || p.pluginKey === pkg);
@@ -82,7 +100,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
       }
 
       logger.info({ package: pkg }, "auto-installing bundled plugin via API");
-      const installRes = await fetch(`${baseUrl}/api/plugins/install`, {
+      const installRes = await fetchInternal(`${baseUrl}/api/plugins/install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ packageName: pkg }),
@@ -107,7 +125,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
   if (process.env.PAPERCLIP_AUTO_UPGRADE_PLUGINS === "false") {
     logger.info("auto-upgrade disabled via PAPERCLIP_AUTO_UPGRADE_PLUGINS=false");
   } else try {
-    const listRes3 = await fetch(`${baseUrl}/api/plugins`);
+    const listRes3 = await fetchInternal(`${baseUrl}/api/plugins`);
     if (listRes3.ok) {
       const allPlugins = (await listRes3.json()) as Array<{
         id: string; packageName: string; version: string; status: string;
@@ -142,7 +160,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
             { package: pkg, current: installed.version, latest },
             "auto-upgrading bundled plugin",
           );
-          const upgradeRes = await fetch(`${baseUrl}/api/plugins/${installed.id}/upgrade`, {
+          const upgradeRes = await fetchInternal(`${baseUrl}/api/plugins/${installed.id}/upgrade`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ version: latest }),
@@ -169,7 +187,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
 
   // For dev: if npm install failed for chat plugin, try local path fallback
   {
-    const listRes2 = await fetch(`${baseUrl}/api/plugins`).catch(() => null);
+    const listRes2 = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
     const plugins2 = listRes2?.ok ? (await listRes2.json()) as Array<{ pluginKey: string; status: string }> : [];
     const chatInstalled = plugins2.some((p) => p.pluginKey === "paperclip-chat" && p.status === "ready");
     if (!chatInstalled) {
@@ -177,7 +195,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
         const { resolve } = await import("path");
         const absPath = resolve(process.cwd(), "../paperclip-plugin-chat");
         logger.info({ path: absPath }, "chat plugin not found via npm, trying local path");
-        const res = await fetch(`${baseUrl}/api/plugins/install`, {
+        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
@@ -197,19 +215,19 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
   const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
   if (linearClientId && linearClientSecret) {
     try {
-      const listRes = await fetch(`${baseUrl}/api/plugins`);
+      const listRes = await fetchInternal(`${baseUrl}/api/plugins`);
       if (listRes.ok) {
         const allPlugins = (await listRes.json()) as Array<{ id: string; pluginKey: string; status: string }>;
         const linearPlugin = allPlugins.find((p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready");
         if (linearPlugin) {
           // Check if config already has credentials
-          const configRes = await fetch(`${baseUrl}/api/plugins/${linearPlugin.id}/config`);
+          const configRes = await fetchInternal(`${baseUrl}/api/plugins/${linearPlugin.id}/config`);
           if (configRes.ok) {
             const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
             const existing = config?.configJson ?? {};
             if (!existing.linearClientId || !existing.linearClientSecret) {
               // Auto-populate from env
-              await fetch(`${baseUrl}/api/plugins/${linearPlugin.id}/config`, {
+              await fetchInternal(`${baseUrl}/api/plugins/${linearPlugin.id}/config`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -828,11 +846,16 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  // One-shot token used by autoInstallBundledPlugins to authenticate its
+  // loopback HTTP calls to /api/plugins/install (which require instance admin).
+  // Lives only in this Node process — never written to disk or logged.
+  const internalBootstrapToken = randomBytes(32).toString("hex");
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
     feedbackExportService: feedback,
+    internalBootstrapToken,
     databaseBackupService: {
       runManualBackup: async () => {
         const result = await runServerDatabaseBackup("manual");
@@ -1115,7 +1138,7 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any).then(() => {
+  void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
     // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
     copyWorkspaceSdkFiles();
   }).catch((err) => {

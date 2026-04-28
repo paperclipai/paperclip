@@ -26,4 +26,14 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Ensure ~/.local/bin/claude exists for the chat plugin which hard-codes
+# `${HOME}/.local/bin/claude` (see @lucitra/paperclip-plugin-chat). The
+# image bakes this symlink, but /paperclip is a PVC mount in k8s, so
+# anything under /paperclip in the image layer is hidden at runtime.
+mkdir -p /paperclip/.local/bin
+if [ ! -e /paperclip/.local/bin/claude ]; then
+    ln -sf /usr/local/bin/claude /paperclip/.local/bin/claude
+fi
+chown -R node:node /paperclip/.local 2>/dev/null || true
+
 exec gosu node "$@"

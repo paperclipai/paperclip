@@ -233,6 +233,8 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /** Random per-process token for trusted loopback bootstrap. */
+    internalBootstrapToken?: string;
   },
 ) {
   const app = express();
@@ -264,6 +266,7 @@ export async function createApp(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
+      internalBootstrapToken: opts.internalBootstrapToken,
     }),
   );
   app.use("/api/auth", authRoutes(db));
