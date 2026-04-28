@@ -512,6 +512,20 @@
       "when": 1777305216238,
       "tag": "0072_large_sandman",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1777382021347,
+      "tag": "0073_shiny_salo",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1777384535070,
+      "tag": "0074_striped_genesis",
+      "breakpoints": true
     }
   ]
 }
