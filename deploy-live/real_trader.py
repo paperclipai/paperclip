@@ -483,6 +483,27 @@ class TradeDiagnostic:
     # ---- Hold context ----
     hold_minutes: float = 0.0
 
+    # ---- Tier 2: latency breakdown ----
+    # entry timestamps span the asyncio.gather that places both legs.
+    # `decided_at_ms` (above) is when the bot resolved to enter.
+    # `entry_started_at_ms` is just before the gather call.
+    # `entry_completed_at_ms` is just after both legs return.
+    # `decided_at_ms → entry_started_at_ms` = bot scheduling/setup time.
+    # `entry_started_at_ms → entry_completed_at_ms` = network/exchange round-trip.
+    # `short_entry_latency_ms` / `long_entry_latency_ms` come from each
+    # leg's OrderResult.latency_ms (already measured per-leg in the
+    # executors). Letting us see "long was slow" vs "short was slow".
+    entry_started_at_ms: int = 0
+    entry_completed_at_ms: int = 0
+    short_entry_latency_ms: float = 0.0
+    long_entry_latency_ms: float = 0.0
+
+    # Exit-side mirror.
+    exit_started_at_ms: int = 0
+    exit_completed_at_ms: int = 0
+    short_exit_latency_ms: float = 0.0
+    long_exit_latency_ms: float = 0.0
+
 
 @dataclass
 class Portfolio:
@@ -2550,10 +2571,18 @@ class TradeExecutor:
             pair_recent_losses=ctx.get("pair_recent_losses", 0),
         )
 
+        # Tier 2 latency: timestamp the asyncio.gather span so we can later
+        # decompose "decided→sent" (queue/scheduler) from "sent→fill" (network).
+        entry_started_at_ms = int(time.time() * 1000)
         result_short, result_long = await asyncio.gather(
             ex_short.place_market_order(symbol, "sell", size_usd),
             ex_long.place_market_order(symbol, "buy", size_usd),
         )
+        entry_completed_at_ms = int(time.time() * 1000)
+        diag.entry_started_at_ms = entry_started_at_ms
+        diag.entry_completed_at_ms = entry_completed_at_ms
+        diag.short_entry_latency_ms = result_short.latency_ms
+        diag.long_entry_latency_ms = result_long.latency_ms
         self._log_order(result_short, "entry_short", pos_id)
         self._log_order(result_long, "entry_long", pos_id)
 
@@ -2768,10 +2797,24 @@ class TradeExecutor:
         pos.status = "CLOSING"
         log.info(f"EXEC EXIT #{pos.id} {pos.symbol}: reason={reason}")
 
+        # Tier 2 latency: same span instrumentation as entry.
+        exit_started_at_ms = int(time.time() * 1000)
         result_short, result_long = await asyncio.gather(
             ex_short.place_market_order(pos.symbol, "buy", pos.size_usd),
             ex_long.place_market_order(pos.symbol, "sell", pos.size_usd),
         )
+        exit_completed_at_ms = int(time.time() * 1000)
+        # Stash the timing on the diagnostic now (before _finalize_close
+        # mutates state). Wrapped to isolate any failure.
+        try:
+            diag = self.portfolio.diagnostics.get(pos.id)
+            if diag is not None:
+                diag.exit_started_at_ms = exit_started_at_ms
+                diag.exit_completed_at_ms = exit_completed_at_ms
+                diag.short_exit_latency_ms = result_short.latency_ms
+                diag.long_exit_latency_ms = result_long.latency_ms
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Failed to record exit latency for #{pos.id}: {e}")
         self._log_order(result_short, "exit_short", pos.id)
         self._log_order(result_long, "exit_long", pos.id)
 
