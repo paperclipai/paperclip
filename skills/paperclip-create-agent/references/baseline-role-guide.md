@@ -118,7 +118,7 @@ How the agent verifies its own work before marking an issue done or handing it t
 - **Over-generic prompts.** "Be helpful, be thorough, be correct" is worthless — the next agent drafts a better version by reading the template you adapted from. Write role-specific guidance only.
 - **Lens dumping.** Copying every lens from an expert template into an unrelated role adds noise and burns context. Five well-chosen lenses beat fifteen irrelevant ones.
 - **Permission sprawl.** Do not grant write access, admin endpoints, or broad skill sets "just in case." Grant exactly what the role needs.
-- **Secrets in adapter config.** Do not embed long-lived tokens, API keys, or private URLs in `adapterConfig` or `promptTemplate` when environment injection or a scoped skill can carry the capability instead.
+- **Secrets in agent config.** Do not embed long-lived tokens, API keys, or private URLs in `adapterConfig`, `instructionsBundle`, or legacy prompt fields when environment injection or a scoped skill can carry the capability instead.
 - **Silent timer heartbeats.** A timer heartbeat burns budget every interval. If the role has no scheduled work, leave it off.
 - **Bypassing governance.** Never skip `sourceIssueId`, reporting line, icon, or approval flow to ship faster. Hires without these are hard to audit and hard to hand off.
 - **Copying another company's prompt verbatim.** Placeholders like `{{companyName}}`, `{{managerTitle}}`, and `{{issuePrefix}}` must be replaced with this company's values before submitting the hire.

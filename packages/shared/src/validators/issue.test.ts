@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
@@ -74,5 +75,22 @@ describe("issue validators", () => {
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
     expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  it("clamps oversized requestDepth values on create", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Clamp request depth",
+      requestDepth: MAX_ISSUE_REQUEST_DEPTH + 500,
+    });
+
+    expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("clamps oversized requestDepth values on update", () => {
+    const parsed = updateIssueSchema.parse({
+      requestDepth: MAX_ISSUE_REQUEST_DEPTH + 1,
+    });
+
+    expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
 });
