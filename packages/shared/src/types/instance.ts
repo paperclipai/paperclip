@@ -21,6 +21,7 @@ export interface InstanceGeneralSettings {
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  quotaExhaustedCmd: string | null;
 }
 
 export interface InstanceExperimentalSettings {

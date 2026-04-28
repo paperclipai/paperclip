@@ -1375,7 +1375,7 @@ export interface PluginGoalsClient {
     goalId: string,
     patch: Partial<Pick<
       Goal,
-      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId"
+      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId" | "targetDate"
     >>,
     companyId: string,
   ): Promise<Goal>;
@@ -1569,4 +1569,36 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /**
+   * Generic JSON-RPC escape hatch. Lets plugins invoke any host method
+   * by name, including methods added to the wire protocol after the
+   * SDK's typed clients were published. Capability checks still apply
+   * — the host rejects calls the plugin's manifest doesn't authorize.
+   *
+   * Prefer the typed clients (`ctx.projects.update`, etc.) when they
+   * exist. This is the unsafe-but-flexible fallback for forward
+   * compatibility. The caller is responsible for shape validation on
+   * params and the return value.
+   *
+   * @example
+   *   const updated = await ctx.rpc.call("projects.update", {
+   *     projectId: "abc",
+   *     patch: { name: "New name" },
+   *     companyId: "xyz",
+   *   });
+   */
+  rpc: PluginRpcClient;
+}
+
+/**
+ * Generic RPC client — for forward-compat access to host methods that
+ * predate the typed SDK clients on the operator's installed version.
+ */
+export interface PluginRpcClient {
+  call<TResult = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs?: number,
+  ): Promise<TResult>;
 }

@@ -712,9 +712,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    const quotaExhausted =
+      failed && !loginMeta.requiresLogin && isClaudeQuotaExhausted(parsed);
+    // Quota messages ("out of extra usage", "weekly limit reached", etc.) also
+    // match the transient-upstream regex; classify quota first so the retry
+    // schedule doesn't burn attempts against an already rate-limited account.
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
+      !quotaExhausted &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -731,10 +737,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
+      : quotaExhausted
+      ? "provider_quota_exhausted"
       : transientUpstream
       ? "claude_transient_upstream"
-      : isClaudeQuotaExhausted(parsed)
-      ? "provider_quota_exhausted"
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,

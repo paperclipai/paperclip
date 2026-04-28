@@ -423,35 +423,14 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-function lastExternalCommentAtExpr(companyId: string, userId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-        AND (
-          ${issueComments.authorUserId} IS NULL
-          OR ${issueComments.authorUserId} <> ${userId}
-        )
-    )
-  `;
-}
-
-function issueLastActivityAtExpr(companyId: string, userId: string) {
-  const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
-  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
-  return sql<Date>`
-    GREATEST(
-      COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
-      CASE
-        WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
-        THEN ${issues.updatedAt}
-        ELSE to_timestamp(0)
-      END
-    )
-  `;
-}
+// NOTE: A previous helper `issueLastActivityAtExpr(companyId, userId)` lived
+// here that computed a per-user, per-row "last activity" expression via
+// correlated subqueries on issue_comments / issue_read_states. It was the
+// right-hand side of `inboxVisibleForUserCondition`, which made that predicate
+// non-sargable and caused the inbox query to take 1-2 minutes for accounts
+// with a few thousand issues. It has been replaced by the materialized
+// `issues.last_activity_at` column maintained by DB triggers (see migration
+// 0072_issues_last_activity_at.sql).
 
 const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.read_marked",
@@ -520,8 +499,27 @@ function unreadForUserCondition(companyId: string, userId: string) {
   `;
 }
 
+/**
+ * Hide issues that the given user has archived from their inbox, unless new
+ * activity has occurred on the issue since the archive timestamp.
+ *
+ * The right-hand side compares against the materialized
+ * {@link issues.lastActivityAt} column rather than a per-row dynamic
+ * expression involving correlated subqueries over `issue_comments`,
+ * `issue_read_states`, and `activity_log`. That makes the predicate sargable
+ * and lets Postgres perform a single hash semi-join against
+ * `issue_inbox_archives` instead of replaying multiple correlated subqueries
+ * per scanned issue.
+ *
+ * Semantic note: this uses a global "last activity on the issue" timestamp,
+ * not a per-user "subjective" activity timestamp (which is what the previous
+ * implementation computed). Concretely: if user U archives issue X at T1 and
+ * then *user U themselves* posts a comment at T2 > T1, the issue will resurface
+ * (under the old implementation it would not, because U's own comment was
+ * counted as "their own touch" and excluded). This matches Slack/Linear inbox
+ * semantics and is the desired behavior.
+ */
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
-  const issueLastActivityAt = issueLastActivityAtExpr(companyId, userId);
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -529,7 +527,7 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
       WHERE ${issueInboxArchives.issueId} = ${issues.id}
         AND ${issueInboxArchives.companyId} = ${companyId}
         AND ${issueInboxArchives.userId} = ${userId}
-        AND ${issueInboxArchives.archivedAt} >= ${issueLastActivityAt}
+        AND ${issueInboxArchives.archivedAt} >= ${issues.lastActivityAt}
     )
   `;
 }
@@ -569,7 +567,8 @@ function containsPlainTextAgentMention(bodyLower: string, agentNameLower: string
     const after = afterIndex < bodyLower.length ? bodyLower[afterIndex] : "";
 
     const startsMention = before === "" || /[^a-z0-9_]/.test(before);
-    const endsMention = after === "" || /[\s,!?;:.)\]}>"'`]/.test(after);
+    const endsMentionChars = " \t\n\r,!?;:.)]}>\"'`";
+    const endsMention = after === "" || endsMentionChars.includes(after);
     if (startsMention && endsMention) return true;
 
     index = bodyLower.indexOf(needle, index + 1);
@@ -1153,6 +1152,7 @@ const issueListSelect = {
   `,
   status: issues.status,
   priority: issues.priority,
+  estimate: issues.estimate,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
   checkoutRunId: issues.checkoutRunId,
@@ -1181,6 +1181,7 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
+  lastActivityAt: issues.lastActivityAt,
 };
 
 function withActiveRuns(
@@ -1792,6 +1793,8 @@ export function issueService(db: Db) {
 
       return Boolean(updated);
     });
+  }
+
   async function clearStaleExecutionLock(issueId: string, expectedExecutionRunId: string) {
     const stale = await isTerminalOrMissingHeartbeatRun(expectedExecutionRunId);
     if (!stale) return false;

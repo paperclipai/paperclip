@@ -123,7 +123,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               companyId: run.companyId,
               keyId: undefined,
               runId: runIdHeader,
-              source: "run_id",
+              source: "agent_jwt",
             };
             next();
             return;

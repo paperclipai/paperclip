@@ -1817,8 +1817,12 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertInstanceAdmin(req);
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; force?: boolean } | undefined;
     const version = body?.version;
+    // `force=true` (instance admin only — already gated above) approves any
+    // capability escalation in the new manifest. Without it, the loader
+    // throws when the new manifest declares capabilities the old one didn't.
+    const force = body?.force === true;
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -1832,7 +1836,7 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
+      const result = await lifecycle.upgrade(plugin.id, version, { force });
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
@@ -2293,6 +2297,22 @@ export function pluginRoutes(
       res.status(404).json({
         error: `Webhook endpoint '${endpointKey}' is not declared by this plugin`,
       });
+      return;
+    }
+
+    // Step 4b: Slack-style url_verification handshake.
+    //
+    // Slack tests Events API URLs with a one-time POST that carries
+    // { type: "url_verification", challenge: "<token>" } and expects the
+    // response body to echo the challenge. The plugin SDK's handleWebhook
+    // RPC is fire-and-forget (returns void), so workers cannot set the
+    // HTTP response body — handle this Slack interop convention host-side.
+    const verifBody = req.body as { type?: unknown; challenge?: unknown } | undefined;
+    if (
+      verifBody?.type === "url_verification" &&
+      typeof verifBody.challenge === "string"
+    ) {
+      res.status(200).json({ challenge: verifBody.challenge });
       return;
     }
 

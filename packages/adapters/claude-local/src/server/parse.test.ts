@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeQuotaExhausted,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -92,6 +93,38 @@ describe("isClaudeTransientUpstreamError", () => {
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
+    ).toBe(false);
+  });
+});
+
+describe("quota / transient classifier overlap", () => {
+  // Both classifiers match quota-style messages — callers must check
+  // isClaudeQuotaExhausted first so quota gets routed to the rotation hook
+  // instead of the transient retry schedule.
+  const overlappingQuotaMessages = [
+    "You're out of extra usage · resets 4pm (America/Chicago)",
+    "Claude usage limit reached. Resets at 2am (Europe/Warsaw).",
+    "Usage limit reached.",
+    "5-hour limit reached",
+    "5 hour limit reached. Resets at 4pm.",
+    "Weekly limit reached. Resets Monday.",
+    "Usage cap reached.",
+  ];
+
+  for (const msg of overlappingQuotaMessages) {
+    it(`both classifiers match ${JSON.stringify(msg)} — quota must be checked first`, () => {
+      const parsed = { is_error: true, result: msg };
+      expect(isClaudeQuotaExhausted(parsed)).toBe(true);
+      expect(isClaudeTransientUpstreamError({ parsed })).toBe(true);
+    });
+  }
+
+  it("does not classify generic transient errors (e.g. 503) as quota", () => {
+    expect(
+      isClaudeQuotaExhausted({ is_error: true, result: "Service unavailable (503). Try again later." }),
+    ).toBe(false);
+    expect(
+      isClaudeQuotaExhausted({ is_error: true, errors: [{ type: "overloaded_error" }] }),
     ).toBe(false);
   });
 });

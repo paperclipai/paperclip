@@ -80,16 +80,7 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
 
-type AdapterType =
-  | "claude_local"
-  | "codex_local"
-  | "gemini_local"
-  | "hermes_local"
-  | "opencode_local"
-  | "pi_local"
-  | "cursor"
-  | "http"
-  | "openclaw_gateway";
+type AdapterType = string;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();

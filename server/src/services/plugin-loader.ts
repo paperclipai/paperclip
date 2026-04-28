@@ -401,7 +401,10 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(
+    pluginId: string,
+    options: Omit<PluginInstallOptions, "installDir"> & { force?: boolean },
+  ): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
@@ -1308,7 +1311,7 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir"> & { force?: boolean },
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
@@ -1330,6 +1333,7 @@ export function pluginLoader(
         // the caller to re-supply the path every time.
         localPath = plugin.packagePath ?? undefined,
         version,
+        force = false,
       } = upgradeOptions;
 
       log.info(
@@ -1360,14 +1364,20 @@ export function pluginLoader(
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
 
       if (escalated.length > 0) {
+        if (!force) {
+          log.warn(
+            { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
+            "plugin-loader: upgrade introduces new capabilities — requires admin approval",
+          );
+          throw new Error(
+            `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
+              `The previous version declared [${[...oldCaps].join(", ")}]. ` +
+              `Re-run with force=true (instance admin only) to approve the capability escalation.`,
+          );
+        }
         log.warn(
           { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+          "plugin-loader: capability escalation force-approved",
         );
       }
 
@@ -1619,8 +1629,14 @@ export function pluginLoader(
       toolDispatcher.unregisterPluginTools(pluginKey);
 
       // 4. Stop the worker process
+      //
+      // Stop on ANY handle present — not just `isRunning` — so transitional
+      // states (starting/stopping/errored) still clear the workers Map.
+      // Otherwise the handle leaks and the next startWorker either throws
+      // "already registered" or, after disable+enable, the lifecycle reports
+      // success but bridge calls 502 with "No worker registered".
       try {
-        if (workerManager.isRunning(pluginId)) {
+        if (workerManager.getWorker(pluginId)) {
           await workerManager.stopWorker(pluginId);
         }
       } catch (err) {

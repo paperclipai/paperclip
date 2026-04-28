@@ -61,9 +61,19 @@ export const issues = pgTable(
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Materialized "last activity on this issue" timestamp. Maintained by DB
+    // triggers (see migration 0072_issues_last_activity_at.sql): mirrors
+    // updated_at on UPDATE, and bumps to comment.created_at on
+    // issue_comments insert. Used by inboxVisibleForUserCondition to make the
+    // archive predicate sargable.
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyLastActivityIdx: index("issues_company_last_activity_idx").on(
+      table.companyId,
+      table.lastActivityAt,
+    ),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,

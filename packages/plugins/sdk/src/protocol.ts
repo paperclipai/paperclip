@@ -816,7 +816,6 @@ export interface WorkerToHostMethods {
       actorAgentId?: string | null;
       actorUserId?: string | null;
       actorRunId?: string | null;
-      labelIds?: string[]; // Lucitra extension
     },
     result: Issue,
   ];

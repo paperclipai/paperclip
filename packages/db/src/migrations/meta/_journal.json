@@ -498,6 +498,20 @@
       "when": 1776780004000,
       "tag": "0070_active_run_output_watchdog",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777180000000,
+      "tag": "0071_goals_target_date",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777180001000,
+      "tag": "0072_issues_last_activity_at",
+      "breakpoints": true
     }
   ]
 }

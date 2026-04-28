@@ -54,7 +54,6 @@ import type {
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
-import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 
 /**
  * Bundled plugins that should be auto-installed on startup.
@@ -65,7 +64,6 @@ const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-chat",
   "@lucitra/paperclip-plugin-updater",
   "@lucitra/paperclip-plugin-secrets",
-  "paperclip-plugin-slack",
 ];
 
 async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
@@ -1129,23 +1127,13 @@ export async function startServer(): Promise<StartedServer> {
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
+      }
 
       logger.info({ signal }, "Stopping embedded PostgreSQL");
       try {
         await embeddedPostgres?.stop();
       } catch (err) {
         logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
-      }
-
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-        logger.info({ signal }, "Stopping embedded PostgreSQL");
-        try {
-          await embeddedPostgres?.stop();
-        } catch (err) {
-          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-        }
       }
 
       process.exit(0);

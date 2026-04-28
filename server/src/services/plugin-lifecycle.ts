@@ -185,7 +185,11 @@ export interface PluginLifecycleManager {
    * If the upgrade adds new capabilities, transitions to `upgrade_pending`.
    * Otherwise, transitions to `ready` directly.
    */
-  upgrade(pluginId: string, version?: string): Promise<PluginRecord>;
+  upgrade(
+    pluginId: string,
+    version?: string,
+    options?: { force?: boolean },
+  ): Promise<PluginRecord>;
 
   /**
    * Start the worker process for a plugin that is already in `ready` state.
@@ -501,6 +505,25 @@ export function pluginLifecycleManager(
 
       const result = await transition(pluginId, "ready", null, plugin);
       await activateReadyPlugin(pluginId);
+
+      // Verify the worker actually started. activateReadyPlugin returns
+      // silently when runtime services are missing, so without this the
+      // lifecycle would report success while bridge calls 502 with
+      // "No worker registered". If the worker never came up, roll status
+      // back to error so the operator gets a clear failure.
+      if (workerManager && !workerManager.isRunning(pluginId)) {
+        await transition(
+          pluginId,
+          "error",
+          "Worker failed to start after enable",
+          { ...plugin, status: "ready" },
+        ).catch(() => undefined);
+        throw badRequest(
+          `Plugin '${result.pluginKey}' was marked ready but its worker did not start. ` +
+            `Check server logs for activation errors.`,
+        );
+      }
+
       emitDomain("plugin.enabled", {
         pluginId,
         pluginKey: result.pluginKey,
@@ -636,7 +659,11 @@ export function pluginLifecycleManager(
      * @returns The updated `PluginRecord`.
      * @throws {BadRequest} If the plugin is not in a ready or upgrade_pending state.
      */
-    async upgrade(pluginId: string, version?: string): Promise<PluginRecord> {
+    async upgrade(
+      pluginId: string,
+      version?: string,
+      options: { force?: boolean } = {},
+    ): Promise<PluginRecord> {
       const plugin = await requirePlugin(pluginId);
 
       // Can only upgrade plugins that are ready or already in upgrade_pending
@@ -648,7 +675,7 @@ export function pluginLifecycleManager(
       }
 
       log.info(
-        { pluginId, pluginKey: plugin.pluginKey, targetVersion: version },
+        { pluginId, pluginKey: plugin.pluginKey, targetVersion: version, force: !!options.force },
         "plugin lifecycle: upgrade requested",
       );
 
@@ -656,7 +683,7 @@ export function pluginLifecycleManager(
 
       // 1. Download and validate new package via loader
       const { oldManifest, newManifest, discovered } =
-        await pluginLoaderInstance.upgradePlugin(pluginId, { version });
+        await pluginLoaderInstance.upgradePlugin(pluginId, { version, force: options.force });
 
       log.info(
         {

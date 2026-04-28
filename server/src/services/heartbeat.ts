@@ -109,6 +109,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import {
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
@@ -4046,6 +4047,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : null,
           outcome,
         },
+      });
+    }
+
+    if (recoverable) {
+      const hookAgentId = existing.id;
+      const hookCompanyId = existing.companyId;
+      void runQuotaExhaustedHook({
+        db,
+        agentId: hookAgentId,
+        companyId: hookCompanyId,
+        runId: null,
+        errorCode: opts?.errorCode ?? "provider_quota_exhausted",
+        onSuccess: () =>
+          enqueueWakeup(hookAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "provider_quota_exhausted_recovered",
+            requestedByActorType: "system",
+            requestedByActorId: "quota-exhausted-hook",
+          })
+            .then(() => undefined)
+            .catch((err) => {
+              logger.warn(
+                { err, agentId: hookAgentId },
+                "failed to wake agent after quota-exhausted hook",
+              );
+            }),
+      }).catch((err) => {
+        logger.warn(
+          { err, agentId: hookAgentId },
+          "quota-exhausted hook crashed",
+        );
       });
     }
   }

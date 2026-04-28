@@ -1181,6 +1181,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           status: input.status ?? "planned",
           parentId: input.parentId ?? null,
           ownerAgentId: input.ownerAgentId ?? null,
+          targetDate: null,
           createdAt: now,
           updatedAt: now,
         };
@@ -1254,6 +1255,17 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       debug(message, meta) {
         logs.push({ level: "debug", message, meta });
+      },
+    },
+    rpc: {
+      // Test stub — real worker-rpc-host routes through callHost. Tests that
+      // need to assert specific RPC calls should override this on the harness
+      // ctx after createTestHarness().
+      async call<TResult = unknown>(method: string): Promise<TResult> {
+        throw new Error(
+          `ctx.rpc.call("${method}") is not stubbed in the test harness. ` +
+            `Either use a typed client or replace ctx.rpc on the harness.`,
+        );
       },
     },
   };

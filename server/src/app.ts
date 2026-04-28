@@ -82,6 +82,26 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
+const PRECOMPRESSED_STATIC_EXTENSIONS = new Set([
+  ".css",
+  ".html",
+  ".js",
+  ".json",
+  ".mjs",
+  ".svg",
+  ".txt",
+  ".wasm",
+]);
+const STATIC_CONTENT_TYPES = new Map([
+  [".css", "text/css; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".txt", "text/plain; charset=utf-8"],
+  [".wasm", "application/wasm"],
+]);
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
@@ -95,6 +115,82 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
   return req.accepts(["html"]) === "html";
+}
+
+function acceptsGzip(req: ExpressRequest): boolean {
+  const header = req.headers["accept-encoding"];
+  const value = Array.isArray(header) ? header.join(",") : (header ?? "");
+  return /\bgzip\b/i.test(value);
+}
+
+function createPrecompressedStaticMiddleware(rootDir: string): express.RequestHandler {
+  const root = path.resolve(rootDir);
+  const rootPrefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+
+  return (req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      next();
+      return;
+    }
+    if (req.headers.range || !acceptsGzip(req)) {
+      next();
+      return;
+    }
+
+    const extension = path.extname(req.path);
+    if (!PRECOMPRESSED_STATIC_EXTENSIONS.has(extension)) {
+      next();
+      return;
+    }
+
+    let assetPath: string;
+    try {
+      assetPath = path.resolve(root, `.${req.path}`);
+    } catch {
+      next();
+      return;
+    }
+    if (assetPath !== root && !assetPath.startsWith(rootPrefix)) {
+      next();
+      return;
+    }
+
+    const gzipPath = `${assetPath}.gz`;
+    let assetStat: fs.Stats;
+    let gzipStat: fs.Stats;
+    try {
+      assetStat = fs.statSync(assetPath);
+      gzipStat = fs.statSync(gzipPath);
+    } catch {
+      next();
+      return;
+    }
+    if (!assetStat.isFile() || !gzipStat.isFile() || gzipStat.mtimeMs + 1000 < assetStat.mtimeMs) {
+      next();
+      return;
+    }
+
+    const contentType = STATIC_CONTENT_TYPES.get(extension);
+    if (contentType) {
+      res.set("Content-Type", contentType);
+    }
+    res
+      .status(200)
+      .set("Cache-Control", "public, max-age=31536000, immutable")
+      .set("Content-Encoding", "gzip")
+      .set("Content-Length", String(gzipStat.size))
+      .set("Last-Modified", assetStat.mtime.toUTCString())
+      .vary("Accept-Encoding");
+
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    const stream = fs.createReadStream(gzipPath);
+    stream.on("error", next);
+    stream.pipe(res);
+  };
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -223,7 +319,22 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
+  const streamBus = createPluginStreamBus();
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager({
+    onStreamNotification: (pluginId, method, params) => {
+      const channel = String(params.channel ?? "");
+      const companyId = String(params.companyId ?? "");
+      if (!channel) return;
+      if (method === "streams.emit") {
+        streamBus.publish(pluginId, channel, companyId, params.event ?? params.data);
+      } else if (method === "streams.close") {
+        streamBus.publish(pluginId, channel, companyId, null, "close");
+      } else if (method === "streams.open") {
+        streamBus.publish(pluginId, channel, companyId, null, "open");
+      }
+    },
+  });
 
   // Mount API routes
   const api = Router();
@@ -264,23 +375,6 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
-  const hostServicesDisposers = new Map<string, () => void>();
-  const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
-  const streamBus = createPluginStreamBus();
-  const workerManager = createPluginWorkerManager({
-    onStreamNotification: (pluginId, method, params) => {
-      const channel = String(params.channel ?? "");
-      const companyId = String(params.companyId ?? "");
-      if (!channel) return;
-      if (method === "streams.emit") {
-        streamBus.publish(pluginId, channel, companyId, params.event ?? params.data);
-      } else if (method === "streams.close") {
-        streamBus.publish(pluginId, channel, companyId, null, "close");
-      } else if (method === "streams.open") {
-        streamBus.publish(pluginId, channel, companyId, null, "open");
-      }
-    },
-  });
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -380,6 +474,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
       // never change once built, so they can be cached aggressively.
       app.use(
         "/assets",
+        createPrecompressedStaticMiddleware(path.join(uiDist, "assets")),
         express.static(path.join(uiDist, "assets"), {
           maxAge: "1y",
           immutable: true,

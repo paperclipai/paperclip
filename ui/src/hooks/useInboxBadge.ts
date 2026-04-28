@@ -21,8 +21,12 @@ import {
 } from "../lib/inbox";
 
 const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
-const INBOX_BADGE_ISSUE_LIMIT = 500;
-const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
+const INBOX_BADGE_ISSUE_LIMIT = 100;
+const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 100;
+// Badge queries cover the same expensive inbox SQL as the Inbox page; cache
+// their results for 30s so opening/closing the page or focus events don't
+// retrigger the query.
+const INBOX_BADGE_QUERY_STALE_MS = 30_000;
 
 export function useDismissedInboxAlerts() {
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxAlerts);
@@ -184,6 +188,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
         limit: INBOX_BADGE_ISSUE_LIMIT,
       }),
     enabled: !!companyId,
+    staleTime: INBOX_BADGE_QUERY_STALE_MS,
   });
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
@@ -193,6 +198,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
     queryKey: [...queryKeys.heartbeats(companyId!), "limit", INBOX_BADGE_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(companyId!, undefined, INBOX_BADGE_HEARTBEAT_RUN_LIMIT),
     enabled: !!companyId,
+    staleTime: INBOX_BADGE_QUERY_STALE_MS,
   });
 
   return useMemo(

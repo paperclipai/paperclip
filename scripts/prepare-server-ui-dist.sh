@@ -19,3 +19,13 @@ fi
 rm -rf "$SERVER_UI_DIST"
 cp -r "$UI_DIST" "$SERVER_UI_DIST"
 echo "  -> Copied ui/dist to server/ui-dist"
+
+if command -v gzip >/dev/null 2>&1; then
+  find "$SERVER_UI_DIST/assets" -type f \
+    \( -name '*.css' -o -name '*.html' -o -name '*.js' -o -name '*.json' -o -name '*.mjs' -o -name '*.svg' -o -name '*.txt' -o -name '*.wasm' \) \
+    -size +1024c \
+    -exec gzip -n -9 -k -f {} \;
+  echo "  -> Wrote gzip-compressed static assets"
+else
+  echo "  -> gzip not found; skipping precompressed static assets"
+fi

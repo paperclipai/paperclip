@@ -6,11 +6,10 @@ import {
   costEvents,
   heartbeatRuns,
   issues as issuesTable,
+  labels as labelsTable,
   pluginLogs,
 } from "@paperclipai/db";
 import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable, labels as labelsTable } from "@paperclipai/db";
-import { eq, and, like, desc } from "drizzle-orm";
 import type {
   HostServices,
   Company,

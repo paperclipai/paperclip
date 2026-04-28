@@ -183,16 +183,20 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
  * Known patterns:
  *   "You're out of extra usage · resets 2am (Europe/Warsaw)"
  *   "You've exceeded your usage limit"
+ *   "Claude usage limit reached"
+ *   "5-hour limit reached" / "5 hour limit reached"
+ *   "Weekly limit reached"
+ *   "Usage cap reached"
  *   "out of usage"
  */
+const CLAUDE_QUOTA_EXHAUSTED_RE =
+  /out\s+of\s+(?:extra\s+)?usage|exceeded\s+your\s+usage\s+limit|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached/i;
 export function isClaudeQuotaExhausted(parsed: Record<string, unknown> | null | undefined): boolean {
   if (!parsed) return false;
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
   const allMessages = [resultText, ...errors].map((m) => m.trim()).filter(Boolean);
-  return allMessages.some((msg) =>
-    /out of (?:extra )?usage|exceeded your usage limit|usage limit reached/i.test(msg),
-  );
+  return allMessages.some((msg) => CLAUDE_QUOTA_EXHAUSTED_RE.test(msg));
 }
 
 // Patterns indicating Claude exited cleanly but could not do any real work.

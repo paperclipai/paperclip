@@ -1068,6 +1068,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           notifyHost("log", { level: "debug", message, meta });
         },
       },
+
+      rpc: {
+        // Untyped passthrough to callHost. Lets plugins invoke any host
+        // method by name — including newer protocol methods that the
+        // installed SDK doesn't expose typed clients for. Capability
+        // checks still run on the host side.
+        async call<TResult = unknown>(
+          method: string,
+          params?: unknown,
+          timeoutMs?: number,
+        ): Promise<TResult> {
+          return callHost(
+            method as WorkerToHostMethodName,
+            (params ?? {}) as never,
+            timeoutMs,
+          ) as Promise<TResult>;
+        },
+      },
     };
   }
 

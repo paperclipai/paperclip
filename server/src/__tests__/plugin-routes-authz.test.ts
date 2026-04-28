@@ -247,7 +247,7 @@ describe.sequential("plugin install and upgrade authz", () => {
       .send({ version: "1.1.0" });
 
     expect(res.status).toBe(200);
-    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0");
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0", { force: false });
   }, 20_000);
 });
 
