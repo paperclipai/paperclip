@@ -201,6 +201,46 @@
 - Initial audit failure는 useful signal이다. 별도 closure phase로 투명하게 닫으면 마일스톤 기록의 신뢰도가 높아진다.
 - 다음 milestone은 새 기능보다 provider-backed lint, pgvector readiness, runtime hardening 같은 운영 깊이의 우선순위를 먼저 검토해야 한다.
 
+## 마일스톤: v2.5 - Semantic Knowledge Intelligence
+
+**완료:** 2026-04-29
+**Phases:** 6
+**Plans:** 6
+**Audit:** initial `gaps_found`, final re-audit `passed`
+
+### 만든 것
+
+- Company-scoped semantic index storage, deterministic fallback embedding, incremental reindex status/action을 추가했다.
+- Daily wiki, graph evidence, work artifacts, deliverables를 semantic + lexical fallback search로 통합했다.
+- Contradiction candidate generation, resolution decisions, activity-log audit, search freshness integration을 추가했다.
+- Jarvis answer에 citations, stale evidence warnings, unresolved contradiction warnings, routable citation targets를 연결했다.
+- Knowledge operations health route와 dashboard tab으로 semantic index, contradiction review, Jarvis grounding traceability를 gate로 만들었다.
+- Phase 38에서 missing verification, validation, summary frontmatter, requirement checkbox/traceability gap을 닫았다.
+
+### 잘 된 점
+
+- v2.4에서 deferred했던 semantic search와 provider-optional contradiction review를 deterministic local baseline 위에 붙여 CI/local dev 안정성을 유지했다.
+- Search, contradiction, Jarvis, operations가 같은 RT2 knowledge evidence chain을 공유하도록 연결되어 기능 간 drift가 줄었다.
+- Phase 38 closure가 v2.4보다 짧아졌고, artifact gap을 명확히 닫아 milestone re-audit을 `passed`로 만들었다.
+
+### 비효율적이었던 점
+
+- Phase 34-36 verification artifact와 Phase 33-37 validation artifact가 기능 phase 직후 생성되지 않아 여전히 closure phase가 필요했다.
+- Local `gsd-sdk query` interface가 현재 runtime과 맞지 않아 formal audit automation을 그대로 실행하지 못하고 file-based closure evidence를 남겨야 했다.
+- Live provider-backed embedding/contradiction explanation은 provider-optional storage까지만 닫혀 실제 provider behavior 검증은 다음 hardening 후보로 남았다.
+
+### 확립된 패턴
+
+- Semantic knowledge features는 live provider 없이도 deterministic fallback으로 검증 가능해야 한다.
+- Jarvis answer는 citation, warning, target link가 없으면 RT2 knowledge loop의 신뢰 surface로 취급하지 않는다.
+- Operations health는 기능 존재 여부가 아니라 index, contradiction, grounding traceability loss를 explicit reason code로 보여줘야 한다.
+
+### 핵심 교훈
+
+- Phase close 시점에 `VERIFICATION.md`, `VALIDATION.md`, summary frontmatter를 함께 생성해야 milestone close가 가벼워진다.
+- Provider-backed capability는 optional path와 deterministic baseline을 분리해야 제품 검증과 운영 확장이 동시에 가능하다.
+- 다음 milestone은 새 semantic feature보다 connector/runtime/provider/eval hardening 중 하나를 명확히 선택해야 한다.
+
 ## Cross-Milestone Trend
 
 | Trend | Observation |
@@ -208,4 +248,4 @@
 | Product identity | RT2가 우선순위다. Paperclip/Multica wording은 product-facing surface에서 숨기고 engine/internal compatibility layer로 제한한다. |
 | Verification | Windows sandbox `spawn EPERM`은 반복되는 local environment issue다. Vitest/build에는 승인된 escalated run이 필요할 수 있다. |
 | Planning | 사용자는 wave-by-wave prompting보다 긴 `--auto --chain` execution을 선호한다. |
-| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. |
+| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. |

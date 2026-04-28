@@ -12,13 +12,13 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence
 
-**현재 마일스톤:** v2.5 Semantic Knowledge Intelligence
+**현재 마일스톤:** 다음 milestone planning 대기
 
-**최근 완료:** v2.4는 daily wiki projector, graphify projector, coin ledger atomicity, settlement governance hardening, scheduled consistency linting을 완료하고 Phase 30-32 closure로 milestone audit gaps를 닫았다. 최종 re-audit은 requirements 24/24, phases 5/5, integration 5/5, flows 5/5로 `passed`다.
+**최근 완료:** v2.5는 semantic index, semantic knowledge search, contradiction review workflow, Jarvis grounded answers, knowledge operations health gate를 완료하고 Phase 38 closure로 milestone audit gaps를 닫았다. 최종 re-audit은 requirements 19/19, phases 6/6, integration 5/5, flows 5/5로 `passed`다.
 
-**현재 진행:** v2.5는 v2.4에서 deliberately deferred한 vector embedding + semantic search와 live provider-backed contradiction detection을 RT2-controlled knowledge loop에 붙이는 milestone이다. 새 `REQUIREMENTS.md`와 `ROADMAP.md`는 Phase 33-37로 scope를 제한한다.
+**현재 진행:** `$gsd-new-milestone`로 v2.6 scope, requirements, roadmap을 정의해야 한다. 후보는 external connector hardening, native/mobile capture hardening, autonomy/evals hardening, historical validation debt cleanup이다.
 
 ## 현재 마일스톤: v2.5 Semantic Knowledge Intelligence
 
@@ -30,6 +30,14 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 - provider-backed contradiction 후보 탐지와 approval-first resolution workflow.
 - Jarvis 답변이 retrieved evidence, contradiction warnings, source freshness를 노출하는 grounded assistance.
 - knowledge intelligence 운영 대시보드와 batch health gate.
+
+**v2.5 delivered:**
+- Company-scoped semantic index storage, deterministic fallback embedding, and incremental reindex inspection.
+- Semantic + lexical RT2 knowledge search across daily wiki, graph, work artifact, and deliverable evidence.
+- Contradiction candidate generation, resolution decisions, activity-log audit, and freshness integration.
+- Jarvis grounded answers with citations, stale evidence warnings, unresolved contradiction warnings, and routable citation targets.
+- Knowledge operations health route and dashboard gate for semantic index, contradiction review, and Jarvis grounding.
+- Phase 38 artifact closure for missing verification, validation, summary frontmatter, and requirement traceability.
 
 **v2.4 delivered:**
 - Board/domain event를 daily wiki page, date index, chronological log, per-user page로 project한다.
@@ -92,10 +100,16 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.4 Ledger/Settlement 요구사항 9개.
 - [x] v2.4 Consistency Lint 요구사항 4개.
 - [x] v2.4 Phase 30-32 milestone audit gap closure.
+- [x] v2.5 Semantic Index 요구사항 4개.
+- [x] v2.5 Semantic Search 요구사항 4개.
+- [x] v2.5 Contradiction Review 요구사항 4개.
+- [x] v2.5 Jarvis Grounding 요구사항 4개.
+- [x] v2.5 Knowledge Operations 요구사항 3개.
+- [x] v2.5 Phase 38 artifact closure.
 
 ### 진행 중
 
-- [ ] v2.5 Semantic Knowledge Intelligence 요구사항 19개.
+- [ ] v2.6 요구사항 정의 필요.
 
 ### 범위 밖
 
@@ -114,6 +128,7 @@ v2.0-v2.2에서 완료한 것:
 - v2.2 audit은 blocker 없이 `tech_debt`로 종료했다. 주요 부채는 Phase 14-18 `VALIDATION.md` 누락, 일부 route test의 embedded Postgres skip, 외부 연동 깊이의 후속 범위다.
 - v2.3은 Phase 19-24에서 검증 부채와 개발기획서 remaining 6% gap을 실제 운영 기능과 감사 가능한 검증 산출물로 닫았다.
 - v2.4는 daily wiki projector -> graphify -> ledger atomicity -> settlement hardening -> batch linting으로 knowledge/economy 깊이를 더했고, Phase 30-32에서 strict milestone traceability를 복구했다. 최종 re-audit은 `passed`다.
+- v2.5는 semantic index -> semantic search -> contradiction review -> Jarvis grounding -> operations health gate로 지식 루프를 닫았고, Phase 38에서 strict milestone traceability를 복구했다. 최종 re-audit은 `passed`다.
 
 ## 제약
 
@@ -135,10 +150,11 @@ v2.0-v2.2에서 완료한 것:
 | v2.2와 v2.3은 기능 완료와 검증 부채를 분리해 기록 | strict validation artifact가 없으면 shipped와 debt를 같이 남겨야 한다 | 좋음 - 후속 gap closure가 가능해짐 |
 | Paperclip/Multica 명칭은 product-facing이 아니라 engine/internal compatibility layer로만 유지 | 사용자가 RealTycoon2가 장식처럼 보이는 위험을 명확히 지적했다 | 좋음 - 제품 표면은 RT2/Trello형 업무 흐름으로 전환 |
 | v2.4는 knowledge projection과 economy governance 심화를 5개 기능 phase와 3개 closure phase로 완료 | initial audit gaps를 숨기지 않고 Phase 30-32에서 artifact coverage를 복구했다 | 좋음 - final re-audit `passed` |
+| v2.5는 semantic knowledge intelligence를 5개 기능 phase와 1개 closure phase로 완료 | semantic index/search/contradiction/Jarvis/operations 기능 구현 후 Phase 38에서 artifact coverage를 복구했다 | 좋음 - final re-audit `passed` |
 
 ## 다음 마일스톤 목표
 
-v2.5는 semantic knowledge intelligence milestone이다. 핵심은 RT2 work signal이 wiki/graph에 쌓인 뒤 다시 semantic retrieval, contradiction review, Jarvis grounding, operator health signal로 돌아오는 닫힌 지식 루프를 만드는 것이다.
+다음 milestone은 v2.5에서 닫은 semantic knowledge loop 위에 더 깊은 운영 hardening을 얹어야 한다. 후보는 external connector hardening, native/mobile capture hardening, autonomy/evals hardening, historical validation debt cleanup이다.
 
 ## Evolution
 
@@ -158,4 +174,4 @@ v2.5는 semantic knowledge intelligence milestone이다. 핵심은 RT2 work sign
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-28, v2.5 milestone initialized*
+*마지막 업데이트: 2026-04-29, v2.5 milestone archived*

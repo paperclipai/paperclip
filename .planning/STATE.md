@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.5
 milestone_name: Semantic Knowledge Intelligence
 status: shipped
-last_updated: "2026-04-28T16:52:00+09:00"
-last_activity: 2026-04-28
+last_updated: "2026-04-29T09:00:00+09:00"
+last_activity: 2026-04-29
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 5
-  completed_plans: 5
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 6
+  completed_plans: 6
   percent: 100
 ---
 
@@ -17,37 +17,35 @@ progress:
 
 ## Current Position
 
-Phase: 37 - Knowledge Intelligence Operations
-Plan: 37-01 complete
-Status: Phase 37 shipped - PR #4650
-Last activity: 2026-04-28 - Phase 37 shipped via https://github.com/paperclipai/paperclip/pull/4650
+Phase: 38 - Semantic Knowledge Artifact Closure
+Plan: 38-01 complete
+Status: v2.5 Semantic Knowledge Intelligence shipped and archived
+Last activity: 2026-04-29 - v2.5 milestone archive completed
 
 ## 현재 위치
 
-v2.5 Semantic Knowledge Intelligence Phase 33-37이 구현 및 검증 완료되어 PR #4650으로 shipped 상태다. 이번 milestone은 v2.4에서 intentionally deferred한 vector embedding + semantic search와 provider-backed contradiction detection을 RT2 knowledge loop에 연결했다.
+v2.5 Semantic Knowledge Intelligence Phase 33-38이 구현, 검증, artifact closure, archive까지 완료되었다. 이번 milestone은 v2.4에서 intentionally deferred한 vector embedding + semantic search와 provider-backed contradiction detection option을 RT2 knowledge loop에 연결하고, operator-facing health gate까지 닫았다.
 
-다음 위치는 PR #4650의 CI와 merge conflict를 확인한 뒤 milestone close를 진행하는 것이다.
+다음 위치는 `$gsd-new-milestone`으로 v2.6 scope와 requirements를 정의하는 것이다.
 
 ## 최근 완료한 마일스톤
 
-v2.4는 Knowledge + Economy 심화 milestone이었다:
+v2.5는 Semantic Knowledge Intelligence milestone이었다:
 
-- **Phase 25**: Daily Wiki Projector - board/domain event를 daily wiki page로 자동 생성
-- **Phase 26**: Graphify Projector - daily wiki 기반 knowledge graph + confidence tag + report evidence
-- **Phase 27**: Coin Ledger Atomicity - balance 원자적 계산, transaction 무결성, reconciliation
-- **Phase 28**: Settlement Governance Hardening - unique constraint, anti-gaming UI, threshold 설정
-- **Phase 29**: Consistency Linting (Batch) - scheduled evidence-only wiki consistency linting
-- **Phase 30**: Knowledge Artifact and Verification Closure - Phase 25/26 traceability closure
-- **Phase 31**: Economy Artifact and Verification Closure - Phase 27/28 traceability closure
-- **Phase 32**: Lint Traceability and Milestone Acceptance Closure - Phase 29 lint closure and final re-audit
+- **Phase 33**: Semantic Index Foundation - daily wiki/graph/work evidence를 company-scoped semantic index에 적재
+- **Phase 34**: Semantic Knowledge Search - semantic + lexical fallback search surface와 filters
+- **Phase 35**: Contradiction Review Workflow - contradiction candidate, resolution, audit/freshness loop
+- **Phase 36**: Jarvis Grounded Answers - citations, stale evidence warnings, unresolved contradiction warnings
+- **Phase 37**: Knowledge Intelligence Operations - semantic/contradiction/Jarvis health gate
+- **Phase 38**: Semantic Knowledge Artifact Closure - v2.5 audit gaps closure and re-audit pass
 
 ## 프로젝트 기준
 
-참조: `.planning/PROJECT.md` (2026-04-28 업데이트)
+참조: `.planning/PROJECT.md` (2026-04-29 업데이트)
 
 **핵심 가치:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
 
-**현재 초점:** v2.5 Semantic Knowledge Intelligence. Daily wiki/graph knowledge를 semantic retrieval, contradiction review, Jarvis grounding, operator health signal로 되돌리는 closed loop를 만든다.
+**현재 초점:** 다음 milestone planning. v2.5에서 닫힌 semantic knowledge loop를 바탕으로 external connector hardening, native/mobile capture, autonomy/evals, historical validation debt 중 하나를 v2.6 scope로 선택해야 한다.
 
 ## 누적 맥락
 
@@ -57,7 +55,7 @@ v2.4는 Knowledge + Economy 심화 milestone이었다:
 - v2.2는 일일업무일지 3칸 Trello형 drag/drop, identity hardening, Trello 기반 업무 보드, Knowledge Bridge, economy/rollout evidence를 완료했다.
 - v2.3은 검증 부채 closure, SSO/SCIM rollout validation, Obsidian bidirectional sync, settlement governance, Trello advanced board, native capture queue, Phase 19 verification artifact closure를 완료했다.
 - v2.4는 daily wiki projector, graphify, ledger atomicity, settlement hardening, batch linting을 완료하고 Phase 30-32에서 strict traceability를 복구했다.
-- v2.5는 pgvector가 없거나 provider가 꺼진 local dev에서도 deterministic fallback으로 검증 가능해야 한다.
+- v2.5는 deterministic fallback을 유지하면서 semantic index/search, contradiction review, Jarvis grounding, operator health gate를 연결했다.
 - Windows sandbox `spawn EPERM`은 계속 환경 제약이다. Vitest/build tooling은 승인된 unsandboxed run이 필요할 수 있다.
 
 ## Deferred Items
@@ -69,7 +67,7 @@ v2.4는 Knowledge + Economy 심화 milestone이었다:
 | uat_gap | Phase 01 / 01-UAT.md | unknown, 0 pending scenarios |
 | uat_gap | Phase m1-6-daily-report / m1-6-UAT.md | unknown, 0 pending scenarios |
 
-v2.5 범위 밖:
+v2.5 이후 후보:
 
 | Category | Item | Reason |
 |----------|------|--------|
@@ -77,14 +75,16 @@ v2.5 범위 밖:
 | autonomy | automatic knowledge rewrites without approval | contradiction review가 먼저 안정화되어야 함 |
 | provider | mandatory live LLM/provider dependency | local dev와 CI는 deterministic fallback으로 검증 가능해야 함 |
 | mobile | native mobile semantic search UX | web operator loop가 먼저 안정화되어야 함 |
+| connectors | live IdP handshake, SCIM apply mutation, local Obsidian daemon | v2.6 hardening 후보 |
+| validation | Phase 19-24 strict `*-VALIDATION.md`, legacy UAT unknown closure | historical debt cleanup 후보 |
 
 ## 다음 단계
 
-PR #4650의 CI와 merge conflict를 확인한 뒤 milestone close를 진행한다:
+새 milestone을 시작한다:
 
 ```sh
-$gsd-complete-milestone
+$gsd-new-milestone
 ```
 
 ---
-*상태 업데이트: 2026-04-28, Phase 37 shipped via PR #4650*
+*상태 업데이트: 2026-04-29, v2.5 milestone archived*
