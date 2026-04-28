@@ -514,14 +514,32 @@ async function validateSlackConfig(
     warnings.push("No default channel — notifications will not post anywhere by default");
   }
 
+  // Errors that mean "the channel id might still be valid, but we can't verify
+  // it from this token" — surface as warnings so a chat:write-only token doesn't
+  // false-fail the whole test.
+  const UNVERIFIABLE_CHANNEL_ERRORS = new Set([
+    "missing_scope",
+    "not_in_channel",
+    "channel_not_visible",
+  ]);
+
   for (const { key, label } of channelChecks) {
     const channelId = config[key];
     if (typeof channelId !== "string" || channelId.length === 0) continue;
     const info = await conversationsInfo(pluginCtx, token, channelId);
-    if (!info.ok) {
-      errors.push(`${label} (${channelId}): ${info.error ?? "not accessible"}`);
-    } else if (info.channel?.is_archived) {
-      warnings.push(`${label} (${channelId}) is archived`);
+    if (info.ok) {
+      if (info.channel?.is_archived) {
+        warnings.push(`${label} (${channelId}) is archived`);
+      }
+      continue;
+    }
+    const slackError = info.error ?? "not accessible";
+    if (UNVERIFIABLE_CHANNEL_ERRORS.has(slackError)) {
+      warnings.push(
+        `${label} (${channelId}): could not verify (${slackError}); the channel may still work for posting if the bot is a member and has chat:write`,
+      );
+    } else {
+      errors.push(`${label} (${channelId}): ${slackError}`);
     }
   }
 
