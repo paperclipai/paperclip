@@ -112,6 +112,20 @@ function normalizeHttpUrlCandidate(value: string): string | null {
   }
 }
 
+const DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS = 10_000;
+
+function resolveProbeTimeoutMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_TIMEOUT_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS;
+}
+
 export async function findReachablePaperclipApiUrlOverSsh(input: {
   config: SshConnectionConfig;
   candidates: string[];
@@ -125,13 +139,16 @@ export async function findReachablePaperclipApiUrlOverSsh(input: {
     ),
   );
 
+  const timeoutMs = resolveProbeTimeoutMs(input.timeoutMs);
+  const curlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+
   for (const candidate of uniqueCandidates) {
     const healthUrl = new URL("/api/health", candidate).toString();
     try {
       await runSshCommand(
         input.config,
-        `sh -lc ${shellQuote(`curl -fsS -m ${Math.max(1, Math.ceil((input.timeoutMs ?? 5_000) / 1000))} ${shellQuote(healthUrl)} >/dev/null`)}`,
-        { timeoutMs: input.timeoutMs ?? 5_000 },
+        `sh -lc ${shellQuote(`curl -fsS -m ${curlSeconds} ${shellQuote(healthUrl)} >/dev/null`)}`,
+        { timeoutMs },
       );
       return candidate;
     } catch {
