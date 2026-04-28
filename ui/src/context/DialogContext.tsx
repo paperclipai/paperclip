@@ -14,6 +14,7 @@ interface NewIssueDefaults {
   parentExecutionWorkspaceLabel?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
+  allowOutsideExecutionWindow?: boolean;
   title?: string;
   description?: string;
 }

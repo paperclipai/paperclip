@@ -1112,6 +1112,27 @@ export function IssueProperties({
           {projectContent}
         </PropertyPicker>
 
+        <PropertyRow label="Window">
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-2 rounded-md border px-2 py-0.5 text-xs transition-colors",
+              issue.allowOutsideExecutionWindow
+                ? "border-green-500/50 bg-green-500/10 text-green-700 dark:text-green-400"
+                : "border-border text-muted-foreground hover:bg-accent/50",
+            )}
+            onClick={() =>
+              onUpdate({
+                allowOutsideExecutionWindow: !issue.allowOutsideExecutionWindow,
+              })
+            }
+          >
+            {issue.allowOutsideExecutionWindow ? "Runs outside window" : "Follows agent window"}
+          </button>
+          <span className="text-xs text-muted-foreground">
+            {issue.allowOutsideExecutionWindow ? "Override enabled" : "Override off"}
+          </span>
+        </PropertyRow>
         <PropertyPicker
           inline={inline}
           label="Parent"
@@ -1247,7 +1268,6 @@ export function IssueProperties({
             <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
         )}
-
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>

@@ -176,5 +176,9 @@ export interface InstanceSchedulerHeartbeatAgent {
   intervalSec: number;
   heartbeatEnabled: boolean;
   schedulerActive: boolean;
+  executionWindowStartTime: string | null;
+  executionWindowEndTime: string | null;
+  executionWindowTimeZone: string | null;
+  executionWindowBlocked: boolean;
   lastHeartbeatAt: Date | null;
 }

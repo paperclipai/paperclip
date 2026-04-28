@@ -482,8 +482,11 @@ describe("NewIssueDialog", () => {
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
 
-    const selects = Array.from(container.querySelectorAll("select"));
-    const modeSelect = selects[0] as HTMLSelectElement | undefined;
+    let modeSelect: HTMLSelectElement | undefined;
+    for (let attempt = 0; attempt < 5 && !modeSelect; attempt += 1) {
+      await flush();
+      modeSelect = container.querySelector("select") as HTMLSelectElement | null ?? undefined;
+    }
     expect(modeSelect).not.toBeUndefined();
 
     await act(async () => {

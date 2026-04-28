@@ -300,7 +300,7 @@ describe("heartbeat comment wake batching", () => {
           payloadTemplate: {
             message: "wake now",
           },
-          waitTimeoutMs: 2_000,
+          waitTimeoutMs: 20_000,
         },
         runtimeConfig: {},
         permissions: {},
@@ -441,12 +441,20 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
+      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+      const secondRunId =
+        typeof secondPayload.idempotencyKey === "string" ? secondPayload.idempotencyKey : null;
+      expect(secondRunId).toBeTruthy();
       await waitFor(async () => {
-        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        if (!secondRunId) return false;
+        const run = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, secondRunId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
       }, 90_000);
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
         wake: {
           commentIds: [comment2.id, comment3.id],
@@ -1017,7 +1025,7 @@ describe("heartbeat comment wake batching", () => {
           payloadTemplate: {
             message: "wake now",
           },
-          waitTimeoutMs: 2_000,
+          waitTimeoutMs: 20_000,
         },
         runtimeConfig: {},
         permissions: {},

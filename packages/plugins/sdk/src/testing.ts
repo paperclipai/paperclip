@@ -717,6 +717,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionWorkspaceId: input.executionWorkspaceId ?? null,
           executionWorkspacePreference: input.executionWorkspacePreference ?? null,
           executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+          allowOutsideExecutionWindow: false,
           startedAt: null,
           completedAt: null,
           cancelledAt: null,

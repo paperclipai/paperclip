@@ -22,6 +22,17 @@ function humanize(value: string) {
   return value.replaceAll("_", " ");
 }
 
+function formatExecutionWindow(agent: InstanceSchedulerHeartbeatAgent): string | null {
+  if (
+    !agent.executionWindowStartTime ||
+    !agent.executionWindowEndTime ||
+    !agent.executionWindowTimeZone
+  ) {
+    return null;
+  }
+  return `${agent.executionWindowStartTime}-${agent.executionWindowEndTime} ${agent.executionWindowTimeZone}`;
+}
+
 function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
   return `/${agent.companyIssuePrefix}/agents/${encodeURIComponent(agent.agentUrlKey)}`;
 }
@@ -220,6 +231,13 @@ export function InstanceSettings() {
                 <div className="divide-y">
                   {group.agents.map((agent) => {
                     const saving = toggleMutation.isPending && toggleMutation.variables?.id === agent.id;
+                    const executionWindowLabel = formatExecutionWindow(agent);
+                    const windowBlocked = agent.heartbeatEnabled && agent.intervalSec > 0 && agent.executionWindowBlocked;
+                    const statusLabel = agent.schedulerActive
+                      ? "On"
+                      : windowBlocked
+                        ? "Window"
+                        : "Off";
                     return (
                       <div
                         key={agent.id}
@@ -229,7 +247,7 @@ export function InstanceSettings() {
                           variant={agent.schedulerActive ? "default" : "outline"}
                           className="shrink-0 text-[10px] px-1.5 py-0"
                         >
-                          {agent.schedulerActive ? "On" : "Off"}
+                          {statusLabel}
                         </Badge>
                         <Link
                           to={buildAgentHref(agent)}
@@ -243,6 +261,14 @@ export function InstanceSettings() {
                         <span className="text-muted-foreground tabular-nums shrink-0">
                           {agent.intervalSec}s
                         </span>
+                        {executionWindowLabel ? (
+                          <span
+                            className="hidden lg:inline text-muted-foreground truncate"
+                            title={windowBlocked ? "Outside execution window" : "Inside execution window"}
+                          >
+                            {executionWindowLabel}
+                          </span>
+                        ) : null}
                         <span
                           className="hidden md:inline text-muted-foreground truncate"
                           title={agent.lastHeartbeatAt ? formatDateTime(agent.lastHeartbeatAt) : undefined}
