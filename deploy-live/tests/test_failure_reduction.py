@@ -215,3 +215,73 @@ def test_a2_freshness_constant_is_tighter_than_candidate_filter():
     """ENTRY_QUOTE_FRESHNESS_S must be tighter than STALE_PRICE_SECONDS;
     otherwise the gate adds nothing."""
     assert real_trader.ENTRY_QUOTE_FRESHNESS_S < real_trader.STALE_PRICE_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# B.1 — Spread-momentum filter
+# ---------------------------------------------------------------------------
+
+
+def _trader_with_history(pair_key, history):
+    """Build a minimal LiveTrader instance with a seeded baseline_spreads."""
+    t = LiveTrader.__new__(LiveTrader)
+    t.baseline_spreads = {pair_key: list(history)}
+    return t
+
+
+def test_b1_returns_false_when_history_too_short():
+    """With fewer than SPREAD_MOMENTUM_LOOKBACK prior samples, no opinion —
+    don't filter the candidate."""
+    t = _trader_with_history("PK", [0.5, 0.6])  # only 2 prior, need 5
+    # Last value is current_spread which we'd be checking against; pretend
+    # update_baseline_spreads was just called.
+    assert t.is_spread_widening("PK", 0.7) is False
+
+
+def test_b1_returns_false_when_pair_unseen():
+    """Pair with no history returns False (don't filter)."""
+    t = _trader_with_history("PK", [])
+    assert t.is_spread_widening("UNSEEN", 1.5) is False
+
+
+def test_b1_detects_widening_polyxusdt_pattern():
+    """The POLYXUSDT pattern: spread went 0.5 → 1.0 → 1.5 → 2.0 → 2.5 → 2.8.
+    Every reading is a new high. Bot should refuse to enter."""
+    history = [0.5, 1.0, 1.5, 2.0, 2.5, 2.8]
+    t = _trader_with_history("PK", history)
+    # Imagine update_baseline_spreads was just called with 2.8; bl[-1]=2.8
+    # We're checking whether current=2.8 looks like widening vs prior 5.
+    assert t.is_spread_widening("PK", 2.8) is True
+
+
+def test_b1_allows_entry_after_peak_when_spread_narrowing():
+    """Spread peaked at 3.0% then came back down. Current value 2.0% is
+    below the recent max → not widening → entry allowed."""
+    # Last entry is 2.0 (the current spread the helper compares against)
+    history = [1.5, 2.5, 3.0, 2.5, 2.2, 2.0]
+    t = _trader_with_history("PK", history)
+    assert t.is_spread_widening("PK", 2.0) is False
+
+
+def test_b1_hysteresis_treats_within_one_pct_of_max_as_widening():
+    """Tiny pullback from peak is still 'effectively at peak'. Within 1%
+    of recent max counts as widening to avoid flapping in/out."""
+    # Recent max is 3.0. Current is 2.985 (within 1% = 2.97).
+    history = [1.0, 2.0, 3.0, 2.95, 2.97, 2.985]
+    t = _trader_with_history("PK", history)
+    # Prior 5 = [1.0, 2.0, 3.0, 2.95, 2.97]. Max=3.0. 0.99 × 3.0 = 2.97.
+    # current=2.985 >= 2.97 → still widening (hysteresis kicks in).
+    assert t.is_spread_widening("PK", 2.985) is True
+
+
+def test_b1_clear_pullback_below_threshold_allows_entry():
+    """Once pullback exceeds the hysteresis band, entry is allowed."""
+    # Recent max 3.0; threshold 2.97; current 2.5 is well below.
+    history = [1.0, 2.0, 3.0, 2.8, 2.6, 2.5]
+    t = _trader_with_history("PK", history)
+    assert t.is_spread_widening("PK", 2.5) is False
+
+
+def test_b1_constants_exist_and_are_sane():
+    assert real_trader.SPREAD_MOMENTUM_LOOKBACK >= 3
+    assert 0.5 < real_trader.SPREAD_WIDENING_THRESHOLD <= 1.0

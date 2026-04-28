@@ -171,6 +171,16 @@ FUNDING_VETO_THRESHOLD_PCT: float = 0.50
 # intervals. Used by the funding veto to size the projected cost.
 _FUNDING_LOOKAHEAD_HOURS: float = 0.5  # rounding up MAX_HOLD_MINUTES/60 conservatively
 
+# B.1 — Spread-momentum filter. Convergence trades work when we enter on a
+# narrowing spread; entering on a widening one means we may stop out before
+# mean reversion. The bot tracks each pair's recent spreads in
+# baseline_spreads[pair_key]. If the current spread is at/near the recent
+# maximum (within SPREAD_WIDENING_THRESHOLD of the LOOKBACK-period max),
+# the pair is treated as still rising and the candidate is skipped.
+# A later cycle on a shrinking spread will re-evaluate the pair.
+SPREAD_MOMENTUM_LOOKBACK: int = 5
+SPREAD_WIDENING_THRESHOLD: float = 0.99  # within 1% of recent max = "still up"
+
 # ---------------------------------------------------------------------------
 # Exchange API keys
 # ---------------------------------------------------------------------------
@@ -3306,6 +3316,30 @@ class LiveTrader:
             bl.pop(0)
         return sum(bl) / len(bl) if bl else EXIT_SPREAD_PCT
 
+    # -- Spread-momentum filter (B.1) --
+    def is_spread_widening(self, pair_key: str, current_spread: float) -> bool:
+        """Return True if the recent spread history shows the spread moving
+        away from convergence rather than toward it.
+
+        Compares current_spread against the SPREAD_MOMENTUM_LOOKBACK readings
+        BEFORE the most recent entry in baseline_spreads — the caller is
+        expected to have already called update_baseline_spreads with
+        current_spread, so bl[-1] == current_spread; we exclude it from
+        the comparison window so we're measuring "current vs prior history",
+        not "current vs current-and-history".
+
+        Returns False when there isn't enough history (under
+        SPREAD_MOMENTUM_LOOKBACK prior samples) — better to allow the trade
+        than over-filter on noise.
+        """
+        bl = self.baseline_spreads.get(pair_key, [])
+        # The LOOKBACK readings BEFORE the latest. If list is short, returns
+        # fewer; the length check below catches insufficient history.
+        history = bl[-SPREAD_MOMENTUM_LOOKBACK - 1:-1]
+        if len(history) < SPREAD_MOMENTUM_LOOKBACK:
+            return False
+        return current_spread >= max(history) * SPREAD_WIDENING_THRESHOLD
+
     # -- Orderbook depth fetcher --
     async def fetch_orderbook_levels(self, session: aiohttp.ClientSession,
                                      exchange: str, symbol: str,
@@ -4129,6 +4163,17 @@ async def main():
                                                             q_low.instrument)
                                 trader.update_symbol_spread(symbol, spread_pct)
                                 trader.update_baseline_spreads(pair_key, spread_pct)
+
+                                # B.1 — Spread-momentum filter. If the pair's
+                                # recent history shows the spread still rising
+                                # (current at/near the LOOKBACK-period max),
+                                # don't enter — convergence trades work on a
+                                # narrowing spread, not a widening one. The
+                                # POLYXUSDT case from production (entered
+                                # three times in a row while spread widened
+                                # from 0.78% to 2.83%) is precisely this.
+                                if trader.is_spread_widening(pair_key, spread_pct):
+                                    continue
 
                                 # Compute fees
                                 fees_pct = trader.compute_fees(
