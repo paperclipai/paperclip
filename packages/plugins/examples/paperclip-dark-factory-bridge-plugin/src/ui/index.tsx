@@ -14,16 +14,23 @@ type ProjectionSummary = {
   truthSource: "dark-factory-journal";
   authoritative: false;
   disclaimer: string;
+  journalCursor: JournalCursor;
+  lastSequenceNo: number;
+  projectionStatus: string;
+  callbackReceiptId: string;
+  staleReason: string | null;
+  degradedReason: string | null;
+  blockedReason: string | null;
   projection: {
+    runId: string;
     linkedRunId: string;
     projectionStatus: string;
-    journalCursor: {
-      cursorId: string;
-      lastJournalSequenceNo: number;
-      journalRef: string;
-      monotonic: boolean;
-      gapDetected: boolean;
-    };
+    journalCursor: JournalCursor;
+    lastSequenceNo: number;
+    callbackReceiptId: string;
+    staleReason: string | null;
+    degradedReason: string | null;
+    blockedReason: string | null;
     callbackReceipt: {
       receiptId: string;
       status: string;
@@ -33,11 +40,18 @@ type ProjectionSummary = {
       degraded: boolean;
       blocked: boolean;
       needsApproval: boolean;
+      stale: boolean;
     };
     lastUpdatedAt: string;
   };
   providerHealth: {
     providerRole: string;
+    modelRole: string;
+    modelSelection: {
+      policy: string;
+      protocolMustSpecifyConcreteModel: boolean;
+      configuredModelName: string | null;
+    };
     breakerState: string;
     lastUpdatedAt: string;
     lastSuccessAt: string | null;
@@ -45,6 +59,18 @@ type ProjectionSummary = {
     openReason: string | null;
     cooldownUntil: string | null;
   };
+};
+
+type JournalCursor = {
+  cursorId: string;
+  runId: string;
+  journalCursor: string;
+  lastSequenceNo: number;
+  lastJournalSequenceNo: number;
+  journalRef: string;
+  sourceJournalRef: string;
+  monotonic: boolean;
+  gapDetected: boolean;
 };
 
 const panelStyle = {
@@ -68,6 +94,14 @@ const noticeStyle = {
   padding: "6px 8px",
 } satisfies React.CSSProperties;
 
+const badgeStyle = {
+  border: "1px solid #cbd5e1",
+  background: "#f8fafc",
+  borderRadius: 999,
+  padding: "2px 8px",
+  fontSize: 12,
+} satisfies React.CSSProperties;
+
 const buttonStyle = {
   border: "1px solid #1f2937",
   background: "#111827",
@@ -82,14 +116,44 @@ function Disclaimer() {
   return <div style={noticeStyle}>{DISCLAIMER}</div>;
 }
 
+function Badge({ label, active, reason }: { label: string; active: boolean; reason?: string | null }) {
+  if (!active) return null;
+  return <span style={badgeStyle}>{label}{reason ? `: ${reason}` : ""}</span>;
+}
+
+function ProjectionRows({ data }: { data: ProjectionSummary }) {
+  const projection = data.projection;
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={rowStyle}><span>Linked Run id</span><code>{projection.linkedRunId}</code></div>
+      <div style={rowStyle}><span>Journal cursor</span><code>{projection.journalCursor.journalCursor}</code></div>
+      <div style={rowStyle}><span>Source journal ref</span><code>{projection.journalCursor.sourceJournalRef}</code></div>
+      <div style={rowStyle}><span>Last sequence</span><strong>{projection.lastSequenceNo}</strong></div>
+      <div style={rowStyle}><span>Projection status</span><strong>{projection.projectionStatus}</strong></div>
+      <div style={rowStyle}><span>Callback receipt</span><code>{projection.callbackReceiptId}</code></div>
+      <div style={rowStyle}><span>Receipt status</span><strong>{projection.callbackReceipt.status}</strong></div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <Badge label="degraded" active={projection.flags.degraded} reason={projection.degradedReason} />
+        <Badge label="blocked" active={projection.flags.blocked} reason={projection.blockedReason} />
+        <Badge label="stale" active={projection.flags.stale} reason={projection.staleReason} />
+        <Badge label="needs approval" active={projection.flags.needsApproval} />
+      </div>
+    </div>
+  );
+}
+
 function ProviderHealthRows({ data }: { data: ProjectionSummary }) {
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <div style={rowStyle}><span>Provider role</span><code>{data.providerHealth.providerRole}</code></div>
+      <div style={rowStyle}><span>Model role</span><code>{data.providerHealth.modelRole}</code></div>
+      <div style={rowStyle}><span>Model policy</span><code>{data.providerHealth.modelSelection.policy}</code></div>
+      <div style={rowStyle}><span>Concrete model protocol MUST</span><strong>{data.providerHealth.modelSelection.protocolMustSpecifyConcreteModel ? "yes" : "no"}</strong></div>
       <div style={rowStyle}><span>Breaker state</span><strong>{data.providerHealth.breakerState}</strong></div>
       <div style={rowStyle}><span>Last updated</span><code>{data.providerHealth.lastUpdatedAt}</code></div>
       <div style={rowStyle}><span>Last success</span><code>{data.providerHealth.lastSuccessAt ?? "none"}</code></div>
       <div style={rowStyle}><span>Last failure</span><code>{data.providerHealth.lastFailureAt ?? "none"}</code></div>
+      <div style={rowStyle}><span>Open reason</span><code>{data.providerHealth.openReason ?? "none"}</code></div>
     </div>
   );
 }
@@ -107,6 +171,7 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
     <div style={panelStyle}>
       <strong>Dark Factory Bridge Projection</strong>
       <Disclaimer />
+      <ProjectionRows data={data} />
       <ProviderHealthRows data={data} />
     </div>
   );
@@ -129,24 +194,18 @@ export function IssuePanel({ context }: PluginDetailTabProps) {
         <strong>Dark Factory Projection</strong>
         <button
           style={buttonStyle}
+          title="Submits a receipt-only rehydrate intention; it does not mean terminal success."
           onClick={async () => {
             await requestRehydrate({ companyId: context.companyId, issueId: context.entityId, reason: "operator refresh from task detail tab" });
             refresh();
           }}
         >
-          Request rehydrate
+          Request rehydrate (receipt only)
         </button>
       </div>
       <Disclaimer />
-      <div style={rowStyle}><span>Linked Run id</span><code>{data.projection.linkedRunId}</code></div>
-      <div style={rowStyle}><span>Journal cursor</span><code>{data.projection.journalCursor.journalRef}</code></div>
-      <div style={rowStyle}><span>Sequence</span><strong>{data.projection.journalCursor.lastJournalSequenceNo}</strong></div>
-      <div style={rowStyle}><span>Projection status</span><strong>{data.projection.projectionStatus}</strong></div>
-      <div style={rowStyle}><span>Callback receipt</span><code>{data.projection.callbackReceipt.receiptId}</code></div>
-      <div style={rowStyle}><span>Receipt status</span><strong>{data.projection.callbackReceipt.status}</strong></div>
-      <div style={rowStyle}><span>Degraded</span><strong>{data.projection.flags.degraded ? "yes" : "no"}</strong></div>
-      <div style={rowStyle}><span>Blocked</span><strong>{data.projection.flags.blocked ? "yes" : "no"}</strong></div>
-      <div style={rowStyle}><span>Needs approval</span><strong>{data.projection.flags.needsApproval ? "yes" : "no"}</strong></div>
+      <div style={noticeStyle}>Request Rehydrate only submits an intention/receipt. It does not advance terminal success and does not make this projection authoritative.</div>
+      <ProjectionRows data={data} />
       <ProviderHealthRows data={data} />
     </div>
   );
@@ -166,6 +225,7 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
       <strong>Dark Factory Bridge Settings</strong>
       <Disclaimer />
       <div>Mock projection mode. No real Dark Factory connection is configured, and no token or secret is stored.</div>
+      <ProjectionRows data={data} />
       <ProviderHealthRows data={data} />
     </div>
   );

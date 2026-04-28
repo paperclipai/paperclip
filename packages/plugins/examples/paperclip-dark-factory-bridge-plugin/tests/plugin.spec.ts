@@ -113,7 +113,12 @@ describe("Dark Factory bridge projection plugin", () => {
         disclaimer: PROJECTION_DISCLAIMER,
         issueId,
         linkedRunId: expect.stringMatching(/^df-run-/),
-        projectionStatus: expect.stringMatching(/degraded|blocked|needs_approval|current/),
+        runId: expect.stringMatching(/^df-run-/),
+        journalCursor: expect.objectContaining({ source: "dark-factory-projection" }),
+        lastSequenceNo: expect.any(Number),
+        projectionStatus: expect.stringMatching(/degraded|blocked|needs_approval|current|stale/),
+        callbackReceiptId: expect.stringMatching(/^df-callback-/),
+        staleReason: null,
       },
     });
 
@@ -124,7 +129,19 @@ describe("Dark Factory bridge projection plugin", () => {
         source: "dark-factory-projection",
         truthSource: "dark-factory-journal",
         authoritative: false,
-        cursor: expect.objectContaining({ lastJournalSequenceNo: expect.any(Number) }),
+        journalCursor: expect.objectContaining({
+          source: "dark-factory-projection",
+          truthSource: "dark-factory-journal",
+          authoritative: false,
+          lastSequenceNo: expect.any(Number),
+          journalCursor: expect.stringMatching(/^dark-factory:\/\/journal\//),
+          sourceJournalRef: expect.stringMatching(/^dark-factory:\/\/journal\//),
+          monotonic: true,
+        }),
+        lastSequenceNo: expect.any(Number),
+        projectionStatus: expect.any(String),
+        callbackReceiptId: expect.stringMatching(/^df-callback-/),
+        staleReason: null,
       },
     });
 
@@ -136,7 +153,29 @@ describe("Dark Factory bridge projection plugin", () => {
         truthSource: "dark-factory-journal",
         authoritative: false,
         observationSource: "runtime_observation",
-        providerHealth: expect.objectContaining({ breakerState: expect.stringMatching(/closed|open|half_open/) }),
+        journalCursor: expect.any(Object),
+        lastSequenceNo: expect.any(Number),
+        projectionStatus: expect.any(String),
+        callbackReceiptId: expect.stringMatching(/^df-callback-/),
+        staleReason: null,
+        providerRole: "primary_execution",
+        modelRole: "execution_model",
+        modelSelection: expect.objectContaining({
+          policy: "role_based_runtime_selection",
+          protocolMustSpecifyConcreteModel: false,
+          configuredModelName: null,
+        }),
+        breakerState: expect.stringMatching(/closed|open|half_open/),
+        providerHealth: expect.objectContaining({
+          breakerState: expect.stringMatching(/closed|open|half_open/),
+          providerRole: "primary_execution",
+          modelRole: "execution_model",
+          modelSelection: expect.objectContaining({
+            policy: "role_based_runtime_selection",
+            protocolMustSpecifyConcreteModel: false,
+            configuredModelName: null,
+          }),
+        }),
       },
     });
 
@@ -148,6 +187,12 @@ describe("Dark Factory bridge projection plugin", () => {
         source: "dark-factory-projection",
         truthSource: "dark-factory-journal",
         authoritative: false,
+        journalCursor: expect.any(Object),
+        lastSequenceNo: expect.any(Number),
+        projectionStatus: expect.any(String),
+        callbackReceiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
+        staleReason: null,
+        requestSemantics: "receipt_only_not_terminal_success",
         receipt: expect.objectContaining({
           receiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
           status: "requested",
@@ -156,10 +201,33 @@ describe("Dark Factory bridge projection plugin", () => {
         }),
       },
     });
-    type RehydrateReceiptBody = { receipt: { receiptId: string; status: string; terminalStateAdvanced: boolean; idempotencyKey: string } };
+    type RehydrateReceiptBody = { receipt: { receiptId: string; status: string; terminalStateAdvanced: boolean; idempotencyKey: string }; requestSemantics: string };
     const rehydrateBody = (rehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
     const repeatedRehydrateBody = (repeatedRehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
     expect(repeatedRehydrateBody.receipt).toMatchObject(rehydrateBody.receipt);
+    expect(repeatedRehydrateBody.requestSemantics).toBe("receipt_only_not_terminal_success");
+  });
+
+  it("surfaces stale projection metadata without treating the projection as authoritative", async () => {
+    const companyId = randomUUID();
+    const issueId = "stale-phase2-issue";
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const projection = await plugin.definition.onApiRequest?.(apiInput("projection", issueId, companyId));
+
+    expect(projection).toMatchObject({
+      status: 200,
+      body: {
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
+        authoritative: false,
+        projectionStatus: "stale",
+        staleReason: "journal_cursor_lag_detected",
+        degradedReason: "projection_lag_exceeds_mock_threshold",
+        blockedReason: null,
+      },
+    });
   });
 
   it("keeps journal cursor rows unique per company and issue in the plugin namespace migration", async () => {

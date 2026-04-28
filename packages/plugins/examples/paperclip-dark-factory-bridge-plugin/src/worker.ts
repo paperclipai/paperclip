@@ -3,33 +3,59 @@ import { definePlugin, runWorker, type PluginApiRequestInput } from "@paperclipa
 
 export const PROJECTION_DISCLAIMER = "Projection only — Dark Factory Journal remains truth source";
 
-type ProjectionStatus = "current" | "degraded" | "blocked" | "needs_approval";
+const PROJECTION_SOURCE = "dark-factory-projection" as const;
+const TRUTH_SOURCE = "dark-factory-journal" as const;
+
+type ProjectionStatus = "current" | "degraded" | "blocked" | "needs_approval" | "stale";
 type BreakerState = "closed" | "open" | "half_open";
 
-type ProjectionEnvelope = {
-  source: "dark-factory-projection";
-  truthSource: "dark-factory-journal";
+type ProjectionContract = {
+  source: typeof PROJECTION_SOURCE;
   authoritative: false;
+  truthSource: typeof TRUTH_SOURCE;
   disclaimer: string;
   issueId: string;
+  runId: string;
   linkedRunId: string;
-  projectionId: string;
-  projectionStatus: ProjectionStatus;
   journalCursor: JournalCursor;
+  lastSequenceNo: number;
+  projectionStatus: ProjectionStatus;
+  callbackReceiptId: string;
+  staleReason: string | null;
+  degradedReason: string | null;
+  blockedReason: string | null;
+};
+
+type ProjectionEnvelope = ProjectionContract & {
+  projectionId: string;
   callbackReceipt: CallbackReceipt;
+  sourceJournalRef: string;
+  projectionJson: {
+    issueId: string;
+    runId: string;
+    cursor: string;
+    status: ProjectionStatus;
+  };
   flags: {
     degraded: boolean;
     blocked: boolean;
     needsApproval: boolean;
+    stale: boolean;
   };
   lastUpdatedAt: string;
 };
 
 type JournalCursor = {
+  source: typeof PROJECTION_SOURCE;
+  authoritative: false;
+  truthSource: typeof TRUTH_SOURCE;
   cursorId: string;
   runId: string;
+  journalCursor: string;
+  lastSequenceNo: number;
   lastJournalSequenceNo: number;
   journalRef: string;
+  sourceJournalRef: string;
   monotonic: true;
   gapDetected: boolean;
 };
@@ -42,7 +68,16 @@ type CallbackReceipt = {
 };
 
 type ProviderHealth = {
+  source: typeof PROJECTION_SOURCE;
+  authoritative: false;
+  truthSource: typeof TRUTH_SOURCE;
   providerRole: "primary_execution";
+  modelRole: "execution_model";
+  modelSelection: {
+    policy: "role_based_runtime_selection";
+    protocolMustSpecifyConcreteModel: false;
+    configuredModelName: null;
+  };
   breakerState: BreakerState;
   lastUpdatedAt: string;
   lastSuccessAt: string | null;
@@ -52,10 +87,17 @@ type ProviderHealth = {
 };
 
 type ProjectionSummary = {
-  source: "dark-factory-projection";
-  truthSource: "dark-factory-journal";
+  source: typeof PROJECTION_SOURCE;
+  truthSource: typeof TRUTH_SOURCE;
   authoritative: false;
   disclaimer: string;
+  journalCursor: JournalCursor;
+  lastSequenceNo: number;
+  projectionStatus: ProjectionStatus;
+  callbackReceiptId: string;
+  staleReason: string | null;
+  degradedReason: string | null;
+  blockedReason: string | null;
   projection: ProjectionEnvelope;
   providerHealth: ProviderHealth;
 };
@@ -76,6 +118,7 @@ function runId(issueId: string): string {
 }
 
 function statusFor(issueId: string): ProjectionStatus {
+  if (issueId.toLowerCase().includes("stale")) return "stale";
   return (["current", "degraded", "blocked", "needs_approval"] as const)[stableInt(issueId, 4)];
 }
 
@@ -86,40 +129,74 @@ function breakerFor(issueId: string): BreakerState {
 function buildCursor(issueId: string): JournalCursor {
   const linkedRunId = runId(issueId);
   const lastJournalSequenceNo = 100 + stableInt(`${issueId}:cursor`, 900);
+  const journalRef = `dark-factory://journal/${linkedRunId}#${lastJournalSequenceNo}`;
   return {
+    source: PROJECTION_SOURCE,
+    truthSource: TRUTH_SOURCE,
+    authoritative: false,
     cursorId: `df-cursor-${issueId.slice(0, 8)}`,
     runId: linkedRunId,
+    journalCursor: journalRef,
+    lastSequenceNo: lastJournalSequenceNo,
     lastJournalSequenceNo,
-    journalRef: `dark-factory://journal/${linkedRunId}#${lastJournalSequenceNo}`,
+    journalRef,
+    sourceJournalRef: journalRef,
     monotonic: true,
     gapDetected: false,
   };
 }
 
-function buildProjection(issueId: string): ProjectionEnvelope {
-  const projectionStatus = statusFor(issueId);
-  const linkedRunId = runId(issueId);
-  const cursor = buildCursor(issueId);
+function reasonsFor(status: ProjectionStatus): Pick<ProjectionContract, "staleReason" | "degradedReason" | "blockedReason"> {
   return {
-    source: "dark-factory-projection",
-    truthSource: "dark-factory-journal",
+    staleReason: status === "stale" ? "journal_cursor_lag_detected" : null,
+    degradedReason: status === "degraded" || status === "stale" ? "projection_lag_exceeds_mock_threshold" : null,
+    blockedReason: status === "blocked" ? "provider_breaker_open_for_projection" : null,
+  };
+}
+
+function buildContract(issueId: string): ProjectionContract {
+  const projectionStatus = statusFor(issueId);
+  const cursor = buildCursor(issueId);
+  const linkedRunId = cursor.runId;
+  return {
+    source: PROJECTION_SOURCE,
+    truthSource: TRUTH_SOURCE,
     authoritative: false,
     disclaimer: PROJECTION_DISCLAIMER,
     issueId,
+    runId: linkedRunId,
     linkedRunId,
-    projectionId: `df-projection-${issueId.slice(0, 8)}`,
-    projectionStatus,
     journalCursor: cursor,
+    lastSequenceNo: cursor.lastSequenceNo,
+    projectionStatus,
+    callbackReceiptId: `df-callback-${issueId.slice(0, 8)}-${cursor.lastSequenceNo}`,
+    ...reasonsFor(projectionStatus),
+  };
+}
+
+function buildProjection(issueId: string): ProjectionEnvelope {
+  const contract = buildContract(issueId);
+  return {
+    ...contract,
+    projectionId: `df-projection-${issueId.slice(0, 8)}`,
+    sourceJournalRef: contract.journalCursor.sourceJournalRef,
+    projectionJson: {
+      issueId,
+      runId: contract.runId,
+      cursor: contract.journalCursor.journalCursor,
+      status: contract.projectionStatus,
+    },
     callbackReceipt: {
-      receiptId: `df-callback-${issueId.slice(0, 8)}-${cursor.lastJournalSequenceNo}`,
+      receiptId: contract.callbackReceiptId,
       status: "observed",
       terminalStateAdvanced: false,
-      idempotencyKey: `${linkedRunId}:${cursor.lastJournalSequenceNo}`,
+      idempotencyKey: `${contract.runId}:${contract.lastSequenceNo}`,
     },
     flags: {
-      degraded: projectionStatus === "degraded",
-      blocked: projectionStatus === "blocked",
-      needsApproval: projectionStatus === "needs_approval",
+      degraded: contract.projectionStatus === "degraded" || contract.projectionStatus === "stale",
+      blocked: contract.projectionStatus === "blocked",
+      needsApproval: contract.projectionStatus === "needs_approval",
+      stale: contract.projectionStatus === "stale",
     },
     lastUpdatedAt: isoFromOffset(issueId),
   };
@@ -128,7 +205,16 @@ function buildProjection(issueId: string): ProjectionEnvelope {
 function buildProviderHealth(issueId: string): ProviderHealth {
   const breakerState = breakerFor(issueId);
   return {
+    source: PROJECTION_SOURCE,
+    truthSource: TRUTH_SOURCE,
+    authoritative: false,
     providerRole: "primary_execution",
+    modelRole: "execution_model",
+    modelSelection: {
+      policy: "role_based_runtime_selection",
+      protocolMustSpecifyConcreteModel: false,
+      configuredModelName: null,
+    },
     breakerState,
     lastUpdatedAt: isoFromOffset(`${issueId}:health`, 3),
     lastSuccessAt: breakerState === "open" ? null : isoFromOffset(`${issueId}:success`, -20),
@@ -139,31 +225,37 @@ function buildProviderHealth(issueId: string): ProviderHealth {
 }
 
 function buildSummary(issueId: string): ProjectionSummary {
+  const projection = buildProjection(issueId);
   return {
-    source: "dark-factory-projection",
-    truthSource: "dark-factory-journal",
+    source: PROJECTION_SOURCE,
+    truthSource: TRUTH_SOURCE,
     authoritative: false,
     disclaimer: PROJECTION_DISCLAIMER,
-    projection: buildProjection(issueId),
+    journalCursor: projection.journalCursor,
+    lastSequenceNo: projection.lastSequenceNo,
+    projectionStatus: projection.projectionStatus,
+    callbackReceiptId: projection.callbackReceiptId,
+    staleReason: projection.staleReason,
+    degradedReason: projection.degradedReason,
+    blockedReason: projection.blockedReason,
+    projection,
     providerHealth: buildProviderHealth(issueId),
   };
 }
 
 function buildRehydrateReceipt(issueId: string, reason?: string | null) {
-  const linkedRunId = runId(issueId);
+  const contract = buildContract(issueId);
+  const receiptId = `df-rehydrate-${contract.runId}`;
   return {
-    source: "dark-factory-projection" as const,
-    truthSource: "dark-factory-journal" as const,
-    authoritative: false as const,
-    disclaimer: PROJECTION_DISCLAIMER,
-    issueId,
-    linkedRunId,
+    ...contract,
+    callbackReceiptId: receiptId,
     requestedAt: isoFromOffset(`${issueId}:rehydrate`, 5),
+    requestSemantics: "receipt_only_not_terminal_success" as const,
     receipt: {
-      receiptId: `df-rehydrate-${linkedRunId}`,
+      receiptId,
       status: "requested" as const,
       terminalStateAdvanced: false as const,
-      idempotencyKey: `${linkedRunId}:rehydrate-request`,
+      idempotencyKey: `${contract.runId}:rehydrate-request`,
       reason: reason ?? "operator_requested_projection_refresh",
     },
   };
@@ -201,30 +293,28 @@ const plugin = definePlugin({
     }
 
     if (input.routeKey === "journal-cursor") {
+      const contract = buildContract(issueId);
       return {
         status: 200,
         body: {
-          source: "dark-factory-projection",
-          truthSource: "dark-factory-journal",
-          authoritative: false,
-          disclaimer: PROJECTION_DISCLAIMER,
-          issueId,
-          cursor: buildCursor(issueId),
+          ...contract,
+          cursor: contract.journalCursor,
         },
       };
     }
 
     if (input.routeKey === "provider-health") {
+      const providerHealth = buildProviderHealth(issueId);
       return {
         status: 200,
         body: {
-          source: "dark-factory-projection",
-          truthSource: "dark-factory-journal",
-          authoritative: false,
-          disclaimer: PROJECTION_DISCLAIMER,
-          issueId,
+          ...buildContract(issueId),
           observationSource: "runtime_observation",
-          providerHealth: buildProviderHealth(issueId),
+          providerRole: providerHealth.providerRole,
+          modelRole: providerHealth.modelRole,
+          modelSelection: providerHealth.modelSelection,
+          breakerState: providerHealth.breakerState,
+          providerHealth,
         },
       };
     }
@@ -248,8 +338,8 @@ const plugin = definePlugin({
       status: "ok",
       message: "Dark Factory bridge projection mock worker is running",
       details: {
-        source: "dark-factory-projection",
-        truthSource: "dark-factory-journal",
+        source: PROJECTION_SOURCE,
+        truthSource: TRUTH_SOURCE,
         authoritative: false,
       },
     };
