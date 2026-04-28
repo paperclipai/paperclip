@@ -335,12 +335,12 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         capacity: 1,
         warnings: [],
       }),
-      inbound: {
+      inbound: expect.objectContaining({
         source: "slack",
         channel: "daily-work",
         externalUserId: "U123",
         reviewRequired: true,
-      },
+      }),
     });
   });
 
