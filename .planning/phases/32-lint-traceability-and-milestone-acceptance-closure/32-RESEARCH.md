@@ -303,19 +303,19 @@ Source: Current code/test evidence. [VERIFIED: server/src/services/rt2-wiki-lint
 
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
-| A1 | A final re-audit artifact may be either an update to `.planning/v2.4-MILESTONE-AUDIT.md` or a new clearly named post-closure audit artifact. [ASSUMED] | Summary / Architecture Patterns | Planner may choose the wrong artifact convention unless aligned with project preference. |
+| A1 | Phase 32 will use a new `.planning/v2.4-MILESTONE-REAUDIT.md` artifact and preserve the original audit unchanged. [RESOLVED] | Summary / Architecture Patterns | Low; this follows CONTEXT discretion and keeps original gap evidence intact. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should final acceptance overwrite or preserve the original milestone audit?**
+1. **RESOLVED: Final acceptance will preserve the original milestone audit and write a new re-audit artifact.**
    - What we know: Context permits either updating `.planning/v2.4-MILESTONE-AUDIT.md` or creating a new audit artifact, as long as original gap context is preserved. [VERIFIED: .planning/phases/32-lint-traceability-and-milestone-acceptance-closure/32-CONTEXT.md]
-   - What's unclear: The repo has not established a single post-closure re-audit filename convention for v2.4. [VERIFIED: rg .planning]
-   - Recommendation: Use a new `v2.4-MILESTONE-REAUDIT.md` or append a clearly dated post-closure section to the existing audit; do not erase original gap evidence. [ASSUMED]
+   - Prior uncertainty: The repo had not established a single post-closure re-audit filename convention for v2.4. [VERIFIED: rg .planning]
+   - Resolution: Use a new `.planning/v2.4-MILESTONE-REAUDIT.md` artifact and do not overwrite `.planning/v2.4-MILESTONE-AUDIT.md`. This preserves original gap evidence while giving Phase 32 a clear post-closure acceptance target. [RESOLVED: planner decision from CONTEXT discretion]
 
-2. **Should full workspace `pnpm typecheck` be retried with a longer timeout during execution?**
+2. **RESOLVED: Retry full workspace checks if practical, but make focused lint and server checks the LINT acceptance gate.**
    - What we know: It timed out in this research session after about 124 seconds, while server typecheck passed. [VERIFIED: command 2026-04-28]
-   - What's unclear: Whether the timeout was transient or inherent to the current workspace state. [VERIFIED: command 2026-04-28]
-   - Recommendation: Planner should include one full workspace retry if practical, but must not block LINT acceptance on an unexplained timeout when focused lint and server checks pass. [VERIFIED: .planning/phases/32-lint-traceability-and-milestone-acceptance-closure/32-CONTEXT.md]
+   - Prior uncertainty: Whether the timeout was transient or inherent to the current workspace state. [VERIFIED: command 2026-04-28]
+   - Resolution: Execution must run `pnpm --filter @paperclipai/server test -- rt2-wiki-lint` and `pnpm --filter @paperclipai/server typecheck` as the required Phase 32 LINT gates. It should retry `pnpm typecheck` and `pnpm test` if practical, record exact outcomes, and separate unrelated timeout or host-specific failures from LINT acceptance. [RESOLVED: D-14, D-15]
 
 ## Environment Availability
 
