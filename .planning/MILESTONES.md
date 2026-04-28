@@ -7,7 +7,7 @@
 | v2.1 | 개발기획서 반영 및 운영자 채택 | Shipped | 2026-04-25 | 2026-04-25 | 업로드된 RealTycoon2 개발기획서 gap을 앱에서 보이게 만들고 capture, daily cockpit, OKR/KPI, task mesh, knowledge sync, Jarvis rollout, enterprise readiness를 완료 |
 | v2.2 | 개발기획서 완전 정합성 고도화 | Shipped | 2026-04-25 | 2026-04-25 | 일일업무일지/Trello형 업무 보드/identity hardening/Knowledge Bridge/P&L/rollout evidence로 개발기획서 정합성을 약 94%까지 끌어올림 |
 | v2.3 | 운영 검증 및 외부 연동 실체화 | Shipped | 2026-04-25 | 2026-04-27 | Phase 19-24 완료. 요구사항 17/17, integration 5/5, flows 5/5 충족. strict Nyquist validation debt는 tech debt로 이월 |
-| v2.4 | Knowledge+Economy 심화 | In Progress | 2026-04-27 | - | Daily Wiki Projector, Graphify Projector, Coin Ledger Atomicity, Settlement Governance Hardening, Consistency Linting으로 knowledge/economy 깊이 추가 |
+| v2.4 | Knowledge+Economy 심화 | Shipped | 2026-04-27 | 2026-04-28 | Phase 25-32 완료. 요구사항 24/24, phases 5/5, integration 5/5, flows 5/5 충족. 초기 audit gaps는 Phase 30-32 closure로 닫고 re-audit `passed` |
 
 ## v2.0 RT2 Refoundation
 
@@ -159,26 +159,66 @@ v2.2에서 기능적으로 완료했지만 `tech_debt`로 남긴 strict validati
 
 ## v2.4 Knowledge+Economy 심화
 
-**상태:** 2026-04-27 진행 중  
+**상태:** 2026-04-28 완료  
 **시작:** 2026-04-27  
-**완료:** -  
-**Phases:** 5 (25-29)  
-**Requirements:** 24 total  
-**Archives:** (to be added on completion)
+**완료:** 2026-04-28  
+**Phases:** 8 planned/closure, 8 complete  
+**Plans:** 10 complete  
+**Requirements:** 24 planned, 24 complete  
+**Audit:** initial `gaps_found`, final re-audit `passed` (`.planning/milestones/v2.4-MILESTONE-REAUDIT.md`)  
+**Archives:**
+
+- `.planning/milestones/v2.4-ROADMAP.md`
+- `.planning/milestones/v2.4-REQUIREMENTS.md`
+- `.planning/milestones/v2.4-MILESTONE-AUDIT.md`
+- `.planning/milestones/v2.4-MILESTONE-REAUDIT.md`
 
 ### 목표
 
 daily wiki projector, graphify projector, coin ledger atomicity, settlement governance hardening, consistency linting으로 knowledge projection과 economy governance의 심화 기능을 구현한다.
 
-### 계획된 Phase
+### 완료한 Phase
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 25 | Daily Wiki Projector | WIKI-01, WIKI-02, WIKI-03, WIKI-04, WIKI-05 | Pending |
-| 26 | Graphify Projector | GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04, GRAPH-05, GRAPH-06 | Pending |
-| 27 | Coin Ledger Atomicity | LEDGER-01, LEDGER-02, LEDGER-03, LEDGER-04, LEDGER-05 | Pending |
-| 28 | Settlement Governance Hardening | SETTLE-01, SETTLE-02, SETTLE-03, SETTLE-04 | Pending |
-| 29 | Consistency Linting (Batch) | LINT-01, LINT-02, LINT-03, LINT-04 | Pending |
+| 25 | Daily Wiki Projector | WIKI-01, WIKI-02, WIKI-03, WIKI-04, WIKI-05 | Complete |
+| 26 | Graphify Projector | GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04, GRAPH-05, GRAPH-06 | Complete |
+| 27 | Coin Ledger Atomicity | LEDGER-01, LEDGER-02, LEDGER-03, LEDGER-04, LEDGER-05 | Complete |
+| 28 | Settlement Governance Hardening | SETTLE-01, SETTLE-02, SETTLE-03, SETTLE-04 | Complete |
+| 29 | Consistency Linting (Batch) | LINT-01, LINT-02, LINT-03, LINT-04 | Complete |
+| 30 | Knowledge Artifact and Verification Closure | WIKI, GRAPH | Complete |
+| 31 | Economy Artifact and Verification Closure | LEDGER, SETTLE | Complete |
+| 32 | Lint Traceability and Milestone Acceptance Closure | LINT | Complete |
+
+### 완료한 것
+
+- Board/domain event를 daily wiki page, date index, chronological log, per-user page로 project하는 Daily Wiki Projector를 완료했다.
+- Daily wiki output을 graph node/edge로 연결하고 confidence tag, incremental refresh, graph report, community evidence를 보강했다.
+- Coin ledger에 atomic `balanceAfter`, debit/credit `leg`, transaction rollback, reconciliation, non-negative balance protection을 추가했다.
+- Settlement governance에 duplicate materialization guard, linked ledger evidence, anti-gaming signal, company threshold settings를 추가했다.
+- Scheduled, evidence-only wiki consistency linting과 `embedding_consistency` issue type을 추가했다.
+- Initial milestone audit의 orphaned/partial requirement gaps를 Phase 30-32에서 summary, verification, validation, frontmatter repair로 닫았다.
+
+### 감사 결과
+
+초기 audit은 `gaps_found`였다. 요구사항 구현 증거는 있었지만 milestone gate가 요구하는 `SUMMARY.md`, `VERIFICATION.md`, `VALIDATION.md`, `requirements-completed` frontmatter가 부족했다.
+
+Phase 30-32 closure 후 re-audit 결과:
+
+| Gate | Score |
+|------|-------|
+| Requirements | 24/24 |
+| Phases | 5/5 |
+| Integration | 5/5 |
+| Flows | 5/5 |
+
+### 검증
+
+- `pnpm --filter @paperclipai/server test -- rt2-wiki-lint` passed
+- `pnpm --filter @paperclipai/server typecheck` passed
+- `pnpm typecheck` passed
+- `pnpm test` passed; 265 files passed, 23 skipped; 1460 tests passed, 121 skipped
+- `pnpm test:e2e`는 기본 milestone close gate가 아니므로 실행하지 않았다.
 
 ### 의존성
 
@@ -192,6 +232,8 @@ daily wiki projector, graphify projector, coin ledger atomicity, settlement gove
 |----------|------|--------|
 | vector | vector embedding + semantic search | deferred until pgvector ready |
 | federation | cross-company knowledge federation | outside trusted ecosystem |
+| lint | live provider-backed contradiction detection | deterministic local analyzer and injectable tests accepted for v2.4 |
+| postgres | embedded Postgres tests in default Windows run | selected embedded cases remain opt-in |
 
 ---
-*마지막 업데이트: 2026-04-27, v2.4 milestone started*
+*마지막 업데이트: 2026-04-28, v2.4 milestone shipped*

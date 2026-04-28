@@ -161,6 +161,46 @@
 - 기능이 완료되어도 strict validation artifact가 없으면 `passed`가 아니라 `tech_debt`로 기록하는 편이 정확하다.
 - v2.4 이후는 새 기능 확장보다 실제 배포/운영 환경 검증과 persistent runtime hardening을 먼저 검토해야 한다.
 
+## 마일스톤: v2.4 - Knowledge+Economy 심화
+
+**완료:** 2026-04-28  
+**Phases:** 8  
+**Plans:** 10  
+**Audit:** initial `gaps_found`, final re-audit `passed`
+
+### 만든 것
+
+- Board/domain event를 daily wiki page, date index, chronological log, per-user page로 project했다.
+- Daily wiki output을 confidence-tagged graph, incremental refresh, graph report, community evidence로 연결했다.
+- Coin ledger에 atomic `balanceAfter`, debit/credit `leg`, transaction rollback, reconciliation, non-negative balance protection을 추가했다.
+- Settlement governance에 duplicate materialization guard, linked ledger evidence, anti-gaming signal, company threshold settings를 추가했다.
+- Scheduled, evidence-only wiki consistency linting과 `embedding_consistency` issue type을 추가했다.
+- Phase 30-32에서 WIKI/GRAPH/LEDGER/SETTLE/LINT traceability gaps를 닫고 final milestone re-audit을 통과했다.
+
+### 잘 된 점
+
+- 초기 audit failure를 숨기지 않고 Phase 30-32 closure로 분리해 requirements, summary, verification, validation, frontmatter를 명확히 복구했다.
+- Knowledge flow와 economy flow를 각각 구현 evidence와 milestone acceptance evidence로 연결했다.
+- `pnpm typecheck`와 `pnpm test`가 final gate에서 통과해 milestone close confidence가 이전 tech_debt milestone보다 높아졌다.
+
+### 비효율적이었던 점
+
+- Phase 25-29 기능 완료 후 artifact coverage가 뒤늦게 보강되어 별도 closure phase 3개가 필요했다.
+- Initial audit 기준으로 WIKI/GRAPH/LEDGER/SETTLE 요구사항이 orphaned/partial로 보였고, 기능 구현과 milestone acceptance의 간극이 컸다.
+- Provider-backed lint와 pgvector semantic search는 아직 future scope라 knowledge 품질 hardening은 다음 milestone에서 다시 판단해야 한다.
+
+### 확립된 패턴
+
+- milestone acceptance는 구현 여부만이 아니라 `REQUIREMENTS.md`, `SUMMARY.md`, `VERIFICATION.md`, `VALIDATION.md`의 traceability로 판정한다.
+- Lint는 evidence-only, scheduled, no-auto-fix가 기본 안전 패턴이다.
+- Ledger/settlement economy flow는 atomic write, reconciliation, approval evidence, anti-gaming signal을 함께 닫아야 한다.
+
+### 핵심 교훈
+
+- 기능 phase가 끝나는 즉시 summary frontmatter와 verification/validation artifact를 생성해야 closure phase를 줄일 수 있다.
+- Initial audit failure는 useful signal이다. 별도 closure phase로 투명하게 닫으면 마일스톤 기록의 신뢰도가 높아진다.
+- 다음 milestone은 새 기능보다 provider-backed lint, pgvector readiness, runtime hardening 같은 운영 깊이의 우선순위를 먼저 검토해야 한다.
+
 ## Cross-Milestone Trend
 
 | Trend | Observation |
@@ -168,4 +208,4 @@
 | Product identity | RT2가 우선순위다. Paperclip/Multica wording은 product-facing surface에서 숨기고 engine/internal compatibility layer로 제한한다. |
 | Verification | Windows sandbox `spawn EPERM`은 반복되는 local environment issue다. Vitest/build에는 승인된 escalated run이 필요할 수 있다. |
 | Planning | 사용자는 wave-by-wave prompting보다 긴 `--auto --chain` execution을 선호한다. |
-| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. |
+| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. |
