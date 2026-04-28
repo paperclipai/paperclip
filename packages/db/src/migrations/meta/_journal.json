@@ -533,6 +533,13 @@
       "when": 1777400002000,
       "tag": "0075_heartbeat_runs_company_issueid_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1777400003000,
+      "tag": "0076_synthetic_ssh_probe_results",
+      "breakpoints": true
     }
   ]
 }
