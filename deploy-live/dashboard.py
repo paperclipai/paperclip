@@ -267,6 +267,29 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- TRADE DIAGNOSTICS -->
+<div class="card">
+  <div class="ctitle">Trade Diagnostics &mdash; what went wrong</div>
+  <div id="td-summary" class="nd" style="padding:8px 4px;font-size:13px;">Loading&#x2026;</div>
+  <div class="tw">
+    <table>
+      <thead><tr>
+        <th>ID</th><th>Symbol</th><th>Net P&amp;L</th>
+        <th title="Per-leg PnL: SHORT / LONG. Asymmetric values mean the trade was driven by direction, not convergence.">Short / Long P&amp;L</th>
+        <th title="Sum of both legs' slippage at entry. Positive = adverse (paid more than expected).">Entry Slip $</th>
+        <th title="Sum of both legs' slippage at exit.">Exit Slip $</th>
+        <th title="Net funding paid. Positive = bot paid; negative = bot received.">Funding $</th>
+        <th>Hold (min)</th>
+        <th title="Older of the two leg quotes at decision. Stale quotes mean the bot may have decided on data that no longer reflected the market.">Quote Age (ms)</th>
+        <th title="Spread implied by actual fill prices. Negative means orders crossed the book.">Realized Entry %</th>
+        <th>Realized Exit %</th>
+        <th>Reason</th>
+      </tr></thead>
+      <tbody id="td-body"><tr><td colspan="12" class="nd">Loading&#x2026;</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- AUDIT LOG -->
 <div class="card">
   <div class="ctitle">Order Audit Log (last 50)</div>
@@ -490,6 +513,77 @@ function renderAudit(s) {
   tb.innerHTML = html;
 }
 
+// ---- Trade Diagnostics renderer ----
+// Pulls the joined view from /api/diagnostics. Failures are logged but
+// don't break the rest of the dashboard — diagnostics are nice-to-have.
+// All string fields are escaped via esc() to prevent XSS through malicious
+// or buggy state.json content.
+function renderDiagnostics(d) {
+  const sum = d.summary || {};
+  const trades = d.trades || [];
+  const sumEl = document.getElementById('td-summary');
+  if (!trades.length) {
+    sumEl.textContent = 'No closed trades with diagnostic records yet.';
+    document.getElementById('td-body').innerHTML =
+      '<tr><td colspan="12" class="nd">No data</td></tr>';
+    return;
+  }
+  // Color helpers reuse existing dashboard idioms.
+  const cls = (v) => v > 0 ? 'g' : (v < 0 ? 'r' : '');
+  const fmt = (v, n) => (typeof v === 'number') ? v.toFixed(n) : '\u2014';
+  const fmtUSD = (v) => (typeof v === 'number') ? '$' + v.toFixed(4) : '\u2014';
+
+  // Summary line — built from numeric summary stats only (no user-controlled
+  // strings), so direct innerHTML is safe here.
+  sumEl.innerHTML = (
+    '<b>' + (sum.n_trades_with_diagnostics | 0) + '</b> trades' +
+    ' &middot; entry slip <span class="' + cls(sum.total_entry_slippage_usd) + '">' +
+        fmtUSD(sum.total_entry_slippage_usd) + '</span>' +
+    ' &middot; exit slip <span class="' + cls(sum.total_exit_slippage_usd) + '">' +
+        fmtUSD(sum.total_exit_slippage_usd) + '</span>' +
+    ' &middot; funding <span class="' + cls(sum.total_funding_paid_usd) + '">' +
+        fmtUSD(sum.total_funding_paid_usd) + '</span>' +
+    ' &middot; <b>' + (sum.stale_quote_count | 0) + '</b> with stale quotes (>' +
+        ((sum.stale_quote_threshold_ms || 0) / 1000).toFixed(0) + 's)' +
+    ' &middot; <b>' + (sum.negative_realized_entry_count | 0) + '</b> with negative realized entry' +
+    ' &middot; <b>' + (sum.asymmetric_pnl_count | 0) + '</b> with asymmetric per-leg P&amp;L'
+  );
+
+  // Per-trade rows (limit to 50 for compactness). String columns escaped.
+  const tb = document.getElementById('td-body');
+  let html = '';
+  for (const t of trades.slice(0, 50)) {
+    html += '<tr>';
+    html += '<td>' + ((t.id | 0) || '') + '</td>';
+    html += '<td class="a">' + esc(t.symbol || '') + '</td>';
+    html += '<td class="' + cls(t.net_pnl_usd) + '">' + fmtUSD(t.net_pnl_usd) + '</td>';
+    html +=
+      '<td><span class="' + cls(t.short_pnl_usd) + '">' + fmt(t.short_pnl_usd, 3) + '</span>' +
+      ' / <span class="' + cls(t.long_pnl_usd) + '">' + fmt(t.long_pnl_usd, 3) + '</span></td>';
+    html += '<td class="' + cls(-t.entry_slippage_usd) + '">' + fmtUSD(t.entry_slippage_usd) + '</td>';
+    html += '<td class="' + cls(-t.exit_slippage_usd) + '">' + fmtUSD(t.exit_slippage_usd) + '</td>';
+    html += '<td class="' + cls(-t.funding_paid_usd) + '">' + fmtUSD(t.funding_paid_usd) + '</td>';
+    html += '<td>' + fmt(t.hold_minutes, 1) + '</td>';
+    const stale = t.max_quote_age_ms >= 5000;
+    html += '<td' + (stale ? ' class="r"' : '') + '>' + ((t.max_quote_age_ms | 0) || 0) + '</td>';
+    const negRealized = t.realized_entry_spread_pct < 0;
+    html += '<td' + (negRealized ? ' class="r"' : '') + '>' + fmt(t.realized_entry_spread_pct, 3) + '%</td>';
+    html += '<td>' + fmt(t.realized_exit_spread_pct, 3) + '%</td>';
+    html += '<td>' + esc(t.exit_reason || '') + '</td>';
+    html += '</tr>';
+  }
+  tb.innerHTML = html;
+}
+
+async function refreshDiagnostics() {
+  try {
+    const r = await fetch('/api/diagnostics');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderDiagnostics(d);
+  } catch(e) { console.warn('diagnostics refresh:', e); }
+}
+
 // ---- Poll loop ----
 async function refresh() {
   try {
@@ -504,6 +598,9 @@ async function refresh() {
     renderClosed(s);
     renderAudit(s);
   } catch(e) { console.warn('refresh:', e); }
+  // Diagnostics is a separate fetch so a failure here doesn't break the
+  // main view; conversely a state-fetch failure doesn't kill diagnostics.
+  refreshDiagnostics();
 }
 refresh();
 setInterval(refresh, 3000);
@@ -544,6 +641,122 @@ def api_state():
             return jsonify(json.load(f))
     except (FileNotFoundError, json.JSONDecodeError):
         return jsonify({})
+
+
+# ---------------------------------------------------------------------------
+# /api/diagnostics — joined view of closed positions + their TradeDiagnostic
+# records. Server-side join + summary stats so the dashboard can display
+# forensic data without re-implementing the join in JavaScript.
+#
+# Returns a structure that's friendly for the small Trade Diagnostics panel:
+#   {
+#     "summary": {<aggregate stats>},
+#     "trades":  [<per-trade joined records, most recent first>],
+#   }
+# ---------------------------------------------------------------------------
+_STALE_QUOTE_MS_THRESHOLD = 5_000   # 5 seconds
+
+
+@app.route("/api/diagnostics")
+@check_auth
+def api_diagnostics():
+    """Return joined closed-positions + diagnostics with summary stats."""
+    try:
+        with open(os.path.join(DATA_DIR, "real_state.json")) as f:
+            state = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return jsonify({"summary": {}, "trades": []})
+
+    diagnostics = state.get("diagnostics") or {}
+    closed = state.get("closed_positions") or []
+
+    trades = []
+    sum_entry_slip = 0.0
+    sum_exit_slip = 0.0
+    sum_funding = 0.0
+    n_stale = 0
+    n_neg_realized = 0
+    n_asym_pnl = 0
+
+    # Iterate most-recent-first.
+    for pos in reversed(closed):
+        pid = pos.get("id")
+        diag = diagnostics.get(str(pid))
+        if not diag:
+            # Trade closed before the diagnostic feature shipped — skip
+            # rather than render a half-empty row.
+            continue
+
+        entry_slip = (
+            float(diag.get("short_entry_slippage_usd", 0.0))
+            + float(diag.get("long_entry_slippage_usd", 0.0))
+        )
+        exit_slip = (
+            float(diag.get("short_exit_slippage_usd", 0.0))
+            + float(diag.get("long_exit_slippage_usd", 0.0))
+        )
+        funding = (
+            float(diag.get("funding_paid_short_usd", 0.0))
+            + float(diag.get("funding_paid_long_usd", 0.0))
+        )
+        max_quote_age = max(
+            int(diag.get("detection_short_quote_age_ms", 0)),
+            int(diag.get("detection_long_quote_age_ms", 0)),
+        )
+        short_pnl = float(diag.get("short_pnl_usd", 0.0))
+        long_pnl = float(diag.get("long_pnl_usd", 0.0))
+
+        sum_entry_slip += entry_slip
+        sum_exit_slip += exit_slip
+        sum_funding += funding
+        if max_quote_age >= _STALE_QUOTE_MS_THRESHOLD:
+            n_stale += 1
+        # Realized entry spread on the position itself (Plan 3 commit
+        # 72ee1bbb persisted this on LivePosition).
+        realized_entry = float(pos.get("realized_entry_spread_pct", 0.0))
+        if realized_entry < 0:
+            n_neg_realized += 1
+        # "Asymmetric PnL": one leg made money, the other lost. Indicates
+        # the trade's outcome was driven by directional price movement
+        # rather than convergence — useful signal even when net PnL is
+        # close to zero.
+        if (short_pnl > 0) != (long_pnl > 0) and abs(short_pnl) + abs(long_pnl) > 0.01:
+            n_asym_pnl += 1
+
+        trades.append({
+            "id": pid,
+            "symbol": pos.get("symbol"),
+            "exchange_short": pos.get("exchange_short"),
+            "exchange_long": pos.get("exchange_long"),
+            "entry_time": pos.get("entry_time"),
+            "net_pnl_usd": float(pos.get("net_pnl_usd", 0.0)),
+            "short_pnl_usd": short_pnl,
+            "long_pnl_usd": long_pnl,
+            "entry_slippage_usd": entry_slip,
+            "exit_slippage_usd": exit_slip,
+            "funding_paid_usd": funding,
+            "hold_minutes": float(diag.get("hold_minutes", 0.0)),
+            "max_quote_age_ms": max_quote_age,
+            "realized_entry_spread_pct": realized_entry,
+            "realized_exit_spread_pct": float(diag.get("exit_realized_spread_pct", 0.0)),
+            "exit_reason": pos.get("exit_reason"),
+            "candidate_score": float(diag.get("candidate_score", 0.0)),
+            "candidate_rank": int(diag.get("candidate_rank", 0)),
+        })
+
+    return jsonify({
+        "summary": {
+            "n_trades_with_diagnostics": len(trades),
+            "total_entry_slippage_usd": round(sum_entry_slip, 4),
+            "total_exit_slippage_usd": round(sum_exit_slip, 4),
+            "total_funding_paid_usd": round(sum_funding, 4),
+            "stale_quote_count": n_stale,
+            "stale_quote_threshold_ms": _STALE_QUOTE_MS_THRESHOLD,
+            "negative_realized_entry_count": n_neg_realized,
+            "asymmetric_pnl_count": n_asym_pnl,
+        },
+        "trades": trades,
+    })
 
 
 @app.route("/api/stop", methods=["POST"])
