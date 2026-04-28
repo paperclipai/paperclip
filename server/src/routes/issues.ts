@@ -958,6 +958,7 @@ export function issueRoutes(
       includeRoutineExecutions: includeRoutineExecutionsExplicit || includeRoutineExecutionsImplicit,
       excludeRoutineExecutions:
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
+      includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       q: req.query.q as string | undefined,
       limit,
     });

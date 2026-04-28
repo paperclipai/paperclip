@@ -234,6 +234,7 @@ describe.sequential("agent skill routes", () => {
     mockAdapter.syncSkills.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    let persistedAgent: Record<string, unknown> | null = null;
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: makeAgent("claude_local"),
@@ -272,18 +273,26 @@ describe.sequential("agent skill routes", () => {
       entries: [],
       warnings: [],
     });
-    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeAgent("claude_local"),
-      adapterConfig: patch.adapterConfig ?? {},
-    }));
-    mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
-      ...makeAgent(String(input.adapterType ?? "claude_local")),
-      ...input,
-      adapterConfig: input.adapterConfig ?? {},
-      runtimeConfig: input.runtimeConfig ?? {},
-      budgetMonthlyCents: Number(input.budgetMonthlyCents ?? 0),
-      permissions: null,
-    }));
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      const previousAgent = persistedAgent ?? makeAgent("claude_local");
+      persistedAgent = {
+        ...previousAgent,
+        ...patch,
+        adapterConfig: patch.adapterConfig ?? previousAgent.adapterConfig ?? {},
+      };
+      return persistedAgent;
+    });
+    mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => {
+      persistedAgent = {
+        ...makeAgent(String(input.adapterType ?? "claude_local")),
+        ...input,
+        adapterConfig: input.adapterConfig ?? {},
+        runtimeConfig: input.runtimeConfig ?? {},
+        budgetMonthlyCents: Number(input.budgetMonthlyCents ?? 0),
+        permissions: null,
+      };
+      return persistedAgent;
+    });
     mockApprovalService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       id: "approval-1",
       companyId: "company-1",
@@ -432,6 +441,35 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         agentId: "11111111-1111-4111-8111-111111111111",
         agentRole: "engineer",
+      }),
+    );
+  });
+
+  it("accepts the security role on direct agent creation and preserves it in telemetry", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Security Engineer",
+        role: "security",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(res.body).toMatchObject({
+      role: "security",
+    });
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        role: "security",
+      }),
+    );
+    expect(mockTrackAgentCreated).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentId: "11111111-1111-4111-8111-111111111111",
+        agentRole: "security",
       }),
     );
   });

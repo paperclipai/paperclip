@@ -502,15 +502,29 @@
     {
       "idx": 71,
       "version": "7",
-      "when": 1777180000000,
-      "tag": "0071_goals_target_date",
+      "when": 1777131234000,
+      "tag": "0071_default_hire_approval_off",
       "breakpoints": true
     },
     {
       "idx": 72,
       "version": "7",
-      "when": 1777180001000,
-      "tag": "0072_issues_last_activity_at",
+      "when": 1777305216238,
+      "tag": "0072_large_sandman",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1777400000000,
+      "tag": "0073_goals_target_date",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1777400001000,
+      "tag": "0074_issues_last_activity_at",
       "breakpoints": true
     }
   ]

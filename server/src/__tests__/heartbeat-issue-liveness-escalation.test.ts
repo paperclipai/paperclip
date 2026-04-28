@@ -4,7 +4,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  budgetPolicies,
   companies,
+  costEvents,
   createDb,
   executionWorkspaces,
   heartbeatRuns,
@@ -101,6 +103,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
       enableIsolatedWorkspaces: false,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
   });
 
@@ -114,7 +117,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   }
 
-  async function seedBlockedChain(opts: { stale?: boolean } = {}) {
+  async function seedBlockedChain(opts: { outsideLookback?: boolean } = {}) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -155,9 +158,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     ]);
 
-    const issueTimestamp = opts.stale === false
-      ? new Date()
-      : new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const issueTimestamp = opts.outsideLookback === true
+      ? new Date(Date.now() - 25 * 60 * 60 * 1000)
+      : new Date(Date.now() - 60 * 60 * 1000);
     await db.insert(issues).values([
       {
         id: blockedIssueId,
@@ -191,10 +194,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       type: "blocks",
     });
 
-    return { companyId, managerId, blockedIssueId, blockerIssueId };
+    return { companyId, managerId, coderId, blockedIssueId, blockerIssueId };
   }
 
   it("keeps liveness findings advisory when auto recovery is disabled", async () => {
+    await instanceSettingsService(db).updateExperimental({
+      enableIssueGraphLivenessAutoRecovery: false,
+    });
     const { companyId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
 
@@ -212,16 +218,16 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(0);
   });
 
-  it("does not create recovery issues until the dependency path is stale for 24 hours", async () => {
+  it("does not create recovery issues outside the configured lookback window", async () => {
     await enableAutoRecovery();
-    const { companyId } = await seedBlockedChain({ stale: false });
+    const { companyId } = await seedBlockedChain({ outsideLookback: true });
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
 
     expect(result.findings).toBe(1);
     expect(result.escalationsCreated).toBe(0);
-    expect(result.skippedAutoRecoveryTooYoung).toBe(1);
+    expect(result.skippedOutsideLookback).toBe(1);
 
     const escalations = await db
       .select()
@@ -342,6 +348,71 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(events.some((event) => event.action === "issue.blockers.updated")).toBe(true);
   });
 
+  it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const issueTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: coderId,
+        updatedAt: issueTimestamp,
+      })
+      .where(eq(issues.id, blockerIssueId));
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: coderId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: coderId,
+      issueId: blockerIssueId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockerIssueId,
+      assigneeAgentId: managerId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "in_review_without_action_path",
+        blockerIssueId,
+      ].join(":"),
+    });
+
+    const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    const createdEvent = events.find((event) => event.action === "issue.harness_liveness_escalation_created");
+    expect(createdEvent?.details).toMatchObject({
+      ownerSelection: {
+        selectedAgentId: managerId,
+        selectedReason: "assignee_reporting_chain",
+        budgetBlockedCandidateAgentIds: [coderId],
+      },
+    });
+  });
+
   it("parents recovery under the leaf blocker without inheriting dependent or blocker execution state for manager-owned recovery", async () => {
     await enableAutoRecovery();
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
@@ -357,7 +428,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const dependentExecutionWorkspaceId = randomUUID();
     const blockerExecutionWorkspaceId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const issueTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
 
     await db.insert(companies).values({
       id: companyId,
@@ -492,7 +563,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const secondBlockedIssueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const issueTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
     await db.insert(issues).values({
       id: secondBlockedIssueId,
       companyId,

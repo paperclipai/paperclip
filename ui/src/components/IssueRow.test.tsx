@@ -202,6 +202,31 @@ describe("IssueRow", () => {
     });
   });
 
+  it("renders checklist step numbers beside the issue identifier", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42" })}
+          checklistStepNumber="2.1"
+          mobileMeta="updated now"
+        />,
+      );
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    const metaRow = Array.from(link?.querySelectorAll("span.flex.items-center.gap-2") ?? [])
+      .find((element) => element.textContent?.includes("PAP-42"));
+
+    expect(metaRow).not.toBeUndefined();
+    expect(metaRow?.textContent?.replace(/\s+/g, "")).toContain("2.1.PAP-42");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders without error when titleSuffix is omitted", () => {
     const root = createRoot(container);
 
