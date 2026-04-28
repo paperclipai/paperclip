@@ -210,6 +210,35 @@ async function autoInstallBundledPlugins(
     }
   }
 
+  // ccrotate plugin is bundled in-image at packages/plugins/paperclip-plugin-ccrotate
+  // (no npm publish), so install it from the local path on every boot if absent.
+  {
+    const listRes = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
+    const installed = listRes?.ok ? (await listRes.json()) as Array<{ pluginKey: string; status: string }> : [];
+    const present = installed.some((p) => p.pluginKey === "kkroo.ccrotate" && p.status === "ready");
+    if (!present) {
+      try {
+        const { resolve } = await import("path");
+        const absPath = resolve(process.cwd(), "packages/plugins/paperclip-plugin-ccrotate");
+        logger.info({ path: absPath }, "installing bundled ccrotate plugin from local path");
+        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
+        });
+        if (res.ok) {
+          const result = (await res.json()) as { pluginKey?: string; status?: string };
+          logger.info({ pluginKey: result.pluginKey, status: result.status }, "ccrotate plugin installed from local path");
+        } else {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          logger.warn({ error: err.error }, "ccrotate plugin local install failed");
+        }
+      } catch (err) {
+        logger.warn({ err }, "ccrotate plugin local install threw");
+      }
+    }
+  }
+
   // Auto-configure Linear plugin from env vars if credentials are set
   const linearClientId = process.env.PAPERCLIP_LINEAR_CLIENT_ID;
   const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
