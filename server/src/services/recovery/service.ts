@@ -2235,7 +2235,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
+    const orphanBlockerRecovery = scopedIssueIds.length === 0
+      ? await reconcileUnassignedBlockingIssues()
+      : { assigned: 0, skipped: 0, issueIds: [] as string[] };
     result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
     result.skipped += orphanBlockerRecovery.skipped;
     result.issueIds.push(...orphanBlockerRecovery.issueIds);
