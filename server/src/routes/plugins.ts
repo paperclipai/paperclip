@@ -807,18 +807,24 @@ export function pluginRoutes(
     // For agent callers, the supplied runContext must match the bearer
     // token's own (companyId, agentId, runId). This prevents an agent run
     // from impersonating a sibling agent or a different run inside the
-    // same company.
+    // same company. The agentId/runId checks are unconditional: a token
+    // missing either claim is treated as unauthenticated for tool execute,
+    // not silently allowed to choose an arbitrary identity.
     if (req.actor.type === "agent") {
-      if (req.actor.agentId && req.actor.agentId !== runContext.agentId) {
-        res.status(403).json({ error: '"runContext.agentId" must match the authenticated agent' });
+      if (!req.actor.agentId) {
+        res.status(401).json({ error: "Agent id required to execute plugin tools" });
         return;
       }
-      if (req.actor.runId && req.actor.runId !== runContext.runId) {
-        res.status(403).json({ error: '"runContext.runId" must match the authenticated run' });
+      if (req.actor.agentId !== runContext.agentId) {
+        res.status(403).json({ error: '"runContext.agentId" must match the authenticated agent' });
         return;
       }
       if (!req.actor.runId) {
         res.status(401).json({ error: "Agent run id required to execute plugin tools" });
+        return;
+      }
+      if (req.actor.runId !== runContext.runId) {
+        res.status(403).json({ error: '"runContext.runId" must match the authenticated run' });
         return;
       }
     }

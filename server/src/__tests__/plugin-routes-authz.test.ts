@@ -731,6 +731,35 @@ describe.sequential("agent-auth plugin tool access", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it("rejects an agent token that has no agentId claim", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor({ agentId: undefined }), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclipai.plugin-kb-local:kb_search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclipai.plugin-kb-local:kb_search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(401);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("requires an agent run id when an agent calls executeTool without one", async () => {
     const executeTool = vi.fn();
     const { app } = await createApp(agentActor({ runId: undefined }), {}, {

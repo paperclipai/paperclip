@@ -315,4 +315,47 @@ describe("paperclip MCP tools", () => {
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
   });
+
+  it("rejects URL-encoded traversal in generic request paths", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipApiRequest");
+    for (const path of ["/%2E%2E/secret", "/%2e%2e/secret", "/foo/%2E%2E/bar"]) {
+      const response = await tool.execute({ method: "GET", path });
+      expect(response.content[0]?.text, path).toContain("must not contain '..'");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects URL-encoded traversal in plugin scoped request paths", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipPluginApiRequest");
+    for (const path of ["/%2E%2E/secret", "/%2e%2e/secret", "/foo/%2E%2E/bar"]) {
+      const response = await tool.execute({
+        method: "GET",
+        pluginId: "paperclip.example",
+        path,
+      });
+      expect(response.content[0]?.text, path).toContain("must not contain '..'");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed percent-encoding in plugin scoped request paths", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipPluginApiRequest");
+    const response = await tool.execute({
+      method: "GET",
+      pluginId: "paperclip.example",
+      path: "/%E0%A4%A",
+    });
+
+    expect(response.content[0]?.text).toContain("must not contain '..'");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
