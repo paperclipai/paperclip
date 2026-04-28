@@ -38,10 +38,10 @@
 권장 시작 명령:
 
 ```sh
-$gsd-do "PR #4650의 upstream/master merge conflict를 해결하고 pnpm typecheck && pnpm test 통과 후 branch를 push한다"
+$gsd-quick "PR #4650 ship 후속 처리: upstream/master merge conflict를 해결하고 pnpm typecheck && pnpm test 통과 후 origin/m1-7-basic-ai-jarvis에 push한다"
 ```
 
-주의: `$gsd-ship 37 --auto`는 이미 실행 완료했다. 다음 세션에서 다시 ship workflow를 반복하지 않는다. 다음 순서로 conflict 해결만 진행한다:
+주의: `$gsd-ship 37 --auto`는 이미 실행 완료했고 PR #4650이 생성되어 있다. 다음 세션에서 ship workflow를 반복하지 말고, GSD quick task로 ship 후속 conflict 해결만 진행한다:
 
 1. `git status --short --branch`로 작업트리가 merge 중이 아닌지 확인한다.
 2. `git fetch upstream master`로 최신 base를 가져온다.
