@@ -60,6 +60,35 @@ vi.mock("@/context/CompanyContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  if (
+    typeof window.localStorage?.getItem === "function"
+    && typeof window.localStorage?.setItem === "function"
+    && typeof window.localStorage?.removeItem === "function"
+    && typeof window.localStorage?.clear === "function"
+  ) {
+    return;
+  }
+
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => localStorageEntries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageEntries.set(key, value);
+      },
+      removeItem: (key: string) => {
+        localStorageEntries.delete(key);
+      },
+      clear: () => {
+        localStorageEntries.clear();
+      },
+    },
+  });
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -71,6 +100,7 @@ describe("InviteLandingPage", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    ensureLocalStorageMock();
     localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -198,6 +228,73 @@ describe("InviteLandingPage", () => {
     expect(container.querySelector('input[name="name"]')).toBeNull();
     expect(container.textContent).toContain("Sign in to continue");
     expect(localStorage.getItem("paperclip:pending-invite-token")).toBe("pcp_invite_test");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("switches invite auth to sign-in when a sign-up conflict only exposes HTTP 422", async () => {
+    signUpEmailMock.mockRejectedValue(
+      Object.assign(new Error("Request failed: 422"), { status: 422 }),
+    );
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    expect(inputValueSetter).toBeTypeOf("function");
+
+    const nameInput = container.querySelector('input[name="name"]') as HTMLInputElement | null;
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement | null;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement | null;
+    expect(nameInput).not.toBeNull();
+    expect(emailInput).not.toBeNull();
+    expect(passwordInput).not.toBeNull();
+
+    await act(async () => {
+      inputValueSetter!.call(nameInput, "Jane Example");
+      nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      nameInput!.dispatchEvent(new Event("change", { bubbles: true }));
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      emailInput!.dispatchEvent(new Event("change", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      passwordInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement | null;
+    expect(authForm).not.toBeNull();
+
+    await act(async () => {
+      authForm?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain(
+      "An account already exists for jane@example.com. Sign in below to continue with this invite.",
+    );
+    expect(container.querySelector('input[name="name"]')).toBeNull();
+    expect(container.textContent).toContain("Sign in to continue");
 
     await act(async () => {
       root.unmount();

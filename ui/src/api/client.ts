@@ -19,11 +19,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${BASE}${path}`, {
-    headers,
-    credentials: "include",
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers,
+      credentials: "include",
+      ...init,
+    });
+  } catch {
+    throw new ApiError(
+      "Paperclip couldn't reach the API. Check your connection, then verify the dashboard is pointed at the right URL (PAPERCLIP_API_URL).",
+      0,
+      null,
+    );
+  }
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
     throw new ApiError(

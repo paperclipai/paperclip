@@ -66,6 +66,29 @@ function readResultSummary(resultJson: Record<string, unknown> | null | undefine
   );
 }
 
+function formatAdapterFailureMessage(errorCode: string | null | undefined, error: string | null | undefined) {
+  const normalizedError = asNonEmptyString(error);
+  const lowerError = normalizedError?.toLowerCase() ?? "";
+
+  if (errorCode !== "adapter_failed") {
+    return normalizedError;
+  }
+
+  if (lowerError.includes("missing command")) {
+    return "Adapter failed: the process adapter is missing a command. Set adapterConfig.command to an executable command, then retry this issue.";
+  }
+
+  if (lowerError.includes("circuit breaker")) {
+    return "Adapter is temporarily paused by the circuit breaker. Wait for it to recover or switch to a healthy adapter, then retry this issue.";
+  }
+
+  if (lowerError.includes("unavailable")) {
+    return "Adapter is unavailable right now. Check the adapter host or credentials, then retry this issue.";
+  }
+
+  return "Adapter failed. Inspect the adapter configuration or runtime logs, fix the cause, and retry this issue.";
+}
+
 function extractMarkdownSection(markdown: string | null | undefined, heading: string) {
   if (!markdown) return null;
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -133,7 +156,8 @@ export function buildContinuationSummaryMarkdown(input: {
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
   ];
   if (run.error) {
-    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
+    const formattedError = formatAdapterFailureMessage(run.errorCode, run.error) ?? run.error;
+    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(formattedError, 500)}`);
   }
 
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);

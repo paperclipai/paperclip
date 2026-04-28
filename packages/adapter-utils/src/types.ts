@@ -380,6 +380,17 @@ export interface ServerAdapterModule {
    * rather than reading config.paperclipRuntimeSkills.
    */
   requiresMaterializedRuntimeSkills?: boolean;
+
+  /**
+   * Adapter is experimental — surfaces a UI badge and excludes the adapter from
+   * "stable adapters" defaults. Tooling may still register and use the adapter
+   * normally; this flag is purely a discoverability/expectation signal.
+   *
+   * Use for adapters whose contract or security model has known gaps that are
+   * actively being closed (e.g. interim auto-approve behavior pending a future
+   * capability-scoped policy gate). Document the gap in the adapter's docs.
+   */
+  experimental?: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -428,7 +428,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       pc.dim(
         opts.bind
           ? `\`--yes\` enabled: using Quickstart defaults with bind=${opts.bind}.`
-          : "`--yes` enabled: using Quickstart defaults.",
+          : "`--yes` enabled: using trusted local loopback defaults.",
       ),
     );
   } else {
@@ -438,7 +438,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
         {
           value: "quickstart" as const,
           label: "Quickstart",
-          hint: "Recommended: local defaults + ready to run",
+          hint: "Recommended: trusted local defaults + ready to run",
         },
         {
           value: "advanced" as const,
@@ -575,7 +575,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       pc.dim(
         opts.bind
           ? `Using quickstart defaults with bind=${opts.bind}.`
-          : `Using quickstart defaults: ${server.deploymentMode}/${server.exposure} @ ${describeServerBinding(server)}.`,
+          : `Using trusted local loopback defaults: ${server.deploymentMode}/${server.exposure} @ ${describeServerBinding(server)}.`,
       ),
     );
     if (usedEnvKeys.length > 0) {

@@ -432,6 +432,47 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("shows model-only assignee overrides for copilot_local agents", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Copilot Coder",
+        role: "engineer",
+        title: "Software Engineer",
+        status: "idle",
+        adapterType: "copilot_local",
+      },
+    ]);
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.4", label: "gpt-5.4" },
+    ]);
+    dialogState.newIssueDefaults = {
+      assigneeAgentId: "agent-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+    await flush();
+
+    const optionsButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("GitHub Copilot options"),
+    );
+    expect(optionsButton).not.toBeUndefined();
+
+    await act(async () => {
+      optionsButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("GitHub Copilot options");
+    expect(container.textContent).toContain("Model");
+    expect(container.textContent).not.toContain("Thinking effort");
+    expect(container.textContent).not.toContain("Enable Chrome (--chrome)");
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "copilot_local");
+
+    act(() => root.unmount());
+  });
+
   it("warns when a sub-issue stops matching the parent workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {

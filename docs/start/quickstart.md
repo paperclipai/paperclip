@@ -11,7 +11,15 @@ Get Paperclip running locally in under 5 minutes.
 npx paperclipai onboard --yes
 ```
 
-This walks you through setup, configures your environment, and gets Paperclip running.
+This walks you through setup, writes the initial config, and uses trusted local loopback defaults for the fastest first run.
+
+If you want a different exposure preset, pass one explicitly:
+
+```sh
+npx paperclipai onboard --yes --bind lan
+# or:
+npx paperclipai onboard --yes --bind tailnet
+```
 
 If you already have a Paperclip install, rerunning `onboard` keeps your current config and data paths intact. Use `paperclipai configure` if you want to edit settings.
 

@@ -6,6 +6,34 @@ afterEach(() => {
 });
 
 describe("http adapter execute", () => {
+  // ── CLI-202 regression: adapter failure error messages ─────────────────────
+
+  it("throws when url is missing from config", async () => {
+    await expect(execute({
+      runId: "run-1",
+      agent: { id: "a", companyId: "c", name: "A", adapterType: "http", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {},
+      context: {},
+      onLog: async () => {},
+    })).rejects.toThrow("HTTP adapter missing url");
+  });
+
+  it("throws when the remote responds with a non-2xx status", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response("Bad Gateway", { status: 502 }),
+    ));
+
+    await expect(execute({
+      runId: "run-2",
+      agent: { id: "a", companyId: "c", name: "A", adapterType: "http", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { url: "https://example.test/hook" },
+      context: {},
+      onLog: async () => {},
+    })).rejects.toThrow("HTTP invoke failed with status 502");
+  });
+
   it("reports configured request timeout as timed_out", async () => {
     vi.stubGlobal(
       "fetch",

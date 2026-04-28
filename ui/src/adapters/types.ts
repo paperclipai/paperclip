@@ -41,4 +41,9 @@ export interface UIAdapterModule extends TranscriptParserSource {
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  /**
+   * Adapter is experimental — see ServerAdapterModule.experimental. Surfaces
+   * for UI badging/discoverability; no behavior change.
+   */
+  experimental?: boolean;
 }

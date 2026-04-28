@@ -287,7 +287,7 @@ Open source. Self-hosted. No Paperclip account required.
 npx paperclipai onboard --yes
 ```
 
-That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
+The quickstart path defaults to trusted local loopback mode for the fastest first run. Use an explicit bind preset if you want authenticated/private exposure instead:
 
 ```bash
 npx paperclipai onboard --yes --bind lan

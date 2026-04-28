@@ -7,6 +7,7 @@ import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
+import { formatAuthFeedback } from "../lib/auth-feedback";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -55,7 +56,7 @@ export function AuthPage() {
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Authentication failed");
+      setError(formatAuthFeedback(err, mode).message);
     },
   });
 

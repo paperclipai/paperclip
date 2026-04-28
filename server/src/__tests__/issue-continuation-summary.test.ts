@@ -80,7 +80,36 @@ describe("issue continuation summaries", () => {
       },
     });
 
-    expect(body).toContain("Latest run error (adapter_failed): adapter failed");
+    expect(body).toContain("Latest run error (adapter_failed): Adapter failed. Inspect the adapter configuration or runtime logs, fix the cause, and retry this issue.");
     expect(body).toContain("Inspect the failed run, fix the cause");
+  });
+
+  it("turns missing adapter commands into an explicit fix", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1579",
+        title: "Add continuation summaries",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+      },
+      run: {
+        id: "run-3",
+        status: "failed",
+        error: "Process adapter missing command",
+        errorCode: "adapter_failed",
+        resultJson: null,
+      },
+      agent: {
+        id: "agent-1",
+        name: "CodexCoder",
+        adapterType: "process",
+      },
+    });
+
+    expect(body).toContain(
+      "Latest run error (adapter_failed): Adapter failed: the process adapter is missing a command. Set adapterConfig.command to an executable command, then retry this issue.",
+    );
   });
 });

@@ -8,6 +8,7 @@ export default defineConfig({
       "packages/adapter-utils",
       "packages/adapters/claude-local",
       "packages/adapters/codex-local",
+      "packages/adapters/copilot-local",
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
       "packages/adapters/opencode-local",

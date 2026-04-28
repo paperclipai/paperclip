@@ -1,4 +1,5 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { normalizeClaudeModelId } from "../model-id.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -68,7 +69,7 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
-  if (v.model) ac.model = v.model;
+  if (v.model) ac.model = normalizeClaudeModelId(v.model);
   if (v.thinkingEffort) ac.effort = v.thinkingEffort;
   if (v.chrome) ac.chrome = true;
   ac.timeoutSec = 0;
