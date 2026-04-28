@@ -1232,6 +1232,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  // Count every stranded-recovery issue ever created for this source — including
+  // ones already done or cancelled. Used by the per-source cap below to refuse
+  // unbounded recovery-issue churn when the underlying source keeps re-stalling
+  // (incident 2026-04-28: same source produced 12+ recovery issues in 30min as
+  // each previous recovery was completed and the source re-entered the watchdog).
+  async function countStrandedIssueRecoveryIssuesForSource(companyId: string, sourceIssueId: string) {
+    const rows = await db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          isNull(issues.hiddenAt),
+        ),
+      );
+    return rows[0]?.value ?? 0;
+  }
+
+  // Per-source cap on stranded-recovery issue creation. STO-259 requirement #2.
+  // 3 is the value documented in the issue body — small enough that runaway
+  // creation is impossible, large enough that a transient flapping source can
+  // still surface a recovery task on the second or third pass.
+  const STRANDED_ISSUE_RECOVERY_PER_SOURCE_CAP = 3;
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
@@ -1315,6 +1341,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
+
+    // Per-source cap (STO-259 requirement #2). Even though the open-issue check
+    // above keeps at most one *concurrently open* recovery issue per source, the
+    // source can flap (recovery issue done → source still stalled → new recovery
+    // → done → ...) and produce unbounded recovery rows over time. Cap the total
+    // historical count and surface a warn so the underlying problem is fixed
+    // instead of papered over.
+    const existingCount = await countStrandedIssueRecoveryIssuesForSource(
+      input.issue.companyId,
+      input.issue.id,
+    );
+    if (existingCount >= STRANDED_ISSUE_RECOVERY_PER_SOURCE_CAP) {
+      logger.warn(
+        {
+          companyId: input.issue.companyId,
+          sourceIssueId: input.issue.id,
+          sourceIdentifier: input.issue.identifier,
+          existingRecoveryCount: existingCount,
+          cap: STRANDED_ISSUE_RECOVERY_PER_SOURCE_CAP,
+        },
+        "stranded_issue_recovery cap reached for source — refusing to spawn another recovery issue",
+      );
+      return null;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
