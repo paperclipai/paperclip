@@ -2,10 +2,21 @@ import type { Config } from "../config.js";
 import type { StorageProvider } from "./types.js";
 import { createLocalDiskStorageProvider } from "./local-disk-provider.js";
 import { createS3StorageProvider } from "./s3-provider.js";
+import { createAzureBlobStorageProvider } from "./azure-blob-provider.js";
 
 export function createStorageProviderFromConfig(config: Config): StorageProvider {
   if (config.storageProvider === "local_disk") {
     return createLocalDiskStorageProvider(config.storageLocalDiskBaseDir);
+  }
+
+  if (config.storageProvider === "azure_blob") {
+    return createAzureBlobStorageProvider({
+      connectionString: config.storageAzureBlobConnectionString,
+      accountName: config.storageAzureBlobAccountName,
+      accountKey: config.storageAzureBlobAccountKey,
+      containerName: config.storageAzureBlobContainerName,
+      prefix: config.storageAzureBlobPrefix,
+    });
   }
 
   return createS3StorageProvider({

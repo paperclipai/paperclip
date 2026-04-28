@@ -74,6 +74,14 @@ export const storageS3ConfigSchema = z.object({
   forcePathStyle: z.boolean().default(false),
 });
 
+export const storageAzureBlobConfigSchema = z.object({
+  connectionString: z.string().optional(),
+  accountName: z.string().optional(),
+  accountKey: z.string().optional(),
+  containerName: z.string().min(1).default("paperclip"),
+  prefix: z.string().default(""),
+});
+
 export const storageConfigSchema = z.object({
   provider: z.enum(STORAGE_PROVIDERS).default("local_disk"),
   localDisk: storageLocalDiskConfigSchema.default({
@@ -84,6 +92,10 @@ export const storageConfigSchema = z.object({
     region: "us-east-1",
     prefix: "",
     forcePathStyle: false,
+  }),
+  azureBlob: storageAzureBlobConfigSchema.default({
+    containerName: "paperclip",
+    prefix: "",
   }),
 });
 
@@ -125,6 +137,10 @@ export const paperclipConfigSchema = z
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
+      },
+      azureBlob: {
+        containerName: "paperclip",
+        prefix: "",
       },
     }),
     secrets: secretsConfigSchema.default({
@@ -191,6 +207,7 @@ export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type StorageConfig = z.infer<typeof storageConfigSchema>;
 export type StorageLocalDiskConfig = z.infer<typeof storageLocalDiskConfigSchema>;
 export type StorageS3Config = z.infer<typeof storageS3ConfigSchema>;
+export type StorageAzureBlobConfig = z.infer<typeof storageAzureBlobConfigSchema>;
 export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;

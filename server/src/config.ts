@@ -81,6 +81,11 @@ export interface Config {
   storageS3Endpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
+  storageAzureBlobConnectionString: string | undefined;
+  storageAzureBlobAccountName: string | undefined;
+  storageAzureBlobAccountKey: string | undefined;
+  storageAzureBlobContainerName: string;
+  storageAzureBlobPrefix: string;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
@@ -153,6 +158,16 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
+  const storageAzureBlobConnectionString =
+    process.env.PAPERCLIP_STORAGE_AZURE_BLOB_CONNECTION_STRING ?? fileStorage?.azureBlob?.connectionString ?? undefined;
+  const storageAzureBlobAccountName =
+    process.env.PAPERCLIP_STORAGE_AZURE_BLOB_ACCOUNT_NAME ?? fileStorage?.azureBlob?.accountName ?? undefined;
+  const storageAzureBlobAccountKey =
+    process.env.PAPERCLIP_STORAGE_AZURE_BLOB_ACCOUNT_KEY ?? fileStorage?.azureBlob?.accountKey ?? undefined;
+  const storageAzureBlobContainerName =
+    process.env.PAPERCLIP_STORAGE_AZURE_BLOB_CONTAINER ?? fileStorage?.azureBlob?.containerName ?? "paperclip";
+  const storageAzureBlobPrefix =
+    process.env.PAPERCLIP_STORAGE_AZURE_BLOB_PREFIX ?? fileStorage?.azureBlob?.prefix ?? "";
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -327,6 +342,11 @@ export function loadConfig(): Config {
     storageS3Endpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
+    storageAzureBlobConnectionString,
+    storageAzureBlobAccountName,
+    storageAzureBlobAccountKey,
+    storageAzureBlobContainerName,
+    storageAzureBlobPrefix,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
