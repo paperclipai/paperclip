@@ -137,6 +137,40 @@ except ValueError:
 # on the larger exchange would create directional exposure.
 MAX_FILL_ASYMMETRY_PCT: float = 5.0
 
+# A.1 — Minimum profit margin (in %) over fees that the realized spread
+# must clear at fill time. A trade with realized=+0.05% and round-trip
+# fees of 0.16% is already dead before it opens; previously the
+# bad-fill abort only fired on strictly negative realized spread, letting
+# these sub-fee fills through. Setting this conservatively low (5 bps)
+# so we still let small-but-positive trades through; tune up if too few
+# winners.
+MIN_PROFIT_AFTER_FEES_PCT: float = 0.05
+
+# A.2 — Quote freshness gate at entry-time (separate from the broader
+# STALE_PRICE_SECONDS=30 filter). After a candidate is sorted and selected
+# for execution, the bot may have done other work (other candidates'
+# orders, exit checks). If the chosen candidate's quote is now older
+# than this threshold, the bot skips entry rather than placing a market
+# order against potentially-moved data.
+ENTRY_QUOTE_FRESHNESS_S: float = 2.0
+
+# B.2 — Recent-loss-streak penalty applied to candidate score. Uses
+# pair_stats[pair_key]['losses'] minus ['wins']. A pair that just lost
+# multiple times in a session gets a score deduction of this magnitude
+# per net loss, deprioritizing it relative to fresh pairs.
+LOSS_STREAK_PENALTY_PER: float = 0.30
+
+# B.4 — Funding-cost veto. For PERP/PERP trades, the bot estimates funding
+# cost over the maximum hold window using detected funding rates. If
+# the projected net funding cost exceeds this fraction of the candidate's
+# captured spread, the trade is rejected at the candidate stage.
+FUNDING_VETO_THRESHOLD_PCT: float = 0.50
+
+# Per-interval funding lookahead — funding pays every 8h on perp exchanges.
+# At MAX_HOLD_MINUTES=30 the position holds at most 30/(8*60) ≈ 0.0625
+# intervals. Used by the funding veto to size the projected cost.
+_FUNDING_LOOKAHEAD_HOURS: float = 0.5  # rounding up MAX_HOLD_MINUTES/60 conservatively
+
 # ---------------------------------------------------------------------------
 # Exchange API keys
 # ---------------------------------------------------------------------------
@@ -2670,10 +2704,22 @@ class TradeExecutor:
             realized_spread_pct = compute_realized_entry_spread_pct(
                 fill_price_short, fill_price_long
             )
-            if realized_spread_pct < 0:
+            # A.1: gate is realized spread must cover round-trip fees + a small
+            # profit margin. Previously this was just `< 0`, which let through
+            # trades like realized=+0.05% on a pair with 0.16% round-trip fees —
+            # already a guaranteed loss before any market move. compute_fees
+            # is a staticmethod on LiveTrader (defined later in the file).
+            fees_pct_round_trip = LiveTrader.compute_fees(
+                q_high.exchange, q_low.exchange,
+                q_high.instrument, q_low.instrument,
+            ) * 100
+            min_acceptable_realized = fees_pct_round_trip + MIN_PROFIT_AFTER_FEES_PCT
+            if realized_spread_pct < min_acceptable_realized:
                 log.error(
                     f"ENTRY #{pos_id} {symbol}: BAD-FILL ABORT — "
                     f"detection={spread_pct:.3f}% realized={realized_spread_pct:.3f}% "
+                    f"min={min_acceptable_realized:.3f}% (fees={fees_pct_round_trip:.3f}% "
+                    f"+ margin={MIN_PROFIT_AFTER_FEES_PCT:.3f}%) "
                     f"(short@{fill_price_short:.6f} on {q_high.exchange}, "
                     f"long@{fill_price_long:.6f} on {q_low.exchange})"
                 )
@@ -4121,12 +4167,57 @@ async def main():
                                 if not can_open:
                                     continue
 
+                                # B.4 — Funding-cost veto. For PERP/PERP trades
+                                # the bot would receive funding on the SHORT
+                                # leg and pay funding on the LONG leg (when
+                                # rates > 0). Net cost = (long_rate - short_rate)
+                                # × size × hours_held / 8h_interval. If the
+                                # projected funding cost over a worst-case
+                                # MAX_HOLD_MINUTES exceeds a fraction of the
+                                # captured spread, skip the trade. Trade #569
+                                # (POLYXUSDT) lost $1.21 to funding alone over
+                                # ~50 min — that's the case this catches.
+                                #
+                                # SPOT legs don't pay funding, so when only
+                                # one side is PERP the cost is the PERP leg's
+                                # rate × size × hours; the same threshold
+                                # applies. SPOT/SPOT trades skip the veto
+                                # entirely (no funding either way).
+                                if (q_high.instrument == "PERP" or
+                                        q_low.instrument == "PERP"):
+                                    intervals = _FUNDING_LOOKAHEAD_HOURS / 8.0
+                                    short_funding_paid = (
+                                        -q_high.funding_rate
+                                        if q_high.instrument == "PERP" else 0.0
+                                    )
+                                    long_funding_paid = (
+                                        q_low.funding_rate
+                                        if q_low.instrument == "PERP" else 0.0
+                                    )
+                                    net_funding_cost_pct = (
+                                        (short_funding_paid + long_funding_paid)
+                                        * intervals * 100
+                                    )
+                                    captured_spread_pct = spread_pct - fees_pct
+                                    if (captured_spread_pct > 0 and
+                                            net_funding_cost_pct >
+                                            captured_spread_pct * FUNDING_VETO_THRESHOLD_PCT):
+                                        # Funding would eat too much of the trade
+                                        continue
+
                                 # Score candidate by spread minus fees
                                 score = spread_pct - fees_pct
-                                # Pair preference: boost pairs with good history
+                                # Pair preference: boost historically good pairs,
+                                # penalize pairs with a recent net-loss streak.
+                                # B.2: pair_stats already tracks wins/losses; we
+                                # just weren't using losses in scoring before.
                                 ps = trader.pair_stats.get(pair_key, {})
-                                if ps.get("wins", 0) > ps.get("losses", 0):
+                                wins = int(ps.get("wins", 0))
+                                losses = int(ps.get("losses", 0))
+                                if wins > losses:
                                     score += 0.05  # Small boost for historically good pairs
+                                elif losses > wins:
+                                    score -= LOSS_STREAK_PENALTY_PER * (losses - wins)
 
                                 candidates.append({
                                     "symbol": symbol,
@@ -4154,6 +4245,26 @@ async def main():
 
                         rank_index += 1
                         seen_symbols.add(cand["symbol"])
+
+                        # A.2 — Re-check quote freshness right before placing
+                        # orders. The candidate freshness filter (line ~4109)
+                        # ran at candidate-build time; by now the bot may
+                        # have done other work (placed a previous candidate's
+                        # orders, ran exit checks, etc.). If the quote is now
+                        # older than ENTRY_QUOTE_FRESHNESS_S, skip the entry —
+                        # better to miss a trade than place a market order
+                        # on potentially-moved data.
+                        now_pre_exec = time.time()
+                        short_age_s = now_pre_exec - cand["q_high"].timestamp.timestamp()
+                        long_age_s = now_pre_exec - cand["q_low"].timestamp.timestamp()
+                        if short_age_s > ENTRY_QUOTE_FRESHNESS_S or long_age_s > ENTRY_QUOTE_FRESHNESS_S:
+                            log.info(
+                                f"SKIP {cand['symbol']} stale at exec — "
+                                f"short_age={short_age_s:.2f}s long_age={long_age_s:.2f}s "
+                                f"(threshold {ENTRY_QUOTE_FRESHNESS_S:.1f}s)"
+                            )
+                            continue
+
                         log.info(
                             f"CANDIDATE {cand['symbol']} "
                             f"{cand['q_high'].exchange}/{cand['q_high'].instrument} -> "
