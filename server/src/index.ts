@@ -48,6 +48,82 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { plugins } from "@paperclipai/db";
+import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
+import { pluginRegistryService } from "./services/plugin-registry.js";
+import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+
+/**
+ * Bundled plugins that should be auto-installed on startup.
+ * These are npm packages that get installed if not already present.
+ */
+const BUNDLED_PLUGINS = [
+  "@lucitra/paperclip-plugin-linear",
+  "@lucitra/paperclip-plugin-chat",
+];
+
+async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
+  // Wait for the server to be fully up before calling the install API
+  const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  // Install npm-based bundled plugins
+  for (const pkg of BUNDLED_PLUGINS) {
+    try {
+      const listRes = await fetch(`${baseUrl}/api/plugins`);
+      if (listRes.ok) {
+        const plugins = (await listRes.json()) as Array<{ packageName: string; pluginKey: string; status: string }>;
+        const existing = plugins.find((p) => p.packageName === pkg || p.pluginKey === pkg);
+        if (existing && existing.status === "ready") continue;
+      }
+
+      logger.info({ package: pkg }, "auto-installing bundled plugin via API");
+      const installRes = await fetch(`${baseUrl}/api/plugins/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packageName: pkg }),
+      });
+
+      if (installRes.ok) {
+        const result = (await installRes.json()) as { pluginKey?: string; status?: string };
+        logger.info({ pluginKey: result.pluginKey, status: result.status }, "bundled plugin installed and loaded");
+      } else {
+        const err = (await installRes.json()) as { error?: string };
+        if (!err.error?.includes("already installed")) {
+          logger.warn({ package: pkg, error: err.error }, "bundled plugin install failed");
+        }
+      }
+    } catch (err) {
+      logger.warn({ package: pkg, err }, "failed to auto-install bundled plugin");
+    }
+  }
+
+  // For dev: if npm install failed for chat plugin, try local path fallback
+  {
+    const listRes2 = await fetch(`${baseUrl}/api/plugins`).catch(() => null);
+    const plugins2 = listRes2?.ok ? (await listRes2.json()) as Array<{ pluginKey: string; status: string }> : [];
+    const chatInstalled = plugins2.some((p) => p.pluginKey === "paperclip-chat" && p.status === "ready");
+    if (!chatInstalled) {
+      try {
+        const { resolve } = await import("path");
+        const absPath = resolve(process.cwd(), "../paperclip-plugin-chat");
+        logger.info({ path: absPath }, "chat plugin not found via npm, trying local path");
+        const res = await fetch(`${baseUrl}/api/plugins/install`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
+        });
+        if (res.ok) {
+          const result = (await res.json()) as { pluginKey?: string; status?: string };
+          logger.info({ pluginKey: result.pluginKey, status: result.status }, "chat plugin installed from local path");
+        }
+      } catch (err) {
+        logger.warn({ err }, "local chat plugin install failed");
+      }
+    }
+  }
+}
 
 type BetterAuthSessionUser = {
   id: string;
@@ -853,12 +929,75 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  {
+  // Auto-install bundled plugins (idempotent — skips if already installed)
+  void autoInstallBundledPlugins(db as any).catch((err) => {
+    logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
+  });
+
+  // Start Linear tunnel if Linear is connected and cloudflared is available
+  if (config.linearOAuthClientId) {
+    void (async () => {
+      try {
+        const { secretService } = await import("./services/index.js");
+        const svc = secretService(db as any);
+        // Find any company with a Linear token
+        const allCompanies = await (db as any).select().from(companies);
+        for (const company of allCompanies) {
+          const linearSecret = await svc.getByName(company.id, "linear-oauth-token");
+          if (linearSecret) {
+            const token = await svc.resolveSecretValue(company.id, linearSecret.id, "latest");
+            // Get teamId from plugin config
+            const [plugin] = await (db as any).select().from(plugins).where(eq(plugins.pluginKey, "paperclip-plugin-linear")).limit(1);
+            let teamId = "";
+            if (plugin) {
+              const { pluginConfig: pluginConfigTable } = await import("@paperclipai/db");
+              const [cfg] = await (db as any).select().from(pluginConfigTable).where(eq(pluginConfigTable.pluginId, plugin.id));
+              teamId = (cfg?.configJson as Record<string, unknown>)?.teamId as string ?? "";
+            }
+            if (token && teamId) {
+              const { startLinearTunnel } = await import("./linear-tunnel.js");
+              await startLinearTunnel({ port: listenPort, linearToken: token, teamId });
+            }
+            break; // Only need one company's token
+          }
+        }
+      } catch (err) {
+        logger.info("[linear-tunnel] skipped (not connected or cloudflared unavailable)");
+      }
+    })();
+  }
+
+  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
+
+      // Stop Linear tunnel and delete webhook
+      try {
+        const { stopLinearTunnel } = await import("./linear-tunnel.js");
+        // Resolve token for webhook cleanup
+        let cleanupToken: string | undefined;
+        try {
+          const { secretService } = await import("./services/index.js");
+          const svc = secretService(db as any);
+          const allCompanies = await (db as any).select().from(companies);
+          for (const c of allCompanies) {
+            const s = await svc.getByName(c.id, "linear-oauth-token");
+            if (s) { cleanupToken = await svc.resolveSecretValue(c.id, s.id, "latest"); break; }
+          }
+        } catch { /* best effort */ }
+        await stopLinearTunnel(cleanupToken);
+      } catch { /* best effort */ }
+
+      logger.info({ signal }, "Stopping embedded PostgreSQL");
+      try {
+        await embeddedPostgres?.stop();
+      } catch (err) {
+        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+      } finally {
+        process.exit(0);
       }
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {

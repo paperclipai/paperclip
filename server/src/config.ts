@@ -87,6 +87,9 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  linearOAuthClientId: string;
+  linearOAuthClientSecret: string;
+  linearOAuthRedirectUri: string;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -333,5 +336,10 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    linearOAuthClientId: process.env.PAPERCLIP_LINEAR_CLIENT_ID ?? "",
+    linearOAuthClientSecret: process.env.PAPERCLIP_LINEAR_CLIENT_SECRET ?? "",
+    linearOAuthRedirectUri:
+      process.env.PAPERCLIP_LINEAR_REDIRECT_URI ??
+      `http://localhost:${Number(process.env.PORT) || fileConfig?.server.port || 3100}/api/auth/linear/callback`,
   };
 }

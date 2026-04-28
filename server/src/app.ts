@@ -38,6 +38,8 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { linearAuthRoutes } from "./routes/linear-auth.js";
+import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -167,9 +169,45 @@ export async function createApp(
     }),
   );
   app.use("/api/auth", authRoutes(db));
+  app.get("/api/auth/get-session", (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    res.json({
+      session: {
+        id: `paperclip:${req.actor.source}:${req.actor.userId}`,
+        userId: req.actor.userId,
+      },
+      user: {
+        id: req.actor.userId,
+        email: null,
+        name: req.actor.source === "local_implicit" ? "Local Board" : null,
+      },
+    });
+  });
+  // Integrations discovery — tells the UI which optional features are available
+  const appConfig = loadConfig();
+  app.get("/api/integrations", (_req, res) => {
+    res.json({
+      linear: !!appConfig.linearOAuthClientId,
+    });
+  });
+
+  // Linear OAuth routes — must be mounted BEFORE Better-Auth's catch-all
+  if (appConfig.linearOAuthClientId) {
+    app.use("/api/auth/linear", linearAuthRoutes(db, {
+      clientId: appConfig.linearOAuthClientId,
+      clientSecret: appConfig.linearOAuthClientSecret,
+      redirectUri: appConfig.linearOAuthRedirectUri,
+      secretsProvider: appConfig.secretsProvider,
+    }));
+  }
+
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
+
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
@@ -214,6 +252,23 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
+  const hostServicesDisposers = new Map<string, () => void>();
+  const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
+  const streamBus = createPluginStreamBus();
+  const workerManager = createPluginWorkerManager({
+    onStreamNotification: (pluginId, method, params) => {
+      const channel = String(params.channel ?? "");
+      const companyId = String(params.companyId ?? "");
+      if (!channel) return;
+      if (method === "streams.emit") {
+        streamBus.publish(pluginId, channel, companyId, params.event ?? params.data);
+      } else if (method === "streams.close") {
+        streamBus.publish(pluginId, channel, companyId, null, "close");
+      } else if (method === "streams.open") {
+        streamBus.publish(pluginId, channel, companyId, null, "open");
+      }
+    },
+  });
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -278,7 +333,7 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      { workerManager },
+      { workerManager, streamBus },
     ),
   );
   api.use(adapterRoutes());

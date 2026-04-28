@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { NavLink, useLocation } from "@/lib/router";
+import { NavLink, useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
 import {
@@ -126,6 +126,7 @@ export function SidebarProjects() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const navigate = useNavigate();
   const location = useLocation();
 
   const { data: projects } = useQuery({
@@ -147,7 +148,9 @@ export function SidebarProjects() {
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   const visibleProjects = useMemo(
-    () => (projects ?? []).filter((project: Project) => !project.archivedAt),
+    () => (projects ?? []).filter((project: Project) =>
+      !project.archivedAt && project.status !== "cancelled" && project.status !== "completed"
+    ),
     [projects],
   );
   const { orderedProjects, persistOrder } = useProjectOrder({
@@ -191,7 +194,14 @@ export function SidebarProjects() {
                 open && "rotate-90"
               )}
             />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+            <span
+              className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60 hover:text-foreground cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate("/projects");
+                if (isMobile) setSidebarOpen(false);
+              }}
+            >
               Projects
             </span>
           </CollapsibleTrigger>

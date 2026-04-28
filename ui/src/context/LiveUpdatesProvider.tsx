@@ -83,6 +83,7 @@ function resolveActorLabel(
     return resolveAgentName(queryClient, companyId, actorId) ?? `Agent ${shortId(actorId)}`;
   }
   if (actorType === "system") return "System";
+  if (actorId === "linear-webhook") return "Linear";
   if (actorType === "user" && actorId) {
     return resolveUserName(queryClient, companyId, actorId) ?? "Board";
   }
