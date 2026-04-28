@@ -80,10 +80,10 @@
 | CONTRA-02 | Phase 35 | Complete |
 | CONTRA-03 | Phase 35 | Complete |
 | CONTRA-04 | Phase 35 | Complete |
-| JARVIS-01 | Phase 36 | Complete |
-| JARVIS-02 | Phase 36 | Complete |
-| JARVIS-03 | Phase 36 | Complete |
-| JARVIS-04 | Phase 36 | Complete |
+| JARVIS-01 | Phase 36 / Phase 38 | Pending artifact closure |
+| JARVIS-02 | Phase 36 / Phase 38 | Pending artifact closure |
+| JARVIS-03 | Phase 36 / Phase 38 | Pending artifact closure |
+| JARVIS-04 | Phase 36 / Phase 38 | Pending artifact closure |
 | OPS-01 | Phase 37 | Complete |
 | OPS-02 | Phase 37 | Complete |
 | OPS-03 | Phase 37 | Complete |
@@ -92,7 +92,9 @@
 - v2.5 requirements: 19 total
 - Mapped to phases: 19
 - Unmapped: 0
+- Audit-satisfied before gap closure: 15/19
+- Pending artifact closure: 4 JARVIS requirements via Phase 38
 
 ---
 *Requirements defined: 2026-04-28*
-*Last updated: 2026-04-28 after v2.5 milestone initialization*
+*Last updated: 2026-04-29 after v2.5 audit gap planning*

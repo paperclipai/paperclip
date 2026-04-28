@@ -7,7 +7,7 @@
 - [shipped] **v2.2 개발기획서 완전 정합성 고도화** - Phase 14-18 완료, 2026-04-25 ([archive](milestones/v2.2-ROADMAP.md))
 - [shipped] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-24 완료, 2026-04-27 ([archive](milestones/v2.3-ROADMAP.md), [requirements](milestones/v2.3-REQUIREMENTS.md), [audit](milestones/v2.3-MILESTONE-AUDIT.md))
 - [shipped] **v2.4 Knowledge+Economy 심화** - Phase 25-32 완료, 2026-04-28 ([archive](milestones/v2.4-ROADMAP.md), [requirements](milestones/v2.4-REQUIREMENTS.md), [audit](milestones/v2.4-MILESTONE-AUDIT.md), [re-audit](milestones/v2.4-MILESTONE-REAUDIT.md))
-- [active] **v2.5 Semantic Knowledge Intelligence** - Phase 33-37 planned, 2026-04-28 시작 ([requirements](REQUIREMENTS.md))
+- [active] **v2.5 Semantic Knowledge Intelligence** - Phase 33-38 진행 중, Phase 38 audit gap closure planned ([requirements](REQUIREMENTS.md), [audit](v2.5-MILESTONE-AUDIT.md))
 
 ## 완료됨
 
@@ -81,13 +81,13 @@ Initial audit status: `gaps_found`. Phase 30-32 closed missing summary, verifica
 
 ## 현재 위치
 
-v2.5 Semantic Knowledge Intelligence가 시작되었다. Phase 33부터 semantic index, semantic search, contradiction review, Jarvis grounding, knowledge operations 순서로 진행한다.
+v2.5 Semantic Knowledge Intelligence의 Phase 33-37 구현은 완료되었고, milestone audit에서 확인된 verification/validation artifact gap을 Phase 38에서 닫는다.
 
 ## 진행 예정
 
-### v2.5 Semantic Knowledge Intelligence (Phase 33-37)
+### v2.5 Semantic Knowledge Intelligence (Phase 33-38)
 
-**Goal:** Daily wiki/graph knowledge를 embedding-backed semantic retrieval, contradiction review, Jarvis answer grounding, operator-facing knowledge health로 고도화한다.
+**Goal:** Daily wiki/graph knowledge를 embedding-backed semantic retrieval, contradiction review, Jarvis answer grounding, operator-facing knowledge health로 고도화하고 milestone close 전에 verification/validation traceability를 완결한다.
 
 | Phase | Name | Goal | Requirements | Success Criteria |
 |-------|------|------|--------------|------------------|
@@ -96,6 +96,7 @@ v2.5 Semantic Knowledge Intelligence가 시작되었다. Phase 33부터 semantic
 | 35 | Contradiction Review Workflow | 새 evidence와 기존 knowledge 사이의 충돌 후보를 review/audit loop로 만든다 | CONTRA-01, CONTRA-02, CONTRA-03, CONTRA-04 | 4 |
 | 36 | Jarvis Grounded Answers | Jarvis 답변이 semantic context, citation, contradiction warning을 노출한다 | JARVIS-01, JARVIS-02, JARVIS-03, JARVIS-04 | 4 |
 | 37 | Knowledge Intelligence Operations | 운영자가 semantic/contradiction/Jarvis knowledge health를 검증하고 gate로 관리한다 | OPS-01, OPS-02, OPS-03 | 4 |
+| 38 | Semantic Knowledge Artifact Closure | v2.5 milestone audit에서 발견된 verification, validation, requirements traceability gap을 닫는다 | JARVIS-01, JARVIS-02, JARVIS-03, JARVIS-04 | 4 |
 
 #### Phase 33: Semantic Index Foundation
 
@@ -157,6 +158,20 @@ Success criteria:
 3. Phase verification artifacts가 요구사항 19개 전체의 tests, route evidence, user-facing flow note를 포함한다.
 4. Milestone close 전에 requirements traceability, phase summaries, validation artifacts가 누락 없이 갱신된다.
 
+#### Phase 38: Semantic Knowledge Artifact Closure
+
+Goal: v2.5 milestone audit의 `gaps_found`를 닫기 위해 누락된 phase verification, Nyquist validation, requirements checkbox/frontmatter 정합성을 완결한다.
+
+Requirements: JARVIS-01, JARVIS-02, JARVIS-03, JARVIS-04
+
+Gap Closure: `.planning/v2.5-MILESTONE-AUDIT.md`
+
+Success criteria:
+1. Phase 34, 35, 36의 `*-VERIFICATION.md`가 생성되고 각 requirement evidence를 phase-local로 검증한다.
+2. Phase 36 `36-01-SUMMARY.md`가 YAML frontmatter와 `requirements-completed` 목록을 갖는다.
+3. Phase 33-37의 `*-VALIDATION.md`가 생성되거나 명시적으로 waiver되어 Nyquist coverage가 audit 가능한 상태가 된다.
+4. `.planning/REQUIREMENTS.md`의 v2.5 checkbox와 traceability가 milestone close 기준으로 정합성을 갖고, 재감사에서 `passed`가 가능하다.
+
 ## 진행상황
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -193,11 +208,12 @@ Success criteria:
 | 30. Knowledge Artifact and Verification Closure | v2.4 | 1/1 | Complete | 2026-04-28 |
 | 31. Economy Artifact and Verification Closure | v2.4 | 1/1 | Complete | 2026-04-28 |
 | 32. Lint Traceability and Milestone Acceptance Closure | v2.4 | 1/1 | Complete | 2026-04-28 |
-| 33. Semantic Index Foundation | v2.5 | 0/1 | Planned | - |
-| 34. Semantic Knowledge Search | v2.5 | 0/1 | Planned | - |
-| 35. Contradiction Review Workflow | v2.5 | 0/1 | Planned | - |
-| 36. Jarvis Grounded Answers | v2.5 | 0/1 | Planned | - |
-| 37. Knowledge Intelligence Operations | v2.5 | 0/1 | Planned | - |
+| 33. Semantic Index Foundation | v2.5 | 1/1 | Complete | 2026-04-28 |
+| 34. Semantic Knowledge Search | v2.5 | 1/1 | Complete with verification gap | 2026-04-28 |
+| 35. Contradiction Review Workflow | v2.5 | 1/1 | Complete with verification gap | 2026-04-28 |
+| 36. Jarvis Grounded Answers | v2.5 | 1/1 | Complete with artifact gap | 2026-04-28 |
+| 37. Knowledge Intelligence Operations | v2.5 | 1/1 | Complete | 2026-04-28 |
+| 38. Semantic Knowledge Artifact Closure | v2.5 | 0/1 | Planned | - |
 
 ## Archive
 
@@ -216,6 +232,7 @@ Success criteria:
 - [v2.4 requirements archive](milestones/v2.4-REQUIREMENTS.md)
 - [v2.4 milestone audit](milestones/v2.4-MILESTONE-AUDIT.md)
 - [v2.4 milestone re-audit](milestones/v2.4-MILESTONE-REAUDIT.md)
+- [v2.5 milestone audit](v2.5-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-28, v2.5 milestone initialized*
+*마지막 업데이트: 2026-04-29, v2.5 gap closure phase planned*
