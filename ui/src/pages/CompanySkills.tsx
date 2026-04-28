@@ -46,7 +46,7 @@ import {
   Github,
   Link2,
   ExternalLink,
-  Paperclip,
+  Sparkles,
   Pencil,
   Plus,
   RefreshCw,
@@ -160,7 +160,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "local":
       return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: "Paperclip managed" };
+      return { icon: Sparkles, label: sourceLabel ?? "RealTycoon2", managedLabel: "RealTycoon2 managed" };
     default:
       return { icon: Boxes, label: sourceLabel ?? "Catalog", managedLabel: "Catalog managed" };
   }
@@ -660,7 +660,7 @@ function SkillPane({
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
             <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
             {usedBy.length === 0 ? (
-              <span className="text-muted-foreground">No agents attached</span>
+              <span className="text-muted-foreground">No Jarvis attached</span>
             ) : (
               <div className="flex flex-wrap gap-x-3 gap-y-1">
                 {usedBy.map((agent) => (
@@ -919,7 +919,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the RealTycoon2 execution environment.`,
       });
     },
     onError: (error) => {

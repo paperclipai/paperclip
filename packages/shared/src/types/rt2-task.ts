@@ -1,0 +1,186 @@
+export type Rt2TaskMode = "solo" | "collab";
+
+export type Rt2ParticipantState = "active" | "ended";
+
+export type Rt2ParticipantEndReason = "manager_removed" | "self_left" | "capacity_reduced";
+
+export type Rt2DeliverableKind = "document" | "artifact";
+
+export type Rt2DeliverableState = "defined" | "submitted";
+
+export type Rt2ExecutionState =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "blocked";
+
+export type Rt2ExecutionExecutorType = "user" | "jarvis" | "runtime";
+
+export interface Rt2DeliverableInput {
+  title: string;
+  type: Rt2DeliverableKind;
+  basePrice: number;
+  summary?: string | null;
+}
+
+export interface Rt2TaskParticipant {
+  id: string;
+  taskIssueId: string;
+  userId: string;
+  state: Rt2ParticipantState;
+  endedReason: Rt2ParticipantEndReason | null;
+  joinedAt: Date;
+  endedAt: Date | null;
+}
+
+export interface Rt2TodoSummary {
+  issueId: string;
+  parentTaskIssueId: string;
+  title: string;
+  status: "todo" | "in_progress" | "in_review" | "done" | "blocked" | "cancelled";
+  assigneeUserId: string | null;
+  deliverableCount: number;
+  submittedDeliverableCount: number;
+  execution: Rt2ExecutionSummary | null;
+}
+
+export interface Rt2DeliverableSummary {
+  workProductId: string;
+  issueId: string;
+  title: string;
+  type: Rt2DeliverableKind;
+  state: Rt2DeliverableState;
+  basePrice: number | null;
+  summary: string | null;
+  isRequired: boolean;
+}
+
+export interface Rt2TaskSummary {
+  issueId: string;
+  projectId: string;
+  goalId: string | null;
+  title: string;
+  description: string | null;
+  status: "todo" | "in_progress" | "in_review" | "done" | "blocked" | "cancelled";
+  taskMode: Rt2TaskMode;
+  capacity: number;
+  activeParticipantCount: number;
+  deliverableCount: number;
+  todoCount: number;
+  todoInProgressCount: number;
+  execution: Rt2ExecutionSummary | null;
+}
+
+export interface Rt2ExecutionSummary {
+  id: string;
+  taskIssueId: string;
+  todoIssueId: string | null;
+  state: Rt2ExecutionState;
+  executorType: Rt2ExecutionExecutorType | null;
+  executorId: string | null;
+  executionWorkspaceId: string | null;
+  runtimeServiceId: string | null;
+  heartbeatRunId: string | null;
+  deliverableWorkProductId: string | null;
+  resultWorkProductId: string | null;
+  retryOfAttemptId: string | null;
+  failureReason: string | null;
+  missingDeliverableReason: string | null;
+  queuedAt: Date;
+  claimedAt: Date | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  updatedAt: Date;
+}
+
+export interface Rt2TaskDetail extends Rt2TaskSummary {
+  participants: Rt2TaskParticipant[];
+  deliverables: Rt2DeliverableSummary[];
+  todos: Rt2TodoSummary[];
+}
+
+export type Rt2BoardQualityStatus = "none" | "pending_review" | "reviewed" | "needs_work";
+
+export interface Rt2BoardChecklistItem {
+  id: string;
+  issueId: string;
+  title: string;
+  checked: boolean;
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Rt2BoardAttachmentPreview {
+  id: string;
+  issueId: string;
+  label: string;
+  url: string;
+  contentType: string | null;
+  previewKind: "link" | "image" | "document";
+  position: number;
+}
+
+export interface Rt2BoardCardMeta {
+  issueId: string;
+  dueDate: string | null;
+  qualityStatus: Rt2BoardQualityStatus;
+  priceGold: number | null;
+  detailNotes: string | null;
+  checklist: Rt2BoardChecklistItem[];
+  attachments: Rt2BoardAttachmentPreview[];
+  checklistDone: number;
+  checklistTotal: number;
+  checklistProgress: number;
+}
+
+export interface Rt2BoardOverview {
+  companyId: string;
+  cards: Rt2BoardCardMeta[];
+  filters: {
+    lanes: string[];
+    assigneeIds: string[];
+    okrIds: string[];
+    qualityStatuses: Rt2BoardQualityStatus[];
+    due: Array<"overdue" | "today" | "upcoming" | "none">;
+  };
+}
+
+export type Rt2CaptureDraftSource = "slack" | "teams" | "webhook" | "mobile" | "native";
+export type Rt2CaptureDraftStatus = "review_required" | "duplicate" | "permission_blocked" | "failed" | "promoted" | "discarded";
+
+export interface Rt2CaptureDraftSummary {
+  id: string;
+  companyId: string;
+  source: Rt2CaptureDraftSource;
+  channel: string | null;
+  externalUserId: string | null;
+  rawText: string;
+  parsedDraft: Record<string, unknown>;
+  status: Rt2CaptureDraftStatus;
+  promotionTarget: "task" | "todo" | "deliverable" | null;
+  promotedIssueId: string | null;
+  promotedWorkProductId: string | null;
+  duplicateOfDraftId: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  permissionStatus: "allowed" | "missing_external_user" | "blocked";
+  auditTrail: Array<Record<string, unknown>>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Rt2CaptureQueue {
+  companyId: string;
+  summary: {
+    reviewRequired: number;
+    duplicate: number;
+    permissionBlocked: number;
+    failed: number;
+    promoted: number;
+  };
+  drafts: Rt2CaptureDraftSummary[];
+}

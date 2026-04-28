@@ -39,7 +39,7 @@ const sections: ShortcutSection[] = [
     title: "Global",
     shortcuts: [
       { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New issue" },
+      { keys: ["c"], label: "빠른 업무 기록 열기" },
       { keys: ["["], label: "Toggle sidebar" },
       { keys: ["]"], label: "Toggle panel" },
       { keys: ["?"], label: "Show keyboard shortcuts" },

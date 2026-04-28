@@ -171,7 +171,7 @@ export function InstanceSettings() {
           <h1 className="text-lg font-semibold">Scheduler Heartbeats</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Agents with a timer heartbeat enabled across all of your companies.
+          Jarvis teammates with a timer wake cycle enabled across all of your companies.
         </p>
       </div>
 

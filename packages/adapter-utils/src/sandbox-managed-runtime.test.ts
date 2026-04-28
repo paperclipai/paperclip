@@ -62,7 +62,15 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "._README.md"), "appledouble\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "{\"local\":true}\n", "utf8");
     await writeFile(linkedAssetPath, "skill body\n", "utf8");
-    await symlink(linkedAssetPath, path.join(localAssetsDir, "skill.md"));
+    try {
+      await symlink(linkedAssetPath, path.join(localAssetsDir, "skill.md"));
+    } catch (error) {
+      if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") {
+        console.warn("Skipping sandbox symlink asset test: Windows symlink permission denied");
+        return;
+      }
+      throw error;
+    }
 
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {

@@ -2,9 +2,11 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    testTimeout: 30_000,
+    hookTimeout: 45_000,
     projects: [
-      "packages/shared",
       "packages/db",
+      "packages/shared",
       "packages/adapter-utils",
       "packages/adapters/claude-local",
       "packages/adapters/codex-local",

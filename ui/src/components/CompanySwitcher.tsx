@@ -49,14 +49,14 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
               <span className={`h-2 w-2 rounded-full shrink-0 ${statusDotColor(selectedCompany.status)}`} />
             )}
             <span className="text-sm font-medium truncate">
-              {selectedCompany?.name ?? "Select company"}
+              {selectedCompany?.name ?? "회사 선택"}
             </span>
           </div>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-[220px]">
-        <DropdownMenuLabel>Companies</DropdownMenuLabel>
+        <DropdownMenuLabel>회사</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sidebarCompanies.map((company) => (
           <DropdownMenuItem
@@ -69,19 +69,19 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (
-          <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+          <DropdownMenuItem disabled>등록된 회사가 없습니다</DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/company/settings" className="no-underline text-inherit">
             <Settings className="h-4 w-4 mr-2" />
-            Company Settings
+            회사 설정
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/companies" className="no-underline text-inherit">
             <Plus className="h-4 w-4 mr-2" />
-            Manage Companies
+            회사 관리
           </Link>
         </DropdownMenuItem>
       </DropdownMenuContent>

@@ -18,6 +18,28 @@ import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
+import { rt2TaskRoutes } from "./routes/rt2-tasks.js";
+import { rt2TaskMeshRoutes } from "./routes/rt2-task-mesh.js";
+import { rt2KnowledgeRoutes } from "./routes/rt2-knowledge.js";
+import { rt2KnowledgeOperationsRoutes } from "./routes/rt2-knowledge-operations.js";
+import { rt2JarvisRoutes } from "./routes/rt2-jarvis.js";
+import { rt2GovernanceRoutes } from "./routes/rt2-governance.js";
+import { rt2GamificationRoutes } from "./routes/rt2-gamification.js";
+import { rt2CollaborationRoutes } from "./routes/rt2-collaboration.js";
+import { rt2CollaborationRewardsRoutes } from "./routes/rt2-collaboration-rewards.js";
+import { rt2PersonalPnLRoutes } from "./routes/rt2-personal-pnl.js";
+import { rt2CoPilotRoutes } from "./routes/rt2-copilot.js";
+import { rt2AgentMarketplaceRoutes } from "./routes/rt2-agent-marketplace.js";
+import { rt2CareerMateRoutes } from "./routes/rt2-career-mate.js";
+import { rt2AdvancedAIRoutes } from "./routes/rt2-advanced-ai.js";
+import { rt2EnterpriseRoutes } from "./routes/rt2-enterprise.js";
+import { rt2AutoEvaluationRoutes } from "./routes/rt2-auto-evaluation.js";
+import { rt2ReputationExpansionRoutes } from "./routes/rt2-reputation-expansion.js";
+import { rt2TemplateApplicationRoutes } from "./routes/rt2-template-application.js";
+import { rt2HybridSearchRoutes } from "./routes/rt2-hybrid-search.js";
+import { rt2SemanticIndexRoutes } from "./routes/rt2-semantic-index.js";
+import { rt2ContradictionReviewRoutes } from "./routes/rt2-contradiction-review.js";
+import { rt2DailyReportRoutes } from "./routes/rt2-daily-report.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -51,6 +73,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
+import { createRt2WikiLintScheduler } from "./services/rt2-wiki-lint.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
@@ -120,6 +143,7 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    pluginMigrationDb?: Db;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -129,7 +153,6 @@ export async function createApp(
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
-    pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
@@ -166,18 +189,33 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.use("/api/auth", authRoutes(db));
+  app.get("/api/auth/get-session", (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    res.json({
+      session: {
+        id: `paperclip:${req.actor.source}:${req.actor.userId}`,
+        userId: req.actor.userId,
+      },
+      user: {
+        id: req.actor.userId,
+        email: null,
+        name: req.actor.source === "local_implicit" ? "Local Board" : null,
+      },
+    });
+  });
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
+  app.use("/api/auth", authRoutes(db));
   app.use(llmRoutes(db));
-
-  const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
 
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   api.use(
     "/health",
     healthRoutes(db, {
@@ -189,21 +227,42 @@ export async function createApp(
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
-  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
   }));
   api.use(issueTreeControlRoutes(db));
+  api.use(rt2TaskRoutes(db));
+  api.use(rt2TaskMeshRoutes(db));
+  api.use(rt2KnowledgeRoutes(db));
+  api.use(rt2KnowledgeOperationsRoutes(db));
+  api.use(rt2JarvisRoutes(db));
+  api.use(rt2GovernanceRoutes(db));
+  api.use(rt2GamificationRoutes(db));
+  api.use(rt2CollaborationRoutes(db));
+  api.use(rt2CollaborationRewardsRoutes(db));
+  api.use(rt2PersonalPnLRoutes(db));
+  api.use(rt2CoPilotRoutes(db));
+  api.use(rt2AgentMarketplaceRoutes(db));
+  api.use(rt2CareerMateRoutes(db));
+  api.use(rt2AdvancedAIRoutes(db));
+  api.use(rt2EnterpriseRoutes(db));
+  api.use(rt2AutoEvaluationRoutes(db));
+  api.use(rt2ReputationExpansionRoutes(db));
+  api.use(rt2TemplateApplicationRoutes(db));
+  api.use(rt2HybridSearchRoutes(db));
+  api.use(rt2SemanticIndexRoutes(db));
+  api.use(rt2ContradictionReviewRoutes(db));
+  api.use(rt2DailyReportRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
-  api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
-  api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(costRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(userProfileRoutes(db));
@@ -214,6 +273,7 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
+  const hostServicesDisposers = new Map<string, () => void>();
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -224,6 +284,7 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  const rt2WikiLintScheduler = createRt2WikiLintScheduler(db);
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
@@ -239,10 +300,7 @@ export async function createApp(
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
     db,
-    {
-      localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
-      migrationDb: opts.pluginMigrationDb,
-    },
+    { localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR },
     {
       workerManager,
       eventBus,
@@ -259,9 +317,7 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
-          pluginWorkerManager: workerManager,
-        });
+        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker);
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({
           pluginId,
@@ -401,6 +457,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  rt2WikiLintScheduler.start();
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -435,6 +492,7 @@ export async function createApp(
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    rt2WikiLintScheduler.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

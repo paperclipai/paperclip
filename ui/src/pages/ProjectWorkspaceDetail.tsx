@@ -37,7 +37,7 @@ type ProjectWorkspaceSourceType = ProjectWorkspace["sourceType"];
 type ProjectWorkspaceVisibility = ProjectWorkspace["visibility"];
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
-  { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
+  { value: "local_path", label: "Local git checkout", description: "A local path RealTycoon2 can use directly." },
   { value: "non_git_path", label: "Local non-git path", description: "A local folder without git semantics." },
   { value: "git_repo", label: "Remote git repo", description: "A repo URL with optional refs and local checkout." },
   { value: "remote_managed", label: "Remote-managed workspace", description: "A hosted workspace tracked by external reference." },
@@ -103,7 +103,7 @@ function parseRuntimeConfigJson(value: string) {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
         ok: false as const,
-        error: "Workspace commands JSON must be a JSON object.",
+        error: "Execution commands JSON must be a JSON object.",
       };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
@@ -388,7 +388,7 @@ export function ProjectWorkspaceDetail() {
                 </div>
                 <h1 className="text-2xl font-semibold">{workspace.name}</h1>
                 <p className="max-w-2xl text-sm text-muted-foreground">
-                  Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
+                  Configure the concrete environment RealTycoon2 attaches to this project. These values drive per-environment
                   checkout behavior, default runtime services for child execution workspaces, and let you override setup
                   or cleanup commands when one workspace needs special handling.
                 </p>
@@ -548,10 +548,10 @@ export function ProjectWorkspaceDetail() {
               <details className="rounded-xl border border-dashed border-border/70 bg-background px-3 py-3">
                 <summary className="cursor-pointer text-sm font-medium">Advanced runtime JSON</summary>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
+                  RealTycoon2 derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
                 </p>
                 <div className="mt-3">
-                  <Field label="Workspace commands JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                  <Field label="Execution commands JSON" hint="Execution environments inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">
                     <textarea
                       className="min-h-96 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                       value={form.runtimeConfig}
@@ -619,10 +619,10 @@ export function ProjectWorkspaceDetail() {
           <div className="rounded-2xl border border-border bg-card p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution commands</div>
                 <h2 className="text-lg font-semibold">Services and jobs</h2>
                 <p className="text-sm text-muted-foreground">
-                  Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.
+                  Long-running services stay supervised here, while one-shot jobs run on demand against this environment. Execution environments inherit this config unless they override it.
                 </p>
               </div>
             </div>

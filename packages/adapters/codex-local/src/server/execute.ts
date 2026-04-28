@@ -244,7 +244,7 @@ export async function ensureCodexSkillsInjected(
           if (linkSkill) {
             await linkSkill(entry.source, target);
           } else {
-            await fs.symlink(entry.source, target);
+            await ensurePaperclipSkillSymlink(entry.source, target);
           }
           await onLog(
             "stdout",

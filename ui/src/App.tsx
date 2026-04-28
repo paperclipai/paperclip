@@ -1,8 +1,10 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
-import { CloudAccessGate } from "./components/CloudAccessGate";
+import { authApi } from "./api/auth";
+import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Companies } from "./pages/Companies";
@@ -41,6 +43,8 @@ import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
+import { IssueChatUxLab } from "./pages/IssueChatUxLab";
+import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -49,15 +53,99 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
+import { OneLinerPage } from "./pages/rt2/OneLinerPage";
+import { KnowledgePage } from "./pages/rt2/KnowledgePage";
+import { MarketplacePage } from "./pages/rt2/MarketplacePage";
+import { PnlPage } from "./pages/rt2/PnlPage";
+import { GovernancePage } from "./pages/rt2/GovernancePage";
+import { ControlPlanePage } from "./pages/rt2/ControlPlanePage";
+import { PlanAlignmentPage } from "./pages/rt2/PlanAlignmentPage";
+import { EnterpriseRolloutPage } from "./pages/rt2/EnterpriseRolloutPage";
+import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
 
+function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
+  return (
+    <div className="mx-auto max-w-xl py-10">
+      <div className="rounded-lg border border-border bg-card p-6">
+        <h1 className="text-xl font-semibold">Instance setup required</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {hasActiveInvite
+            ? "No instance admin exists yet. A bootstrap invite is already active. Check your RealTycoon2 startup logs for the first admin invite URL, or run this command to rotate it:"
+            : "No instance admin exists yet. Run this command in your RealTycoon2 environment to generate the first admin invite URL:"}
+        </p>
+        <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
+{`pnpm realtycoon2 auth bootstrap-ceo`}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function CloudAccessGate() {
+  const location = useLocation();
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+    refetchInterval: (query) => {
+      const data = query.state.data as
+        | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
+        | undefined;
+      return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
+        ? 2000
+        : false;
+    },
+    refetchIntervalInBackground: true,
+  });
+
+  const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    enabled: isAuthenticatedMode,
+    retry: false,
+  });
+
+  if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  if (healthQuery.error) {
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
+        {healthQuery.error instanceof Error ? healthQuery.error.message : "Failed to load app state"}
+      </div>
+    );
+  }
+
+  if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
+    return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
+  }
+
+  if (isAuthenticatedMode && !sessionQuery.data) {
+    const next = encodeURIComponent(`${location.pathname}${location.search}`);
+    return <Navigate to={`/auth?next=${next}`} replace />;
+  }
+
+  return <Outlet />;
+}
+
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<Navigate to="one-liner" replace />} />
+      <Route path="one-liner" element={<OneLinerPage />} />
+      <Route path="knowledge" element={<KnowledgePage />} />
+      <Route path="marketplace" element={<MarketplacePage />} />
+      <Route path="pnl" element={<PnlPage />} />
+      <Route path="governance" element={<GovernancePage />} />
+      <Route path="enterprise-rollout" element={<EnterpriseRolloutPage />} />
+      <Route path="plan-alignment" element={<PlanAlignmentPage />} />
+      <Route path="control-plane" element={<ControlPlanePage />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
@@ -121,6 +209,8 @@ function boardRoutes() {
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="tests/ux/chat" element={<IssueChatUxLab />} />
+      <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
       <Route path="instance/settings/adapters" element={<AdapterManager />} />
       <Route path=":pluginRoutePath" element={<PluginPage />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
@@ -198,7 +288,7 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return <Navigate to={`/${targetCompany.issuePrefix}/one-liner`} replace />;
 }
 
 function UnprefixedBoardRedirect() {
@@ -273,6 +363,15 @@ export function App() {
             <Route path="adapters" element={<AdapterManager />} />
           </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          <Route path="one-liner" element={<UnprefixedBoardRedirect />} />
+          <Route path="knowledge" element={<UnprefixedBoardRedirect />} />
+          <Route path="marketplace" element={<UnprefixedBoardRedirect />} />
+          <Route path="pnl" element={<UnprefixedBoardRedirect />} />
+          <Route path="governance" element={<UnprefixedBoardRedirect />} />
+          <Route path="enterprise-rollout" element={<UnprefixedBoardRedirect />} />
+          <Route path="plan-alignment" element={<UnprefixedBoardRedirect />} />
+          <Route path="control-plane" element={<UnprefixedBoardRedirect />} />
+          <Route path="org" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
@@ -299,6 +398,8 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
+          <Route path="tests/ux/chat" element={<UnprefixedBoardRedirect />} />
+          <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>

@@ -31,35 +31,32 @@ source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
-run_isolated_worktree_init() {
-  local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
-  local base_cli_entry="$base_cwd/cli/src/index.ts"
-
-  if [[ -f "$base_cli_runner" && -f "$base_cli_entry" ]]; then
-    (
-      cd "$worktree_cwd"
-      node "$base_cli_runner" "$base_cli_entry" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
-    )
+run_paperclipai_command() {
+  local command_args=("$@")
+  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+    pnpm paperclipai "${command_args[@]}"
     return 0
   fi
 
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
-    (
-      cd "$worktree_cwd"
-      pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
-    )
+  local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+  local base_cli_entry_path="$base_cwd/cli/src/index.ts"
+  local node_command=""
+  if command -v node >/dev/null 2>&1; then
+    node_command="node"
+  elif command -v node.exe >/dev/null 2>&1; then
+    node_command="node.exe"
+  fi
+  if [[ -n "$node_command" ]] && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+    "$node_command" "$base_cli_tsx_path" "$base_cli_entry_path" "${command_args[@]}"
     return 0
   fi
 
   if command -v paperclipai >/dev/null 2>&1; then
-    (
-      cd "$worktree_cwd"
-      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
-    )
+    paperclipai "${command_args[@]}"
     return 0
   fi
 
-  return 127
+  return 1
 }
 
 paperclipai_command_available() {
@@ -69,7 +66,7 @@ paperclipai_command_available() {
 
   local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
   local base_cli_entry_path="$base_cwd/cli/src/index.ts"
-  if command -v node >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+  if [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]] && ( command -v node >/dev/null 2>&1 || command -v node.exe >/dev/null 2>&1 ); then
     return 0
   fi
 
@@ -80,7 +77,30 @@ paperclipai_command_available() {
   return 1
 }
 
+run_isolated_worktree_init() {
+  run_paperclipai_command \
+    worktree \
+    init \
+    --force \
+    --seed-mode \
+    minimal \
+    --name \
+    "$worktree_name" \
+    --from-config \
+    "$source_config_path"
+}
+
 write_fallback_worktree_config() {
+  local node_command=""
+  if command -v node >/dev/null 2>&1; then
+    node_command="node"
+  elif command -v node.exe >/dev/null 2>&1; then
+    node_command="node.exe"
+  else
+    echo "node or node.exe is required to write the fallback worktree config." >&2
+    exit 1
+  fi
+
   WORKTREE_NAME="$worktree_name" \
   BASE_CWD="$base_cwd" \
   WORKTREE_CWD="$worktree_cwd" \
@@ -88,7 +108,7 @@ write_fallback_worktree_config() {
   SOURCE_CONFIG_PATH="$source_config_path" \
   SOURCE_ENV_PATH="$source_env_path" \
   PAPERCLIP_WORKTREES_DIR="${PAPERCLIP_WORKTREES_DIR:-}" \
-  node <<'EOF'
+  "$node_command" <<'EOF'
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -190,16 +210,23 @@ function rewriteLocalUrlPort(rawUrl, port) {
 }
 
 function resolveRuntimeLikePath(value, configPath) {
-  const expanded = expandHomePrefix(value);
+  const expanded = nonEmpty(expandHomePrefix(value));
+  if (!expanded) return null;
   if (path.isAbsolute(expanded)) return expanded;
+  if (!configPath) return expanded;
   return path.resolve(path.dirname(configPath), expanded);
 }
 
+function quoteEnvValue(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 async function main() {
-  const worktreeName = process.env.WORKTREE_NAME;
-  const paperclipDir = process.env.PAPERCLIP_DIR;
-  const sourceConfigPath = process.env.SOURCE_CONFIG_PATH;
-  const sourceEnvPath = process.env.SOURCE_ENV_PATH;
+  const worktreeCwd = process.env.WORKTREE_CWD || process.env.PAPERCLIP_WORKSPACE_CWD || process.cwd();
+  const worktreeName = process.env.WORKTREE_NAME || process.env.PAPERCLIP_WORKSPACE_BRANCH || path.basename(worktreeCwd);
+  const paperclipDir = process.env.PAPERCLIP_DIR || path.resolve(worktreeCwd, ".paperclip");
+  const sourceConfigPath = process.env.SOURCE_CONFIG_PATH || null;
+  const sourceEnvPath = process.env.SOURCE_ENV_PATH || (sourceConfigPath ? path.resolve(path.dirname(sourceConfigPath), ".env") : null);
   const worktreeHome = path.resolve(expandHomePrefix(nonEmpty(process.env.PAPERCLIP_WORKTREES_DIR) ?? "~/.paperclip-worktrees"));
   const instanceId = sanitizeInstanceId(worktreeName);
   const instanceRoot = path.resolve(worktreeHome, "instances", instanceId);
@@ -309,38 +336,40 @@ async function main() {
   }
 
   const envLines = [
-    "PAPERCLIP_HOME=" + JSON.stringify(worktreeHome),
-    "PAPERCLIP_INSTANCE_ID=" + JSON.stringify(instanceId),
-    "PAPERCLIP_CONFIG=" + JSON.stringify(configPath),
-    "PAPERCLIP_CONTEXT=" + JSON.stringify(path.resolve(worktreeHome, "context.json")),
+    "PAPERCLIP_HOME=" + quoteEnvValue(worktreeHome),
+    "PAPERCLIP_INSTANCE_ID=" + quoteEnvValue(instanceId),
+    "PAPERCLIP_CONFIG=" + quoteEnvValue(configPath),
+    "PAPERCLIP_CONTEXT=" + quoteEnvValue(path.resolve(worktreeHome, "context.json")),
     "PAPERCLIP_IN_WORKTREE=true",
-    "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
+    "PAPERCLIP_WORKTREE_NAME=" + quoteEnvValue(worktreeName),
   ];
 
   const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
   if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + quoteEnvValue(agentJwtSecret));
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  if (error instanceof Error) {
+    console.error(error.stack || error.message);
+  } else {
+    console.error(String(error));
+  }
   process.exit(1);
 });
 EOF
 }
 
-if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
-  echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
+if [[ "${PAPERCLIP_WORKSPACE_CREATED:-}" != "true" && -f "$worktree_config_path" && -f "$worktree_env_path" ]]; then
+  echo "Existing worktree Paperclip config found; preserving it." >&2
+elif paperclipai_command_available; then
+  run_isolated_worktree_init
 else
-  if paperclipai_command_available; then
-    run_isolated_worktree_init
-  else
-    echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
-    write_fallback_worktree_config
-  fi
+  echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
+  write_fallback_worktree_config
 fi
 
 list_base_node_modules_paths() {

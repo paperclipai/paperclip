@@ -224,6 +224,62 @@ export {
 } from "./work-product.js";
 
 export {
+  rt2TaskModeSchema,
+  rt2ParticipantStateSchema,
+  rt2ParticipantEndReasonSchema,
+  rt2DeliverableKindSchema,
+  rt2DeliverableStateSchema,
+  rt2DeliverableInputSchema,
+  rt2BoardQualityStatusSchema,
+  updateRt2BoardCardSchema,
+  createRt2BoardChecklistItemSchema,
+  updateRt2BoardChecklistItemSchema,
+  reorderRt2BoardChecklistSchema,
+  createRt2BoardAttachmentSchema,
+  promoteRt2CaptureDraftSchema,
+  failRt2CaptureDraftSchema,
+  createRt2TaskSchema,
+  createOneLinerInboundDraftSchema,
+  oneLinerInboundDraftSourceSchema,
+  createRt2TodoSchema,
+  assignRt2ParticipantSchema,
+  updateRt2TaskCapacitySchema,
+  endRt2ParticipantSchema,
+  type CreateRt2Task,
+  type CreateOneLinerInboundDraft,
+  type UpdateRt2BoardCard,
+  type CreateRt2BoardChecklistItem,
+  type UpdateRt2BoardChecklistItem,
+  type ReorderRt2BoardChecklist,
+  type CreateRt2BoardAttachment,
+  type PromoteRt2CaptureDraft,
+  type FailRt2CaptureDraft,
+  type CreateRt2Todo,
+  type AssignRt2Participant,
+  type UpdateRt2TaskCapacity,
+  type EndRt2Participant,
+} from "./rt2-task.js";
+
+export {
+  rt2DailyLaneSchema,
+  rt2DailyReportDateSchema,
+  upsertRt2DailyReportCardSchema,
+  listRt2DailyBoardSchema,
+  queryRt2DailyWikiSchema,
+  type UpsertRt2DailyReportCard,
+  type ListRt2DailyBoard,
+  type QueryRt2DailyWiki,
+} from "./rt2-daily-report.js";
+
+export {
+  rt2GraphNodeTypeSchema,
+  rt2GraphEdgeTypeSchema,
+  rt2GraphConfidenceSchema,
+  listRt2ProjectGraphSchema,
+  type ListRt2ProjectGraph,
+} from "./rt2-graph.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,
@@ -296,6 +352,36 @@ export {
   createFinanceEventSchema,
   type CreateFinanceEvent,
 } from "./finance.js";
+
+export {
+  applyRt2KnowledgeVaultImportSchema,
+  generateRt2ContradictionCandidatesSchema,
+  getRt2DailyWikiPageSchema,
+  getRt2WikiPageSchema,
+  listRt2ContradictionCandidatesSchema,
+  listRt2DailyWikiPagesSchema,
+  listRt2WikiPagesSchema,
+  previewRt2KnowledgeVaultImportSchema,
+  projectRt2KnowledgeSchema,
+  rebuildRt2DailyWikiSchema,
+  resolveRt2KnowledgeVaultConflictSchema,
+  resolveRt2ContradictionSchema,
+  rt2WikiPageTypeSchema,
+  saveRt2KnowledgeVaultWriterSettingsSchema,
+  type ApplyRt2KnowledgeVaultImport,
+  type GenerateRt2ContradictionCandidates,
+  type GetRt2DailyWikiPage,
+  type GetRt2WikiPage,
+  type ListRt2ContradictionCandidates,
+  type ListRt2DailyWikiPages,
+  type ListRt2WikiPages,
+  type PreviewRt2KnowledgeVaultImport,
+  type ProjectRt2Knowledge,
+  type RebuildRt2DailyWiki,
+  type ResolveRt2KnowledgeVaultConflict,
+  type ResolveRt2Contradiction,
+  type SaveRt2KnowledgeVaultWriterSettings,
+} from "./rt2-knowledge.js";
 
 export {
   createAssetImageMetadataSchema,

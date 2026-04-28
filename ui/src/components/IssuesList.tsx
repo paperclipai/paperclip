@@ -137,15 +137,19 @@ function getInitialViewState(
   key: string,
   initialAssignees?: string[],
   defaultSortField?: IssueSortField,
+  defaultViewMode?: IssueViewState["viewMode"],
 ): IssueViewState {
   const hasStored = hasStoredViewState(key);
   const stored = getViewState(key);
   const base = !hasStored && defaultSortField
     ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
     : stored;
-  if (!initialAssignees) return base;
+  const baseWithViewMode = !hasStored && defaultViewMode
+    ? { ...base, viewMode: defaultViewMode }
+    : base;
+  if (!initialAssignees) return baseWithViewMode;
   return {
-    ...base,
+    ...baseWithViewMode,
     assignees: initialAssignees,
     statuses: [],
   };
@@ -156,8 +160,9 @@ function getInitialWorkspaceViewState(
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
+  defaultViewMode?: IssueViewState["viewMode"],
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
+  const stored = getInitialViewState(key, initialAssignees, defaultSortField, defaultViewMode);
   if (!initialWorkspaces) return stored;
   return {
     ...stored,
@@ -304,6 +309,7 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
+  defaultViewMode?: IssueViewState["viewMode"];
   showProgressSummary?: boolean;
   enableRoutineVisibilityFilter?: boolean;
   mutedIssueIds?: Set<string>;
@@ -365,13 +371,17 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label="Search tasks"
         data-page-search-target="true"
       />
     </div>
   );
+}
+
+function issueLabelToTaskLabel(label: string): string {
+  return label.replace(/\bissues\b/gi, "tasks").replace(/\bissue\b/gi, "task");
 }
 
 function SubIssueProgressSummaryStrip({
@@ -473,6 +483,7 @@ export function IssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   defaultSortField,
+  defaultViewMode,
   showProgressSummary = false,
   enableRoutineVisibilityFilter = false,
   mutedIssueIds,
@@ -505,7 +516,7 @@ export function IssuesList({
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultViewMode),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -525,9 +536,9 @@ export function IssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultViewMode));
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
+  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField, defaultViewMode]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -1003,8 +1014,12 @@ export function IssuesList({
     return defaults;
   }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel
+    ? `Create ${issueLabelToTaskLabel(createIssueLabel)}`
+    : "Create Task";
+  const createButtonLabel = createIssueLabel
+    ? `New ${issueLabelToTaskLabel(createIssueLabel)}`
+    : "New Task";
   const openCreateIssueDialog = useCallback((groupKey?: string) => {
     openNewIssue(newIssueDefaults(groupKey));
   }, [newIssueDefaults, openNewIssue]);

@@ -118,7 +118,7 @@ export function Org() {
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          message="No agents in the organization. Create agents to build your org chart."
+          message="조직에 Jarvis가 없습니다. Jarvis를 추가해 조직도를 구성하세요."
         />
       )}
 

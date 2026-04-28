@@ -16,6 +16,10 @@ interface NewIssueDefaults {
   assigneeUserId?: string;
   title?: string;
   description?: string;
+  rt2Mode?: "task" | "todo";
+  rt2TaskMode?: "solo" | "collab";
+  rt2TaskIssueId?: string;
+  capacity?: number;
 }
 
 interface NewGoalDefaults {

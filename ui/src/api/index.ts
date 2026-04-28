@@ -18,3 +18,7 @@ export { sidebarBadgesApi } from "./sidebarBadges";
 export { sidebarPreferencesApi } from "./sidebarPreferences";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
+export { rt2TasksApi } from "./rt2-tasks";
+export { rt2DailyReportApi } from "./rt2-daily-report";
+export { rt2EnterpriseApi } from "./rt2-enterprise";
+export { rt2SearchApi } from "./rt2-search";

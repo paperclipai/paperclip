@@ -43,9 +43,9 @@ export function sanitizeRememberedPathForCompany(params: {
   path: string | null | undefined;
   companyPrefix: string;
 }): string {
-  const relativePath = params.path ? toCompanyRelativePath(params.path) : "/dashboard";
+  const relativePath = params.path ? toCompanyRelativePath(params.path) : "/one-liner";
   if (!isRememberableCompanyPath(relativePath)) {
-    return "/dashboard";
+    return "/one-liner";
   }
 
   const pathname = relativePath.split("?")[0] ?? "";
@@ -57,7 +57,7 @@ export function sanitizeRememberedPathForCompany(params: {
       identifierMatch &&
       normalizeCompanyPrefix(identifierMatch[1] ?? "") !== normalizeCompanyPrefix(params.companyPrefix)
     ) {
-      return "/dashboard";
+      return "/one-liner";
     }
   }
 

@@ -120,7 +120,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
       );
     });
 
-    expect(container.textContent).toContain("Execution workspace");
+    expect(container.textContent).toContain("Execution environment");
     expect(container.textContent).toContain("Branch");
     expect(container.textContent).toContain("Path");
     expect(container.textContent).toContain("Service");

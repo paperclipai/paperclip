@@ -33,56 +33,115 @@ export type EmbeddedPostgresTestDatabase = {
 
 let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null = null;
 
-const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54329;
-
-function getReservedTestPorts(): Set<number> {
-  const configuredPorts = [
-    DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT,
-    Number.parseInt(process.env.PAPERCLIP_EMBEDDED_POSTGRES_PORT ?? "", 10),
-    ...String(process.env.PAPERCLIP_TEST_POSTGRES_RESERVED_PORTS ?? "")
-      .split(",")
-      .map((value) => Number.parseInt(value.trim(), 10)),
-  ];
-  return new Set(configuredPorts.filter((port) => Number.isInteger(port) && port > 0 && port <= 65535));
-}
-
 async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
   return mod.default as EmbeddedPostgresCtor;
 }
 
 async function getAvailablePort(): Promise<number> {
-  const reservedPorts = getReservedTestPorts();
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const port = await new Promise<number>((resolve, reject) => {
-      const server = net.createServer();
-      server.unref();
-      server.on("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        if (!address || typeof address === "string") {
-          server.close(() => reject(new Error("Failed to allocate test port")));
-          return;
-        }
-        const { port } = address;
-        server.close((error) => {
-          if (error) reject(error);
-          else resolve(port);
-        });
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to allocate test port")));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(port);
       });
     });
-
-    if (!reservedPorts.has(port)) return port;
-  }
-
-  throw new Error(
-    `Failed to allocate embedded Postgres test port outside reserved Paperclip ports: ${[
-      ...reservedPorts,
-    ].join(", ")}`,
-  );
+  });
 }
 
-async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
+function formatEmbeddedPostgresError(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) return error.message;
+  if (typeof error === "string" && error.length > 0) return error;
+  return "embedded Postgres startup failed";
+}
+
+function isRetriableTempDirCleanupError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? (error.code as string | undefined) : undefined;
+  return code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
+}
+
+async function cleanupEmbeddedPostgresDir(dataDir: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isRetriableTempDirCleanupError(error) || attempt === 4) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+}
+
+async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
+  if (process.env.PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS === "true") {
+    return {
+      supported: false,
+      reason: "PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS=true",
+    };
+  }
+
+  if (
+    process.platform === "win32" &&
+    process.env.PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS !== "true"
+  ) {
+    return {
+      supported: false,
+      reason:
+        "embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them",
+    };
+  }
+
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-postgres-probe-"));
+  const port = await getAvailablePort();
+  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
+  const instance = new EmbeddedPostgres({
+    databaseDir: dataDir,
+    user: "paperclip",
+    password: "paperclip",
+    port,
+    persistent: true,
+    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    onLog: () => {},
+    onError: () => {},
+  });
+
+  try {
+    await instance.initialise();
+    await instance.start();
+    return { supported: true };
+  } catch (error) {
+    return {
+      supported: false,
+      reason: formatEmbeddedPostgresError(error),
+    };
+  } finally {
+    await instance.stop().catch(() => {});
+    await cleanupEmbeddedPostgresDir(dataDir);
+  }
+}
+
+export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgresTestSupport> {
+  if (!embeddedPostgresSupportPromise) {
+    embeddedPostgresSupportPromise = probeEmbeddedPostgresSupport();
+  }
+  return await embeddedPostgresSupportPromise;
+}
+
+export async function startEmbeddedPostgresTestDatabase(
+  tempDirPrefix: string,
+): Promise<EmbeddedPostgresTestDatabase> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), tempDirPrefix));
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
@@ -97,51 +156,6 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
     onError: () => {},
   });
 
-  return { dataDir, port, instance };
-}
-
-function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
-}
-
-function formatEmbeddedPostgresError(error: unknown): string {
-  if (error instanceof Error && error.message.length > 0) return error.message;
-  if (typeof error === "string" && error.length > 0) return error;
-  return "embedded Postgres startup failed";
-}
-
-async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
-  const { dataDir, instance } = await createEmbeddedPostgresTestInstance(
-    "paperclip-embedded-postgres-probe-",
-  );
-
-  try {
-    await instance.initialise();
-    await instance.start();
-    return { supported: true };
-  } catch (error) {
-    return {
-      supported: false,
-      reason: formatEmbeddedPostgresError(error),
-    };
-  } finally {
-    await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
-  }
-}
-
-export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgresTestSupport> {
-  if (!embeddedPostgresSupportPromise) {
-    embeddedPostgresSupportPromise = probeEmbeddedPostgresSupport();
-  }
-  return await embeddedPostgresSupportPromise;
-}
-
-export async function startEmbeddedPostgresTestDatabase(
-  tempDirPrefix: string,
-): Promise<EmbeddedPostgresTestDatabase> {
-  const { dataDir, port, instance } = await createEmbeddedPostgresTestInstance(tempDirPrefix);
-
   try {
     await instance.initialise();
     await instance.start();
@@ -155,12 +169,12 @@ export async function startEmbeddedPostgresTestDatabase(
       connectionString,
       cleanup: async () => {
         await instance.stop().catch(() => {});
-        cleanupEmbeddedPostgresTestDirs(dataDir);
+        await cleanupEmbeddedPostgresDir(dataDir);
       },
     };
   } catch (error) {
     await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await cleanupEmbeddedPostgresDir(dataDir);
     throw new Error(
       `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
     );

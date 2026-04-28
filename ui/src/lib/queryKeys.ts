@@ -60,6 +60,41 @@ export const queryKeys = {
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
   },
+  rt2Tasks: {
+    listByProject: (companyId: string, projectId: string) =>
+      ["rt2-tasks", companyId, "project", projectId] as const,
+    detail: (taskIssueId: string) => ["rt2-tasks", "detail", taskIssueId] as const,
+    assignableUsers: (taskIssueId: string) => ["rt2-tasks", "assignable-users", taskIssueId] as const,
+  },
+  rt2Daily: {
+    board: (companyId: string, projectId: string, userId: string, reportDate: string) =>
+      ["rt2-daily", companyId, projectId, userId, reportDate, "board"] as const,
+    wiki: (companyId: string, projectId: string, userId: string, reportDate: string) =>
+      ["rt2-daily", companyId, projectId, userId, reportDate, "wiki"] as const,
+  },
+  rt2Knowledge: {
+    search: (companyId: string, input: Record<string, unknown>) =>
+      ["rt2-knowledge", companyId, "semantic-search", input] as const,
+    semanticStatus: (companyId: string) => ["rt2-knowledge", companyId, "semantic-index-status"] as const,
+    dailyPages: (companyId: string, date?: string, userId?: string) =>
+      ["rt2-knowledge", companyId, "daily-pages", date ?? "__all__", userId ?? "__all__"] as const,
+    pages: (companyId: string, pageType?: string, limit?: number) =>
+      ["rt2-knowledge", companyId, "pages", pageType ?? "__all__", limit ?? "__default__"] as const,
+    vault: (companyId: string, pageType?: string, limit?: number) =>
+      ["rt2-knowledge", companyId, "vault", pageType ?? "__all__", limit ?? "__default__"] as const,
+    vaultWriter: (companyId: string) => ["rt2-knowledge", companyId, "vault-writer"] as const,
+    importPreview: (companyId: string) => ["rt2-knowledge", companyId, "import-preview"] as const,
+    contradictions: (companyId: string, status?: string, projectId?: string) =>
+      ["rt2-knowledge", companyId, "contradictions", status ?? "open", projectId ?? "__all__"] as const,
+    operationsHealth: (companyId: string) => ["rt2-knowledge", companyId, "operations-health"] as const,
+  },
+  rt2Enterprise: {
+    rollout: (companyId: string) => ["rt2-enterprise", companyId, "rollout"] as const,
+    ssoValidation: (companyId: string) => ["rt2-enterprise", companyId, "sso-validation"] as const,
+    scimPreview: (companyId: string) => ["rt2-enterprise", companyId, "scim-preview"] as const,
+    templatePreview: (companyId: string, templateId: string) =>
+      ["rt2-enterprise", companyId, "template-preview", templateId] as const,
+  },
   routines: {
     list: (companyId: string) => ["routines", companyId] as const,
     detail: (id: string) => ["routines", "detail", id] as const,

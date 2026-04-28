@@ -3,7 +3,9 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { issues as issueRows } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -119,6 +121,8 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   issues: false,
   skills: false,
 };
+
+const COMPANY_IMPORT_ISSUE_ORIGIN_KIND = "company_import";
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
@@ -3725,6 +3729,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
     const existingProjectSlugs = new Set<string>();
+    const existingIssueSlugs = new Set<string>();
 
     if (input.target.mode === "existing_company") {
       const existingAgents = await agents.list(input.target.companyId);
@@ -3739,6 +3744,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
         }
         existingProjectSlugs.add(existing.urlKey);
+      }
+      if (typeof (db as Partial<Pick<Db, "select">>).select === "function") {
+        const existingIssues = await db
+          .select({
+            title: issueRows.title,
+            identifier: issueRows.identifier,
+            originKind: issueRows.originKind,
+            originId: issueRows.originId,
+          })
+          .from(issueRows)
+          .where(eq(issueRows.companyId, input.target.companyId));
+        for (const existing of existingIssues) {
+          const originSlug =
+            existing.originKind === COMPANY_IMPORT_ISSUE_ORIGIN_KIND
+              ? normalizeAgentUrlKey(existing.originId ?? "")
+              : null;
+          const identifierSlug = normalizeAgentUrlKey(existing.identifier ?? "");
+          const titleSlug = normalizeAgentUrlKey(existing.title);
+          for (const slug of [originSlug, identifierSlug, titleSlug]) {
+            if (slug) existingIssueSlugs.add(slug);
+          }
+        }
       }
 
       const existingSkills = await companySkills.listFull(input.target.companyId);
@@ -3885,6 +3912,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (include.issues) {
       for (const manifestIssue of manifest.issues) {
+        const existingSlug = existingIssueSlugs.has(manifestIssue.slug);
+        if (existingSlug && input.target.mode === "existing_company") {
+          issuePlans.push({
+            slug: manifestIssue.slug,
+            action: "skip",
+            plannedTitle: manifestIssue.title,
+            reason: "Existing imported task matched; skip strategy.",
+          });
+          continue;
+        }
         issuePlans.push({
           slug: manifestIssue.slug,
           action: "create",
@@ -4382,7 +4419,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (include.issues) {
       const routines = routineService(db);
+      const issuePlanBySlug = new Map(plan.preview.plan.issuePlans.map((entry) => [entry.slug, entry]));
       for (const manifestIssue of sourceManifest.issues) {
+        const issuePlan = issuePlanBySlug.get(manifestIssue.slug);
+        if (issuePlan?.action === "skip") {
+          continue;
+        }
         const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
         const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
         const description = parsed?.body || manifestIssue.description || null;
@@ -4500,6 +4542,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           title: manifestIssue.title,
           description,
           assigneeAgentId,
+          originKind: COMPANY_IMPORT_ISSUE_ORIGIN_KIND,
+          originId: manifestIssue.slug,
+          originFingerprint: createHash("sha256")
+            .update(`${plan.source.manifest.source?.companyId ?? "portable"}:${manifestIssue.slug}`)
+            .digest("hex"),
           status: issueStatus,
           priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
             ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]

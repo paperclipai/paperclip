@@ -68,6 +68,11 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockRt2TasksApi = vi.hoisted(() => ({
+  create: vi.fn(),
+  createTodo: vi.fn(),
+}));
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
 }));
@@ -106,6 +111,10 @@ vi.mock("../api/assets", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/rt2-tasks", () => ({
+  rt2TasksApi: mockRt2TasksApi,
 }));
 
 vi.mock("../hooks/useProjectOrder", () => ({
@@ -222,6 +231,15 @@ async function flush() {
   });
 }
 
+function setFormValue(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = element instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+  setter?.call(element, value);
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -268,6 +286,10 @@ describe("NewIssueDialog", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockRt2TasksApi.create.mockReset();
+    mockRt2TasksApi.createTodo.mockReset();
+    mockRt2TasksApi.create.mockResolvedValue({ issueId: "issue-rt2-1" });
+    mockRt2TasksApi.createTodo.mockResolvedValue({ id: "todo-1" });
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
       companyId: "company-1",
@@ -291,11 +313,11 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New sub-issue");
-    expect(container.textContent).toContain("Sub-issue of");
+    expect(container.textContent).toContain("New sub-task");
+    expect(container.textContent).toContain("Sub-task of");
     expect(container.textContent).toContain("PAP-1");
     expect(container.textContent).toContain("Parent issue");
-    expect(container.textContent).toContain("Create Sub-Issue");
+    expect(container.textContent).toContain("Create Sub-Task");
 
     act(() => root.unmount());
 
@@ -303,9 +325,9 @@ describe("NewIssueDialog", () => {
     const rerendered = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
-    expect(container.textContent).toContain("Create Issue");
-    expect(container.textContent).not.toContain("Sub-issue of");
+    expect(container.textContent).toContain("New task");
+    expect(container.textContent).toContain("Create Task");
+    expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
   });
@@ -349,7 +371,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-Task"));
     expect(submitButton).not.toBeUndefined();
     expect(submitButton?.hasAttribute("disabled")).toBe(false);
 
@@ -387,7 +409,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-Task"));
     expect(submitButton).not.toBeUndefined();
 
     await act(async () => {
@@ -419,7 +441,7 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),
@@ -480,7 +502,7 @@ describe("NewIssueDialog", () => {
     await flush();
     await flush();
 
-    expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).not.toContain("will no longer use the parent task execution environment");
 
     const selects = Array.from(container.querySelectorAll("select"));
     const modeSelect = selects[0] as HTMLSelectElement | undefined;
@@ -492,8 +514,63 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).toContain("will no longer use the parent task execution environment");
     expect(container.textContent).toContain("Parent workspace");
+
+    act(() => root.unmount());
+  });
+
+  it("submits RT2 task payloads with capacity and deliverables", async () => {
+    dialogState.newIssueDefaults = {
+      projectId: "project-1",
+      rt2Mode: "task",
+      rt2TaskMode: "collab",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+
+    await act(async () => {
+      setFormValue(titleInput!, "Launch event collab task");
+    });
+    await flush();
+
+    const capacityInput = container.querySelector('input[aria-label="Capacity"]') as HTMLInputElement | null;
+    const deliverableInput = container.querySelector('input[aria-label="Deliverable title"]') as HTMLInputElement | null;
+    const basePriceInput = container.querySelector('input[aria-label="Base price"]') as HTMLInputElement | null;
+    expect(capacityInput).not.toBeNull();
+    expect(deliverableInput).not.toBeNull();
+    expect(basePriceInput).not.toBeNull();
+
+    await act(async () => {
+      setFormValue(capacityInput!, "2");
+      setFormValue(deliverableInput!, "Event brief");
+      setFormValue(basePriceInput!, "240000");
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockRt2TasksApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId: "project-1",
+        taskMode: "collab",
+        capacity: 2,
+        deliverables: [{ title: "Event brief", type: "document", basePrice: 240000 }],
+      }),
+    );
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });

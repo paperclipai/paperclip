@@ -30,6 +30,31 @@ export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
+export { rt2V33TaskProfiles } from "./rt2_v33_task_profiles.js";
+export { rt2V33TaskParticipants } from "./rt2_v33_task_participants.js";
+export { rt2V33ExecutionAttempts } from "./rt2_v33_execution_attempts.js";
+export {
+  rt2V33DomainEvents,
+  rt2V33ProjectorEvents,
+  rt2V33ProjectorState,
+} from "./rt2_v33_domain_events.js";
+export { rt2V33DailyReportCards } from "./rt2_v33_daily_report_cards.js";
+export { rt2V33DailyWikiPages } from "./rt2_v33_daily_wiki_pages.js";
+export { rt2V33WikiPages } from "./rt2_v33_wiki_pages.js";
+export {
+  rt2V33KnowledgeSyncDecisions,
+  rt2V33KnowledgeVaultSettings,
+} from "./rt2_v33_knowledge_sync.js";
+export {
+  rt2V33GraphCache,
+  rt2V33GraphCommunities,
+  rt2V33GraphEdges,
+  rt2V33GraphNodes,
+  rt2V33GraphReports,
+  rt2V33SurprisingConnections,
+} from "./rt2_v33_graph_projection.js";
+export { rt2QualityScores } from "./rt2_quality_scores.js";
+export { rt2BasePrices, DEFAULT_BASE_PRICES } from "./rt2_base_prices.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";
@@ -71,3 +96,33 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { rt2GamificationXpTransactions } from "./rt2_gamification_xp_transactions.js";
+export { rt2GamificationLevelHistory } from "./rt2_gamification_level_history.js";
+export { rt2GamificationAchievements } from "./rt2_gamification_achievements.js";
+export { rt2GamificationAgentBalances } from "./rt2_gamification_agent_balances.js";
+export { rt2CollaborationRewards, rt2CollaborationEvents } from "./rt2_collaboration_rewards.js";
+export { rt2PersonalPnL, rt2CoinLedger } from "./rt2_personal_pnl.js";
+export { rt2AntiGamingSignals, rt2SettlementGovernance, rt2SettlementThresholds } from "./rt2_settlement_governance.js";
+export {
+  rt2CaptureDrafts,
+  rt2WorkBoardAttachments,
+  rt2WorkBoardCards,
+  rt2WorkBoardChecklistItems,
+} from "./rt2_work_board.js";
+export { rt2AgentMarketplace, rt2ByoaAgents, rt2AgentSubscriptions } from "./rt2_agent_marketplace.js";
+export { rt2CareerProfiles, rt2CareerPortfolio, rt2SkillTransfers, rt2CareerMilestones } from "./rt2_career_mate.js";
+export { rt2ReverseDesignRuns, rt2ProcessMiningSnapshots, rt2RuntimeSkillInjections } from "./rt2_advanced_ai.js";
+export { rt2SsoConnections, rt2CompanyTemplates, rt2TenantPolicies, rt2BindingModes } from "./rt2_enterprise.js";
+export { rt2PromotionTriggers, rt2PerformanceReviews, rt2CreditConversionLedger, CREDITS_PER_GOLD, PROMOTION_TIERS, GRADE_THRESHOLDS, calculateGrade, getTierFromReputation, calculateGoldFromCredits } from "./rt2_reputation_expansion.js";
+export { rt2SearchIndex, rt2SearchLog } from "./rt2_search.js";
+export {
+  rt2V33SemanticIndexChunks,
+  rt2V33SemanticIndexRuns,
+  type Rt2SemanticIndexSourceType,
+} from "./rt2_v33_semantic_index.js";
+export {
+  rt2V33ContradictionCandidates,
+  rt2V33ContradictionResolutions,
+  type Rt2ContradictionCandidateStatus,
+  type Rt2ContradictionResolutionDecision,
+} from "./rt2_v33_contradiction_review.js";

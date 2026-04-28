@@ -15,6 +15,144 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("invalidates RT2 task queries when an RT2 live event arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    expect((queryKeys as any).rt2Tasks).toBeDefined();
+
+    (__liveUpdatesTestUtils as any).handleLiveEvent(
+      queryClient as never,
+      "company-1",
+      "/PAP/projects/project-1/tasks",
+      {
+        id: 99,
+        companyId: "company-1",
+        type: "rt2.task.updated",
+        createdAt: new Date().toISOString(),
+        payload: {
+          projectId: "project-1",
+          taskIssueId: "issue-1",
+          mutation: "created",
+        },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: (queryKeys as any).rt2Tasks.listByProject("company-1", "project-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: (queryKeys as any).rt2Tasks.detail("issue-1"),
+    });
+  });
+
+  it("defines RT2 daily board and wiki query keys with company, project, user, and date identity", () => {
+    const rt2Daily = queryKeys.rt2Daily;
+
+    expect(rt2Daily).toBeDefined();
+    expect(rt2Daily.board("company-1", "project-1", "user-1", "2026-04-17")).toEqual([
+      "rt2-daily",
+      "company-1",
+      "project-1",
+      "user-1",
+      "2026-04-17",
+      "board",
+    ]);
+    expect(rt2Daily.wiki("company-1", "project-1", "user-1", "2026-04-17")).toEqual([
+      "rt2-daily",
+      "company-1",
+      "project-1",
+      "user-1",
+      "2026-04-17",
+      "wiki",
+    ]);
+  });
+
+  it("invalidates the RT2 daily board and wiki queries when a daily report update arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.handleLiveEvent(
+      queryClient as never,
+      "company-1",
+      "/PAP/projects/project-1/tasks",
+      {
+        id: 100,
+        companyId: "company-1",
+        type: "rt2.daily-report.updated",
+        createdAt: new Date().toISOString(),
+        payload: {
+          projectId: "project-1",
+          reportDate: "2026-04-17",
+          userId: "user-1",
+          mutation: "saved",
+        },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.rt2Daily.board("company-1", "project-1", "user-1", "2026-04-17"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.rt2Daily.wiki("company-1", "project-1", "user-1", "2026-04-17"),
+    });
+  });
+
+  it("invalidates only the RT2 daily wiki query when a daily wiki update arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.handleLiveEvent(
+      queryClient as never,
+      "company-1",
+      "/PAP/projects/project-1/tasks",
+      {
+        id: 101,
+        companyId: "company-1",
+        type: "rt2.daily-wiki.updated",
+        createdAt: new Date().toISOString(),
+        payload: {
+          projectId: "project-1",
+          reportDate: "2026-04-17",
+          userId: "user-1",
+          pageKey: "rt2.daily-report:project-1:user-1:2026-04-17",
+          mutation: "materialized",
+        },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.rt2Daily.wiki("company-1", "project-1", "user-1", "2026-04-17"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.rt2Daily.board("company-1", "project-1", "user-1", "2026-04-17"),
+    });
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

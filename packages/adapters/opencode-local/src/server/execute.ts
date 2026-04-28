@@ -116,7 +116,16 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
   const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+    const skillTarget = path.join(target, entry.runtimeName);
+    try {
+      await fs.symlink(entry.source, skillTarget);
+    } catch (error) {
+      if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") {
+        await fs.cp(entry.source, skillTarget, { recursive: true });
+        continue;
+      }
+      throw error;
+    }
   }
   return target;
 }

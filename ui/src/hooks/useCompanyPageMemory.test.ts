@@ -61,22 +61,22 @@ describe("sanitizeRememberedPathForCompany", () => {
     ).toBe("/issues/PAP-12");
   });
 
-  it("falls back to dashboard for remembered issue identifiers from another company", () => {
+  it("falls back to one-liner for remembered issue identifiers from another company", () => {
     expect(
       sanitizeRememberedPathForCompany({
         path: "/issues/FOR-1",
         companyPrefix: "PAP",
       }),
-    ).toBe("/dashboard");
+    ).toBe("/one-liner");
   });
 
-  it("falls back to dashboard when no remembered path exists", () => {
+  it("falls back to one-liner when no remembered path exists", () => {
     expect(
       sanitizeRememberedPathForCompany({
         path: null,
         companyPrefix: "PAP",
       }),
-    ).toBe("/dashboard");
+    ).toBe("/one-liner");
   });
 
   it("keeps remembered skills paths intact for the target company", () => {

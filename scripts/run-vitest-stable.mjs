@@ -7,6 +7,7 @@ import path from "node:path";
 const repoRoot = process.cwd();
 const serverRoot = path.join(repoRoot, "server");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+const pnpmExecPath = process.env.npm_execpath;
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/db",
@@ -84,11 +85,16 @@ function runVitest(args, label) {
     ...process.env,
     PAPERCLIP_HOME: path.join(testRoot, "home"),
     PAPERCLIP_INSTANCE_ID: `vitest-${process.pid}-${invocationIndex}`,
+    PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE: process.env.PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE ?? "true",
     TMPDIR: path.join(testRoot, "tmp"),
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+  const command = pnpmExecPath ? process.execPath : "pnpm";
+  const commandArgs = pnpmExecPath
+    ? [pnpmExecPath, "exec", "vitest", "run", ...args]
+    : ["exec", "vitest", "run", ...args];
+  const result = spawnSync(command, commandArgs, {
     cwd: repoRoot,
     env,
     stdio: "inherit",

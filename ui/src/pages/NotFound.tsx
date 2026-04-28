@@ -22,7 +22,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
-  const dashboardHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/dashboard` : "/";
+  const oneLinerHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/one-liner` : "/";
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
@@ -51,9 +51,9 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
 
         <div className="mt-5 flex flex-wrap gap-2">
           <Button asChild>
-            <Link to={dashboardHref}>
+            <Link to={oneLinerHref}>
               <Compass className="mr-1.5 h-4 w-4" />
-              Open dashboard
+              Open one-liner
             </Link>
           </Button>
           <Button variant="outline" asChild>

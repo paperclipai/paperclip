@@ -107,6 +107,12 @@ interface VisibleIssueRouteContext {
   runIds: Set<string>;
 }
 
+interface Rt2DailyEventContext {
+  projectId: string;
+  userId: string;
+  reportDate: string;
+}
+
 function resolveIssueQueryRefs(
   queryClient: QueryClient,
   companyId: string,
@@ -227,6 +233,49 @@ function overlaps(a: Set<string>, b: Set<string>): boolean {
     if (b.has(value)) return true;
   }
   return false;
+}
+
+function resolveRt2DailyEventContext(payload: Record<string, unknown>): Rt2DailyEventContext | null {
+  const projectId = readString(payload.projectId);
+  const userId = readString(payload.userId);
+  const reportDate = readString(payload.reportDate);
+  if (projectId && userId && reportDate) {
+    return { projectId, userId, reportDate };
+  }
+
+  const pageKey = readString(payload.pageKey);
+  if (!pageKey || !pageKey.startsWith("rt2.daily-report:")) return null;
+
+  const [parsedProjectId, parsedUserId, parsedReportDate] = pageKey.slice("rt2.daily-report:".length).split(":");
+  if (!parsedProjectId || !parsedUserId || !parsedReportDate) return null;
+
+  return {
+    projectId: parsedProjectId,
+    userId: parsedUserId,
+    reportDate: parsedReportDate,
+  };
+}
+
+function invalidateRt2DailyQueries(
+  queryClient: QueryClient,
+  companyId: string,
+  payload: Record<string, unknown>,
+  options?: { includeBoard?: boolean },
+) {
+  const context = resolveRt2DailyEventContext(payload);
+  if (!context) return false;
+
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.rt2Daily.wiki(companyId, context.projectId, context.userId, context.reportDate),
+  });
+
+  if (options?.includeBoard) {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.rt2Daily.board(companyId, context.projectId, context.userId, context.reportDate),
+    });
+  }
+
+  return true;
 }
 
 function shouldSuppressActivityToastForVisibleIssue(
@@ -792,6 +841,38 @@ function handleLiveEvent(
     return;
   }
 
+  if (
+    event.type === "rt2.task.updated" ||
+    event.type === "rt2.participant.updated" ||
+    event.type === "rt2.todo.updated" ||
+    event.type === "rt2.deliverable.updated"
+  ) {
+    const projectId = readString(payload.projectId);
+    const taskIssueId = readString(payload.taskIssueId);
+
+    if (projectId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.rt2Tasks.listByProject(expectedCompanyId, projectId),
+      });
+    }
+    if (taskIssueId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.detail(taskIssueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.assignableUsers(taskIssueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(taskIssueId) });
+    }
+    return;
+  }
+
+  if (event.type === "rt2.daily-report.updated") {
+    invalidateRt2DailyQueries(queryClient, expectedCompanyId, payload, { includeBoard: true });
+    return;
+  }
+
+  if (event.type === "rt2.daily-wiki.updated") {
+    invalidateRt2DailyQueries(queryClient, expectedCompanyId, payload);
+    return;
+  }
+
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
@@ -888,6 +969,7 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  handleLiveEvent,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
   invalidateVisibleIssueRunQueries,

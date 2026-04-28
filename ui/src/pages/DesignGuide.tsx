@@ -195,7 +195,7 @@ export function DesignGuide() {
       <div>
         <h2 className="text-xl font-bold">Design Guide</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
+          Every component, style, and pattern used across RealTycoon2.
         </p>
       </div>
 
@@ -752,7 +752,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
+              <BreadcrumbLink href="#">RealTycoon2 App</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
@@ -784,7 +784,7 @@ export function DesignGuide() {
 
         <SubSection title="Metric Cards">
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
+            <MetricCard icon={Bot} value={12} label="Active Jarvis" description="+3 this week" />
             <MetricCard icon={CircleDot} value={48} label="Open Issues" />
             <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
             <MetricCard icon={Zap} value="99.9%" label="Uptime" />
@@ -1131,7 +1131,7 @@ export function DesignGuide() {
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
-              Agents
+              Jarvis
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Hexagon className="h-4 w-4" />

@@ -111,6 +111,22 @@ export interface InstalledSkillTarget {
   kind: "symlink" | "directory" | "file";
 }
 
+export type MaterializedPathKind = "symlink" | "junction" | "hardlink" | "copy";
+
+export interface MaterializedPathResult {
+  source: string;
+  destination: string;
+  kind: MaterializedPathKind;
+  linkType: "dir" | "file" | "junction" | null;
+  fellBack: boolean;
+  fallbackReason: string | null;
+}
+
+interface MaterializePathOptions {
+  linkPath?: (source: string, destination: string, type?: "dir" | "file" | "junction") => Promise<void>;
+  hardlinkFile?: (source: string, destination: string) => Promise<void>;
+}
+
 interface PersistentSkillSnapshotOptions {
   adapterType: string;
   availableEntries: PaperclipSkillEntry[];
@@ -920,7 +936,7 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
       process.platform === "win32"
         ? hasExtension
           ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
+          : [path.join(dir, command), ...exts.map((ext) => path.join(dir, `${command}${ext}`))]
         : [path.join(dir, command)];
     for (const candidate of candidates) {
       if (await pathExists(candidate)) return candidate;
@@ -1006,7 +1022,33 @@ async function resolveSpawnTarget(
     };
   }
 
+  if (await isWindowsNodeScript(executable)) {
+    return {
+      command: process.execPath,
+      args: [executable, ...args],
+    };
+  }
+
   return { command: executable, args };
+}
+
+async function isWindowsNodeScript(executable: string): Promise<boolean> {
+  const ext = path.extname(executable).toLowerCase();
+  if (ext && ext !== ".js" && ext !== ".mjs" && ext !== ".cjs") return false;
+
+  try {
+    const handle = await fs.open(executable, "r");
+    try {
+      const buffer = Buffer.alloc(160);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const head = buffer.subarray(0, bytesRead).toString("utf8").toLowerCase();
+      return head.startsWith("#!") && /\b(node|node\.exe)\b/.test(head.split(/\r?\n/, 1)[0] ?? "");
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -1361,11 +1403,98 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+function errorCode(err: unknown): string | null {
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === "string" ? code : null;
+}
+
+function canFallbackFromLinkError(code: string | null): boolean {
+  return code === "EPERM" || code === "EACCES" || code === "EINVAL" || code === "ENOTSUP" || code === "UNKNOWN";
+}
+
+async function copyPathRecursive(source: string, destination: string, sourceIsDirectory: boolean) {
+  if (sourceIsDirectory) {
+    await fs.cp(source, destination, { recursive: true });
+    return;
+  }
+  await fs.copyFile(source, destination, fsConstants.COPYFILE_FICLONE);
+}
+
+export async function materializePath(
+  source: string,
+  destination: string,
+  options: MaterializePathOptions = {},
+): Promise<MaterializedPathResult> {
+  const resolvedSource = path.resolve(source);
+  const resolvedDestination = path.resolve(destination);
+  const sourceStats = await fs.stat(resolvedSource);
+  const sourceIsDirectory = sourceStats.isDirectory();
+  const linkType: "dir" | "file" | "junction" | null =
+    process.platform === "win32"
+      ? (sourceIsDirectory ? "junction" : "file")
+      : (sourceIsDirectory ? "dir" : "file");
+  const kind: MaterializedPathKind = linkType === "junction" ? "junction" : "symlink";
+  const linkPath = options.linkPath ?? fs.symlink;
+  const hardlinkFile = options.hardlinkFile ?? fs.link;
+
+  await fs.mkdir(path.dirname(resolvedDestination), { recursive: true });
+
+  try {
+    await linkPath(resolvedSource, resolvedDestination, linkType);
+    return {
+      source: resolvedSource,
+      destination: resolvedDestination,
+      kind,
+      linkType,
+      fellBack: false,
+      fallbackReason: null,
+    };
+  } catch (err) {
+    const code = errorCode(err);
+    if (!canFallbackFromLinkError(code)) throw err;
+
+    if (!sourceIsDirectory) {
+      try {
+        await hardlinkFile(resolvedSource, resolvedDestination);
+        return {
+          source: resolvedSource,
+          destination: resolvedDestination,
+          kind: "hardlink",
+          linkType: null,
+          fellBack: true,
+          fallbackReason: code,
+        };
+      } catch {
+        await copyPathRecursive(resolvedSource, resolvedDestination, sourceIsDirectory);
+        return {
+          source: resolvedSource,
+          destination: resolvedDestination,
+          kind: "copy",
+          linkType: null,
+          fellBack: true,
+          fallbackReason: code,
+        };
+      }
+    }
+
+    await copyPathRecursive(resolvedSource, resolvedDestination, sourceIsDirectory);
+    return {
+      source: resolvedSource,
+      destination: resolvedDestination,
+      kind: "copy",
+      linkType: null,
+      fellBack: true,
+      fallbackReason: code,
+    };
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = async (linkSource, linkTarget) => {
+    await materializePath(linkSource, linkTarget);
+  },
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {

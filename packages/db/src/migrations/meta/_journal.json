@@ -512,6 +512,188 @@
       "when": 1777305216238,
       "tag": "0072_large_sandman",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1776331398425,
+      "tag": "0073_rt2_v33_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1776384361105,
+      "tag": "0074_rt2_v33_daily_report_wiki",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1776396000000,
+      "tag": "0075_rt2_v33_project_graph_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1776402000000,
+      "tag": "0076_rt2_v33_deliverable_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1776489600000,
+      "tag": "0077_rt2_v33_jarvis_overlay",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1776466800000,
+      "tag": "0078_rt2_v33_gamification",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1776643200000,
+      "tag": "0079_rt2_v33_quality_shadow",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1776728649153,
+      "tag": "0080_rt2_v33_knowledge_upgrade",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1776733200000,
+      "tag": "0081_rt2_v33_collaboration_rewards",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1776736800000,
+      "tag": "0082_rt2_v33_phase_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1776740400000,
+      "tag": "0083_rt2_v33_coin_ledger_rule_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1776744000000,
+      "tag": "0084_rt2_v33_execution_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1776747600000,
+      "tag": "0085_rt2_v33_domain_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1776751200000,
+      "tag": "0086_rt2_v33_cumulative_wiki_pages",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1776754800000,
+      "tag": "0087_rt2_phase6_intelligence_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1776755100000,
+      "tag": "0088_rt2_phase7_economy_marketplace_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1776755400000,
+      "tag": "0089_rt2_phase12_jarvis_runtime_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1776755700000,
+      "tag": "0090_rt2_phase13_enterprise_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1776756000000,
+      "tag": "0091_rt2_phase21_knowledge_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1776756300000,
+      "tag": "0092_rt2_phase22_settlement_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1776756600000,
+      "tag": "0093_rt2_phase23_work_board_capture",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1776756900000,
+      "tag": "0094_rt2_ledger_atomicity",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1776757200000,
+      "tag": "0095_rt2_daily_wiki_source_event_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1776757500000,
+      "tag": "0096_rt2_settlement_governance_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1776757800000,
+      "tag": "0097_rt2_v33_semantic_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1776758100000,
+      "tag": "0098_rt2_contradiction_review",
+      "breakpoints": true
     }
   ]
 }

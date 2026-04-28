@@ -71,7 +71,7 @@ export function BudgetIncidentCard({
           <div>
             {incident.scopeType === "project"
               ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-              : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+              : "This scope is paused. New wake cycles will not start until you resolve the budget incident."}
           </div>
         </div>
 

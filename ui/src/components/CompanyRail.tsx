@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { LandPlot, Plus } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -67,7 +67,7 @@ function SortableCompanyItem({
       <Tooltip delayDuration={300}>
         <TooltipTrigger asChild>
           <a
-            href={`/${company.issuePrefix}/dashboard`}
+            href={`/${company.issuePrefix}/one-liner`}
             onClick={(e) => {
               if (isDragging) {
                 e.preventDefault();
@@ -200,9 +200,10 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+      <div className="flex h-12 w-full shrink-0 items-center justify-center" aria-label="RealTycoon2">
+        <div className="flex h-8 w-8 items-center justify-center rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-500">
+          <LandPlot className="h-4 w-4" />
+        </div>
       </div>
 
       {/* Company list */}
@@ -226,7 +227,7 @@ export function CompanyRail() {
                 onSelect={() => {
                   setSelectedCompanyId(company.id);
                   if (isInstanceRoute) {
-                    navigate(`/${company.issuePrefix}/dashboard`);
+                    navigate(`/${company.issuePrefix}/one-liner`);
                   }
                 }}
               />
@@ -245,13 +246,13 @@ export function CompanyRail() {
             <button
               onClick={() => openOnboarding()}
               className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
-              aria-label="Add company"
+              aria-label="회사 추가"
             >
               <Plus className="h-5 w-5" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={8}>
-            <p>Add company</p>
+            <p>회사 추가</p>
           </TooltipContent>
         </Tooltip>
       </div>
