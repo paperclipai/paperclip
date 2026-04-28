@@ -1,5 +1,5 @@
 {
-  "id": "37e4f306-394c-4647-8d98-64470126ae2a",
+  "id": "c13b1dd5-1860-4d0b-aeb2-5bb197766983",
   "prevId": "5b9211ec-73c0-4825-bdf7-08ba60b6915c",
   "version": "7",
   "dialect": "postgresql",
@@ -9768,6 +9768,50 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "join_requests_pending_human_user_uq": {
+          "name": "join_requests_pending_human_user_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "requesting_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"join_requests\".\"request_type\" = 'human' AND \"join_requests\".\"status\" = 'pending_approval' AND \"join_requests\".\"requesting_user_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "join_requests_pending_human_email_uq": {
+          "name": "join_requests_pending_human_email_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"request_email_snapshot\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"join_requests\".\"request_type\" = 'human' AND \"join_requests\".\"status\" = 'pending_approval' AND \"join_requests\".\"request_email_snapshot\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -12678,330 +12722,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.rt2_v33_task_participants": {
-      "name": "rt2_v33_task_participants",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_issue_id": {
-          "name": "task_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "ended_reason": {
-          "name": "ended_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "joined_by_user_id": {
-          "name": "joined_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ended_by_user_id": {
-          "name": "ended_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "joined_at": {
-          "name": "joined_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "rt2_v33_task_participants_task_state_idx": {
-          "name": "rt2_v33_task_participants_task_state_idx",
-          "columns": [
-            {
-              "expression": "task_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "rt2_v33_task_participants_task_user_idx": {
-          "name": "rt2_v33_task_participants_task_user_idx",
-          "columns": [
-            {
-              "expression": "task_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "rt2_v33_task_participants_active_user_uq": {
-          "name": "rt2_v33_task_participants_active_user_uq",
-          "columns": [
-            {
-              "expression": "task_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"rt2_v33_task_participants\".\"state\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "rt2_v33_task_participants_company_id_companies_id_fk": {
-          "name": "rt2_v33_task_participants_company_id_companies_id_fk",
-          "tableFrom": "rt2_v33_task_participants",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "rt2_v33_task_participants_task_issue_id_issues_id_fk": {
-          "name": "rt2_v33_task_participants_task_issue_id_issues_id_fk",
-          "tableFrom": "rt2_v33_task_participants",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "task_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "rt2_v33_task_participants_state_check": {
-          "name": "rt2_v33_task_participants_state_check",
-          "value": "\"rt2_v33_task_participants\".\"state\" in ('active', 'ended')"
-        },
-        "rt2_v33_task_participants_ended_reason_check": {
-          "name": "rt2_v33_task_participants_ended_reason_check",
-          "value": "\"rt2_v33_task_participants\".\"ended_reason\" is null or \"rt2_v33_task_participants\".\"ended_reason\" in ('manager_removed', 'self_left', 'capacity_reduced')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.rt2_v33_task_profiles": {
-      "name": "rt2_v33_task_profiles",
-      "schema": "",
-      "columns": {
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "goal_id": {
-          "name": "goal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_mode": {
-          "name": "task_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "capacity": {
-          "name": "capacity",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "rt2_v33_task_profiles_company_project_idx": {
-          "name": "rt2_v33_task_profiles_company_project_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "rt2_v33_task_profiles_issue_id_issues_id_fk": {
-          "name": "rt2_v33_task_profiles_issue_id_issues_id_fk",
-          "tableFrom": "rt2_v33_task_profiles",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "rt2_v33_task_profiles_company_id_companies_id_fk": {
-          "name": "rt2_v33_task_profiles_company_id_companies_id_fk",
-          "tableFrom": "rt2_v33_task_profiles",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "rt2_v33_task_profiles_project_id_projects_id_fk": {
-          "name": "rt2_v33_task_profiles_project_id_projects_id_fk",
-          "tableFrom": "rt2_v33_task_profiles",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "rt2_v33_task_profiles_goal_id_goals_id_fk": {
-          "name": "rt2_v33_task_profiles_goal_id_goals_id_fk",
-          "tableFrom": "rt2_v33_task_profiles",
-          "tableTo": "goals",
-          "columnsFrom": [
-            "goal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "rt2_v33_task_profiles_task_mode_check": {
-          "name": "rt2_v33_task_profiles_task_mode_check",
-          "value": "\"rt2_v33_task_profiles\".\"task_mode\" in ('solo', 'collab')"
-        },
-        "rt2_v33_task_profiles_capacity_check": {
-          "name": "rt2_v33_task_profiles_capacity_check",
-          "value": "\"rt2_v33_task_profiles\".\"capacity\" >= 1"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.user_sidebar_preferences": {

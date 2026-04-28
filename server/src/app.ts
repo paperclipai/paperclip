@@ -15,7 +15,9 @@ import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
+import { environmentRoutes } from "./routes/environments.js";
 import { rt2TaskRoutes } from "./routes/rt2-tasks.js";
 import { rt2TaskMeshRoutes } from "./routes/rt2-task-mesh.js";
 import { rt2KnowledgeRoutes } from "./routes/rt2-knowledge.js";
@@ -45,11 +47,17 @@ import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import {
+  instanceDatabaseBackupRoutes,
+  type InstanceDatabaseBackupService,
+} from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
+import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -58,7 +66,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
-import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
@@ -134,6 +142,8 @@ export async function createApp(
         now?: Date;
       }): Promise<unknown>;
     };
+    databaseBackupService?: InstanceDatabaseBackupService;
+    pluginMigrationDb?: Db;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -143,6 +153,7 @@ export async function createApp(
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
+    pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -198,11 +209,13 @@ export async function createApp(
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
+  app.use("/api/auth", authRoutes(db));
   app.use(llmRoutes(db));
 
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   api.use(
     "/health",
     healthRoutes(db, {
@@ -220,6 +233,7 @@ export async function createApp(
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
   }));
+  api.use(issueTreeControlRoutes(db));
   api.use(rt2TaskRoutes(db));
   api.use(rt2TaskMeshRoutes(db));
   api.use(rt2KnowledgeRoutes(db));
@@ -242,7 +256,8 @@ export async function createApp(
   api.use(rt2SemanticIndexRoutes(db));
   api.use(rt2ContradictionReviewRoutes(db));
   api.use(rt2DailyReportRoutes(db));
-  api.use(routineRoutes(db));
+  api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));
@@ -250,12 +265,15 @@ export async function createApp(
   api.use(costRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  if (opts.databaseBackupService) {
+    api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
+  }
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);

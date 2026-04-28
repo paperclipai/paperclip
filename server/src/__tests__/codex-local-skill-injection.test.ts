@@ -36,6 +36,7 @@ async function linkSkillDir(source: string, target: string) {
 
 describe("codex local adapter skill injection", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
+  const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -52,6 +53,7 @@ describe("codex local adapter skill injection", () => {
     cleanupDirs.add(skillsHome);
 
     await createPaperclipRepoSkill(currentRepo, "paperclip");
+    await createPaperclipRepoSkill(currentRepo, "paperclip-create-agent");
     await createPaperclipRepoSkill(oldRepo, "paperclip");
     await linkSkillDir(path.join(oldRepo, "skills", "paperclip"), path.join(skillsHome, "paperclip"));
 
@@ -62,21 +64,37 @@ describe("codex local adapter skill injection", () => {
       },
       {
         skillsHome,
-        skillsEntries: [{
-          key: paperclipKey,
-          runtimeName: "paperclip",
-          source: path.join(currentRepo, "skills", "paperclip"),
-        }],
+        skillsEntries: [
+          {
+            key: paperclipKey,
+            runtimeName: "paperclip",
+            source: path.join(currentRepo, "skills", "paperclip"),
+          },
+          {
+            key: createAgentKey,
+            runtimeName: "paperclip-create-agent",
+            source: path.join(currentRepo, "skills", "paperclip-create-agent"),
+          },
+        ],
       },
     );
 
     expect(await fs.realpath(path.join(skillsHome, "paperclip"))).toBe(
       await fs.realpath(path.join(currentRepo, "skills", "paperclip")),
     );
+    expect(await fs.realpath(path.join(skillsHome, "paperclip-create-agent"))).toBe(
+      await fs.realpath(path.join(currentRepo, "skills", "paperclip-create-agent")),
+    );
     expect(logs).toContainEqual(
       expect.objectContaining({
         stream: "stdout",
         chunk: expect.stringContaining('Repaired Codex skill "paperclip"'),
+      }),
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining('Injected Codex skill "paperclip-create-agent"'),
       }),
     );
   });

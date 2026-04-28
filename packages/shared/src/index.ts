@@ -1,4 +1,5 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export * from "./constants.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
@@ -80,6 +81,13 @@ export {
   PLUGIN_WEBHOOK_DELIVERY_STATUSES,
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
+  PLUGIN_DATABASE_NAMESPACE_MODES,
+  PLUGIN_DATABASE_NAMESPACE_STATUSES,
+  PLUGIN_DATABASE_MIGRATION_STATUSES,
+  PLUGIN_DATABASE_CORE_READ_TABLES,
+  PLUGIN_API_ROUTE_METHODS,
+  PLUGIN_API_ROUTE_AUTH_MODES,
+  PLUGIN_API_ROUTE_CHECKOUT_POLICIES,
   type CompanyStatus,
   type DeploymentMode,
   type DeploymentExposure,
@@ -152,6 +160,14 @@ export {
   type PluginWebhookDeliveryStatus,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  type PluginDatabaseNamespaceMode,
+  type PluginDatabaseNamespaceStatus,
+  type PluginDatabaseMigrationStatus,
+  type PluginDatabaseCoreReadTable,
+  type PluginApiRouteMethod,
+  type PluginApiRouteAuthMode,
+  type PluginApiRouteCheckoutPolicy,
+  type PluginIssueOriginKind,
 } from "./constants.js";
 
 export {
@@ -268,6 +284,8 @@ export type {
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
+  IssueThreadInteractionPayload,
+  IssueThreadInteractionResult,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
@@ -394,6 +412,10 @@ export type {
   Rt2DailyWikiPage,
   Rt2DailyWikiAnswer,
 } from "./types/index.js";
+export * from "./types/index.js";
+export type * from "./types/index.js";
+export * from "./validators/index.js";
+export * from "./issue-references.js";
 
 export {
   sidebarOrderPreferenceSchema,
@@ -652,6 +674,10 @@ export {
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
+  issueThreadInteractionContinuationPolicySchema,
+  suggestTasksPayloadSchema,
+  askUserQuestionsPayloadSchema,
+  requestConfirmationPayloadSchema,
   linkIssueApprovalSchema,
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
@@ -676,6 +702,7 @@ export {
   type UpdateIssue,
   type CheckoutIssue,
   type AddIssueComment,
+  type CreateIssueThreadInteraction,
   type LinkIssueApproval,
   type CreateIssueAttachmentMetadata,
   type CreateIssueWorkProduct,
@@ -856,18 +883,23 @@ export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,
   SKILL_MENTION_SCHEME,
+  USER_MENTION_SCHEME,
   buildAgentMentionHref,
   buildProjectMentionHref,
   buildSkillMentionHref,
+  buildUserMentionHref,
   extractAgentMentionIds,
   extractSkillMentionIds,
+  extractUserMentionIds,
   parseAgentMentionHref,
   parseProjectMentionHref,
   parseSkillMentionHref,
+  parseUserMentionHref,
   extractProjectMentionIds,
   type ParsedAgentMention,
   type ParsedProjectMention,
   type ParsedSkillMention,
+  type ParsedUserMention,
 } from "./project-mentions.js";
 
 export {
@@ -911,6 +943,23 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+export {
+  adapterSupportsRemoteManagedEnvironments,
+  getEnvironmentCapabilities,
+  getAdapterEnvironmentSupport,
+  isEnvironmentDriverSupportedForAdapter,
+  isSandboxProviderSupportedForAdapter,
+  supportedEnvironmentDriversForAdapter,
+  supportedSandboxProvidersForAdapter,
+} from "./environment-support.js";
+
+export type {
+  AdapterEnvironmentSupport,
+  EnvironmentCapabilities,
+  EnvironmentProviderCapability,
+  EnvironmentSupportStatus,
+} from "./environment-support.js";
 
 // =============================================================================
 // RT2 Gamification

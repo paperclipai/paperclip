@@ -363,7 +363,9 @@ main().catch((error) => {
 EOF
 }
 
-if paperclipai_command_available; then
+if [[ "${PAPERCLIP_WORKSPACE_CREATED:-}" != "true" && -f "$worktree_config_path" && -f "$worktree_env_path" ]]; then
+  echo "Existing worktree Paperclip config found; preserving it." >&2
+elif paperclipai_command_available; then
   run_isolated_worktree_init
 else
   echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2

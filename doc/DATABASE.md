@@ -27,6 +27,18 @@ pnpm db:migrate
 
 When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
 
+Issue reference mentions follow the normal migration path: the schema migration creates the tracking table, but it does not backfill historical issue titles, descriptions, comments, or documents automatically.
+
+To backfill existing content manually after migrating, run:
+
+```sh
+pnpm issue-references:backfill
+# optional: limit to one company
+pnpm issue-references:backfill -- --company <company-id>
+```
+
+Future issue, comment, and document writes sync references automatically without running the backfill command.
+
 This mode is ideal for local development and one-command installs.
 
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
@@ -92,6 +104,16 @@ Set `DATABASE_URL` in your `.env`:
 
 ```sh
 DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+```
+
+For hosted deployments that use a pooled runtime URL, set
+`DATABASE_MIGRATION_URL` to the direct connection URL. Paperclip uses it for
+startup schema checks/migrations and plugin namespace migrations, while the app
+continues to use `DATABASE_URL` for runtime queries:
+
+```sh
+DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
 If using connection pooling (port 6543), the `postgres` client must disable prepared statements. Update `packages/db/src/client.ts`:

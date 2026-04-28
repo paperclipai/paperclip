@@ -44,7 +44,7 @@ export function IssueQuicklookCard({
   return (
     <div className={cn("space-y-2", compact && "space-y-1.5")}>
       <div className="flex items-start gap-2">
-        <StatusIcon status={issue.status} className="mt-0.5 shrink-0" />
+        <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className="mt-0.5 shrink-0" />
         <RouterDom.Link
           to={linkTo}
           state={linkState ?? withIssueDetailHeaderSeed(null, issue)}

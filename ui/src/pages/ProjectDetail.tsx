@@ -1,21 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
-import { authApi } from "../api/auth";
-import { rt2DailyReportApi } from "../api/rt2-daily-report";
-import { rt2TasksApi } from "../api/rt2-tasks";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -23,29 +19,21 @@ import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveSta
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
-import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
-import { Rt2DailyBoard } from "../components/Rt2DailyBoard";
-import { Rt2DailyWikiPanel } from "../components/Rt2DailyWikiPanel";
-import { Rt2TaskList } from "../components/Rt2TaskList";
-import { Rt2GraphPanel } from "../components/Rt2GraphPanel";
-import { Rt2GovernancePanel } from "../components/Rt2GovernancePanel";
-import { Rt2GamificationPanel } from "../components/Rt2GamificationPanel";
-import { Rt2CollaborationPanel } from "../components/Rt2CollaborationPanel";
-import { Rt2QualityPanel } from "../components/Rt2QualityPanel";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
-import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
+import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
-import { calendarDateKey, projectRouteRef } from "../lib/utils";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { projectRouteRef } from "../lib/utils";
+import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "tasks" | "daily" | "wiki" | "list" | "workspaces" | "configuration" | "budget" | "graph" | "governance" | "rewards" | "collaboration" | "quality";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -58,19 +46,11 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const projectsIdx = segments.indexOf("projects");
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
-  if (tab === "tasks") return "tasks";
-  if (tab === "daily") return "daily";
-  if (tab === "wiki") return "wiki";
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "workspaces") return "workspaces";
-  if (tab === "graph") return "graph";
-  if (tab === "governance") return "governance";
-  if (tab === "rewards") return "rewards";
-  if (tab === "collaboration") return "collaboration";
-  if (tab === "quality") return "quality";
   return null;
 }
 
@@ -196,13 +176,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
@@ -231,252 +205,6 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
-  );
-}
-
-function ProjectRt2TasksList({ projectId, companyId }: { projectId: string; companyId: string }) {
-  const { openNewIssue } = useDialog();
-
-  const { data: tasks = [], isLoading, error } = useQuery({
-    queryKey: queryKeys.rt2Tasks.listByProject(companyId, projectId),
-    queryFn: () => rt2TasksApi.listByProject(companyId, projectId),
-    enabled: !!companyId,
-  });
-
-  if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading tasks...</p>;
-  }
-
-  if (error) {
-    return <p className="text-sm text-destructive">{(error as Error).message}</p>;
-  }
-
-  return (
-    <Rt2TaskList
-      companyId={companyId}
-      projectId={projectId}
-      tasks={tasks}
-      onCreateTask={() =>
-        openNewIssue({
-          projectId,
-          rt2Mode: "task",
-          rt2TaskMode: "solo",
-          capacity: 1,
-        })
-      }
-    />
-  );
-}
-
-function resolveCurrentReportDate() {
-  return calendarDateKey();
-}
-
-function ProjectRt2DailySurface({ companyId, projectId }: { companyId: string; projectId: string }) {
-  const queryClient = useQueryClient();
-  const reportDate = resolveCurrentReportDate();
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    retry: false,
-  });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const boardQueryKey = currentUserId
-    ? queryKeys.rt2Daily.board(companyId, projectId, currentUserId, reportDate)
-    : ["rt2-daily", "board-disabled"] as const;
-  const wikiQueryKey = currentUserId
-    ? queryKeys.rt2Daily.wiki(companyId, projectId, currentUserId, reportDate)
-    : ["rt2-daily", "wiki-disabled"] as const;
-  const { data: board, isLoading, error } = useQuery({
-    queryKey: boardQueryKey,
-    queryFn: () => rt2DailyReportApi.getBoard(companyId, projectId, reportDate),
-    enabled: !!currentUserId,
-  });
-
-  const saveCard = useMutation({
-    mutationFn: ({ todoIssueId, data }: { todoIssueId: string; data: Parameters<typeof rt2DailyReportApi.saveCard>[2] }) =>
-      rt2DailyReportApi.saveCard(companyId, todoIssueId, data),
-    onSuccess: ({ wikiPage }) => {
-      queryClient.setQueryData(wikiQueryKey, wikiPage);
-      queryClient.invalidateQueries({ queryKey: boardQueryKey });
-      queryClient.invalidateQueries({ queryKey: wikiQueryKey });
-    },
-  });
-
-  if (!currentUserId) {
-    return <p className="text-sm text-muted-foreground">일일업무보고서를 보려면 로그인 정보가 필요합니다.</p>;
-  }
-
-  if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading daily board...</p>;
-  }
-
-  if (error) {
-    return <p className="text-sm text-destructive">{(error as Error).message}</p>;
-  }
-
-  if (!board) return null;
-
-  return (
-    <Rt2DailyBoard
-      board={board}
-      pendingTodoIssueId={saveCard.isPending ? saveCard.variables?.todoIssueId ?? null : null}
-      onSaveCard={(todoIssueId, data) => saveCard.mutate({ todoIssueId, data })}
-    />
-  );
-}
-
-function ProjectRt2WikiSurface({ companyId, projectId }: { companyId: string; projectId: string }) {
-  const reportDate = resolveCurrentReportDate();
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    retry: false,
-  });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const wikiQueryKey = currentUserId
-    ? queryKeys.rt2Daily.wiki(companyId, projectId, currentUserId, reportDate)
-    : ["rt2-daily", "wiki-disabled"] as const;
-  const { data: page, isLoading, error } = useQuery({
-    queryKey: wikiQueryKey,
-    queryFn: () => rt2DailyReportApi.getWiki(companyId, projectId, reportDate),
-    enabled: !!currentUserId,
-  });
-
-  const ask = useMutation({
-    mutationFn: (question: "오늘 뭐 했지?") =>
-      rt2DailyReportApi.queryWiki(companyId, {
-        projectId,
-        reportDate,
-        question,
-      }),
-  });
-
-  if (!currentUserId) {
-    return <p className="text-sm text-muted-foreground">위키 확인 화면을 보려면 로그인 정보가 필요합니다.</p>;
-  }
-
-  if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading daily wiki...</p>;
-  }
-
-  if (error) {
-    return <p className="text-sm text-destructive">{(error as Error).message}</p>;
-  }
-
-  if (!page) return null;
-
-  return (
-    <Rt2DailyWikiPanel
-      page={page}
-      answer={ask.data ?? null}
-      queryPending={ask.isPending}
-      onAsk={(question) => ask.mutate(question)}
-    />
-  );
-}
-
-function ProjectWorkspacesContent({
-  companyId,
-  projectId,
-  projectRef,
-  summaries,
-}: {
-  companyId: string;
-  projectId: string;
-  projectRef: string;
-  summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
-}) {
-  const queryClient = useQueryClient();
-  const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
-  const [closingWorkspace, setClosingWorkspace] = useState<{
-    id: string;
-    name: string;
-    status: ExecutionWorkspace["status"];
-  } | null>(null);
-  const controlWorkspaceRuntime = useMutation({
-    mutationFn: async (input: {
-      key: string;
-      kind: "project_workspace" | "execution_workspace";
-      workspaceId: string;
-      action: "start" | "stop" | "restart";
-    }) => {
-      setRuntimeActionKey(`${input.key}:${input.action}`);
-      if (input.kind === "project_workspace") {
-        return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
-      }
-      return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
-    },
-    onSettled: () => {
-      setRuntimeActionKey(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-    },
-  });
-
-  if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
-  }
-
-  const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
-  const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
-
-  return (
-    <>
-      <div className="space-y-4">
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
-          {activeSummaries.map((summary) => (
-            <ProjectWorkspaceSummaryCard
-              key={summary.key}
-              projectRef={projectRef}
-              summary={summary}
-              runtimeActionKey={runtimeActionKey}
-              runtimeActionPending={controlWorkspaceRuntime.isPending}
-              onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
-              onCloseWorkspace={(input) => setClosingWorkspace(input)}
-            />
-          ))}
-        </div>
-        {cleanupFailedSummaries.length > 0 ? (
-          <div className="space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
-            </div>
-            <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
-              {cleanupFailedSummaries.map((summary) => (
-                <ProjectWorkspaceSummaryCard
-                  key={summary.key}
-                  projectRef={projectRef}
-                  summary={summary}
-                  runtimeActionKey={runtimeActionKey}
-                  runtimeActionPending={controlWorkspaceRuntime.isPending}
-                  onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
-                  onCloseWorkspace={(input) => setClosingWorkspace(input)}
-                />
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-      {closingWorkspace ? (
-        <ExecutionWorkspaceCloseDialog
-          workspaceId={closingWorkspace.id}
-          workspaceName={closingWorkspace.name}
-          currentStatus={closingWorkspace.status}
-          open
-          onOpenChange={(open) => {
-            if (!open) setClosingWorkspace(null);
-          }}
-          onClosed={() => {
-            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-            setClosingWorkspace(null);
-          }}
-        />
-      ) : null}
-    </>
   );
 }
 
@@ -524,7 +252,6 @@ export function ProjectDetail() {
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const {
     slots: pluginDetailSlots,
@@ -655,18 +382,6 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
-    if (activeTab === "tasks") {
-      navigate(`/projects/${canonicalProjectRef}/tasks`, { replace: true });
-      return;
-    }
-    if (activeTab === "daily") {
-      navigate(`/projects/${canonicalProjectRef}/daily`, { replace: true });
-      return;
-    }
-    if (activeTab === "wiki") {
-      navigate(`/projects/${canonicalProjectRef}/wiki`, { replace: true });
-      return;
-    }
     if (activeTab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
       return;
@@ -677,26 +392,6 @@ export function ProjectDetail() {
     }
     if (activeTab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
-      return;
-    }
-    if (activeTab === "graph") {
-      navigate(`/projects/${canonicalProjectRef}/graph`, { replace: true });
-      return;
-    }
-    if (activeTab === "governance") {
-      navigate(`/projects/${canonicalProjectRef}/governance`, { replace: true });
-      return;
-    }
-    if (activeTab === "rewards") {
-      navigate(`/projects/${canonicalProjectRef}/rewards`, { replace: true });
-      return;
-    }
-    if (activeTab === "collaboration") {
-      navigate(`/projects/${canonicalProjectRef}/collaboration`, { replace: true });
-      return;
-    }
-    if (activeTab === "quality") {
-      navigate(`/projects/${canonicalProjectRef}/quality`, { replace: true });
       return;
     }
     if (activeTab === "list") {
@@ -822,35 +517,11 @@ export function ProjectDetail() {
     if (cachedTab === "overview") {
       return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
     }
-    if (cachedTab === "tasks") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/tasks`} replace />;
-    }
-    if (cachedTab === "daily") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/daily`} replace />;
-    }
-    if (cachedTab === "wiki") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/wiki`} replace />;
-    }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
-    }
-    if (cachedTab === "graph") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/graph`} replace />;
-    }
-    if (cachedTab === "governance") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/governance`} replace />;
-    }
-    if (cachedTab === "rewards") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/rewards`} replace />;
-    }
-    if (cachedTab === "collaboration") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/collaboration`} replace />;
-    }
-    if (cachedTab === "quality") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/quality`} replace />;
     }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
@@ -879,26 +550,10 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
-    } else if (tab === "tasks") {
-      navigate(`/projects/${canonicalProjectRef}/tasks`);
-    } else if (tab === "daily") {
-      navigate(`/projects/${canonicalProjectRef}/daily`);
-    } else if (tab === "wiki") {
-      navigate(`/projects/${canonicalProjectRef}/wiki`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
-    } else if (tab === "graph") {
-      navigate(`/projects/${canonicalProjectRef}/graph`);
-    } else if (tab === "governance") {
-      navigate(`/projects/${canonicalProjectRef}/governance`);
-    } else if (tab === "rewards") {
-      navigate(`/projects/${canonicalProjectRef}/rewards`);
-    } else if (tab === "collaboration") {
-      navigate(`/projects/${canonicalProjectRef}/collaboration`);
-    } else if (tab === "quality") {
-      navigate(`/projects/${canonicalProjectRef}/quality`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -965,15 +620,7 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "tasks", label: "Tasks" },
-            { value: "daily", label: "Daily" },
-            { value: "wiki", label: "Wiki" },
             { value: "list", label: "Issues" },
-            { value: "graph", label: "Graph" },
-            { value: "governance", label: "Governance" },
-            { value: "rewards", label: "Rewards" },
-            { value: "collaboration", label: "Collab" },
-            { value: "quality", label: "Quality" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
@@ -998,18 +645,6 @@ export function ProjectDetail() {
             return asset.contentPath;
           }}
         />
-      )}
-
-      {activeTab === "tasks" && project?.id && resolvedCompanyId && (
-        <ProjectRt2TasksList projectId={project.id} companyId={resolvedCompanyId} />
-      )}
-
-      {activeTab === "daily" && project?.id && resolvedCompanyId && (
-        <ProjectRt2DailySurface projectId={project.id} companyId={resolvedCompanyId} />
-      )}
-
-      {activeTab === "wiki" && project?.id && resolvedCompanyId && (
-        <ProjectRt2WikiSurface projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
@@ -1056,26 +691,6 @@ export function ProjectDetail() {
           />
         </div>
       ) : null}
-
-      {activeTab === "graph" && project?.id && resolvedCompanyId && (
-        <Rt2GraphPanel projectId={project.id} companyId={resolvedCompanyId} />
-      )}
-
-      {activeTab === "governance" && resolvedCompanyId && (
-        <Rt2GovernancePanel companyId={resolvedCompanyId} />
-      )}
-
-      {activeTab === "rewards" && resolvedCompanyId && (
-        <Rt2GamificationPanel companyId={resolvedCompanyId} />
-      )}
-
-      {activeTab === "collaboration" && project?.id && resolvedCompanyId && (
-        <Rt2CollaborationPanel projectId={project.id} companyId={resolvedCompanyId} />
-      )}
-
-      {activeTab === "quality" && project?.id && resolvedCompanyId && (
-        <Rt2QualityPanel projectId={project.id} companyId={resolvedCompanyId} />
-      )}
 
       {activePluginTab && (
         <PluginSlotMount
