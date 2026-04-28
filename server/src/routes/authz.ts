@@ -39,6 +39,27 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+/**
+ * Allow either board users with company-or-org access OR authenticated
+ * agent runs. Used by plugin tool discovery and execution routes that
+ * must be reachable from local Codex/Cursor/Claude adapters running under
+ * an agent JWT.
+ *
+ * This helper does NOT compare an actor against any specific company.
+ * Callers must invoke `assertCompanyAccess` separately for any path that
+ * touches per-company state.
+ */
+export function assertBoardOrAgentAccess(req: Request) {
+  assertAuthenticated(req);
+  if (req.actor.type === "agent") {
+    return;
+  }
+  if (req.actor.type === "board" && hasBoardOrgAccess(req)) {
+    return;
+  }
+  throw forbidden("Board or agent access required");
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
