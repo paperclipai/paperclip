@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  RUN_LOG_CREDENTIAL_REDACTION_TOKEN,
   maskUserNameForLogs,
   redactCurrentUserText,
   redactCurrentUserValue,
+  redactRunLogCredentialsText,
+  redactRunLogCredentialsValue,
 } from "../log-redaction.js";
 
 describe("log redaction", () => {
@@ -70,5 +73,64 @@ describe("log redaction", () => {
   it("skips redaction when disabled", () => {
     const input = "cwd=/Users/paperclipuser/paperclip";
     expect(redactCurrentUserText(input, { enabled: false })).toBe(input);
+  });
+
+  it("redacts credential-shaped values from run log text", () => {
+    const apiKey = "fake-paperclip-key-value";
+    const bearer = "fake-bearer-token-value";
+    const token = "fake-session-token-value";
+    const secret = "fake-private-secret-value";
+    const jwt = "eyJmYWtlIjoiand0In0.eyJmYWtlIjoicGF5bG9hZCJ9.ZmFrZS1zaWduYXR1cmU";
+    const input = [
+      `PAPERCLIP_API_KEY=${apiKey}`,
+      `Authorization: Bearer ${bearer}`,
+      `SESSION_TOKEN=${token}`,
+      `PRIVATE_SECRET="${secret}"`,
+      `declare -x API_TOKEN='${token}'`,
+      `stdout still keeps useful context ${jwt}`,
+    ].join("\n");
+
+    const result = redactRunLogCredentialsText(input);
+
+    expect(result).toContain(`PAPERCLIP_API_KEY=${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`);
+    expect(result).toContain(`Authorization: Bearer ${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`);
+    expect(result).toContain(`SESSION_TOKEN=${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`);
+    expect(result).toContain(`PRIVATE_SECRET="${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}"`);
+    expect(result).toContain(`API_TOKEN='${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}'`);
+    expect(result).toContain(`stdout still keeps useful context ${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`);
+    for (const sensitiveValue of [apiKey, bearer, token, secret, jwt]) {
+      expect(result).not.toContain(sensitiveValue);
+    }
+  });
+
+  it("does not redact non-sensitive key names that merely contain sensitive words", () => {
+    const result = redactRunLogCredentialsText("TOKENIZER_MODEL=fake-debug-model");
+
+    expect(result).toBe("TOKENIZER_MODEL=fake-debug-model");
+  });
+
+  it("redacts token-shaped values whose final segment ends in a hyphen", () => {
+    const tokenShapedValue = "fakehead1.fakepayload2.fakesignature-";
+    const result = redactRunLogCredentialsText(`stdout ${tokenShapedValue} next`);
+
+    expect(result).toBe(`stdout ${RUN_LOG_CREDENTIAL_REDACTION_TOKEN} next`);
+    expect(result).not.toContain(tokenShapedValue);
+  });
+
+  it("redacts credential-shaped strings recursively in run log values", () => {
+    const fakeValue = "fake-nested-token-value";
+    const result = redactRunLogCredentialsValue({
+      message: `API_TOKEN=${fakeValue}`,
+      nested: {
+        lines: [`Authorization: Bearer ${fakeValue}`],
+      },
+    });
+
+    expect(result).toEqual({
+      message: `API_TOKEN=${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`,
+      nested: {
+        lines: [`Authorization: Bearer ${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`],
+      },
+    });
   });
 });
