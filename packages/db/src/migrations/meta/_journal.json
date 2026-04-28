@@ -526,6 +526,13 @@
       "when": 1777400001000,
       "tag": "0074_issues_last_activity_at",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1777400002000,
+      "tag": "0075_heartbeat_runs_company_issueid_idx",
+      "breakpoints": true
     }
   ]
 }
