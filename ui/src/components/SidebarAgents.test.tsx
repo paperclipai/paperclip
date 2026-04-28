@@ -342,5 +342,20 @@ describe("SidebarAgents", () => {
       const relation = expandButton.compareDocumentPosition(ceoLink);
       expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+
+    // The dropdown action path must work for nested (child) tree rows too —
+    // this guards the prop drilling through the recursive SidebarAgentTreeList.
+    await openAgentMenu("Open actions for Engineer");
+    const childPauseItem = Array.from(
+      document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
+    ).find((element) => element.textContent?.includes("Pause agent"));
+    expect(childPauseItem).toBeTruthy();
+
+    await act(async () => {
+      childPauseItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-2", "company-1");
   });
 });

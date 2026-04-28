@@ -44,6 +44,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Agent } from "@paperclipai/shared";
 
+type AgentPauseAction = "pause" | "resume";
+
 const SIDEBAR_AGENT_TREE_STORAGE_PREFIX = "paperclip.sidebarAgentTree";
 
 function getSidebarAgentTreeStorageKey(companyId: string) {
@@ -81,8 +83,7 @@ type SidebarAgentTreeListProps = {
   expandedAgentIds: Set<string>;
   onToggleExpanded: (agentId: string) => void;
   pendingAgentIds: Set<string>;
-  onPauseResume: (agent: Agent, action: "pause" | "resume") => void;
-  setSidebarOpen: (open: boolean) => void;
+  onPauseResume: (agent: Agent, action: AgentPauseAction) => void;
 };
 
 function SidebarAgentTreeList({
@@ -97,7 +98,6 @@ function SidebarAgentTreeList({
   onToggleExpanded,
   pendingAgentIds,
   onPauseResume,
-  setSidebarOpen,
 }: SidebarAgentTreeListProps) {
   return (
     <>
@@ -115,7 +115,6 @@ function SidebarAgentTreeList({
           onToggleExpanded={onToggleExpanded}
           pendingAgentIds={pendingAgentIds}
           onPauseResume={onPauseResume}
-          setSidebarOpen={setSidebarOpen}
         />
       ))}
     </>
@@ -139,7 +138,6 @@ function SidebarAgentTreeItem({
   onToggleExpanded,
   pendingAgentIds,
   onPauseResume,
-  setSidebarOpen,
 }: SidebarAgentTreeItemProps) {
   const { agent, children } = node;
   const hasChildren = children.length > 0;
@@ -239,7 +237,7 @@ function SidebarAgentTreeItem({
               <Link
                 to={editHref}
                 onClick={() => {
-                  if (isMobile) setSidebarOpen(false);
+                  if (isMobile) onNavigate();
                 }}
               >
                 <Pencil className="size-4" />
@@ -274,7 +272,6 @@ function SidebarAgentTreeItem({
           onToggleExpanded={onToggleExpanded}
           pendingAgentIds={pendingAgentIds}
           onPauseResume={onPauseResume}
-          setSidebarOpen={setSidebarOpen}
         />
       ) : null}
     </>
@@ -380,7 +377,7 @@ export function SidebarAgents() {
   }, [activeAgentId, expandedAgentIds, storageKey, treeAgents]);
 
   const pauseResumeAgent = useMutation({
-    mutationFn: ({ agent, action }: { agent: Agent; action: "pause" | "resume" }) =>
+    mutationFn: ({ agent, action }: { agent: Agent; action: AgentPauseAction }) =>
       action === "pause"
         ? agentsApi.pause(agent.id, selectedCompanyId ?? undefined)
         : agentsApi.resume(agent.id, selectedCompanyId ?? undefined),
@@ -426,7 +423,7 @@ export function SidebarAgents() {
   });
 
   const handlePauseResume = useCallback(
-    (agent: Agent, action: "pause" | "resume") => {
+    (agent: Agent, action: AgentPauseAction) => {
       pauseResumeAgent.mutate({ agent, action });
     },
     [pauseResumeAgent],
@@ -473,7 +470,6 @@ export function SidebarAgents() {
             onToggleExpanded={toggleExpandedAgent}
             pendingAgentIds={pendingAgentIds}
             onPauseResume={handlePauseResume}
-            setSidebarOpen={setSidebarOpen}
           />
         </div>
       </CollapsibleContent>
