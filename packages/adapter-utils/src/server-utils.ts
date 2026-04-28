@@ -1758,7 +1758,7 @@ export async function fetchWithRetry(
 
     if (retryAfter) {
       const parsed = Number(retryAfter);
-      if (!Number.isNaN(parsed) && parsed > 0) {
+      if (!Number.isNaN(parsed) && parsed >= 0) {
         delayMs = parsed * 1000;
       } else {
         const date = new Date(retryAfter).getTime();
