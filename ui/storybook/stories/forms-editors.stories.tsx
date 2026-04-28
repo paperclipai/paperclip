@@ -442,24 +442,18 @@ function InlineEditorGallery() {
 function EnvVarEditorGallery() {
   const [emptyEnv, setEmptyEnv] = useState<Record<string, EnvBinding>>({});
   const [env, setEnv] = useState<Record<string, EnvBinding>>(filledEnv);
-  const createSecret = async (name: string): Promise<CompanySecret> => ({
-    ...storybookSecrets[0]!,
-    id: `secret-${name.toLowerCase()}`,
-    name,
-    latestVersion: 1,
-  });
 
   return (
     <Section eyebrow="EnvVarEditor" title="Runtime environment bindings">
       <div className="grid gap-4 lg:grid-cols-3">
         <StatePanel label="Empty add row" detail="Trailing blank row is the add state.">
-          <EnvVarEditor value={emptyEnv} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={(next) => setEmptyEnv(next ?? {})} />
+          <EnvVarEditor value={emptyEnv} secrets={storybookSecrets} onChange={(next) => setEmptyEnv(next ?? {})} />
         </StatePanel>
-        <StatePanel label="Plain and secret values" detail="Filled rows show edit, seal, secret select, and remove controls.">
-          <EnvVarEditor value={env} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={(next) => setEnv(next ?? {})} />
+        <StatePanel label="Plain and secret values" detail="Filled rows show edit, secret select, and remove controls.">
+          <EnvVarEditor value={env} secrets={storybookSecrets} onChange={(next) => setEnv(next ?? {})} />
         </StatePanel>
         <StatePanel label="Disabled shell" disabled>
-          <EnvVarEditor value={filledEnv} secrets={storybookSecrets} onCreateSecret={createSecret} onChange={() => undefined} />
+          <EnvVarEditor value={filledEnv} secrets={storybookSecrets} onChange={() => undefined} />
         </StatePanel>
       </div>
     </Section>

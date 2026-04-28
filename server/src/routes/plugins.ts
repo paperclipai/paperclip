@@ -64,6 +64,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasBoardOrgAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -589,13 +590,15 @@ export function pluginRoutes(
       return '"runContext.runId" does not belong to "runContext.agentId"';
     }
 
-    const [project] = await db
-      .select({ companyId: projects.companyId })
-      .from(projects)
-      .where(eq(projects.id, runContext.projectId))
-      .limit(1);
-    if (!project || project.companyId !== runContext.companyId) {
-      return '"runContext.projectId" does not belong to "runContext.companyId"';
+    if (runContext.projectId) {
+      const [project] = await db
+        .select({ companyId: projects.companyId })
+        .from(projects)
+        .where(eq(projects.id, runContext.projectId))
+        .limit(1);
+      if (!project || project.companyId !== runContext.companyId) {
+        return '"runContext.projectId" does not belong to "runContext.companyId"';
+      }
     }
 
     return null;
@@ -761,7 +764,11 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    // Defer the principal check until runContext is parsed. Both board users
+    // (with company membership) and agent tokens (whose runContext.agentId
+    // matches their identity) are valid callers — agents need this so plugin
+    // tools are invokable from their heartbeat.
+    assertAuthenticated(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -787,10 +794,29 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    // projectId is optional — companies without any projects (e.g., a fresh
+    // Personal company) should still be able to invoke plugin tools.
+    if (!runContext.agentId || !runContext.runId || !runContext.companyId) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error: '"runContext" must include agentId, runId, and companyId',
       });
+      return;
+    }
+
+    // Principal check: agents can only invoke tools under their own identity;
+    // boards need company access (or instance admin / local_implicit).
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId !== runContext.agentId) {
+        res.status(403).json({ error: "Agent token does not match runContext.agentId" });
+        return;
+      }
+    } else if (req.actor.type === "board") {
+      if (!hasBoardOrgAccess(req)) {
+        res.status(403).json({ error: "Company membership or instance admin access required" });
+        return;
+      }
+    } else {
+      res.status(403).json({ error: "Board or agent access required" });
       return;
     }
 

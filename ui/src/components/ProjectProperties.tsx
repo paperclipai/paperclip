@@ -256,16 +256,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
-  const createSecret = useMutation({
-    mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
-      return secretsApi.create(selectedCompanyId, input);
-    },
-    onSuccess: () => {
-      if (!selectedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    },
-  });
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
     queryFn: () => environmentsApi.list(selectedCompanyId!),
@@ -625,10 +615,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <EnvVarEditor
               value={project.env ?? {}}
               secrets={availableSecrets}
-              onCreateSecret={async (name, value) => {
-                const created = await createSecret.mutateAsync({ name, value });
-                return created;
-              }}
               onChange={(env) => commitField("env", { env: env ?? null })}
             />
             <p className="text-[11px] text-muted-foreground">

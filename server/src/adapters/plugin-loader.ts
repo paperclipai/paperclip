@@ -11,6 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ServerAdapterModule } from "./types.js";
 import { logger } from "../middleware/logger.js";
 
@@ -177,7 +178,12 @@ export async function loadExternalAdapterPackage(
 
   logger.info({ packageName, packageDir, entryPoint, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
 
-  const mod = await import(modulePath);
+  // Wrap absolute paths in a file:// URL so Node's ESM loader accepts them on
+  // Windows (where C:\... is not a valid ESM specifier).
+  const importTarget = path.isAbsolute(modulePath)
+    ? pathToFileURL(modulePath).href
+    : modulePath;
+  const mod = await import(importTarget);
   const adapterModule = validateAdapterModule(mod, packageName);
 
   if (uiParserSource) {
@@ -212,7 +218,10 @@ export async function reloadExternalAdapter(
   const packageDir = resolvePackageDir(record);
   const entryPoint = resolvePackageEntryPoint(packageDir);
   const modulePath = path.resolve(packageDir, entryPoint);
-  const fileUrl = `file://${modulePath}`;
+  // Use pathToFileURL so Windows paths produce valid `file:///C:/...` URLs
+  // (string-concat `file://${absPath}` yields `file://C:\...`, which Node
+  // rejects as an invalid ESM specifier).
+  const fileUrl = pathToFileURL(modulePath).href;
 
   // Bust ESM module cache so re-import loads fresh code from disk.
   // Query-string trick (?t=...) works in Node; Bun may need the file:// URL

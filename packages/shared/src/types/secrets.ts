@@ -30,10 +30,17 @@ export interface CompanySecret {
   externalRef: string | null;
   latestVersion: number;
   description: string | null;
+  agentReferences?: CompanySecretAgentReference[];
   createdByAgentId: string | null;
   createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface CompanySecretAgentReference {
+  agentId: string;
+  agentName: string;
+  envKeys: string[];
 }
 
 export interface SecretProviderDescriptor {

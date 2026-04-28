@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
-  CompanySecret,
   EnvBinding,
   Environment,
 } from "@paperclipai/shared";
@@ -201,17 +200,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => environmentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId) && environmentsEnabled,
   });
-  const createSecret = useMutation({
-    mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
-      return secretsApi.create(selectedCompanyId, input);
-    },
-    onSuccess: () => {
-      if (!selectedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    },
-  });
-
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to upload images");
@@ -908,10 +896,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       )
                   }
                   secrets={availableSecrets}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
                   onChange={(env) =>
                     isCreate
                       ? set!({ envBindings: env ?? {}, envVars: "" })

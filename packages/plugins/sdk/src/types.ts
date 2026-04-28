@@ -208,8 +208,12 @@ export interface ToolRunContext {
   runId: string;
   /** UUID of the company the run belongs to. */
   companyId: string;
-  /** UUID of the project the run belongs to. */
-  projectId: string;
+  /**
+   * UUID of the project the run belongs to. Optional — agent runs in
+   * companies that don't have any projects (e.g., personal/operations
+   * companies) omit this. When present, it must belong to the same company.
+   */
+  projectId?: string;
 }
 
 /**

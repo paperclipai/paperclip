@@ -29,6 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
@@ -931,8 +932,13 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests.
+      // Wrap absolute paths in a file:// URL so Node's ESM loader accepts them
+      // on Windows (where C:\... is not a valid ESM specifier).
+      const importTarget = path.isAbsolute(manifestPath)
+        ? pathToFileURL(manifestPath).href
+        : manifestPath;
+      const mod = await import(importTarget) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -1752,7 +1758,9 @@ export function pluginLoader(
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        // Pass as a file:// URL so Node's --import flag accepts it on Windows
+        // (where C:\... is rejected as an invalid ESM specifier).
+        workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
@@ -1826,7 +1834,11 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass the DB UUID so the registry can route worker lookups correctly.
+        // The worker manager keys workers by pluginId (DB UUID), but the
+        // registry keys tools by manifest pluginKey ("email-tools" etc.) —
+        // dispatch needs both.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(

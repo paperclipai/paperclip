@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions } from "@paperclipai/db";
+import { agents, companySecrets, companySecretVersions } from "@paperclipai/db";
 import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -36,6 +36,22 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
     secretId: binding.secretId,
     version: binding.version ?? "latest",
   };
+}
+
+function collectSecretEnvKeys(adapterConfig: Record<string, unknown>) {
+  const env = asRecord(adapterConfig.env);
+  if (!env) return [];
+
+  const refs: Array<{ secretId: string; envKey: string }> = [];
+  for (const [envKey, rawBinding] of Object.entries(env)) {
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success || typeof parsed.data === "string") continue;
+    const binding = canonicalizeBinding(parsed.data);
+    if (binding.type === "secret_ref") {
+      refs.push({ secretId: binding.secretId, envKey });
+    }
+  }
+  return refs;
 }
 
 export function secretService(db: Db) {
@@ -152,6 +168,46 @@ export function secretService(db: Db) {
     return normalized;
   }
 
+  async function listAgentReferencesBySecretId(companyId: string) {
+    const agentRows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const references = new Map<
+      string,
+      Array<{ agentId: string; agentName: string; envKeys: string[] }>
+    >();
+
+    for (const agent of agentRows) {
+      const refs = collectSecretEnvKeys(agent.adapterConfig ?? {});
+      const envKeysBySecretId = new Map<string, string[]>();
+      for (const ref of refs) {
+        envKeysBySecretId.set(ref.secretId, [
+          ...(envKeysBySecretId.get(ref.secretId) ?? []),
+          ref.envKey,
+        ]);
+      }
+
+      for (const [secretId, envKeys] of envKeysBySecretId) {
+        references.set(secretId, [
+          ...(references.get(secretId) ?? []),
+          {
+            agentId: agent.id,
+            agentName: agent.name,
+            envKeys: Array.from(new Set(envKeys)).sort(),
+          },
+        ]);
+      }
+    }
+
+    return references;
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -161,6 +217,22 @@ export function secretService(db: Db) {
         .from(companySecrets)
         .where(eq(companySecrets.companyId, companyId))
         .orderBy(desc(companySecrets.createdAt)),
+
+    listWithAgentReferences: async (companyId: string) => {
+      const [secrets, references] = await Promise.all([
+        db
+          .select()
+          .from(companySecrets)
+          .where(eq(companySecrets.companyId, companyId))
+          .orderBy(desc(companySecrets.createdAt)),
+        listAgentReferencesBySecretId(companyId),
+      ]);
+
+      return secrets.map((secret) => ({
+        ...secret,
+        agentReferences: references.get(secret.id) ?? [],
+      }));
+    },
 
     getById,
     getByName,

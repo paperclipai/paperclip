@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { X } from "lucide-react";
+import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 
 const inputClass =
@@ -57,16 +58,13 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
 export function EnvVarEditor({
   value,
   secrets,
-  onCreateSecret,
   onChange,
 }: {
   value: Record<string, EnvBinding>;
   secrets: CompanySecret[];
-  onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (env: Record<string, EnvBinding> | undefined) => void;
 }) {
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
-  const [sealError, setSealError] = useState<string | null>(null);
   const valueRef = useRef(value);
   const emittingRef = useRef(false);
 
@@ -90,8 +88,6 @@ export function EnvVarEditor({
       if (row.source === "secret") {
         if (row.secretId) {
           rec[key] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
-        } else {
-          rec[key] = { type: "plain", value: row.plainValue };
         }
       } else {
         rec[key] = { type: "plain", value: row.plainValue };
@@ -128,35 +124,6 @@ export function EnvVarEditor({
     emit(next);
   }
 
-  function defaultSecretName(key: string) {
-    return key
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 64);
-  }
-
-  async function sealRow(index: number) {
-    const row = rows[index];
-    if (!row) return;
-    const key = row.key.trim();
-    const plain = row.plainValue;
-    if (!key || plain.length === 0) return;
-
-    const suggested = defaultSecretName(key) || "secret";
-    const name = window.prompt("Secret name", suggested)?.trim();
-    if (!name) return;
-
-    try {
-      setSealError(null);
-      const created = await onCreateSecret(name, plain);
-      updateRow(index, { source: "secret", secretId: created.id });
-    } catch (error) {
-      setSealError(error instanceof Error ? error.message : "Failed to create secret");
-    }
-  }
-
   return (
     <div className="space-y-1.5">
       {rows.map((row, index) => {
@@ -187,47 +154,25 @@ export function EnvVarEditor({
               <option value="secret">Secret</option>
             </select>
             {row.source === "secret" ? (
-              <>
-                <select
-                  className={cn(inputClass, "flex-[3] bg-background")}
-                  value={row.secretId}
-                  onChange={(event) => updateRow(index, { secretId: event.target.value })}
-                >
-                  <option value="">Select secret...</option>
-                  {secrets.map((secret) => (
-                    <option key={secret.id} value={secret.id}>
-                      {secret.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
-                  onClick={() => sealRow(index)}
-                  disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
-                >
-                  New
-                </button>
-              </>
+              <select
+                className={cn(inputClass, "flex-[3] bg-background")}
+                value={row.secretId}
+                onChange={(event) => updateRow(index, { secretId: event.target.value })}
+              >
+                <option value="">Select secret...</option>
+                {secrets.map((secret) => (
+                  <option key={secret.id} value={secret.id}>
+                    {secret.name}
+                  </option>
+                ))}
+              </select>
             ) : (
-              <>
-                <input
-                  className={cn(inputClass, "flex-[3]")}
-                  placeholder="value"
-                  value={row.plainValue}
-                  onChange={(event) => updateRow(index, { plainValue: event.target.value })}
-                />
-                <button
-                  type="button"
-                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
-                  onClick={() => sealRow(index)}
-                  disabled={!row.key.trim() || !row.plainValue}
-                  title="Store value as secret and replace with reference"
-                >
-                  Seal
-                </button>
-              </>
+              <input
+                className={cn(inputClass, "flex-[3]")}
+                placeholder="value"
+                value={row.plainValue}
+                onChange={(event) => updateRow(index, { plainValue: event.target.value })}
+              />
             )}
             {!isTrailing ? (
               <button
@@ -243,9 +188,12 @@ export function EnvVarEditor({
           </div>
         );
       })}
-      {sealError && <p className="text-[11px] text-destructive">{sealError}</p>}
       <p className="text-[11px] text-muted-foreground/60">
-        PAPERCLIP_* variables are injected automatically at runtime.
+        PAPERCLIP_* variables are injected automatically at runtime. Secrets are managed in{" "}
+        <Link to="/company/settings/secrets" className="underline underline-offset-2 hover:text-foreground">
+          Company Settings &gt; Secrets
+        </Link>
+        .
       </p>
     </div>
   );

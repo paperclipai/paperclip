@@ -32,7 +32,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const secrets = await svc.list(companyId);
+    const secrets = await svc.listWithAgentReferences(companyId);
     res.json(secrets);
   });
 
