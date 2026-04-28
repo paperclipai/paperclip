@@ -130,8 +130,12 @@ export const createIssueSchema = z.object({
   parentId: z.string().uuid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
-  title: z.string().min(1),
-  description: multilineTextSchema.optional().nullable(),
+  // S-CRIT-8 (2026-04-28 fuzz): unbounded title hangs the server on huge
+  // inputs. 500 chars is plenty for an issue title (UI truncates at ~80).
+  title: z.string().min(1).max(500),
+  // Keep upstream's multilineTextSchema (line-break normalization) but cap
+  // length at 64 KiB. Anything bigger should attach as a file.
+  description: multilineTextSchema.pipe(z.string().max(65_536)).optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),

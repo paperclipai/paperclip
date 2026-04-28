@@ -61,6 +61,24 @@ export function errorHandler(
     return;
   }
 
+  // Malformed JSON body — express.json() raises SyntaxError with `body` attached.
+  // Without this branch the parser error leaks as 500. (S-CRIT-7, 2026-04-28 fuzz)
+  if (err instanceof SyntaxError && "body" in err) {
+    res.status(400).json({ error: "Malformed JSON body", code: "invalid_json" });
+    return;
+  }
+
+  // Payload too large — express.json() raises an Error with `type: 'entity.too.large'`
+  // and an HTTP-style status. Surface as 413 instead of 500.
+  if (
+    err && typeof err === "object"
+    && (err as { type?: string }).type === "entity.too.large"
+  ) {
+    const status = (err as { status?: number }).status ?? 413;
+    res.status(status).json({ error: "Payload too large", code: "entity_too_large" });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,
