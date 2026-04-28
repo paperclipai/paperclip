@@ -2,6 +2,12 @@ export interface DashboardRunActivityDay {
   date: string;
   succeeded: number;
   failed: number;
+  /**
+   * Subset of `failed` whose wall-clock spanned a host sleep boundary
+   * (e.g. macOS Sleep -> Wake). These are environmental, not code failures
+   * and can be subtracted from `failed` to get a "real failures" count.
+   */
+  sleepBoundaryFailed: number;
   other: number;
   total: number;
 }

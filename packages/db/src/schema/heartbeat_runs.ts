@@ -54,6 +54,7 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    sleepBoundaryCrossed: boolean("sleep_boundary_crossed").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

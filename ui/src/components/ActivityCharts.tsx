@@ -65,13 +65,16 @@ type RunChartProps =
 function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivityDay[] {
   const days = getLast14Days();
   const grouped = new Map<string, DashboardRunActivityDay>();
-  for (const day of days) grouped.set(day, { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
+  for (const day of days) grouped.set(day, { date: day, succeeded: 0, failed: 0, sleepBoundaryFailed: 0, other: 0, total: 0 });
   for (const run of runs) {
     const day = new Date(run.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
     if (run.status === "succeeded") entry.succeeded++;
-    else if (run.status === "failed" || run.status === "timed_out") entry.failed++;
+    else if (run.status === "failed" || run.status === "timed_out") {
+      entry.failed++;
+      if (run.sleepBoundaryCrossed) entry.sleepBoundaryFailed++;
+    }
     else entry.other++;
     entry.total++;
   }
@@ -98,11 +101,14 @@ export function RunActivityChart(props: RunChartProps) {
     <div>
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
+          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, sleepBoundaryFailed: 0, other: 0, total: 0 };
           const total = entry.total;
           const heightPct = (total / maxValue) * 100;
+          const sleepNote = entry.sleepBoundaryFailed > 0
+            ? ` (incl. ${entry.sleepBoundaryFailed} sleep-stranded)`
+            : "";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs${sleepNote}`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
@@ -253,7 +259,7 @@ export function SuccessRateChart(props: RunChartProps) {
     <div>
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
+          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, sleepBoundaryFailed: 0, other: 0, total: 0 };
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
           return (
