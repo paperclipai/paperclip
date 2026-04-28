@@ -79,6 +79,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    authPublicBaseUrl?: string | null;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -178,6 +179,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      publicUrl: opts.authPublicBaseUrl ?? null,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));

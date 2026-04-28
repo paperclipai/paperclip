@@ -14,11 +14,13 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    publicUrl?: string | null;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
     authReady: true,
     companyDeletionEnabled: true,
+    publicUrl: null,
   },
 ) {
   const router = Router();
@@ -85,6 +87,10 @@ export function healthRoutes(
       });
     }
 
+    // Normalize: drop any trailing slashes so plugins can safely concatenate
+    // a leading-slash path (`${publicUrl}/api/...`) without producing `//`.
+    const publicUrl = opts.publicUrl ? opts.publicUrl.replace(/\/+$/, "") : null;
+
     res.json({
       status: "ok",
       version: serverVersion,
@@ -93,6 +99,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      publicUrl,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },

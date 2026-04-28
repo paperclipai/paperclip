@@ -53,4 +53,57 @@ describe("GET /health", () => {
       error: "database_unreachable",
     });
   });
+
+  it("emits the configured publicUrl with trailing slashes normalized", async () => {
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        publicUrl: "https://paperclip.example.com//",
+      }),
+    );
+
+    const res = await request(app).get("/health");
+    expect(res.status).toBe(200);
+    expect(res.body.publicUrl).toBe("https://paperclip.example.com");
+  });
+
+  it("returns publicUrl: null when none is configured", async () => {
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+    expect(res.status).toBe(200);
+    expect(res.body.publicUrl).toBe(null);
+  });
 });

@@ -75,6 +75,7 @@ export interface PluginHostContext {
   entityType: string | null;
   parentEntityId?: string | null;
   userId: string | null;
+  publicUrl: string | null;
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }
 

@@ -614,6 +614,7 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     betterAuthHandler,
     resolveSession,
   });

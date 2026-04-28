@@ -25,6 +25,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { healthApi } from "@/api/health";
 import { Button } from "@/components/ui/button";
 import { useNavigate, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
@@ -136,6 +137,7 @@ function buildLauncherHostContext(
   context: PluginLauncherContext,
   renderEnvironment: PluginRenderEnvironmentContext | null,
   userId: string | null,
+  publicUrl: string | null,
 ): PluginHostContext {
   return {
     companyId: context.companyId ?? null,
@@ -144,6 +146,7 @@ function buildLauncherHostContext(
     entityId: context.entityId ?? null,
     entityType: context.entityType ?? null,
     userId,
+    publicUrl,
     renderEnvironment,
   };
 }
@@ -411,10 +414,21 @@ function LauncherRenderContent({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: health, error: healthError } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    staleTime: 5 * 60 * 1000,
+  });
+  useEffect(() => {
+    if (healthError) {
+      console.error("[plugin-host] /api/health failed; publicUrl unknown — plugins will fall back to window.location.origin", healthError);
+    }
+  }, [healthError]);
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
+  const publicUrl = health?.publicUrl ?? null;
   const hostContext = useMemo(
-    () => buildLauncherHostContext(instance.hostContext, renderEnvironment, userId),
-    [instance.hostContext, renderEnvironment, userId],
+    () => buildLauncherHostContext(instance.hostContext, renderEnvironment, userId, publicUrl),
+    [instance.hostContext, renderEnvironment, userId, publicUrl],
   );
 
   if (!component) {
