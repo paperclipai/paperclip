@@ -614,6 +614,9 @@ function summarizeOpenClawGatewayDefaultsForLog(defaultsPayload: unknown) {
     present: Boolean(defaults),
     keys: defaults ? Object.keys(defaults).sort() : [],
     url: defaults ? nonEmptyTrimmedString(defaults.url) : null,
+    transportProfile: defaults
+      ? nonEmptyTrimmedString(defaults.transportProfile)
+      : null,
     paperclipApiUrl: defaults
       ? nonEmptyTrimmedString(defaults.paperclipApiUrl)
       : null,
@@ -758,6 +761,11 @@ export function normalizeAgentDefaultsForJoin(input: {
 
   if (isPlainObject(defaults.payloadTemplate)) {
     normalized.payloadTemplate = defaults.payloadTemplate;
+  }
+
+  const transportProfile = nonEmptyTrimmedString(defaults.transportProfile);
+  if (transportProfile) {
+    normalized.transportProfile = transportProfile;
   }
 
   const parsedDisableDeviceAuth = parseBooleanLike(defaults.disableDeviceAuth);
@@ -1563,7 +1571,7 @@ function buildInviteOnboardingManifest(
         adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) or transportProfile, plus headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
       },
       registrationEndpoint: {
         method: "POST",

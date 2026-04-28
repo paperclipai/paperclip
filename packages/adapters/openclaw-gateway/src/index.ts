@@ -16,7 +16,8 @@ Don't use when:
 - Your deployment does not permit outbound WebSocket access from the Paperclip server.
 
 Core fields:
-- url (string, required): OpenClaw gateway WebSocket URL (ws:// or wss://)
+- url (string, required unless transportProfile resolves one): OpenClaw gateway WebSocket URL (ws:// or wss://)
+- transportProfile (string, optional): named runtime transport resolver; cluster:openclaw resolves from PAPERCLIP_OPENCLAW_GATEWAY_URL and PAPERCLIP_INTERNAL_API_URL
 - headers (object, optional): handshake headers; supports x-openclaw-token / x-openclaw-auth
 - authToken (string, optional): shared gateway token override
 - password (string, optional): gateway shared password, if configured

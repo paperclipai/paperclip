@@ -521,6 +521,47 @@ describe("openclaw gateway adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
 
+  it("resolves cluster transport profile from environment before stale explicit urls", async () => {
+    const gateway = await createMockGatewayServer();
+    const previousGatewayUrl = process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_INTERNAL_API_URL;
+
+    try {
+      process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL = gateway.url;
+      process.env.PAPERCLIP_INTERNAL_API_URL = "http://paperclip.paperclip.svc.cluster.local:3100";
+
+      const result = await execute(
+        buildContext({
+          transportProfile: "cluster:openclaw",
+          url: "wss://stale.example.invalid/",
+          paperclipApiUrl: "https://stale-paperclip.example.invalid/",
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(String(payload?.message ?? "")).toContain(
+        "PAPERCLIP_API_URL=http://paperclip.paperclip.svc.cluster.local:3100/",
+      );
+    } finally {
+      if (previousGatewayUrl === undefined) {
+        delete process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL;
+      } else {
+        process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL = previousGatewayUrl;
+      }
+      if (previousPaperclipApiUrl === undefined) {
+        delete process.env.PAPERCLIP_INTERNAL_API_URL;
+      } else {
+        process.env.PAPERCLIP_INTERNAL_API_URL = previousPaperclipApiUrl;
+      }
+      await gateway.close();
+    }
+  });
+
   it("returns adapter-managed runtime services from gateway result meta", async () => {
     const gateway = await createMockGatewayServer({
       waitPayload: {
@@ -673,5 +714,36 @@ describe("openclaw gateway testEnvironment", () => {
 
     expect(result.status).toBe("fail");
     expect(result.checks.some((check) => check.code === "openclaw_gateway_url_missing")).toBe(true);
+  });
+
+  it("accepts cluster transport profile without adapter url", async () => {
+    const gateway = await createMockGatewayServer();
+    const previousGatewayUrl = process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL;
+
+    try {
+      process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL = gateway.url;
+
+      const result = await testEnvironment({
+        companyId: "company-123",
+        adapterType: "openclaw_gateway",
+        config: {
+          transportProfile: "cluster:openclaw",
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "openclaw_gateway_url_valid")).toBe(true);
+      expect(result.checks.some((check) => check.code === "openclaw_gateway_probe_ok")).toBe(true);
+    } finally {
+      if (previousGatewayUrl === undefined) {
+        delete process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL;
+      } else {
+        process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL = previousGatewayUrl;
+      }
+      await gateway.close();
+    }
   });
 });

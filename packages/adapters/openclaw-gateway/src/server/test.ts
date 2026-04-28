@@ -17,6 +17,16 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function resolveTransportProfileUrl(profile: string | null): string | null {
+  if (profile === "cluster:openclaw") {
+    return (
+      nonEmpty(process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL) ??
+      "ws://openclaw.openclaw.svc.cluster.local:18789"
+    );
+  }
+  return null;
+}
+
 function isLoopbackHost(hostname: string): boolean {
   const value = hostname.trim().toLowerCase();
   return value === "localhost" || value === "127.0.0.1" || value === "::1";
@@ -192,7 +202,8 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const urlValue = asString(config.url, "").trim();
+  const transportProfile = nonEmpty(config.transportProfile);
+  const urlValue = resolveTransportProfileUrl(transportProfile) ?? asString(config.url, "").trim();
 
   if (!urlValue) {
     checks.push({

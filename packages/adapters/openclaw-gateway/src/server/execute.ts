@@ -92,6 +92,8 @@ const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
 const DEFAULT_ROLE = "operator";
+const CLUSTER_OPENCLAW_GATEWAY_URL = "ws://openclaw.openclaw.svc.cluster.local:18789";
+const CLUSTER_PAPERCLIP_API_URL = "http://paperclip.paperclip.svc.cluster.local:3100";
 
 const SENSITIVE_LOG_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
@@ -338,7 +340,10 @@ function resolveClaimedApiKeyPath(value: unknown): string {
 }
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
-  const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+  const transportProfile = nonEmpty(ctx.config.transportProfile);
+  const paperclipApiUrlOverride =
+    resolvePaperclipApiUrlOverride(resolveTransportProfilePaperclipApiUrl(transportProfile)) ??
+    resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
@@ -528,6 +533,20 @@ function normalizeUrl(input: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function resolveTransportProfileUrl(profile: string | null): string | null {
+  if (profile === "cluster:openclaw") {
+    return nonEmpty(process.env.PAPERCLIP_OPENCLAW_GATEWAY_URL) ?? CLUSTER_OPENCLAW_GATEWAY_URL;
+  }
+  return null;
+}
+
+function resolveTransportProfilePaperclipApiUrl(profile: string | null): string | null {
+  if (profile === "cluster:openclaw") {
+    return nonEmpty(process.env.PAPERCLIP_INTERNAL_API_URL) ?? CLUSTER_PAPERCLIP_API_URL;
+  }
+  return null;
 }
 
 function rawDataToString(data: unknown): string {
@@ -1049,7 +1068,8 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const urlValue = asString(ctx.config.url, "").trim();
+  const transportProfile = nonEmpty(ctx.config.transportProfile);
+  const urlValue = resolveTransportProfileUrl(transportProfile) ?? asString(ctx.config.url, "").trim();
   if (!urlValue) {
     return {
       exitCode: 1,
