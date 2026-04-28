@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -357,6 +359,82 @@ function createRoutineDispatchFingerprint(input: {
 function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
   return (routine.variables ?? []).some((variable) => variable.name === WORKSPACE_BRANCH_ROUTINE_VARIABLE)
     || extractRoutineVariableNames([routine.title, routine.description]).includes(WORKSPACE_BRANCH_ROUTINE_VARIABLE);
+}
+
+interface CapacityBand {
+  band: "green" | "amber" | "orange" | "red";
+  percentageUsed: number;
+}
+
+async function readCapacityBand(companyId: string): Promise<CapacityBand> {
+  try {
+    // Read USAGE.md from the company runtime directory
+    const usagePath = path.join(process.cwd(), "..", "..", "..", "USAGE.md");
+    
+    let content: string;
+    try {
+      content = readFileSync(usagePath, "utf-8");
+    } catch {
+      // If USAGE.md is not accessible, fail open (return green to allow routine fire)
+      return { band: "green", percentageUsed: 0 };
+    }
+
+    // Parse USAGE.md for all_models_weekly_usage_pct
+    const usageMatch = content.match(/all_models_weekly_usage_pct[:\s]+(\d+(?:\.\d+)?)/);
+    if (!usageMatch) {
+      // Field not found, fail open
+      return { band: "green", percentageUsed: 0 };
+    }
+
+    const percentageUsed = parseFloat(usageMatch[1]);
+    if (isNaN(percentageUsed)) {
+      return { band: "green", percentageUsed: 0 };
+    }
+
+    // Map percentage to band: Green < 70%, Amber 70-84%, Orange 85-94%, Red >= 95%
+    let band: CapacityBand["band"];
+    if (percentageUsed >= 95) {
+      band = "red";
+    } else if (percentageUsed >= 85) {
+      band = "orange";
+    } else if (percentageUsed >= 70) {
+      band = "amber";
+    } else {
+      band = "green";
+    }
+
+    return { band, percentageUsed };
+  } catch {
+    // Unexpected error: fail open to avoid breaking routine scheduler
+    return { band: "green", percentageUsed: 0 };
+  }
+}
+
+function shouldSkipRoutineFireDueToCapacity(routine: typeof routines.$inferSelect, capacityBand: CapacityBand): boolean {
+  // Skip fire if band >= Amber (70%) unless routine is capacity_critical
+  if (capacityBand.percentageUsed >= 70 && !routine.capacityCritical) {
+    return true;
+  }
+  return false;
+}
+
+async function createSkippedRoutineRun(db: Db, input: {
+  routine: typeof routines.$inferSelect;
+  trigger: typeof routineTriggers.$inferSelect | null;
+  failureReason: string;
+}) {
+  return db.insert(routineRuns).values({
+    id: crypto.randomUUID(),
+    companyId: input.routine.companyId,
+    routineId: input.routine.id,
+    triggerId: input.trigger?.id ?? null,
+    source: "schedule",
+    status: "skipped",
+    triggeredAt: new Date(),
+    failureReason: input.failureReason,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }).returning();
 }
 
 export function routineService(
@@ -1681,6 +1759,19 @@ export function routineService(
           .returning({ id: routineTriggers.id })
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
+
+        // Check capacity before dispatching
+        const capacityBand = await readCapacityBand(row.routine.companyId);
+        const shouldSkip = shouldSkipRoutineFireDueToCapacity(row.routine, capacityBand);
+
+        if (shouldSkip) {
+          await createSkippedRoutineRun(db, {
+            routine: row.routine,
+            trigger: row.trigger,
+            failureReason: `capacity_band_${capacityBand.band}_or_higher`,
+          });
+          continue;
+        }
 
         for (let i = 0; i < runCount; i += 1) {
           await dispatchRoutineRun({
