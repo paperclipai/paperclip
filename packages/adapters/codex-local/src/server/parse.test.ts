@@ -112,6 +112,17 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
+  it("classifies the personal-account 'send a request to your admin' usage-limit wording", () => {
+    const errorMessage =
+      "You've hit your usage limit. To get more access now, send a request to your admin or try again at 10:37 AM.";
+    const now = new Date(2026, 3, 28, 2, 11, 0);
+
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
+      new Date(2026, 3, 28, 10, 37, 0, 0).getTime(),
+    );
+  });
+
   it("parses explicit timezone hints on usage-limit retry windows", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM (America/Chicago).";
     const now = new Date("2026-04-23T03:29:02.000Z");

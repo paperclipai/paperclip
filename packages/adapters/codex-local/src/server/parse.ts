@@ -8,8 +8,15 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+// Matches both wordings Codex emits when a usage cap is hit:
+//   • "You've hit your usage limit for <model>. Switch to another model now, or try again at <time>."
+//   • "You've hit your usage limit. To get more access now, send a request to your admin or try again at <time>."
+// The "for <model>" clause and the middle remediation clause vary, but the suffix
+// "or try again at <time>" is stable — that's what we capture. Model names can
+// contain dots ("GPT-5.3-Codex-Spark"), so .+? is used in the for-clause and
+// anchored by the required ". " sentence break that follows.
 const CODEX_USAGE_LIMIT_RE =
-  /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+  /you(?:'|’)ve hit your usage limit(?:\s+for\s+.+?)?\.\s+[^.\n]*?\bor try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
