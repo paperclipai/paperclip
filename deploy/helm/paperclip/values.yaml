@@ -69,8 +69,9 @@ env:
   serveUi: true
   # -- Paperclip instance identifier. Directory under `/paperclip/instances/` is named after this.
   instanceId: default
-  # -- Extra environment variables merged verbatim into the container spec.
-  # Example: `[{name: NODE_OPTIONS, value: --max-old-space-size=3072}]`.
+  # -- Extra hostnames the server accepts on its `Host` header (e.g. public ingress hosts). Rendered as `PAPERCLIP_ALLOWED_HOSTNAMES`, with `127.0.0.1` **always prepended by the chart** so spawned agents get `http://127.0.0.1:{{ env.port }}` as `PAPERCLIP_API_URL` (the server picks `allowedHostnames[0] + env.port` to build that URL). Do not list public hosts here expecting them to be reachable from inside the pod — they're served on `:443`/HTTPS via an ingress, but the URL the server constructs always uses `http://` and `env.port`, so they'd be unreachable as `allowedHostnames[0]`. The leading `127.0.0.1` neutralises that. Example: `["paperclip.example.com"]`.
+  extraAllowedHostnames: []
+  # -- Extra environment variables merged verbatim into the container spec. Example: `[{name: NODE_OPTIONS, value: --max-old-space-size=3072}]`.
   extra: []
 
 # -- Secret containing `agentJwtSecret` and optional `masterKey` seed.
