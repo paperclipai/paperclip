@@ -34,6 +34,8 @@ function createAgent(
     spentMonthlyCents: 0,
     lastHeartbeatAt: null,
     metadata: null,
+    tags: [],
+    sourceBlueprintId: null,
     createdAt: now,
     updatedAt: now,
     pauseReason: null,

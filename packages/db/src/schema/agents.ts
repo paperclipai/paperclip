@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
+import { agentBlueprints } from "./agent_blueprints.js";
 
 export const agents = pgTable(
   "agents",
@@ -27,6 +28,8 @@ export const agents = pgTable(
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
+    tags: text("tags").array().notNull().default([]),
+    sourceBlueprintId: uuid("source_blueprint_id").references(() => agentBlueprints.id, { onDelete: "set null" }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     pauseReason: text("pause_reason"),

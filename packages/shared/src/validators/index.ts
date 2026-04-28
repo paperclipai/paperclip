@@ -382,3 +382,9 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+export {
+  createAgentBlueprintSchema,
+  updateAgentBlueprintSchema,
+  type CreateAgentBlueprint,
+  type UpdateAgentBlueprint,
+} from "./agent-blueprint.js";

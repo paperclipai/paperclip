@@ -111,6 +111,8 @@ describe("CommentThread", () => {
       permissions: { canCreateAgents: false },
       lastHeartbeatAt: null,
       metadata: null,
+      tags: [],
+      sourceBlueprintId: null,
       createdAt: new Date("2026-03-11T00:00:00.000Z"),
       updatedAt: new Date("2026-03-11T00:00:00.000Z"),
     };
@@ -287,6 +289,8 @@ describe("CommentThread", () => {
       permissions: { canCreateAgents: false },
       lastHeartbeatAt: null,
       metadata: null,
+      tags: [],
+      sourceBlueprintId: null,
       createdAt: new Date("2026-03-11T00:00:00.000Z"),
       updatedAt: new Date("2026-03-11T00:00:00.000Z"),
     };

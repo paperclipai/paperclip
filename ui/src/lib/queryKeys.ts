@@ -173,4 +173,9 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  blueprints: {
+    all: ["blueprints"] as const,
+    list: (search?: string, role?: string) => ["blueprints", "list", search ?? "", role ?? ""] as const,
+    detail: (id: string) => ["blueprints", id] as const,
+  },
 };

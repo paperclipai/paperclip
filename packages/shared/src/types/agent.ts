@@ -70,10 +70,12 @@ export interface Agent {
   status: AgentStatus;
   reportsTo: string | null;
   capabilities: string | null;
+  tags: string[];
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;
   defaultEnvironmentId?: string | null;
+  sourceBlueprintId: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;

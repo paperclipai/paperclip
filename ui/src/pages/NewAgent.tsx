@@ -8,7 +8,6 @@ import { companySkillsApi } from "../api/companySkills";
 import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Popover,
   PopoverContent,
@@ -23,7 +22,9 @@ import { getUIAdapter, listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
+import { SkillsMultiSelect } from "../components/SkillsMultiSelect";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
+import { blueprintsApi } from "../api/blueprints";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -57,6 +58,7 @@ export function NewAgent() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const presetAdapterType = searchParams.get("adapterType");
+  const blueprintId = searchParams.get("blueprintId");
 
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -66,6 +68,7 @@ export function NewAgent() {
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [blueprintBanner, setBlueprintBanner] = useState<string | null>(null);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -91,6 +94,29 @@ export function NewAgent() {
     queryFn: () => companySkillsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+
+  const { data: blueprintData } = useQuery({
+    queryKey: queryKeys.blueprints.detail(blueprintId ?? ""),
+    queryFn: () => blueprintsApi.get(blueprintId!),
+    enabled: !!blueprintId,
+  });
+
+  useEffect(() => {
+    if (!blueprintData) return;
+    if (!name) setName(blueprintData.name);
+    if (!title && blueprintData.title) setTitle(blueprintData.title);
+    if (blueprintData.role) setRole(blueprintData.role);
+    setConfigValues({
+      ...defaultCreateValues,
+      adapterType: blueprintData.adapterType,
+      ...(blueprintData.adapterConfig as Partial<CreateConfigValues>),
+    });
+    const metaSkills = blueprintData.metadata?.desiredSkills;
+    if (Array.isArray(metaSkills) && metaSkills.length > 0) {
+      setSelectedSkillKeys(metaSkills as string[]);
+    }
+    setBlueprintBanner(blueprintData.name);
+  }, [blueprintData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isFirstAgent = !agents || agents.length === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
@@ -168,8 +194,8 @@ export function NewAgent() {
         return;
       }
     }
-    createAgent.mutate(
-      buildNewAgentHirePayload({
+    createAgent.mutate({
+      ...buildNewAgentHirePayload({
         name,
         effectiveRole,
         title,
@@ -178,19 +204,11 @@ export function NewAgent() {
         configValues,
         adapterConfig: buildAdapterConfig(),
       }),
-    );
+      ...(blueprintId ? { sourceBlueprintId: blueprintId } : {}),
+    });
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
-
-  function toggleSkill(key: string, checked: boolean) {
-    setSelectedSkillKeys((prev) => {
-      if (checked) {
-        return prev.includes(key) ? prev : [...prev, key];
-      }
-      return prev.filter((value) => value !== key);
-    });
-  }
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -200,6 +218,13 @@ export function NewAgent() {
           Advanced agent configuration
         </p>
       </div>
+
+      {blueprintBanner && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-accent/40 px-3 py-2 text-sm text-muted-foreground">
+          <Shield className="h-3.5 w-3.5 shrink-0" />
+          Pre-filled from blueprint: <span className="font-medium text-foreground">{blueprintBanner}</span>
+        </div>
+      )}
 
       <div className="border border-border">
         {/* Name */}
@@ -283,27 +308,11 @@ export function NewAgent() {
                 No optional company skills installed yet.
               </p>
             ) : (
-              <div className="space-y-3">
-                {availableSkills.map((skill) => {
-                  const inputId = `skill-${skill.id}`;
-                  const checked = selectedSkillKeys.includes(skill.key);
-                  return (
-                    <div key={skill.id} className="flex items-start gap-3">
-                      <Checkbox
-                        id={inputId}
-                        checked={checked}
-                        onCheckedChange={(next) => toggleSkill(skill.key, next === true)}
-                      />
-                      <label htmlFor={inputId} className="grid gap-1 leading-none">
-                        <span className="text-sm font-medium">{skill.name}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {skill.description ?? skill.key}
-                        </span>
-                      </label>
-                    </div>
-                  );
-                })}
-              </div>
+              <SkillsMultiSelect
+                skills={availableSkills}
+                selected={selectedSkillKeys}
+                onChange={setSelectedSkillKeys}
+              />
             )}
           </div>
         </div>

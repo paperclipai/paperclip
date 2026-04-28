@@ -512,6 +512,20 @@
       "when": 1777305216238,
       "tag": "0072_large_sandman",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1776960000000,
+      "tag": "0073_agent_blueprints",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1776960300000,
+      "tag": "0074_blueprint_lineage",
+      "breakpoints": true
     }
   ]
 }

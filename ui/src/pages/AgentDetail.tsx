@@ -22,7 +22,7 @@ import { useToastActions } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -54,6 +54,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
   MoreHorizontal,
   CheckCircle2,
   XCircle,
@@ -73,6 +81,7 @@ import {
   ArrowLeft,
   HelpCircle,
   FolderOpen,
+  Layers,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -91,7 +100,11 @@ import {
   type AgentRuntimeState,
   type LiveEvent,
   type WorkspaceOperation,
+  AGENT_ROLES,
+  AGENT_ROLE_LABELS,
 } from "@paperclipai/shared";
+import { blueprintsApi } from "../api/blueprints";
+import { defaultCreateValues } from "../components/agent-config-defaults";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 import {
@@ -99,6 +112,8 @@ import {
   arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
+import { SkillsMultiSelect } from "../components/SkillsMultiSelect";
+import { TagsInput } from "../components/TagsInput";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -632,6 +647,7 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [saveBlueprintOpen, setSaveBlueprintOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
@@ -968,7 +984,17 @@ export function AgentDetail() {
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
+            <PopoverContent className="w-48 p-1" align="end">
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                onClick={() => {
+                  setSaveBlueprintOpen(true);
+                  setMoreOpen(false);
+                }}
+              >
+                <Layers className="h-3 w-3" />
+                Save as Blueprint
+              </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                 onClick={() => {
@@ -1154,7 +1180,247 @@ export function AgentDetail() {
           />
         </div>
       ) : null}
+
+      {saveBlueprintOpen && (
+        <SaveAsBlueprintDialog
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
+          open={saveBlueprintOpen}
+          onClose={() => setSaveBlueprintOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+/* ---- Save as Blueprint dialog ---- */
+
+interface SaveAsBlueprintDialogProps {
+  agent: AgentDetailRecord;
+  companyId?: string;
+  open: boolean;
+  onClose: () => void;
+}
+
+function SaveAsBlueprintDialog({ agent, companyId, open, onClose }: SaveAsBlueprintDialogProps) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [name, setName] = useState(agent.name);
+  const [role, setRole] = useState(agent.role);
+  const [title, setTitle] = useState(agent.title ?? "");
+  const [capabilities, setCapabilities] = useState(agent.capabilities ?? "");
+  const [tags, setTags] = useState<string[]>(agent.tags ?? []);
+  const [budgetMonthlyCents, setBudgetMonthlyCents] = useState(agent.budgetMonthlyCents);
+  const [instructionsContent, setInstructionsContent] = useState("");
+
+  const { data: bundle } = useQuery({
+    queryKey: queryKeys.agents.instructionsBundle(agent.id),
+    queryFn: () => agentsApi.instructionsBundle(agent.id, companyId),
+    enabled: open && Boolean(companyId),
+  });
+
+  const entryFile = bundle?.entryFile ?? "AGENTS.md";
+  const { data: entryFileDetail } = useQuery({
+    queryKey: queryKeys.agents.instructionsFile(agent.id, entryFile),
+    queryFn: () => agentsApi.instructionsFile(agent.id, entryFile, companyId),
+    enabled: open && Boolean(bundle),
+  });
+
+  useEffect(() => {
+    if (entryFileDetail?.content && !instructionsContent) {
+      setInstructionsContent(entryFileDetail.content);
+    }
+  }, [entryFileDetail]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [roleOpen, setRoleOpen] = useState(false);
+  const [configValues, setConfigValues] = useState<CreateConfigValues>({
+    ...defaultCreateValues,
+    adapterType: agent.adapterType,
+    ...(agent.adapterConfig as Partial<CreateConfigValues>),
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const { data: skillSnapshot, isLoading: skillsLoading } = useQuery({
+    queryKey: queryKeys.agents.skills(agent.id),
+    queryFn: () => agentsApi.skills(agent.id, companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const { data: companySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId ?? ""),
+    queryFn: () => companySkillsApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
+
+  const availableSkills = useMemo(
+    () => (companySkills ?? []).filter((s) => !s.key.startsWith("paperclipai/paperclip/")),
+    [companySkills],
+  );
+
+  const [desiredSkills, setDesiredSkills] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!skillSnapshot) return;
+    const entryByKey = new Map(skillSnapshot.entries.map((e) => [e.key, e]));
+    setDesiredSkills(
+      skillSnapshot.desiredSkills.filter((key) => !entryByKey.get(key)?.required),
+    );
+  }, [skillSnapshot]);
+
+  const createMutation = useMutation({
+    mutationFn: (input: Parameters<typeof blueprintsApi.create>[0]) => blueprintsApi.create(input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.blueprints.all });
+      pushToast({ tone: "success", title: "Saved as blueprint" });
+      onClose();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : "Failed to save blueprint"),
+  });
+
+  function handleSave() {
+    setError(null);
+    const adapter = getUIAdapter(configValues.adapterType);
+    const adapterConfig = adapter.buildAdapterConfig(configValues);
+    createMutation.mutate({
+      name: name.trim(),
+      role: role as typeof AGENT_ROLES[number],
+      title: title.trim() || null,
+      capabilities: capabilities.trim() || null,
+      tags,
+      adapterType: configValues.adapterType,
+      adapterConfig,
+      runtimeConfig: agent.runtimeConfig ?? {},
+      budgetMonthlyCents: budgetMonthlyCents,
+      permissions: agent.permissions as unknown as Record<string, unknown>,
+      metadata: desiredSkills.length > 0 ? { desiredSkills } : null,
+      icon: agent.icon ?? null,
+      sourceAgentId: agent.id,
+      sourceBlueprintId: agent.sourceBlueprintId ?? null,
+      instructionsContent: instructionsContent.trim() || null,
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Save as Blueprint</DialogTitle>
+          <DialogDescription>
+            Create a reusable template from this agent's current configuration.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-1">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Name *</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Role</label>
+              <Popover open={roleOpen} onOpenChange={setRoleOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-accent/50 transition-colors"
+                  >
+                    <span>{AGENT_ROLE_LABELS[role as keyof typeof AGENT_ROLE_LABELS] ?? role}</span>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-40 p-1" align="start">
+                  {AGENT_ROLES.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        r === role && "bg-accent"
+                      )}
+                      onClick={() => { setRole(r); setRoleOpen(false); }}
+                    >
+                      {AGENT_ROLE_LABELS[r as keyof typeof AGENT_ROLE_LABELS] ?? r}
+                    </button>
+                  ))}
+                </PopoverContent>
+              </Popover>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</label>
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. VP of Engineering" />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Capabilities</label>
+            <textarea
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+              rows={2}
+              value={capabilities}
+              onChange={(e) => setCapabilities(e.target.value)}
+              placeholder="Brief description of what this agent can do"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Instructions</label>
+            <textarea
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+              rows={6}
+              value={instructionsContent}
+              onChange={(e) => setInstructionsContent(e.target.value)}
+              placeholder={bundle ? "Loading instructions…" : "Agent instructions (AGENTS.md content). Passed to the agent on every run."}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tags</label>
+            <div className="rounded-md border border-input bg-background px-3 py-1.5">
+              <TagsInput value={tags} onChange={setTags} />
+            </div>
+          </div>
+
+          <div className="border border-border rounded-md overflow-hidden">
+            <div className="px-3 py-2 bg-muted/30 border-b border-border">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Adapter Configuration</p>
+            </div>
+            <AgentConfigForm
+              mode="create"
+              values={configValues}
+              onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Desired Skills</label>
+            <SkillsMultiSelect
+              skills={availableSkills}
+              selected={desiredSkills}
+              onChange={setDesiredSkills}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly Budget (cents)</label>
+            <Input
+              type="number"
+              min={0}
+              value={budgetMonthlyCents}
+              onChange={(e) => setBudgetMonthlyCents(parseInt(e.target.value, 10) || 0)}
+              placeholder="0 = no limit"
+            />
+          </div>
+        </div>
+
+        {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={createMutation.isPending}>Cancel</Button>
+          <Button onClick={handleSave} disabled={createMutation.isPending || skillsLoading || !name.trim()}>
+            {createMutation.isPending ? "Saving…" : skillsLoading ? "Loading…" : "Save Blueprint"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1273,8 +1539,31 @@ function AgentOverview({
   agentId: string;
   agentRouteId: string;
 }) {
+  const { data: sourceBlueprint } = useQuery({
+    queryKey: queryKeys.blueprints.detail(agent.sourceBlueprintId ?? ""),
+    queryFn: () => blueprintsApi.get(agent.sourceBlueprintId!),
+    enabled: !!agent.sourceBlueprintId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   return (
     <div className="space-y-8">
+      {/* Blueprint lineage banner */}
+      {agent.sourceBlueprintId && (
+        <div className="inline-flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+          <Layers className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            Hired from blueprint:{" "}
+            <Link
+              to="/instance/blueprints"
+              className="font-medium text-foreground underline underline-offset-2 hover:opacity-80 transition-opacity"
+            >
+              {sourceBlueprint?.name ?? agent.sourceBlueprintId.slice(0, 8)}
+            </Link>
+          </span>
+        </div>
+      )}
+
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />
 
