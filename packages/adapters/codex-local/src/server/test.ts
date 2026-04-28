@@ -5,17 +5,138 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   asString,
-  asBoolean,
-  asStringArray,
   parseObject,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import { adapterExecutionTargetToRemoteSpec } from "@paperclipai/adapter-utils/execution-target";
+import { runSshCommand } from "@paperclipai/adapter-utils/ssh";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
+import { buildCodexExecArgs } from "./codex-args.js";
+
+function shellQuoteArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function testEnvironmentOverSsh(
+  ctx: AdapterEnvironmentTestContext,
+  sshConfig: Parameters<typeof runSshCommand>[0],
+): Promise<AdapterEnvironmentTestResult> {
+  const checks: AdapterEnvironmentCheck[] = [];
+  const config = parseObject(ctx.config);
+  const command = asString(config.command, "codex");
+  const remoteLabel = `${sshConfig.username}@${sshConfig.host}:${sshConfig.port}`;
+
+  try {
+    const cmdResult = await runSshCommand(
+      sshConfig,
+      `sh -lc 'command -v ${shellQuoteArg(command)} 2>/dev/null || true'`,
+      { timeoutMs: 10_000 },
+    );
+    const resolved = cmdResult.stdout.trim();
+    if (resolved) {
+      checks.push({
+        code: "codex_command_resolvable",
+        level: "info",
+        message: `Command is executable on ${remoteLabel}: ${resolved}`,
+      });
+    } else {
+      checks.push({
+        code: "codex_command_unresolvable",
+        level: "error",
+        message: `Command \`${command}\` is not on PATH on ${remoteLabel}`,
+        hint: "Install the codex CLI on the remote host or set adapter `command` to its absolute path.",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      code: "codex_command_unresolvable",
+      level: "error",
+      message: `Failed to probe codex command via SSH: ${err instanceof Error ? err.message : String(err)}`,
+      detail: remoteLabel,
+    });
+  }
+
+  try {
+    const authResult = await runSshCommand(
+      sshConfig,
+      `sh -lc 'if [ -f "$HOME/.codex/auth.json" ]; then ` +
+        `if command -v jq >/dev/null 2>&1; then ` +
+          `jq -r ".tokens.id_token // empty" "$HOME/.codex/auth.json" 2>/dev/null | awk -F. "{print \\$2}" | base64 -d 2>/dev/null | jq -r ".email // empty" 2>/dev/null; ` +
+        `else echo "auth-present"; fi; ` +
+      `else echo "missing"; fi'`,
+      { timeoutMs: 8_000 },
+    );
+    const out = authResult.stdout.trim();
+    if (out === "missing") {
+      checks.push({
+        code: "codex_native_auth_missing",
+        level: "warn",
+        message: `~/.codex/auth.json not found on ${remoteLabel}.`,
+        hint: "Run `codex login` on the remote host (or `ccrotate snap` after login) to populate it.",
+      });
+    } else if (out === "auth-present" || out === "") {
+      checks.push({
+        code: "codex_native_auth_present",
+        level: "info",
+        message: `Codex auth file present on ${remoteLabel}.`,
+      });
+    } else {
+      checks.push({
+        code: "codex_native_auth_present",
+        level: "info",
+        message: `Codex authenticated on ${remoteLabel}.`,
+        detail: `Logged in as ${out}.`,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      code: "codex_native_auth_check_failed",
+      level: "warn",
+      message: `Could not probe codex auth on ${remoteLabel}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    const rotResult = await runSshCommand(
+      sshConfig,
+      `sh -lc 'if command -v ccrotate >/dev/null 2>&1; then CCROTATE_TARGET=codex ccrotate when 2>&1 | head -20; else echo "not-installed"; fi'`,
+      { timeoutMs: 10_000 },
+    );
+    const out = rotResult.stdout.trim();
+    if (out === "not-installed") {
+      checks.push({
+        code: "ccrotate_not_installed",
+        level: "info",
+        message: `ccrotate is not installed on ${remoteLabel} — codex auth rotation is manual.`,
+      });
+    } else if (out) {
+      checks.push({
+        code: "ccrotate_state",
+        level: "info",
+        message: `ccrotate codex accounts on ${remoteLabel}:`,
+        detail: out,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      code: "ccrotate_probe_failed",
+      level: "info",
+      message: `ccrotate probe skipped: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  return {
+    adapterType: ctx.adapterType,
+    status: summarizeStatus(checks),
+    checks,
+    testedAt: new Date().toISOString(),
+  };
+}
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -55,6 +176,12 @@ const CODEX_AUTH_REQUIRED_RE =
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  // SSH-aware path: probe the actual host the agent runs on, not the pod.
+  const sshSpec = adapterExecutionTargetToRemoteSpec(ctx.executionTarget ?? null);
+  if (sshSpec) {
+    return testEnvironmentOverSsh(ctx, sshSpec);
+  }
+
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
@@ -140,31 +267,16 @@ export async function testEnvironment(
         hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
       });
     } else {
-      const model = asString(config.model, "").trim();
-      const modelReasoningEffort = asString(
-        config.modelReasoningEffort,
-        asString(config.reasoningEffort, ""),
-      ).trim();
-      const search = asBoolean(config.search, false);
-      const bypass = asBoolean(
-        config.dangerouslyBypassApprovalsAndSandbox,
-        asBoolean(config.dangerouslyBypassSandbox, false),
-      );
-      const extraArgs = (() => {
-        const fromExtraArgs = asStringArray(config.extraArgs);
-        if (fromExtraArgs.length > 0) return fromExtraArgs;
-        return asStringArray(config.args);
-      })();
-
-      const args = ["exec", "--json"];
-      if (search) args.unshift("--search");
-      if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
-      if (model) args.push("--model", model);
-      if (modelReasoningEffort) {
-        args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+      const execArgs = buildCodexExecArgs({ ...config, fastMode: false });
+      const args = execArgs.args;
+      if (execArgs.fastModeIgnoredReason) {
+        checks.push({
+          code: "codex_fast_mode_unsupported_model",
+          level: "warn",
+          message: execArgs.fastModeIgnoredReason,
+          hint: "Switch the agent model to GPT-5.4 or enter a manual model ID to enable Codex Fast mode.",
+        });
       }
-      if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("-");
 
       const probe = await runChildProcess(
         `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,

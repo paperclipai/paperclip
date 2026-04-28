@@ -23,18 +23,71 @@ export function trackCompanyImported(
   });
 }
 
+export function trackProjectCreated(client: TelemetryClient): void {
+  client.track("project.created");
+}
+
+export function trackRoutineCreated(client: TelemetryClient): void {
+  client.track("routine.created");
+}
+
+export function trackRoutineRun(
+  client: TelemetryClient,
+  dims: { source: string; status: string },
+): void {
+  client.track("routine.run", {
+    source: dims.source,
+    status: dims.status,
+  });
+}
+
+export function trackGoalCreated(
+  client: TelemetryClient,
+  dims?: { goalLevel?: string | null },
+): void {
+  client.track("goal.created", dims?.goalLevel ? { goal_level: dims.goalLevel } : undefined);
+}
+
+export function trackAgentCreated(
+  client: TelemetryClient,
+  dims: { agentRole: string; agentId?: string },
+): void {
+  client.track("agent.created", {
+    agent_role: dims.agentRole,
+    ...(dims.agentId ? { agent_id: dims.agentId } : {}),
+  });
+}
+
+export function trackSkillImported(
+  client: TelemetryClient,
+  dims: { sourceType: string; skillRef?: string | null },
+): void {
+  client.track("skill.imported", {
+    source_type: dims.sourceType,
+    ...(dims.skillRef ? { skill_ref: dims.skillRef } : {}),
+  });
+}
+
 export function trackAgentFirstHeartbeat(
   client: TelemetryClient,
-  dims: { agentRole: string },
+  dims: { agentRole: string; agentId?: string },
 ): void {
-  client.track("agent.first_heartbeat", { agent_role: dims.agentRole });
+  client.track("agent.first_heartbeat", {
+    agent_role: dims.agentRole,
+    ...(dims.agentId ? { agent_id: dims.agentId } : {}),
+  });
 }
 
 export function trackAgentTaskCompleted(
   client: TelemetryClient,
-  dims: { agentRole: string },
+  dims: { agentRole: string; agentId?: string; adapterType?: string; model?: string },
 ): void {
-  client.track("agent.task_completed", { agent_role: dims.agentRole });
+  client.track("agent.task_completed", {
+    agent_role: dims.agentRole,
+    ...(dims.agentId ? { agent_id: dims.agentId } : {}),
+    ...(dims.adapterType ? { adapter_type: dims.adapterType } : {}),
+    ...(dims.model ? { model: dims.model } : {}),
+  });
 }
 
 export function trackErrorHandlerCrash(

@@ -48,6 +48,7 @@ import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -154,6 +155,9 @@ export interface PluginLoaderOptions {
    * Defaults to ~/.paperclip/plugins/
    */
   localPluginDir?: string;
+
+  /** Optional direct Postgres connection used for plugin DDL migrations. */
+  migrationDb?: Db;
 
   /**
    * Whether to scan the local filesystem directory for plugins.
@@ -397,7 +401,10 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(
+    pluginId: string,
+    options: Omit<PluginInstallOptions, "installDir"> & { force?: boolean },
+  ): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
@@ -743,6 +750,7 @@ export function pluginLoader(
 ): PluginLoader {
   const {
     localPluginDir = DEFAULT_LOCAL_PLUGIN_DIR,
+    migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
   } = options;
@@ -1303,7 +1311,7 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir"> & { force?: boolean },
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
@@ -1325,6 +1333,7 @@ export function pluginLoader(
         // the caller to re-supply the path every time.
         localPath = plugin.packagePath ?? undefined,
         version,
+        force = false,
       } = upgradeOptions;
 
       log.info(
@@ -1355,14 +1364,20 @@ export function pluginLoader(
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
 
       if (escalated.length > 0) {
+        if (!force) {
+          log.warn(
+            { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
+            "plugin-loader: upgrade introduces new capabilities — requires admin approval",
+          );
+          throw new Error(
+            `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
+              `The previous version declared [${[...oldCaps].join(", ")}]. ` +
+              `Re-run with force=true (instance admin only) to approve the capability escalation.`,
+          );
+        }
         log.warn(
           { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+          "plugin-loader: capability escalation force-approved",
         );
       }
 
@@ -1614,8 +1629,14 @@ export function pluginLoader(
       toolDispatcher.unregisterPluginTools(pluginKey);
 
       // 4. Stop the worker process
+      //
+      // Stop on ANY handle present — not just `isRunning` — so transitional
+      // states (starting/stopping/errored) still clear the workers Map.
+      // Otherwise the handle leaks and the next startWorker either throws
+      // "already registered" or, after disable+enable, the lifecycle reports
+      // success but bridge calls 502 with "No worker registered".
       try {
-        if (workerManager.isRunning(pluginId)) {
+        if (workerManager.getWorker(pluginId)) {
           await workerManager.stopWorker(pluginId);
         }
       } catch (err) {
@@ -1712,14 +1733,22 @@ export function pluginLoader(
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
       const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
+      const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
 
       // ------------------------------------------------------------------
-      // 2. Build host handlers for this plugin
+      // 2. Apply restricted database migrations before worker startup
+      // ------------------------------------------------------------------
+      const databaseNamespace = manifest.database
+        ? (await pluginDatabaseService(migrationDb).applyMigrations(pluginId, manifest, packageRoot))?.namespaceName ?? null
+        : null;
+
+      // ------------------------------------------------------------------
+      // 3. Build host handlers for this plugin
       // ------------------------------------------------------------------
       const hostHandlers = buildHostHandlers(pluginId, manifest);
 
       // ------------------------------------------------------------------
-      // 3. Retrieve plugin config (if any)
+      // 4. Retrieve plugin config (if any)
       // ------------------------------------------------------------------
       let config: Record<string, unknown> = {};
       try {
@@ -1733,7 +1762,7 @@ export function pluginLoader(
       }
 
       // ------------------------------------------------------------------
-      // 4. Spawn worker process
+      // 5. Spawn worker process
       // ------------------------------------------------------------------
       const workerOptions: WorkerStartOptions = {
         entrypointPath: workerEntrypoint,
@@ -1741,6 +1770,7 @@ export function pluginLoader(
         config,
         instanceInfo,
         apiVersion: manifest.apiVersion,
+        databaseNamespace,
         hostHandlers,
         autoRestart: true,
       };
@@ -1775,7 +1805,7 @@ export function pluginLoader(
       );
 
       // ------------------------------------------------------------------
-      // 5. Sync job declarations and register with scheduler
+      // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
       if (jobDeclarations.length > 0) {
@@ -1962,6 +1992,26 @@ function resolveWorkerEntrypoint(
       `Checked: ${path.resolve(packageDir, workerRelPath)}, ` +
       `${path.resolve(directDir, workerRelPath)}`,
   );
+}
+
+function resolvePluginPackageRoot(
+  plugin: PluginRecord & { packagePath?: string | null },
+  localPluginDir: string,
+): string {
+  if (plugin.packagePath && existsSync(plugin.packagePath)) {
+    return path.resolve(plugin.packagePath);
+  }
+
+  const packageName = plugin.packageName;
+  const packageDir = packageName.startsWith("@")
+    ? path.join(localPluginDir, "node_modules", ...packageName.split("/"))
+    : path.join(localPluginDir, "node_modules", packageName);
+  if (existsSync(packageDir)) return packageDir;
+
+  const directDir = path.join(localPluginDir, packageName);
+  if (existsSync(directDir)) return directDir;
+
+  throw new Error(`Package root not found for plugin "${plugin.pluginKey}"`);
 }
 
 function resolveManagedInstallPackageDir(localPluginDir: string, packageName: string): string {

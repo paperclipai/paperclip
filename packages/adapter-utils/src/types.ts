@@ -2,6 +2,9 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { AdapterExecutionTarget } from "./execution-target.js";
+
 export interface AdapterAgent {
   id: string;
   companyId: string;
@@ -61,12 +64,16 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export type AdapterExecutionErrorFamily = "transient_upstream";
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
   errorMessage?: string | null;
   errorCode?: string | null;
+  errorFamily?: AdapterExecutionErrorFamily | null;
+  retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
@@ -119,9 +126,17 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Legacy remote transport view. Prefer `executionTarget`, which is the
+   * provider-neutral contract produced by core runtime code.
+   */
+  executionTransport?: {
+    remoteExecution?: Record<string, unknown> | null;
+  };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
-  onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
 
@@ -208,6 +223,13 @@ export interface AdapterEnvironmentTestContext {
     bindHost?: string | null;
     allowedHostnames?: string[];
   };
+  /**
+   * The execution target the agent runs on. When provided and remote (SSH/
+   * sandbox), adapter testEnvironment implementations should redirect
+   * auth/probe checks to that target — running locally tests the wrong place
+   * (the pod has no codex/claude credentials, only the SSH host does).
+   */
+  executionTarget?: AdapterExecutionTarget | null;
 }
 
 /** Payload for the onHireApproved adapter lifecycle hook (e.g. join-request or hire_agent approval). */
@@ -262,6 +284,34 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+// ---------------------------------------------------------------------------
+// Adapter config schema — declarative UI config for external adapters
+// ---------------------------------------------------------------------------
+
+export interface ConfigFieldOption {
+  label: string;
+  value: string;
+  /** Optional group key for categorizing options (e.g. provider name) */
+  group?: string;
+}
+
+export interface ConfigFieldSchema {
+  key: string;
+  label: string;
+  type: "text" | "select" | "toggle" | "number" | "textarea" | "combobox";
+  options?: ConfigFieldOption[];
+  default?: unknown;
+  hint?: string;
+  required?: boolean;
+  group?: string;
+  /** Optional metadata — not rendered, but available to custom UI logic */
+  meta?: Record<string, unknown>;
+}
+
+export interface AdapterConfigSchema {
+  fields: ConfigFieldSchema[];
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -273,6 +323,13 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  /**
+   * Optional explicit refresh hook for model discovery.
+   * Use this when the adapter caches discovered models and needs a bypass path
+   * so the UI can fetch newly released models without waiting for cache expiry
+   * or a Paperclip code update.
+   */
+  refreshModels?: () => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -293,7 +350,44 @@ export interface ServerAdapterModule {
    * Returns the detected model/provider and the config source, or null if
    * the adapter does not support detection or no config is found.
    */
-  detectModel?: () => Promise<{ model: string; provider: string; source: string } | null>;
+  detectModel?: () => Promise<{ model: string; provider: string; source: string; candidates?: string[] } | null>;
+  /**
+   * Optional: return a declarative config schema so the UI can render
+   * adapter-specific form fields without shipping React components.
+   * Dynamic options (e.g. scanning a profiles directory) should be
+   * resolved inside this method — the caller receives a fully hydrated schema.
+   */
+  getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
+
+  // ---------------------------------------------------------------------------
+  // Adapter capability flags
+  //
+  // These allow adapter plugins to declare what "local" capabilities they
+  // support, replacing hardcoded type lists in the server and UI.
+  // All flags are optional — when undefined, the server falls back to
+  // legacy hardcoded lists for built-in adapters.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Adapter supports managed instructions bundle (AGENTS.md files).
+   * When true, the server uses instructionsPathKey (default "instructionsFilePath")
+   * to resolve the instructions config key, and the UI shows the bundle editor.
+   * Built-in local adapters default to true; external plugins must opt in.
+   */
+  supportsInstructionsBundle?: boolean;
+
+  /**
+   * The adapterConfig key that holds the instructions file path.
+   * Defaults to "instructionsFilePath" when supportsInstructionsBundle is true.
+   */
+  instructionsPathKey?: string;
+
+  /**
+   * Adapter needs runtime skill entries materialized (written to disk)
+   * before being passed via config. Used by adapters that scan a directory
+   * rather than reading config.paperclipRuntimeSkills.
+   */
+  requiresMaterializedRuntimeSkills?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +404,8 @@ export type TranscriptEntry =
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
-  | { kind: "stdout"; ts: string; text: string };
+  | { kind: "stdout"; ts: string; text: string }
+  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string };
 
 export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 
@@ -337,6 +432,7 @@ export interface CreateConfigValues {
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;
+  fastMode: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;
@@ -351,7 +447,10 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  /** Arbitrary key-value pairs populated by schema-driven config fields. */
+  adapterSchemaValues?: Record<string, unknown>;
 }

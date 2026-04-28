@@ -37,14 +37,18 @@ Built-in adapters:
 - `claude_local`: runs your local `claude` CLI
 - `codex_local`: runs your local `codex` CLI
 - `opencode_local`: runs your local `opencode` CLI
-- `hermes_local`: runs your local `hermes` CLI
 - `cursor`: runs Cursor in background mode
 - `pi_local`: runs an embedded Pi agent locally
+- `hermes_local`: runs your local `hermes` CLI (`hermes-paperclip-adapter`)
 - `openclaw_gateway`: connects to an OpenClaw gateway endpoint
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+External plugin adapters (install via the adapter manager or API):
+
+- `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
+
+For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
 ## 3.2 Runtime behavior
 
@@ -120,14 +124,14 @@ If the connection drops, the UI reconnects automatically.
 
 1. Enable timer wakeups (for example every 300s)
 2. Keep assignment wakeups on
-3. Use a focused prompt template
+3. Use a focused prompt template that tells agents to act in the same heartbeat, leave durable progress, and mark blocked work with an owner/action
 4. Watch run logs and adjust prompt/config over time
 
 ## 7.2 Event-driven loop (less constant polling)
 
 1. Disable timer or set a long interval
 2. Keep wake-on-assignment enabled
-3. Use on-demand wakeups for manual nudges
+3. Use child issues, comments, and on-demand wakeups for handoffs instead of loops that poll agents, sessions, or processes
 
 ## 7.3 Safety-first loop
 
@@ -173,7 +177,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 
 ## 10. Minimal setup checklist
 
-1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`).
+1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
 2. Set `cwd` to the target workspace (for local adapters).
 3. Optionally add a prompt template (`promptTemplate`) or use the managed instructions bundle.
 4. Configure heartbeat policy (timer and/or assignment wakeups).

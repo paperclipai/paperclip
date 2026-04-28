@@ -116,21 +116,7 @@ function setVersion(version) {
     writeFileSync(pkg.pkgPath, `${JSON.stringify(nextPkg, null, 2)}\n`);
   }
 
-  const cliEntryPath = join(repoRoot, "cli/src/index.ts");
-  const cliEntry = readFileSync(cliEntryPath, "utf8");
-  const nextCliEntry = cliEntry.replace(
-    /\.version\("([^"]+)"\)/,
-    `.version("${version}")`,
-  );
-
-  if (cliEntry !== nextCliEntry) {
-    writeFileSync(cliEntryPath, nextCliEntry);
-    return;
-  }
-
-  if (!cliEntry.includes(".version(cliVersion)")) {
-    throw new Error("failed to rewrite CLI version string in cli/src/index.ts");
-  }
+  // CLI `--version` reads `cliVersion` from cli/package.json via cli/src/version.ts — no index.ts rewrite needed.
 }
 
 function listPackages() {

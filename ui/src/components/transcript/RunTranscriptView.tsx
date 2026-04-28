@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  GitCompare,
   TerminalSquare,
   User,
   Wrench,
@@ -14,6 +15,11 @@ import {
 
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
+
+const RAW_VIRTUALIZATION_THRESHOLD = 300;
+const RAW_OVERSCAN_ROWS = 40;
+const RAW_ESTIMATED_ROW_HEIGHT = 36;
+const RAW_INITIAL_ROWS = 180;
 
 interface RunTranscriptViewProps {
   entries: TranscriptEntry[];
@@ -93,6 +99,12 @@ type TranscriptBlock =
       lines: Array<{ ts: string; text: string }>;
     }
   | {
+      type: "system_group";
+      ts: string;
+      endTs?: string;
+      lines: Array<{ ts: string; text: string }>;
+    }
+  | {
       type: "stdout";
       ts: string;
       text: string;
@@ -104,6 +116,16 @@ type TranscriptBlock =
       tone: "info" | "warn" | "error" | "neutral";
       text: string;
       detail?: string;
+    }
+  | {
+      type: "diff_group";
+      ts: string;
+      endTs?: string;
+      filePath?: string;
+      hunks: Array<{
+        changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
+        text: string;
+      }>;
     };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -491,6 +513,10 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         label: "result",
         tone: entry.isError ? "error" : "info",
         text: entry.text.trim() || entry.errors[0] || (entry.isError ? "Run failed" : "Completed"),
+        detail:
+          !entry.isError && entry.text.trim().length > 0
+            ? `${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
+            : undefined,
       });
       continue;
     }
@@ -543,13 +569,19 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         }
         continue;
       }
-      blocks.push({
-        type: "event",
-        ts: entry.ts,
-        label: "system",
-        tone: "warn",
-        text: entry.text,
-      });
+      // Batch consecutive system events into a single collapsible group
+      const prev = blocks[blocks.length - 1];
+      if (prev && prev.type === "system_group") {
+        prev.lines.push({ ts: entry.ts, text: entry.text });
+        prev.endTs = entry.ts;
+      } else {
+        blocks.push({
+          type: "system_group",
+          ts: entry.ts,
+          endTs: entry.ts,
+          lines: [{ ts: entry.ts, text: entry.text }],
+        });
+      }
       continue;
     }
 
@@ -561,6 +593,28 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       activeCommandBlock.result = activeCommandBlock.result
         ? `${activeCommandBlock.result}${activeCommandBlock.result.endsWith("\n") || entry.text.startsWith("\n") ? entry.text : `\n${entry.text}`}`
         : entry.text;
+      continue;
+    }
+
+    // ── Diff entries — accumulate into diff_group blocks ──────────
+    if (entry.kind === "diff") {
+      const prev = blocks[blocks.length - 1];
+      if (prev && prev.type === "diff_group") {
+        if (entry.changeType === "file_header") {
+          // New file in the same diff block — update filePath
+          prev.filePath = entry.text;
+        }
+        prev.hunks.push({ changeType: entry.changeType, text: entry.text });
+        prev.endTs = entry.ts;
+      } else {
+        blocks.push({
+          type: "diff_group",
+          ts: entry.ts,
+          endTs: entry.ts,
+          filePath: entry.changeType === "file_header" ? entry.text : undefined,
+          hunks: [{ changeType: entry.changeType, text: entry.text }],
+        });
+      }
       continue;
     }
 
@@ -1062,9 +1116,14 @@ function TranscriptEventRow({
         )}
         <div className="min-w-0 flex-1">
           {block.label === "result" && block.tone !== "error" ? (
-            <div className={cn("whitespace-pre-wrap break-words text-sky-700 dark:text-sky-300", compact ? "text-[11px]" : "text-xs")}>
+            <MarkdownBody
+              className={cn(
+                "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 text-sky-700 dark:text-sky-300",
+                compact ? "text-[11px] leading-5" : "text-xs leading-5",
+              )}
+            >
               {block.text}
-            </div>
+            </MarkdownBody>
           ) : (
             <div className={cn("whitespace-pre-wrap break-words", compact ? "text-[11px]" : "text-xs")}>
               <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
@@ -1080,6 +1139,103 @@ function TranscriptEventRow({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function TranscriptDiffGroup({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "diff_group" }>;
+  density: TranscriptDensity;
+}) {
+  const [open, setOpen] = useState(false);
+  const compact = density === "compact";
+
+  // Count add/remove lines (exclude context, hunk, file_header, truncation)
+  const addCount = block.hunks.filter((h) => h.changeType === "add").length;
+  const removeCount = block.hunks.filter((h) => h.changeType === "remove").length;
+  const hasChanges = addCount > 0 || removeCount > 0;
+
+  // Extract a short file name from the path
+  const shortFile = block.filePath
+    ? block.filePath.split("/").pop() ?? block.filePath
+    : "diff";
+
+  return (
+    <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-2">
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex cursor-pointer items-center gap-2"
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
+      >
+        <GitCompare className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
+        <span className={cn("text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-700 dark:text-blue-300")}>
+          {shortFile}
+        </span>
+        {hasChanges && (
+          <span className="text-[10px] tabular-nums">
+            <span className="text-emerald-600 dark:text-emerald-400">+{addCount}</span>
+            {" "}
+            <span className="text-red-600 dark:text-red-400">-{removeCount}</span>
+          </span>
+        )}
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      </div>
+      {open && (
+        <pre className={cn(
+          "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono pl-5",
+          compact ? "text-[11px]" : "text-xs",
+        )}>
+          {block.hunks.map((hunk, i) => {
+            const key = `${i}-${hunk.changeType}`;
+            switch (hunk.changeType) {
+              case "remove":
+                return (
+                  <span key={key} className="block bg-red-500/[0.10] text-red-700 dark:text-red-300 -mx-2 px-2">
+                    <span className="select-none mr-2 text-red-500/60 dark:text-red-400/50">-</span>
+                    {hunk.text}
+                    {"\n"}
+                  </span>
+                );
+              case "add":
+                return (
+                  <span key={key} className="block bg-emerald-500/[0.10] text-emerald-700 dark:text-emerald-300 -mx-2 px-2">
+                    <span className="select-none mr-2 text-emerald-500/60 dark:text-emerald-400/50">+</span>
+                    {hunk.text}
+                    {"\n"}
+                  </span>
+                );
+              case "file_header":
+                return (
+                  <span key={key} className="block font-semibold text-blue-600 dark:text-blue-300 mt-2 first:mt-0">
+                    {hunk.text}
+                    {"\n"}
+                  </span>
+                );
+              case "truncation":
+                return (
+                  <span key={key} className="block text-muted-foreground italic mt-1">
+                    {hunk.text}
+                    {"\n"}
+                  </span>
+                );
+              case "context":
+              default:
+                return (
+                  <span key={key} className="block text-muted-foreground/70">
+                    {" "}
+                    {hunk.text}
+                    {"\n"}
+                  </span>
+                );
+            }
+          })}
+        </pre>
+      )}
     </div>
   );
 }
@@ -1112,6 +1268,43 @@ function TranscriptStderrGroup({
           {block.lines.map((line, i) => (
             <span key={`${line.ts}-${i}`}>
               <span className="select-none text-amber-500/50 dark:text-amber-400/40">{i > 0 ? "\n" : ""}</span>
+              {line.text}
+            </span>
+          ))}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function TranscriptSystemGroup({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "system_group" }>;
+  density: TranscriptDensity;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-2 text-blue-700 dark:text-blue-300">
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex cursor-pointer items-center gap-2"
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
+      >
+        <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
+          {block.lines.length} system {block.lines.length === 1 ? "message" : "messages"}
+        </span>
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      </div>
+      {open && (
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-blue-700/80 dark:text-blue-300/80 pl-5">
+          {block.lines.map((line, i) => (
+            <span key={`${line.ts}-${i}`}>
+              <span className="select-none text-blue-500/40 dark:text-blue-400/30">{i > 0 ? "\n" : ""}</span>
               {line.text}
             </span>
           ))}
@@ -1159,6 +1352,34 @@ function TranscriptStdoutRow({
   );
 }
 
+function findScrollParent(element: HTMLElement): HTMLElement | Window {
+  let current = element.parentElement;
+  while (current) {
+    const style = window.getComputedStyle(current);
+    if (/(auto|scroll)/.test(style.overflowY) && current.scrollHeight > current.clientHeight) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return window;
+}
+
+function rawEntryContent(entry: TranscriptEntry): string {
+  if (entry.kind === "tool_call") {
+    return `${entry.name}\n${formatToolPayload(entry.input)}`;
+  }
+  if (entry.kind === "tool_result") {
+    return formatToolPayload(entry.content);
+  }
+  if (entry.kind === "result") {
+    return `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`;
+  }
+  if (entry.kind === "init") {
+    return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
+  }
+  return entry.text;
+}
+
 function RawTranscriptView({
   entries,
   density,
@@ -1167,11 +1388,63 @@ function RawTranscriptView({
   density: TranscriptDensity;
 }) {
   const compact = density === "compact";
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const shouldVirtualize = entries.length > RAW_VIRTUALIZATION_THRESHOLD;
+  const [range, setRange] = useState(() => ({
+    start: 0,
+    end: Math.min(entries.length, shouldVirtualize ? RAW_INITIAL_ROWS : entries.length),
+  }));
+
+  useEffect(() => {
+    if (!shouldVirtualize) {
+      setRange({ start: 0, end: entries.length });
+      return;
+    }
+
+    const list = listRef.current;
+    if (!list) return;
+
+    const scrollParent = findScrollParent(list);
+    const updateRange = () => {
+      const scrollElement: HTMLElement | null = scrollParent === window ? null : (scrollParent as HTMLElement);
+      const scrollerTop = scrollElement ? scrollElement.getBoundingClientRect().top : 0;
+      const scrollerHeight = scrollElement ? scrollElement.clientHeight : window.innerHeight;
+      const listTop = list.getBoundingClientRect().top;
+      const visibleTop = Math.max(0, scrollerTop - listTop);
+      const visibleBottom = Math.max(visibleTop + scrollerHeight, 0);
+      const nextStart = Math.max(0, Math.floor(visibleTop / RAW_ESTIMATED_ROW_HEIGHT) - RAW_OVERSCAN_ROWS);
+      const nextEnd = Math.min(
+        entries.length,
+        Math.ceil(visibleBottom / RAW_ESTIMATED_ROW_HEIGHT) + RAW_OVERSCAN_ROWS,
+      );
+      setRange((current) => (
+        current.start === nextStart && current.end === nextEnd
+          ? current
+          : { start: nextStart, end: nextEnd }
+      ));
+    };
+
+    updateRange();
+    const frame = window.requestAnimationFrame(updateRange);
+    scrollParent.addEventListener("scroll", updateRange, { passive: true });
+    window.addEventListener("resize", updateRange);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      scrollParent.removeEventListener("scroll", updateRange);
+      window.removeEventListener("resize", updateRange);
+    };
+  }, [entries.length, shouldVirtualize]);
+
+  const visibleEntries = shouldVirtualize ? entries.slice(range.start, range.end) : entries;
+  const topSpacer = shouldVirtualize ? range.start * RAW_ESTIMATED_ROW_HEIGHT : 0;
+  const bottomSpacer = shouldVirtualize ? Math.max(0, entries.length - range.end) * RAW_ESTIMATED_ROW_HEIGHT : 0;
+
   return (
-    <div className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
-      {entries.map((entry, idx) => (
+    <div ref={listRef} className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
+      {topSpacer > 0 && <div aria-hidden="true" style={{ height: topSpacer }} />}
+      {visibleEntries.map((entry, idx) => (
         <div
-          key={`${entry.kind}-${entry.ts}-${idx}`}
+          key={`${entry.kind}-${entry.ts}-${range.start + idx}`}
           className={cn(
             "grid gap-x-3",
             "grid-cols-[auto_1fr]",
@@ -1181,18 +1454,11 @@ function RawTranscriptView({
             {entry.kind}
           </span>
           <pre className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">
-            {entry.kind === "tool_call"
-              ? `${entry.name}\n${formatToolPayload(entry.input)}`
-              : entry.kind === "tool_result"
-                ? formatToolPayload(entry.content)
-                : entry.kind === "result"
-                  ? `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
-                  : entry.kind === "init"
-                    ? `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`
-                    : entry.text}
+            {rawEntryContent(entry)}
           </pre>
         </div>
       ))}
+      {bottomSpacer > 0 && <div aria-hidden="true" style={{ height: bottomSpacer }} />}
     </div>
   );
 }
@@ -1208,7 +1474,10 @@ export function RunTranscriptView({
   className,
   thinkingClassName,
 }: RunTranscriptViewProps) {
-  const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
+  const blocks = useMemo(
+    () => (mode === "raw" ? [] : normalizeTranscript(entries, streaming)),
+    [entries, mode, streaming],
+  );
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
 
@@ -1242,7 +1511,9 @@ export function RunTranscriptView({
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
           {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
           {block.type === "tool_group" && <TranscriptToolGroup block={block} density={density} />}
+          {block.type === "diff_group" && <TranscriptDiffGroup block={block} density={density} />}
           {block.type === "stderr_group" && <TranscriptStderrGroup block={block} density={density} />}
+          {block.type === "system_group" && <TranscriptSystemGroup block={block} density={density} />}
           {block.type === "stdout" && (
             <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
           )}

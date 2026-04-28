@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { NavLink, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, CornerDownRight, Plus } from "lucide-react";
+import { Link, NavLink, useLocation } from "@/lib/router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ChevronRight,
+  CornerDownRight,
+  MoreHorizontal,
+  PauseCircle,
+  Pencil,
+  PlayCircle,
+  Plus,
+} from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
+import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
@@ -19,12 +29,22 @@ import {
 } from "../lib/sidebar-agent-tree";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { Agent } from "@paperclipai/shared";
+
+type AgentPauseAction = "pause" | "resume";
 
 const SIDEBAR_AGENT_TREE_STORAGE_PREFIX = "paperclip.sidebarAgentTree";
 
@@ -62,6 +82,8 @@ type SidebarAgentTreeListProps = {
   liveCountByAgent: Map<string, number>;
   expandedAgentIds: Set<string>;
   onToggleExpanded: (agentId: string) => void;
+  pendingAgentIds: Set<string>;
+  onPauseResume: (agent: Agent, action: AgentPauseAction) => void;
 };
 
 function SidebarAgentTreeList({
@@ -74,6 +96,8 @@ function SidebarAgentTreeList({
   liveCountByAgent,
   expandedAgentIds,
   onToggleExpanded,
+  pendingAgentIds,
+  onPauseResume,
 }: SidebarAgentTreeListProps) {
   return (
     <>
@@ -89,6 +113,8 @@ function SidebarAgentTreeList({
           liveCountByAgent={liveCountByAgent}
           expandedAgentIds={expandedAgentIds}
           onToggleExpanded={onToggleExpanded}
+          pendingAgentIds={pendingAgentIds}
+          onPauseResume={onPauseResume}
         />
       ))}
     </>
@@ -110,17 +136,30 @@ function SidebarAgentTreeItem({
   liveCountByAgent,
   expandedAgentIds,
   onToggleExpanded,
+  pendingAgentIds,
+  onPauseResume,
 }: SidebarAgentTreeItemProps) {
   const { agent, children } = node;
   const hasChildren = children.length > 0;
   const expanded = hasChildren && expandedAgentIds.has(agent.id);
   const runCount = liveCountByAgent.get(agent.id) ?? 0;
+  const editHref = `${agentUrl(agent)}/configuration`;
+  const disabled = pendingAgentIds.has(agent.id);
+  const isPaused = agent.status === "paused";
+  const isBudgetPaused = isPaused && agent.pauseReason === "budget";
+  const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
+  const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused;
+  const pauseResumeDisabledLabel = disabled
+    ? "Updating..."
+    : isBudgetPaused
+      ? "Budget paused"
+      : pauseResumeLabel;
 
   return (
     <>
       <div
         className={cn(
-          "flex items-center gap-2.5 pl-3 text-[13px] font-medium transition-colors",
+          "group/agent relative flex items-center gap-2.5 pl-3 text-[13px] font-medium transition-colors",
           activeAgentId === agentRouteRef(agent)
             ? "bg-accent text-foreground"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
@@ -149,10 +188,11 @@ function SidebarAgentTreeItem({
         )}
         <NavLink
           to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
+          state={SIDEBAR_SCROLL_RESET_STATE}
           onClick={() => {
             if (isMobile) onNavigate();
           }}
-          className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pr-3"
+          className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pr-8"
         >
           <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
           <span className="flex-1 truncate">{agent.name}</span>
@@ -175,6 +215,49 @@ function SidebarAgentTreeItem({
             </span>
           )}
         </NavLink>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
+                isMobile
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
+              )}
+              aria-label={`Open actions for ${agent.name}`}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem asChild>
+              <Link
+                to={editHref}
+                onClick={() => {
+                  if (isMobile) onNavigate();
+                }}
+              >
+                <Pencil className="size-4" />
+                <span>Edit agent</span>
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => {
+                if (pauseResumeDisabled) return;
+                onPauseResume(agent, isPaused ? "resume" : "pause");
+              }}
+              disabled={pauseResumeDisabled}
+              title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+            >
+              {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
+              <span>{pauseResumeDisabledLabel}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {hasChildren && expanded ? (
         <SidebarAgentTreeList
@@ -187,6 +270,8 @@ function SidebarAgentTreeItem({
           liveCountByAgent={liveCountByAgent}
           expandedAgentIds={expandedAgentIds}
           onToggleExpanded={onToggleExpanded}
+          pendingAgentIds={pendingAgentIds}
+          onPauseResume={onPauseResume}
         />
       ) : null}
     </>
@@ -195,9 +280,12 @@ function SidebarAgentTreeItem({
 
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
+  const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
+  const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { pushToast } = useToastActions();
   const location = useLocation();
 
   const { data: agents } = useQuery({
@@ -288,6 +376,59 @@ export function SidebarAgents() {
     }
   }, [activeAgentId, expandedAgentIds, storageKey, treeAgents]);
 
+  const pauseResumeAgent = useMutation({
+    mutationFn: ({ agent, action }: { agent: Agent; action: AgentPauseAction }) =>
+      action === "pause"
+        ? agentsApi.pause(agent.id, selectedCompanyId ?? undefined)
+        : agentsApi.resume(agent.id, selectedCompanyId ?? undefined),
+    onMutate: ({ agent }) => {
+      setPendingAgentIds((current) => {
+        const next = new Set(current);
+        next.add(agent.id);
+        return next;
+      });
+    },
+    onSuccess: async (_agent, { agent, action }) => {
+      if (selectedCompanyId) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) }),
+        ]);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
+      ]);
+      pushToast({
+        title: action === "pause" ? "Agent paused" : "Agent resumed",
+        body: agent.name,
+        tone: "success",
+      });
+    },
+    onError: (error, { agent, action }) => {
+      pushToast({
+        title: action === "pause" ? "Could not pause agent" : "Could not resume agent",
+        body: error instanceof Error ? error.message : agent.name,
+        tone: "error",
+      });
+    },
+    onSettled: (_data, _error, { agent }) => {
+      setPendingAgentIds((current) => {
+        const next = new Set(current);
+        next.delete(agent.id);
+        return next;
+      });
+    },
+  });
+
+  const handlePauseResume = useCallback(
+    (agent: Agent, action: AgentPauseAction) => {
+      pauseResumeAgent.mutate({ agent, action });
+    },
+    [pauseResumeAgent],
+  );
+
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
@@ -327,6 +468,8 @@ export function SidebarAgents() {
             liveCountByAgent={liveCountByAgent}
             expandedAgentIds={expandedAgentIdSet}
             onToggleExpanded={toggleExpandedAgent}
+            pendingAgentIds={pendingAgentIds}
+            onPauseResume={handlePauseResume}
           />
         </div>
       </CollapsibleContent>

@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { routineRoutes } from "../routes/routines.js";
-import { errorHandler } from "../middleware/index.js";
 
 const companyId = "22222222-2222-4222-8222-222222222222";
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -82,14 +80,45 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  logActivity: mockLogActivity,
-  routineService: () => mockRoutineService,
-}));
+function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
-function createApp(actor: Record<string, unknown>) {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackRoutineCreated: mockTrackRoutineCreated,
+    trackErrorHandlerCrash: vi.fn(),
+  }));
+
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/routines.js", () => ({
+    routineService: () => mockRoutineService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    logActivity: mockLogActivity,
+    routineService: () => mockRoutineService,
+  }));
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ errorHandler }, { routineRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -103,7 +132,19 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("routine routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../routes/routines.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.clearAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
@@ -118,7 +159,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission for non-admin board routine creation", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -140,7 +181,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to retarget a routine assignee", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -161,7 +202,7 @@ describe("routine routes", () => {
 
   it("requires tasks:assign permission to reactivate a routine", async () => {
     mockRoutineService.get.mockResolvedValue(pausedRoutine);
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -181,7 +222,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to create a trigger", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -203,7 +244,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to update a trigger", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -223,7 +264,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to manually run a routine", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -240,9 +281,32 @@ describe("routine routes", () => {
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
   });
 
+  it("passes the board actor through when manually running a routine", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/run`)
+      .send({});
+
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenCalledWith(routineId, {
+      source: "manual",
+    }, {
+      agentId: null,
+      userId: "board-user",
+    });
+  });
+
   it("allows routine creation when the board user has tasks:assign", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -267,5 +331,6 @@ describe("routine routes", () => {
       agentId: null,
       userId: "board-user",
     });
+    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
 });

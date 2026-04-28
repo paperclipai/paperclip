@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -8,14 +7,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
   agents,
-  applyPendingMigrations,
   companies,
   companySkills,
   costEvents,
   createDb,
   documents,
   documentRevisions,
-  ensurePostgresDatabase,
   feedbackExports,
   feedbackVotes,
   heartbeatRuns,
@@ -25,87 +22,24 @@ import {
   issues,
 } from "@paperclipai/db";
 import { feedbackService } from "../services/feedback.ts";
+import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
-}
-
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-service-"));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  await applyPendingMigrations(connectionString);
-  return { connectionString, dataDir, instance };
+async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
+  await db?.$client?.end?.({ timeout: 0 });
 }
 
 describe("feedbackService.saveIssueVote", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof feedbackService>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let tempDirs: string[] = [];
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
+    const started = await startEmbeddedPostgresTestDatabase("paperclip-feedback-service-");
     db = createDb(started.connectionString);
     svc = feedbackService(db);
-    instance = started.instance;
-    dataDir = started.dataDir;
-  }, 20_000);
+    tempDb = started;
+  }, 120_000);
 
   afterEach(async () => {
     await db.delete(feedbackExports);
@@ -129,10 +63,8 @@ describe("feedbackService.saveIssueVote", () => {
   });
 
   afterAll(async () => {
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await closeDbClient(db);
+    await tempDb?.cleanup();
   });
 
   async function seedIssueWithAgentComment() {
@@ -187,7 +119,11 @@ describe("feedbackService.saveIssueVote", () => {
     const targetCommentId = randomUUID();
     const earlierCommentId = randomUUID();
     const laterCommentId = randomUUID();
-    const runId = randomUUID();
+    // Use a deterministic UUID whose hyphen-separated segments cannot be
+    // mistaken for a phone number by the PII redactor's phone regex.
+    // Random UUIDs occasionally produce digit pairs like "4880-8614" that
+    // cross segment boundaries and match the phone pattern.
+    const runId = "abcde123-face-beef-cafe-abcdef654321";
     const instructionsDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-instructions-"));
     tempDirs.push(instructionsDir);
     const instructionsPath = path.join(instructionsDir, "AGENTS.md");
@@ -1065,6 +1001,73 @@ describe("feedbackService.saveIssueVote", () => {
     });
   });
 
+  it("can flush a single shared trace immediately by trace id", async () => {
+    const { companyId, issueId, commentId: firstCommentId } = await seedIssueWithAgentComment();
+    const secondCommentId = randomUUID();
+    const agentId = await db
+      .select({ authorAgentId: issueComments.authorAgentId })
+      .from(issueComments)
+      .where(eq(issueComments.id, firstCommentId))
+      .then((rows) => rows[0]?.authorAgentId ?? null);
+
+    await db.insert(issueComments).values({
+      id: secondCommentId,
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Second AI generated update",
+    });
+
+    const uploadTraceBundle = vi.fn().mockResolvedValue({
+      objectKey: `feedback-traces/${companyId}/2026/04/01/test-trace.json`,
+    });
+    const flushingSvc = feedbackService(db, {
+      shareClient: {
+        uploadTraceBundle,
+      },
+    });
+
+    const first = await flushingSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: firstCommentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+    await flushingSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: secondCommentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    const flushResult = await flushingSvc.flushPendingFeedbackTraces({
+      companyId,
+      traceId: first.traceId ?? undefined,
+      limit: 1,
+    });
+
+    expect(flushResult).toMatchObject({
+      attempted: 1,
+      sent: 1,
+      failed: 0,
+    });
+    expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+
+    const traces = await flushingSvc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    const firstTrace = traces.find((trace) => trace.targetId === firstCommentId);
+    const secondTrace = traces.find((trace) => trace.targetId === secondCommentId);
+    expect(firstTrace?.status).toBe("sent");
+    expect(secondTrace?.status).toBe("pending");
+  });
+
   it("marks pending shared traces as failed when remote export upload fails", async () => {
     const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
     const uploadTraceBundle = vi.fn().mockRejectedValue(new Error("telemetry unavailable"));
@@ -1101,5 +1104,40 @@ describe("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toContain("telemetry unavailable");
     expect(traces[0]?.exportedAt).toBeNull();
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks pending shared traces as failed when no feedback export backend is configured", async () => {
+    const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
+
+    const result = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    const flushResult = await svc.flushPendingFeedbackTraces({
+      companyId,
+      traceId: result.traceId ?? undefined,
+      limit: 1,
+    });
+
+    expect(flushResult).toMatchObject({
+      attempted: 1,
+      sent: 0,
+      failed: 1,
+    });
+
+    const traces = await svc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    expect(traces[0]?.status).toBe("failed");
+    expect(traces[0]?.attemptCount).toBe(1);
+    expect(traces[0]?.failureReason).toBe("Feedback export backend is not configured");
+    expect(traces[0]?.exportedAt).toBeNull();
   });
 });

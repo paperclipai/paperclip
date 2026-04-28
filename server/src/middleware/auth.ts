@@ -16,14 +16,50 @@ function hashToken(token: string) {
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+  /**
+   * Random per-process token. When set, requests that arrive on loopback with
+   * `x-paperclip-internal-bootstrap: <token>` are treated as instance admin
+   * regardless of deploymentMode. This is the channel index.ts uses to
+   * auto-install bundled plugins by hitting its own /api/plugins/install route
+   * before the auth bootstrap completes — without it, the loopback POST 403s.
+   */
+  internalBootstrapToken?: string;
+}
+
+function isLoopback(req: Request): boolean {
+  const ip = req.ip ?? req.socket?.remoteAddress ?? "";
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
+    if (
+      opts.internalBootstrapToken &&
+      isLoopback(req) &&
+      req.header("x-paperclip-internal-bootstrap") === opts.internalBootstrapToken
+    ) {
+      req.actor = {
+        type: "board",
+        userId: "internal-bootstrap",
+        userName: "Internal Bootstrap",
+        userEmail: null,
+        isInstanceAdmin: true,
+        source: "local_implicit",
+      };
+      next();
+      return;
+    }
     req.actor =
       opts.deploymentMode === "local_trusted"
-        ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
+        ? {
+            type: "board",
+            userId: "local-board",
+            userName: "Local Board",
+            userEmail: null,
+            isInstanceAdmin: true,
+            source: "local_implicit",
+          }
         : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
@@ -49,7 +85,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
             db
-              .select({ companyId: companyMemberships.companyId })
+              .select({
+                companyId: companyMemberships.companyId,
+                membershipRole: companyMemberships.membershipRole,
+                status: companyMemberships.status,
+              })
               .from(companyMemberships)
               .where(
                 and(
@@ -62,7 +102,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           req.actor = {
             type: "board",
             userId,
+            userName: session.user.name ?? null,
+            userEmail: session.user.email ?? null,
             companyIds: memberships.map((row) => row.companyId),
+            memberships,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
@@ -109,7 +152,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               companyId: run.companyId,
               keyId: undefined,
               runId: runIdHeader,
-              source: "run_id",
+              source: "agent_jwt",
             };
             next();
             return;
@@ -136,7 +179,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         req.actor = {
           type: "board",
           userId: boardKey.userId,
+          userName: access.user?.name ?? null,
+          userEmail: access.user?.email ?? null,
           companyIds: access.companyIds,
+          memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
           runId: runIdHeader || undefined,

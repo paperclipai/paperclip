@@ -1,7 +1,11 @@
 /// <reference path="./types/express.d.ts" />
+import fs from "node:fs";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import path from "node:path";
 import { resolve } from "node:path";
+import os from "node:os";
+import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -31,10 +35,13 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   heartbeatService,
+  instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -43,8 +50,12 @@ import { plugins } from "@paperclipai/db";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
-import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { conflict } from "./errors.js";
+import type {
+  InstanceDatabaseBackupRunResult,
+  InstanceDatabaseBackupTrigger,
+} from "./routes/instance-database-backups.js";
 
 /**
  * Bundled plugins that should be auto-installed on startup.
@@ -53,17 +64,36 @@ import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-linear",
   "@lucitra/paperclip-plugin-chat",
+  "@lucitra/paperclip-plugin-updater",
+  "@lucitra/paperclip-plugin-secrets",
 ];
 
-async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
+async function autoInstallBundledPlugins(
+  _db: import("@paperclipai/db").Db,
+  internalBootstrapToken: string,
+) {
   // Wait for the server to be fully up before calling the install API
   const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
   const baseUrl = `http://127.0.0.1:${port}`;
+  // The /api/plugins/install route requires assertInstanceAdmin. Loopback
+  // requests carrying this token are accepted as instance admin (see
+  // actorMiddleware -> internalBootstrapToken). Without it we'd 403 here.
+  const internalHeaders = {
+    "x-paperclip-internal-bootstrap": internalBootstrapToken,
+  } as const;
+  // Wrap fetch to auto-attach the bootstrap header for every loopback call
+  // we make in this function. External calls (npm registry) should still use
+  // plain fetch so we don't leak the token.
+  const fetchInternal = (input: string | URL, init?: RequestInit) =>
+    fetch(input, {
+      ...init,
+      headers: { ...(init?.headers ?? {}), ...internalHeaders },
+    });
 
   // Install npm-based bundled plugins
   for (const pkg of BUNDLED_PLUGINS) {
     try {
-      const listRes = await fetch(`${baseUrl}/api/plugins`);
+      const listRes = await fetchInternal(`${baseUrl}/api/plugins`);
       if (listRes.ok) {
         const plugins = (await listRes.json()) as Array<{ packageName: string; pluginKey: string; status: string }>;
         const existing = plugins.find((p) => p.packageName === pkg || p.pluginKey === pkg);
@@ -71,7 +101,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
       }
 
       logger.info({ package: pkg }, "auto-installing bundled plugin via API");
-      const installRes = await fetch(`${baseUrl}/api/plugins/install`, {
+      const installRes = await fetchInternal(`${baseUrl}/api/plugins/install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ packageName: pkg }),
@@ -91,9 +121,74 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
     }
   }
 
+  // Auto-upgrade bundled plugins if a newer version is available on npm
+  // Set PAPERCLIP_AUTO_UPGRADE_PLUGINS=false to disable
+  if (process.env.PAPERCLIP_AUTO_UPGRADE_PLUGINS === "false") {
+    logger.info("auto-upgrade disabled via PAPERCLIP_AUTO_UPGRADE_PLUGINS=false");
+  } else try {
+    const listRes3 = await fetchInternal(`${baseUrl}/api/plugins`);
+    if (listRes3.ok) {
+      const allPlugins = (await listRes3.json()) as Array<{
+        id: string; packageName: string; version: string; status: string;
+      }>;
+      for (const pkg of BUNDLED_PLUGINS) {
+        const installed = allPlugins.find((p) => p.packageName === pkg && p.status === "ready");
+        if (!installed) continue;
+
+        try {
+          // Check npm for latest version (abbreviated metadata for speed)
+          const npmRes = await fetch(
+            `https://registry.npmjs.org/${encodeURIComponent(pkg)}`,
+            { headers: { Accept: "application/vnd.npm.install-v1+json" } },
+          );
+          if (!npmRes.ok) continue;
+          const npmData = (await npmRes.json()) as { "dist-tags"?: { latest?: string } };
+          const latest = npmData["dist-tags"]?.latest;
+          if (!latest || latest === installed.version) continue;
+
+          // Simple semver comparison: split and compare numerically
+          const parse = (v: string) => v.replace(/^v/, "").split("-")[0].split(".").map(Number);
+          const cur = parse(installed.version);
+          const lat = parse(latest);
+          let isNewer = false;
+          for (let i = 0; i < 3; i++) {
+            if ((lat[i] ?? 0) > (cur[i] ?? 0)) { isNewer = true; break; }
+            if ((lat[i] ?? 0) < (cur[i] ?? 0)) break;
+          }
+          if (!isNewer) continue;
+
+          logger.info(
+            { package: pkg, current: installed.version, latest },
+            "auto-upgrading bundled plugin",
+          );
+          const upgradeRes = await fetchInternal(`${baseUrl}/api/plugins/${installed.id}/upgrade`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version: latest }),
+          });
+          if (upgradeRes.ok) {
+            logger.info({ package: pkg, latest }, "bundled plugin auto-upgraded");
+          } else {
+            const err = (await upgradeRes.json()) as { error?: string };
+            // Capability escalation is expected — log but don't fail
+            if (err.error?.includes("capability")) {
+              logger.info({ package: pkg, latest }, "auto-upgrade pending capability approval");
+            } else {
+              logger.warn({ package: pkg, error: err.error }, "auto-upgrade failed");
+            }
+          }
+        } catch (err) {
+          logger.warn({ package: pkg, err }, "failed to check/upgrade bundled plugin");
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "auto-upgrade check failed (non-fatal)");
+  }
+
   // For dev: if npm install failed for chat plugin, try local path fallback
   {
-    const listRes2 = await fetch(`${baseUrl}/api/plugins`).catch(() => null);
+    const listRes2 = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
     const plugins2 = listRes2?.ok ? (await listRes2.json()) as Array<{ pluginKey: string; status: string }> : [];
     const chatInstalled = plugins2.some((p) => p.pluginKey === "paperclip-chat" && p.status === "ready");
     if (!chatInstalled) {
@@ -101,7 +196,7 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
         const { resolve } = await import("path");
         const absPath = resolve(process.cwd(), "../paperclip-plugin-chat");
         logger.info({ path: absPath }, "chat plugin not found via npm, trying local path");
-        const res = await fetch(`${baseUrl}/api/plugins/install`, {
+        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
@@ -113,6 +208,75 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
       } catch (err) {
         logger.warn({ err }, "local chat plugin install failed");
       }
+    }
+  }
+
+  // ccrotate plugin is bundled in-image at packages/plugins/paperclip-plugin-ccrotate
+  // (no npm publish), so install it from the local path on every boot if absent.
+  {
+    const listRes = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
+    const installed = listRes?.ok ? (await listRes.json()) as Array<{ pluginKey: string; status: string }> : [];
+    const present = installed.some((p) => p.pluginKey === "kkroo.ccrotate" && p.status === "ready");
+    if (!present) {
+      try {
+        const { resolve } = await import("path");
+        const absPath = resolve(process.cwd(), "packages/plugins/paperclip-plugin-ccrotate");
+        logger.info({ path: absPath }, "installing bundled ccrotate plugin from local path");
+        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
+        });
+        if (res.ok) {
+          const result = (await res.json()) as { pluginKey?: string; status?: string };
+          logger.info({ pluginKey: result.pluginKey, status: result.status }, "ccrotate plugin installed from local path");
+        } else {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          logger.warn({ error: err.error }, "ccrotate plugin local install failed");
+        }
+      } catch (err) {
+        logger.warn({ err }, "ccrotate plugin local install threw");
+      }
+    }
+  }
+
+  // Auto-configure Linear plugin from env vars if credentials are set
+  const linearClientId = process.env.PAPERCLIP_LINEAR_CLIENT_ID;
+  const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
+  if (linearClientId && linearClientSecret) {
+    try {
+      const listRes = await fetchInternal(`${baseUrl}/api/plugins`);
+      if (listRes.ok) {
+        const allPlugins = (await listRes.json()) as Array<{ id: string; pluginKey: string; status: string }>;
+        const linearPlugin = allPlugins.find((p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready");
+        if (linearPlugin) {
+          // Check if config already has credentials
+          const configRes = await fetchInternal(`${baseUrl}/api/plugins/${linearPlugin.id}/config`);
+          if (configRes.ok) {
+            const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
+            const existing = config?.configJson ?? {};
+            if (!existing.linearClientId || !existing.linearClientSecret) {
+              // Auto-populate from env
+              await fetchInternal(`${baseUrl}/api/plugins/${linearPlugin.id}/config`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  configJson: {
+                    ...existing,
+                    linearClientId,
+                    linearClientSecret,
+                    syncComments: existing.syncComments ?? true,
+                    syncDirection: existing.syncDirection ?? "bidirectional",
+                  },
+                }),
+              });
+              logger.info("Auto-configured Linear plugin from env vars");
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "failed to auto-configure Linear plugin from env");
     }
   }
 }
@@ -259,7 +423,8 @@ export async function startServer(): Promise<StartedServer> {
     if (!rawUrl) return undefined;
     try {
       const parsed = new URL(rawUrl);
-      if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+      // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
+      if (!parsed.port) return rawUrl;
       parsed.port = String(port);
       return parsed.toString();
     } catch {
@@ -328,6 +493,7 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   let db;
+  let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let embeddedPostgresStartedByThisProcess = false;
   let migrationSummary: MigrationSummary = "skipped";
@@ -337,9 +503,11 @@ export async function startServer(): Promise<StartedServer> {
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
   if (config.databaseUrl) {
-    migrationSummary = await ensureMigrations(config.databaseUrl, "PostgreSQL");
+    const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
+    migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
     db = createDb(config.databaseUrl);
+    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
@@ -501,6 +669,7 @@ export async function startServer(): Promise<StartedServer> {
     });
   
     db = createDb(embeddedConnectionString);
+    pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
     resolvedEmbeddedPostgresPort = port;
@@ -531,6 +700,12 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   }
+
+  const requestedListenPort = config.port;
+  const listenPort = await detectPort(requestedListenPort);
+  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+  }
   
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
@@ -551,14 +726,7 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
-    const betterAuthSecret =
-      process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
-    if (!betterAuthSecret) {
-      throw new Error(
-        "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) to be set",
-      );
-    }
-    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
+    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
       .map((value) => value.trim())
@@ -583,31 +751,150 @@ export async function startServer(): Promise<StartedServer> {
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
-  
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
-    config.port = listenPort;
-  }
+
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
-  }
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
   maybePersistWorktreeRuntimePorts({
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
+  // Overwrite only the SDK JS files that contain our fork extensions.
+  // We must NOT delete the whole SDK dir or its package.json — the npm-installed
+  // SDK has proper dependency resolution for @paperclipai/shared that we need.
+  function copyWorkspaceSdkFiles() {
+    try {
+      const pluginsSdkDist = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk", "dist");
+      const thisDir = path.dirname(new URL(import.meta.url).pathname);
+      const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
+      if (!fs.existsSync(workspaceSdkDist) || !fs.existsSync(pluginsSdkDist)) return;
+
+      // Only overwrite the specific files we changed (fork extensions)
+      const filesToCopy = [
+        "worker-rpc-host.js",
+        "worker-rpc-host.js.map",
+        "worker-rpc-host.d.ts",
+        "worker-rpc-host.d.ts.map",
+        "host-client-factory.js",
+        "host-client-factory.js.map",
+        "host-client-factory.d.ts",
+        "host-client-factory.d.ts.map",
+        "protocol.js",
+        "protocol.js.map",
+        "protocol.d.ts",
+        "protocol.d.ts.map",
+        "types.js",
+        "types.js.map",
+        "types.d.ts",
+        "types.d.ts.map",
+        "testing.js",
+        "testing.js.map",
+        "testing.d.ts",
+        "testing.d.ts.map",
+      ];
+      let copied = 0;
+      for (const file of filesToCopy) {
+        const src = path.join(workspaceSdkDist, file);
+        const dest = path.join(pluginsSdkDist, file);
+        if (fs.existsSync(src)) {
+          fs.cpSync(src, dest, { force: true });
+          copied++;
+        }
+      }
+      if (copied > 0) {
+        logger.info(`Patched ${copied} workspace SDK files into local plugins directory`);
+      }
+    } catch (err) {
+      logger.warn({ err }, "Failed to patch workspace SDK files (non-fatal)");
+    }
+  }
+  copyWorkspaceSdkFiles();
+
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
-    shareClient: createFeedbackTraceShareClientFromConfig(config) ?? undefined,
+    shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
+  const backupSettingsSvc = instanceSettingsService(db);
+  let databaseBackupInFlight = false;
+  const runServerDatabaseBackup = async (
+    trigger: InstanceDatabaseBackupTrigger,
+  ): Promise<InstanceDatabaseBackupRunResult | null> => {
+    if (databaseBackupInFlight) {
+      const message = "Database backup already in progress";
+      if (trigger === "scheduled") {
+        logger.warn("Skipping scheduled database backup because a previous backup is still running");
+        return null;
+      }
+      throw conflict(message);
+    }
+
+    databaseBackupInFlight = true;
+    const startedAt = new Date();
+    const startedAtMs = Date.now();
+    const label = trigger === "scheduled" ? "Automatic" : "Manual";
+    try {
+      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
+      // Read retention from Instance Settings (DB) so changes take effect without restart.
+      const generalSettings = await backupSettingsSvc.getGeneral();
+      const retention = generalSettings.backupRetention;
+
+      const result = await runDatabaseBackup({
+        connectionString: activeDatabaseConnectionString,
+        backupDir: config.databaseBackupDir,
+        retention,
+        filenamePrefix: "paperclip",
+      });
+      const finishedAt = new Date();
+      const response: InstanceDatabaseBackupRunResult = {
+        ...result,
+        trigger,
+        backupDir: config.databaseBackupDir,
+        retention,
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        durationMs: Date.now() - startedAtMs,
+      };
+      logger.info(
+        {
+          backupFile: result.backupFile,
+          sizeBytes: result.sizeBytes,
+          prunedCount: result.prunedCount,
+          backupDir: config.databaseBackupDir,
+          retention,
+          trigger,
+          durationMs: response.durationMs,
+        },
+        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+      );
+      return response;
+    } catch (err) {
+      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+      throw err;
+    } finally {
+      databaseBackupInFlight = false;
+    }
+  };
+  const pluginWorkerManager = createPluginWorkerManager();
+  // One-shot token used by autoInstallBundledPlugins to authenticate its
+  // loopback HTTP calls to /api/plugins/install (which require instance admin).
+  // Lives only in this Node process — never written to disk or logged.
+  const internalBootstrapToken = randomBytes(32).toString("hex");
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
     feedbackExportService: feedback,
+    internalBootstrapToken,
+    databaseBackupService: {
+      runManualBackup: async () => {
+        const result = await runServerDatabaseBackup("manual");
+        if (!result) {
+          throw conflict("Database backup already in progress");
+        }
+        return result;
+      },
+    },
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -615,23 +902,42 @@ export async function startServer(): Promise<StartedServer> {
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
     resolveSession,
+    pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+
+  // Increase keep-alive timeouts to safely outlive default idle timeouts
+  // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
+  // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
+  server.keepAliveTimeout = 185000;
+  server.headersTimeout = 186000;
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedListenPort) {
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
   }
   
   const runtimeListenHost = config.host;
-  const runtimeApiHost =
-    runtimeListenHost === "0.0.0.0" || runtimeListenHost === "::"
-      ? "localhost"
-      : runtimeListenHost;
+  const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
+  process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -652,14 +958,42 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any);
-    const routines = routineService(db as any);
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
-      .then(() => heartbeat.resumeQueuedRuns())
+      .then(() => heartbeat.promoteDueScheduledRetries())
+      .then(async (promotion) => {
+        await heartbeat.resumeQueuedRuns();
+        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        if (
+          promotion.promoted > 0 ||
+          reconciled.assignmentDispatched > 0 ||
+          reconciled.dispatchRequeued > 0 ||
+          reconciled.continuationRequeued > 0 ||
+          reconciled.escalated > 0
+        ) {
+          logger.warn(
+            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+            "startup heartbeat recovery changed assigned issue state",
+          );
+        }
+      })
+      .then(async () => {
+        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+        if (reconciled.escalationsCreated > 0) {
+          logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
+        }
+      })
+      .then(async () => {
+        const scanned = await heartbeat.scanSilentActiveRuns();
+        if (scanned.created > 0 || scanned.escalated > 0) {
+          logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -690,7 +1024,35 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.resumeQueuedRuns())
+        .then(() => heartbeat.promoteDueScheduledRetries())
+        .then(async (promotion) => {
+          await heartbeat.resumeQueuedRuns();
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            promotion.promoted > 0 ||
+            reconciled.assignmentDispatched > 0 ||
+            reconciled.dispatchRequeued > 0 ||
+            reconciled.continuationRequeued > 0 ||
+            reconciled.escalated > 0
+          ) {
+            logger.warn(
+              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              "periodic heartbeat recovery changed assigned issue state",
+            );
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+          if (reconciled.escalationsCreated > 0) {
+            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          }
+        })
+        .then(async () => {
+          const scanned = await heartbeat.scanSilentActiveRuns();
+          if (scanned.created > 0 || scanned.escalated > 0) {
+            logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+          }
+        })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
@@ -699,52 +1061,28 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
-    let backupInFlight = false;
-  
-    const runScheduledBackup = async () => {
-      if (backupInFlight) {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
-        return;
-      }
-  
-      backupInFlight = true;
-      try {
-        const result = await runDatabaseBackup({
-          connectionString: activeDatabaseConnectionString,
-          backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
-          filenamePrefix: "paperclip",
-        });
-        logger.info(
-          {
-            backupFile: result.backupFile,
-            sizeBytes: result.sizeBytes,
-            prunedCount: result.prunedCount,
-            backupDir: config.databaseBackupDir,
-            retentionDays: config.databaseBackupRetentionDays,
-          },
-          `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
-        );
-      } catch (err) {
-        logger.error({ err, backupDir: config.databaseBackupDir }, "Automatic database backup failed");
-      } finally {
-        backupInFlight = false;
-      }
-    };
-  
+
     logger.info(
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionDays: config.databaseBackupRetentionDays,
+        retentionSource: "instance-settings-db",
         backupDir: config.databaseBackupDir,
       },
       "Automatic database backups enabled",
     );
     setInterval(() => {
-      void runScheduledBackup();
+      void runServerDatabaseBackup("scheduled").catch(() => {
+        // runServerDatabaseBackup already logs the failure with context.
+      });
     }, backupIntervalMs);
   }
   
+  // Wait for external adapters to finish loading before accepting requests.
+  // Without this, adapter type validation (assertKnownAdapterType) would
+  // reject valid external adapter types during the startup loading window.
+  const { waitForExternalAdapters } = await import("./adapters/registry.js");
+  await waitForExternalAdapters();
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);
@@ -767,12 +1105,13 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ err, url }, "Failed to open browser on startup");
           });
       }
-      printStartupBanner({
-        host: config.host,
-        deploymentMode: config.deploymentMode,
+        printStartupBanner({
+          bind: config.bind,
+          host: config.host,
+          deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
-        requestedPort: config.port,
+        requestedPort: requestedListenPort,
         listenPort,
         uiMode,
         db: startupDbInfo,
@@ -805,8 +1144,35 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
 
+  // Ensure plugins directory uses the workspace SDK (with fork extensions).
+  // Copy the built dist + package.json from the workspace SDK into the plugins
+  // node_modules so workers use our fork's SDK (with labels/projects extensions).
+  try {
+    const pluginsSdkDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk");
+    const thisDir = path.dirname(new URL(import.meta.url).pathname);
+    const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
+    const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
+    if (fs.existsSync(workspaceSdkDist) && fs.existsSync(pluginsSdkDir)) {
+      // Remove symlink if left over from a previous approach
+      if (fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
+        fs.unlinkSync(pluginsSdkDir);
+        fs.mkdirSync(pluginsSdkDir, { recursive: true });
+      }
+      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
+      if (fs.existsSync(workspaceSdkPkg)) {
+        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
+      }
+      logger.info("Copied workspace plugin SDK dist to local plugins directory");
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
+  }
+
   // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any).catch((err) => {
+  void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
+    // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
+    copyWorkspaceSdkFiles();
+  }).catch((err) => {
     logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
   });
 
@@ -892,7 +1258,7 @@ export async function startServer(): Promise<StartedServer> {
     server,
     host: config.host,
     listenPort,
-    apiUrl: process.env.PAPERCLIP_API_URL ?? `http://${runtimeApiHost}:${listenPort}`,
+    apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
 }

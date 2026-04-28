@@ -266,6 +266,67 @@
   }
 }
 
+/* Chain-of-thought reasoning line ticker animations.
+   Pure translate, no opacity — the overflow-hidden container clips.
+   Both keyframes share the same easing so the two spans move in lockstep. */
+@keyframes cot-line-slide-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@keyframes cot-line-slide-out {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-100%); }
+}
+
+.cot-line-enter {
+  animation: cot-line-slide-in 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.cot-line-exit {
+  animation: cot-line-slide-out 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cot-line-enter,
+  .cot-line-exit {
+    animation: none;
+  }
+}
+
+/* Shimmer text effect for active "Working" state — Cursor-style sweep */
+@keyframes shimmer-text-slide {
+  0% { background-position: 100% center; }
+  60% { background-position: 0% center; }
+  100% { background-position: 0% center; }
+}
+
+.shimmer-text {
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-text-slide 2.5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    -webkit-text-fill-color: unset;
+    background: none;
+  }
+}
+
 /* MDXEditor theme integration */
 .paperclip-mdxeditor-scope,
 .paperclip-mdxeditor {
@@ -294,9 +355,16 @@
   --accentBgActive: color-mix(in oklab, var(--accent) 72%, var(--background));
   --accentText: var(--accent-foreground);
   font-family: inherit;
-  font-size: 0.875rem;
+  font-size: 1rem;
   line-height: 1.5;
   color: var(--foreground);
+}
+
+@media (min-width: 768px) {
+  .paperclip-mdxeditor-scope,
+  .paperclip-mdxeditor {
+    font-size: 0.875rem;
+  }
 }
 
 .paperclip-mdxeditor-scope [class*="_iconButton_"],
@@ -324,7 +392,7 @@
 }
 
 .paperclip-mdxeditor [class*="_placeholder_"] {
-  font-size: 0.875rem;
+  font-size: inherit;
   line-height: 1.5;
   color: var(--muted-foreground);
 }
@@ -380,9 +448,21 @@
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: middle;
+  vertical-align: baseline;
   white-space: nowrap;
   user-select: none;
+}
+
+/* Strip the MDXEditor's default inline-code styling from the text inside chips
+   (the link label otherwise picks up a monospace font + gray tint). */
+.paperclip-mdxeditor-content a.paperclip-mention-chip,
+.paperclip-mdxeditor-content a.paperclip-mention-chip code,
+.paperclip-mdxeditor-content a.paperclip-project-mention-chip,
+.paperclip-mdxeditor-content a.paperclip-project-mention-chip code {
+  font-family: inherit;
+  background: none;
+  color: inherit;
+  padding: 0;
 }
 
 .paperclip-mdxeditor-content a.paperclip-mention-chip::before,
@@ -695,6 +775,18 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: none;
 }
 
+.paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"] {
+  border-color: color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
+  background: color-mix(in oklab, var(--accent) 42%, transparent);
+}
+
+/* Inline issue references in markdown: no pill chrome, just a status icon
+   beside the link label — keeps the pair from splitting across lines. */
+.paperclip-markdown-issue-ref {
+  display: inline;
+  white-space: nowrap;
+}
+
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
@@ -759,9 +851,11 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: transparent;
 }
 
-/* Project mention chips rendered inside MarkdownBody */
+/* Mention chips rendered inline in prose (MarkdownBody or inline anchors) */
 a.paperclip-mention-chip,
-a.paperclip-project-mention-chip {
+a.paperclip-project-mention-chip,
+span.paperclip-mention-chip,
+span.paperclip-project-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -772,8 +866,23 @@ a.paperclip-project-mention-chip {
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: middle;
+  /* Align the pill relative to the surrounding text baseline instead of its
+     x-height midpoint so it sits on the text line rather than floating above. */
+  vertical-align: baseline;
   white-space: nowrap;
+}
+
+/* When the identifier inside a chip is backtick-wrapped in markdown, strip the
+   inline-code monospace/gray styling so the pill label reads cleanly. */
+.paperclip-markdown a.paperclip-mention-chip code,
+.paperclip-markdown a.paperclip-project-mention-chip code,
+.paperclip-markdown span.paperclip-mention-chip code,
+.paperclip-markdown span.paperclip-project-mention-chip code {
+  font-family: inherit;
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
 }
 
 /* Keep MDXEditor popups above app dialogs, even when they portal to <body>. */
