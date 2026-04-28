@@ -59,11 +59,11 @@ cp .env.example .env
 # DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
 ```
 
-Run migrations (once the migration generation issue is fixed) or use `drizzle-kit push`:
+Run migrations:
 
 ```sh
 DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
-  npx drizzle-kit push
+  pnpm db:migrate
 ```
 
 Start the server:
@@ -100,37 +100,27 @@ postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:
 
 ### Configure
 
-Set `DATABASE_URL` in your `.env`:
+For the application runtime, use a direct PostgreSQL connection unless the database client has explicit prepared-statement configuration for your pooling mode:
 
 ```sh
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-For hosted deployments that use a pooled runtime URL, set
-`DATABASE_MIGRATION_URL` to the direct connection URL. Paperclip uses it for
-startup schema checks/migrations and plugin namespace migrations, while the app
-continues to use `DATABASE_URL` for runtime queries:
+If you later run the app with a pooled runtime URL, set `DATABASE_MIGRATION_URL` to the direct connection URL. Paperclip uses it for startup schema checks/migrations and plugin namespace migrations, while the app continues to use `DATABASE_URL` for runtime queries:
 
 ```sh
 DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If using connection pooling (port 6543), the `postgres` client must disable prepared statements. Update `packages/db/src/client.ts`:
-
-```ts
-export function createDb(url: string) {
-  const sql = postgres(url, { prepare: false });
-  return drizzlePg(sql, { schema });
-}
-```
+If your hosted database requires transaction-pooling-only connections, use a direct or session-pooled connection for Paperclip until runtime pooling support is documented in this guide. Do not edit database client source files as part of deployment setup.
 
 ### Push the schema
 
 ```sh
 # Use the direct connection (port 5432) for schema changes
 DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
-  npx drizzle-kit push
+  pnpm db:migrate
 ```
 
 ### Free tier limits
@@ -152,6 +142,14 @@ The database mode is controlled by `DATABASE_URL`:
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+
+## Plugin database namespaces
+
+The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
+
+## Backups
+
+Paperclip supports automatic and manual database backups. See `doc/DEVELOPING.md` for the current `paperclipai db:backup` / `pnpm db:backup` commands and backup retention configuration.
 
 ## Secret storage
 
