@@ -1,6 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CompanySecret, CompanySecretAgentReference, SecretProvider } from "@paperclipai/shared";
+import type {
+  CompanySecret,
+  CompanySecretAgentReference,
+  SecretProvider,
+} from "@paperclipai/shared";
 import { Edit3, KeyRound, Plus, RotateCw, Trash2 } from "lucide-react";
 import { secretsApi } from "@/api/secrets";
 import { Badge } from "@/components/ui/badge";
@@ -20,18 +24,22 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const selectClass =
+  "border-input h-9 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50";
 
 type SecretFormState = {
   name: string;
   value: string;
   description: string;
+  provider: SecretProvider | "";
 };
 
-function createEmptySecretForm(): SecretFormState {
+function createEmptySecretForm(provider: SecretProvider | "" = ""): SecretFormState {
   return {
     name: "",
     value: "",
     description: "",
+    provider,
   };
 }
 
@@ -85,6 +93,17 @@ export function SecretsManager({ companyId }: { companyId: string }) {
       ]),
     );
   }, [providersQuery.data]);
+  const defaultProviderId =
+    providersQuery.data?.find((provider) => !provider.requiresExternalRef)?.id ??
+    providersQuery.data?.[0]?.id ??
+    "";
+
+  useEffect(() => {
+    if (!defaultProviderId) return;
+    setCreateForm((current) =>
+      current.provider ? current : { ...current, provider: defaultProviderId },
+    );
+  }, [defaultProviderId]);
 
   async function refreshSecrets() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
@@ -95,12 +114,12 @@ export function SecretsManager({ companyId }: { companyId: string }) {
       secretsApi.create(companyId, {
         name: createForm.name.trim(),
         value: createForm.value,
-        provider: "local_encrypted",
+        provider: createForm.provider || undefined,
         description: createForm.description.trim() || null,
       }),
     onSuccess: async (secret) => {
       setCreateOpen(false);
-      setCreateForm(createEmptySecretForm());
+      setCreateForm(createEmptySecretForm(defaultProviderId));
       await refreshSecrets();
       pushToast({
         title: "Secret created",
@@ -193,7 +212,8 @@ export function SecretsManager({ companyId }: { companyId: string }) {
 
   const createNameValid = SECRET_NAME_PATTERN.test(createForm.name.trim());
   const editNameValid = SECRET_NAME_PATTERN.test(editForm.name.trim());
-  const canCreate = createNameValid && createForm.value.length > 0;
+  const canCreate =
+    createNameValid && Boolean(createForm.provider) && createForm.value.length > 0;
   const canUpdate = Boolean(editingSecret) && editNameValid;
   const canRotate = Boolean(rotatingSecret) && rotateValue.length > 0;
 
@@ -226,7 +246,15 @@ export function SecretsManager({ companyId }: { companyId: string }) {
             Store company-level credentials once, then reference them from agents and projects.
           </p>
         </div>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
+        <Button
+          size="sm"
+          onClick={() => {
+            setCreateForm((current) =>
+              current.provider ? current : { ...current, provider: defaultProviderId },
+            );
+            setCreateOpen(true);
+          }}
+        >
           <Plus className="h-4 w-4" />
           Create secret
         </Button>
@@ -347,6 +375,30 @@ export function SecretsManager({ companyId }: { companyId: string }) {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="secret-create-provider">Provider</Label>
+                <select
+                  id="secret-create-provider"
+                  className={selectClass}
+                  value={createForm.provider}
+                  onChange={(event) =>
+                    setCreateForm((current) => ({
+                      ...current,
+                      provider: event.target.value as SecretProvider,
+                    }))
+                  }
+                  disabled={providersQuery.isLoading}
+                >
+                  <option value="" disabled>
+                    Select provider...
+                  </option>
+                  {(providersQuery.data ?? []).map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="space-y-1.5">
                 <Label htmlFor="secret-create-name">Name</Label>
                 <Input
