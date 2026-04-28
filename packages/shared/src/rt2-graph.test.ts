@@ -10,8 +10,19 @@ import { listRt2ProjectGraphSchema as validatorsListRt2ProjectGraphSchema } from
 
 describe("RT2 graph shared contracts", () => {
   it("locks the approved node, edge, and confidence values", () => {
-    expect(RT2_GRAPH_NODE_TYPES).toEqual(["project", "task", "todo", "daily_wiki_page"]);
-    expect(RT2_GRAPH_EDGE_TYPES).toEqual(["project_task", "task_todo", "daily_wiki_task", "task_dependency"]);
+    expect(RT2_GRAPH_NODE_TYPES).toEqual(["project", "task", "todo", "daily_wiki_page", "deliverable", "actor", "event"]);
+    expect(RT2_GRAPH_EDGE_TYPES).toEqual([
+      "project_task",
+      "task_todo",
+      "daily_wiki_task",
+      "task_dependency",
+      "task_deliverable",
+      "project_deliverable",
+      "project_daily_wiki_page",
+      "project_event",
+      "actor_event",
+      "event_entity",
+    ]);
     expect(RT2_GRAPH_CONFIDENCES).toEqual(["EXTRACTED", "INFERRED", "AMBIGUOUS"]);
   });
 

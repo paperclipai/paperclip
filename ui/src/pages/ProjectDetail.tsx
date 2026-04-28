@@ -28,6 +28,11 @@ import { IssuesList } from "../components/IssuesList";
 import { Rt2DailyBoard } from "../components/Rt2DailyBoard";
 import { Rt2DailyWikiPanel } from "../components/Rt2DailyWikiPanel";
 import { Rt2TaskList } from "../components/Rt2TaskList";
+import { Rt2GraphPanel } from "../components/Rt2GraphPanel";
+import { Rt2GovernancePanel } from "../components/Rt2GovernancePanel";
+import { Rt2GamificationPanel } from "../components/Rt2GamificationPanel";
+import { Rt2CollaborationPanel } from "../components/Rt2CollaborationPanel";
+import { Rt2QualityPanel } from "../components/Rt2QualityPanel";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
@@ -40,7 +45,7 @@ import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "tasks" | "daily" | "wiki" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "tasks" | "daily" | "wiki" | "list" | "workspaces" | "configuration" | "budget" | "graph" | "governance" | "rewards" | "collaboration" | "quality";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -61,6 +66,11 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "workspaces") return "workspaces";
+  if (tab === "graph") return "graph";
+  if (tab === "governance") return "governance";
+  if (tab === "rewards") return "rewards";
+  if (tab === "collaboration") return "collaboration";
+  if (tab === "quality") return "quality";
   return null;
 }
 
@@ -669,6 +679,26 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
     }
+    if (activeTab === "graph") {
+      navigate(`/projects/${canonicalProjectRef}/graph`, { replace: true });
+      return;
+    }
+    if (activeTab === "governance") {
+      navigate(`/projects/${canonicalProjectRef}/governance`, { replace: true });
+      return;
+    }
+    if (activeTab === "rewards") {
+      navigate(`/projects/${canonicalProjectRef}/rewards`, { replace: true });
+      return;
+    }
+    if (activeTab === "collaboration") {
+      navigate(`/projects/${canonicalProjectRef}/collaboration`, { replace: true });
+      return;
+    }
+    if (activeTab === "quality") {
+      navigate(`/projects/${canonicalProjectRef}/quality`, { replace: true });
+      return;
+    }
     if (activeTab === "list") {
       if (filter) {
         navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
@@ -807,6 +837,21 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "graph") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/graph`} replace />;
+    }
+    if (cachedTab === "governance") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/governance`} replace />;
+    }
+    if (cachedTab === "rewards") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/rewards`} replace />;
+    }
+    if (cachedTab === "collaboration") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/collaboration`} replace />;
+    }
+    if (cachedTab === "quality") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/quality`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -844,6 +889,16 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
+    } else if (tab === "graph") {
+      navigate(`/projects/${canonicalProjectRef}/graph`);
+    } else if (tab === "governance") {
+      navigate(`/projects/${canonicalProjectRef}/governance`);
+    } else if (tab === "rewards") {
+      navigate(`/projects/${canonicalProjectRef}/rewards`);
+    } else if (tab === "collaboration") {
+      navigate(`/projects/${canonicalProjectRef}/collaboration`);
+    } else if (tab === "quality") {
+      navigate(`/projects/${canonicalProjectRef}/quality`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -914,6 +969,11 @@ export function ProjectDetail() {
             { value: "daily", label: "Daily" },
             { value: "wiki", label: "Wiki" },
             { value: "list", label: "Issues" },
+            { value: "graph", label: "Graph" },
+            { value: "governance", label: "Governance" },
+            { value: "rewards", label: "Rewards" },
+            { value: "collaboration", label: "Collab" },
+            { value: "quality", label: "Quality" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
@@ -996,6 +1056,26 @@ export function ProjectDetail() {
           />
         </div>
       ) : null}
+
+      {activeTab === "graph" && project?.id && resolvedCompanyId && (
+        <Rt2GraphPanel projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "governance" && resolvedCompanyId && (
+        <Rt2GovernancePanel companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "rewards" && resolvedCompanyId && (
+        <Rt2GamificationPanel companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "collaboration" && project?.id && resolvedCompanyId && (
+        <Rt2CollaborationPanel projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "quality" && project?.id && resolvedCompanyId && (
+        <Rt2QualityPanel projectId={project.id} companyId={resolvedCompanyId} />
+      )}
 
       {activePluginTab && (
         <PluginSlotMount

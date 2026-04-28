@@ -17,7 +17,7 @@ export function Rt2TaskList({
     <div className="space-y-4">
       <div className="flex items-center justify-end">
         <Button variant="outline" size="sm" onClick={onCreateTask}>
-          New Task
+          새 작업
         </Button>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
@@ -32,10 +32,11 @@ export function Rt2TaskList({
               <span className="text-[11px] uppercase text-muted-foreground">{task.taskMode}</span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-              <span>{task.activeParticipantCount} / {task.capacity} participants</span>
+              <span>{task.activeParticipantCount} / {task.capacity} 참여자</span>
               <span>{task.todoCount} todos</span>
-              <span>{task.deliverableCount} deliverables</span>
+              <span>{task.deliverableCount} 산출물</span>
               <span>{task.status.replaceAll("_", " ")}</span>
+              <span>{task.execution ? `실행 ${task.execution.state}` : "실행 대기"}</span>
             </div>
           </Link>
         ))}

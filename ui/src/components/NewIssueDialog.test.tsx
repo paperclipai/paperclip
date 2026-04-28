@@ -313,11 +313,11 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New sub-issue");
-    expect(container.textContent).toContain("Sub-issue of");
+    expect(container.textContent).toContain("New sub-task");
+    expect(container.textContent).toContain("Sub-task of");
     expect(container.textContent).toContain("PAP-1");
     expect(container.textContent).toContain("Parent issue");
-    expect(container.textContent).toContain("Create Sub-Issue");
+    expect(container.textContent).toContain("Create Sub-Task");
 
     act(() => root.unmount());
 
@@ -325,9 +325,9 @@ describe("NewIssueDialog", () => {
     const rerendered = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
-    expect(container.textContent).toContain("Create Issue");
-    expect(container.textContent).not.toContain("Sub-issue of");
+    expect(container.textContent).toContain("New task");
+    expect(container.textContent).toContain("Create Task");
+    expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
   });
@@ -371,7 +371,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-Task"));
     expect(submitButton).not.toBeUndefined();
     expect(submitButton?.hasAttribute("disabled")).toBe(false);
 
@@ -409,7 +409,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-Task"));
     expect(submitButton).not.toBeUndefined();
 
     await act(async () => {
@@ -441,7 +441,7 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),
@@ -502,7 +502,7 @@ describe("NewIssueDialog", () => {
     await flush();
     await flush();
 
-    expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).not.toContain("will no longer use the parent task execution environment");
 
     const selects = Array.from(container.querySelectorAll("select"));
     const modeSelect = selects[0] as HTMLSelectElement | undefined;
@@ -514,7 +514,7 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).toContain("will no longer use the parent task execution environment");
     expect(container.textContent).toContain("Parent workspace");
 
     act(() => root.unmount());
@@ -530,7 +530,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
 
     await act(async () => {
@@ -540,12 +540,15 @@ describe("NewIssueDialog", () => {
 
     const capacityInput = container.querySelector('input[aria-label="Capacity"]') as HTMLInputElement | null;
     const deliverableInput = container.querySelector('input[aria-label="Deliverable title"]') as HTMLInputElement | null;
+    const basePriceInput = container.querySelector('input[aria-label="Base price"]') as HTMLInputElement | null;
     expect(capacityInput).not.toBeNull();
     expect(deliverableInput).not.toBeNull();
+    expect(basePriceInput).not.toBeNull();
 
     await act(async () => {
       setFormValue(capacityInput!, "2");
       setFormValue(deliverableInput!, "Event brief");
+      setFormValue(basePriceInput!, "240000");
     });
     await flush();
 
@@ -564,7 +567,7 @@ describe("NewIssueDialog", () => {
         projectId: "project-1",
         taskMode: "collab",
         capacity: 2,
-        deliverables: [{ title: "Event brief", type: "document" }],
+        deliverables: [{ title: "Event brief", type: "document", basePrice: 240000 }],
       }),
     );
     expect(mockIssuesApi.create).not.toHaveBeenCalled();

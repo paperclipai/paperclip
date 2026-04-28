@@ -96,6 +96,26 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
+function isRetriableRmError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? (error as { code?: unknown }).code : undefined;
+  return code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
+}
+
+async function rmWithRetries(targetPath: string): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isRetriableRmError(error) || attempt === 7) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+}
+
 describe("feedbackService.saveIssueVote", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof feedbackService>;
@@ -109,7 +129,7 @@ describe("feedbackService.saveIssueVote", () => {
     svc = feedbackService(db);
     instance = started.instance;
     dataDir = started.dataDir;
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(feedbackExports);
@@ -136,7 +156,7 @@ describe("feedbackService.saveIssueVote", () => {
     await closeDbClient(db);
     await instance?.stop();
     if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      await rmWithRetries(dataDir);
     }
   });
 

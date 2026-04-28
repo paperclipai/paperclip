@@ -31,11 +31,55 @@ import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
 export function resolveShell(): string {
-  const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
+  const fallback = process.platform === "win32" ? process.env.ComSpec?.trim() || "cmd.exe" : "/bin/sh";
   const shell = process.env.SHELL?.trim();
   if (!shell) return fallback;
   if (path.isAbsolute(shell) && !existsSync(shell)) return fallback;
   return shell;
+}
+
+function resolveDirectCommandInvocation(command: string) {
+  const trimmed = command.trim();
+  const nodeEvalMatch = trimmed.match(
+    /^(?<node>"[^"]+"|'[^']+'|[^\s]+)\s+(?<flag>-e|--eval)\s+(?<quote>["'])(?<script>[\s\S]*)\k<quote>\s*$/u,
+  );
+  if (!nodeEvalMatch?.groups) return null;
+
+  const nodeCommand = nodeEvalMatch.groups.node.replace(/^['"]|['"]$/g, "");
+  const normalizedNodeCommand = path.basename(nodeCommand).toLowerCase();
+  if (normalizedNodeCommand !== "node" && normalizedNodeCommand !== "node.exe") {
+    return null;
+  }
+
+  let script = nodeEvalMatch.groups.script;
+  if (nodeEvalMatch.groups.quote === "\"") {
+    try {
+      script = JSON.parse(`"${script}"`) as string;
+    } catch {
+      // Keep the raw payload when it is not valid JSON-style escaping.
+    }
+  } else {
+    script = script.replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+  }
+
+  return {
+    command: normalizedNodeCommand === "node" || normalizedNodeCommand === "node.exe" ? process.execPath : nodeCommand,
+    args: [nodeEvalMatch.groups.flag, script],
+  };
+}
+
+function resolveShellInvocation(command: string, opts?: { login?: boolean }) {
+  const direct = resolveDirectCommandInvocation(command);
+  if (direct) return direct;
+  const shell = resolveShell();
+  const shellName = path.basename(shell).toLowerCase();
+  if (shellName === "cmd" || shellName === "cmd.exe") {
+    return { command: shell, args: ["/d", "/s", "/c", command] };
+  }
+  if (shellName === "powershell" || shellName === "powershell.exe" || shellName === "pwsh" || shellName === "pwsh.exe") {
+    return { command: shell, args: ["-NoProfile", "-Command", command] };
+  }
+  return { command: shell, args: [opts?.login ? "-lc" : "-c", command] };
 }
 
 export interface ExecutionWorkspaceInput {
@@ -266,7 +310,7 @@ export async function ensureServerWorkspaceLinksCurrent(
     const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
     await fs.mkdir(path.dirname(linkPath), { recursive: true });
     await fs.rm(linkPath, { recursive: true, force: true });
-    await fs.symlink(mismatch.expectedPath, linkPath);
+    await fs.symlink(mismatch.expectedPath, linkPath, process.platform === "win32" ? "junction" : undefined);
   }
 
   const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
@@ -713,7 +757,40 @@ function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+function toWindowsBashEnvValue(key: string, value: string, cwd: string) {
+  if (
+    process.platform === "win32" &&
+    /^[A-Za-z]:[\\/]/.test(value) &&
+    (key.startsWith("PAPERCLIP_") || key.endsWith("_CWD") || key.endsWith("_PATH") || key.endsWith("_HOME") || key.includes("DIR"))
+  ) {
+    const relative = path.relative(cwd, value);
+    return (relative.length > 0 ? relative : ".").replace(/\\/g, "/");
+  }
+  return value;
+}
+
+function resolveWindowsBashInvocation(command: string, env: NodeJS.ProcessEnv, cwd: string) {
+  if (process.platform !== "win32") return null;
+  const match = command.trim().match(/^(?<shell>bash|sh|zsh)\s+(?<script>.+)$/s);
+  if (!match?.groups) return null;
+  const exports = Object.entries(env)
+    .filter((entry): entry is [string, string] => {
+      const [key, value] = entry;
+      return (
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+      typeof value === "string" &&
+      (key.startsWith("PAPERCLIP_") || process.env[key] !== value)
+      );
+    })
+    .map(([key, value]) => `export ${key}=${quoteShellArg(toWindowsBashEnvValue(key, value, cwd))};`)
+    .join(" ");
+  return {
+    command: match.groups.shell,
+    args: ["-lc", `${exports} ${match.groups.script}`],
+  };
+}
+
+function resolveRepoManagedWorkspaceScript(command: string, repoRoot: string) {
   const patterns = [
     /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
     /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
@@ -727,9 +804,35 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
     const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
     if (!existsSync(repoManagedPath)) continue;
 
-    const prefix = match.groups.prefix ?? "";
-    const suffix = match.groups.suffix ?? "";
-    return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
+    return {
+      prefix: match.groups.prefix ?? "",
+      suffix: match.groups.suffix ?? "",
+      relativePath,
+      repoManagedPath,
+    };
+  }
+
+  return null;
+}
+
+async function syncRepoManagedWorkspaceScript(input: {
+  repoManagedPath: string;
+  worktreePath: string;
+  relativePath: string;
+}) {
+  const destinationPath = path.join(input.worktreePath, input.relativePath.slice(2));
+  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+  const contents = await fs.readFile(input.repoManagedPath, "utf8");
+  await fs.writeFile(destinationPath, contents.replace(/\r?\n/g, "\n"), "utf8");
+}
+
+function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+  if (process.platform === "win32") {
+    return command;
+  }
+  const resolved = resolveRepoManagedWorkspaceScript(command, repoRoot);
+  if (resolved) {
+    return `${resolved.prefix}${quoteShellArg(resolved.repoManagedPath)}${resolved.suffix}`;
   }
 
   return command;
@@ -742,10 +845,11 @@ async function runWorkspaceCommand(input: {
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
-  const shell = resolveShell();
+  const effectiveCommand = input.resolvedCommand ?? input.command;
+  const shellCommand = resolveWindowsBashInvocation(effectiveCommand, input.env, input.cwd) ?? resolveShellInvocation(effectiveCommand);
   const proc = await executeProcess({
-    command: shell,
-    args: ["-c", input.resolvedCommand ?? input.command],
+    command: shellCommand.command,
+    args: shellCommand.args,
     cwd: input.cwd,
     env: input.env,
   });
@@ -842,16 +946,17 @@ async function recordWorkspaceCommandOperation(
   let stdout = "";
   let stderr = "";
   let code: number | null = null;
+  const effectiveCommand = input.resolvedCommand ?? input.command;
+  const shellCommand = resolveWindowsBashInvocation(effectiveCommand, input.env, input.cwd) ?? resolveShellInvocation(effectiveCommand);
   const operation = await recorder.recordOperation({
     phase: input.phase,
     command: input.command,
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const shell = resolveShell();
       const result = await executeProcess({
-        command: shell,
-        args: ["-c", input.resolvedCommand ?? input.command],
+        command: shellCommand.command,
+        args: shellCommand.args,
         cwd: input.cwd,
         env: input.env,
       });
@@ -900,6 +1005,14 @@ async function provisionExecutionWorktree(input: {
 }) {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
+  const repoManagedScript = resolveRepoManagedWorkspaceScript(provisionCommand, input.repoRoot);
+  if (process.platform === "win32" && repoManagedScript) {
+    await syncRepoManagedWorkspaceScript({
+      repoManagedPath: repoManagedScript.repoManagedPath,
+      worktreePath: input.worktreePath,
+      relativePath: repoManagedScript.relativePath,
+    });
+  }
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
   await recordWorkspaceCommandOperation(input.recorder, {
@@ -2034,8 +2147,8 @@ async function startLocalRuntimeService(input: {
     onLog: input.onLog,
   });
 
-  const shell = resolveShell();
-  const child = spawn(shell, ["-lc", command], {
+  const shellCommand = resolveShellInvocation(command, { login: true });
+  const child = spawn(shellCommand.command, shellCommand.args, {
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",

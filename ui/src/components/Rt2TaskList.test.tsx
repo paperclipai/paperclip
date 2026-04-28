@@ -56,6 +56,27 @@ describe("Rt2TaskList", () => {
             deliverableCount: 1,
             todoCount: 2,
             todoInProgressCount: 1,
+            execution: {
+              id: "attempt-1",
+              taskIssueId: "issue-1",
+              todoIssueId: null,
+              state: "queued",
+              executorType: null,
+              executorId: null,
+              executionWorkspaceId: null,
+              runtimeServiceId: null,
+              heartbeatRunId: null,
+              deliverableWorkProductId: null,
+              resultWorkProductId: null,
+              retryOfAttemptId: null,
+              failureReason: null,
+              missingDeliverableReason: null,
+              queuedAt: new Date("2026-04-16T00:00:00Z"),
+              claimedAt: null,
+              startedAt: null,
+              completedAt: null,
+              updatedAt: new Date("2026-04-16T00:00:00Z"),
+            },
           }]}
           onCreateTask={onCreateTask}
         />,
@@ -63,13 +84,14 @@ describe("Rt2TaskList", () => {
     });
 
     expect(container.textContent).toContain("Prepare launch checklist");
-    expect(container.textContent).toContain("2 / 3 participants");
+    expect(container.textContent).toContain("2 / 3 참여자");
     expect(container.textContent).toContain("2 todos");
-    expect(container.textContent).toContain("1 deliverables");
+    expect(container.textContent).toContain("1 산출물");
     expect(container.textContent).toContain("in progress");
+    expect(container.textContent).toContain("실행 queued");
 
     const createButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("New Task"));
+      .find((button) => button.textContent?.includes("새 작업"));
     expect(createButton).toBeDefined();
 
     act(() => {

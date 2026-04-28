@@ -45,7 +45,6 @@ import {
   AlertTriangle,
   Tag,
   Calendar,
-  Paperclip,
   FileText,
   Loader2,
   ListTree,
@@ -228,7 +227,7 @@ function formatFileSize(file: File) {
 
 const statuses = [
   { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
-  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
+  { value: "todo", label: "To-Do", color: issueStatusText.todo ?? issueStatusTextDefault },
   { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
   { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
   { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
@@ -242,9 +241,9 @@ const priorities = [
 ];
 
 const EXECUTION_WORKSPACE_MODES = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "shared_workspace", label: "프로젝트 기본 실행 환경" },
+  { value: "isolated_workspace", label: "새 격리 실행 환경" },
+  { value: "reuse_existing", label: "기존 실행 환경 재사용" },
 ] as const;
 
 function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
@@ -303,6 +302,7 @@ export function NewIssueDialog() {
   const [rt2TaskMode, setRt2TaskMode] = useState<"solo" | "collab">("solo");
   const [capacity, setCapacity] = useState("1");
   const [deliverableTitle, setDeliverableTitle] = useState("");
+  const [deliverableBasePrice, setDeliverableBasePrice] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -730,6 +730,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setDeliverableBasePrice("");
   }
 
   function discardDraft() {
@@ -742,7 +743,15 @@ export function NewIssueDialog() {
     if (!effectiveCompanyId || !title.trim() || isSubmitting) return;
     if (isRt2TaskMode) {
       const parsedCapacity = Number(capacity);
-      if (!projectId || !Number.isInteger(parsedCapacity) || parsedCapacity < 1 || !deliverableTitle.trim()) {
+      const parsedBasePrice = Number(deliverableBasePrice);
+      if (
+        !projectId ||
+        !Number.isInteger(parsedCapacity) ||
+        parsedCapacity < 1 ||
+        !deliverableTitle.trim() ||
+        !Number.isInteger(parsedBasePrice) ||
+        parsedBasePrice < 0
+      ) {
         return;
       }
       createRt2Task.mutate({
@@ -755,14 +764,21 @@ export function NewIssueDialog() {
           priority: (priority || "medium") as "critical" | "high" | "medium" | "low",
           taskMode: rt2TaskMode,
           capacity: parsedCapacity,
-          deliverables: [{ title: deliverableTitle.trim(), type: "document" }],
+          deliverables: [{ title: deliverableTitle.trim(), type: "document", basePrice: parsedBasePrice }],
         },
       });
       return;
     }
     if (isRt2TodoMode) {
       const taskIssueId = newIssueDefaults.rt2TaskIssueId ?? "";
-      if (!taskIssueId || !selectedAssigneeUserId || !deliverableTitle.trim()) {
+      const parsedBasePrice = Number(deliverableBasePrice);
+      if (
+        !taskIssueId ||
+        !selectedAssigneeUserId ||
+        !deliverableTitle.trim() ||
+        !Number.isInteger(parsedBasePrice) ||
+        parsedBasePrice < 0
+      ) {
         return;
       }
       createRt2Todo.mutate({
@@ -772,7 +788,7 @@ export function NewIssueDialog() {
           title: title.trim(),
           description: description.trim() || null,
           assigneeUserId: selectedAssigneeUserId,
-          deliverables: [{ title: deliverableTitle.trim(), type: "document" }],
+          deliverables: [{ title: deliverableTitle.trim(), type: "document", basePrice: parsedBasePrice }],
         },
       });
       return;
@@ -936,7 +952,7 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
-        : "Agent options";
+        : "Jarvis options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
@@ -980,22 +996,22 @@ export function NewIssueDialog() {
     activeSubmitMutation.error instanceof Error
       ? activeSubmitMutation.error.message
       : isRt2Mode
-        ? "Failed to create RT2 item. Try again."
-        : "Failed to create issue. Try again.";
+        ? "RT2 항목을 만들지 못했습니다. 다시 시도하세요."
+        : "작업을 만들지 못했습니다. 다시 시도하세요.";
   const dialogTitle = isRt2TaskMode
     ? "New task"
     : isRt2TodoMode
       ? "New to-do"
       : isSubIssueMode
-        ? "New sub-issue"
-        : "New issue";
+        ? "New sub-task"
+        : "New task";
   const submitLabel = isRt2TaskMode
     ? "Create Task"
     : isRt2TodoMode
       ? "Create To-Do"
       : isSubIssueMode
-        ? "Create Sub-Issue"
-        : "Create Issue";
+        ? "Create Sub-Task"
+        : "Create Task";
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1164,7 +1180,7 @@ export function NewIssueDialog() {
           <div className="px-4 pt-4 pb-2">
             <textarea
             className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-            placeholder="Issue title"
+            placeholder="Task title"
             rows={1}
             value={title}
             onChange={(e) => {
@@ -1436,7 +1452,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-issue of</span>
+                <span className="shrink-0">Sub-task of</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1492,6 +1508,19 @@ export function NewIssueDialog() {
                     disabled={isSubmitting}
                   />
                 </label>
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  <span>Base price</span>
+                  <input
+                    aria-label="Base price"
+                    type="number"
+                    min={0}
+                    className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm text-foreground outline-none"
+                    placeholder="Expected value"
+                    value={deliverableBasePrice}
+                    onChange={(event) => setDeliverableBasePrice(event.target.value)}
+                    disabled={isSubmitting}
+                  />
+                </label>
               </div>
             </div>
           ) : null}
@@ -1499,9 +1528,9 @@ export function NewIssueDialog() {
           {currentProject && currentProjectSupportsExecutionWorkspace && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
-              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-xs font-medium">작업 실행 환경</div>
               <div className="text-[11px] text-muted-foreground">
-                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
+                이 작업을 프로젝트 기본 환경, 새 격리 환경, 기존 실행 환경 중 어디에서 실행할지 정합니다.
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1525,7 +1554,7 @@ export function NewIssueDialog() {
                   value={selectedExecutionWorkspaceId}
                   onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
                 >
-                  <option value="">Choose an existing workspace</option>
+                  <option value="">기존 실행 환경 선택</option>
                   {deduplicatedReusableWorkspaces.map((workspace) => (
                     <option key={workspace.id} value={workspace.id}>
                       {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
@@ -1535,12 +1564,12 @@ export function NewIssueDialog() {
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-[11px] text-muted-foreground">
-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
+                  {selectedReusableExecutionWorkspace.name} 실행 환경을 재사용합니다.
                 </div>
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  Warning: this sub-task will no longer use the parent task execution environment{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
                 </div>
               ) : null}
             </div>
@@ -1676,7 +1705,7 @@ export function NewIssueDialog() {
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                             <span className="truncate text-sm">{file.file.name}</span>
                           </div>
                           <div className="mt-1 text-[11px] text-muted-foreground">
@@ -1783,7 +1812,7 @@ export function NewIssueDialog() {
             onClick={() => stageFileInputRef.current?.click()}
             disabled={isSubmitting}
           >
-            <Paperclip className="h-3 w-3" />
+            <FileText className="h-3 w-3" />
             Upload
           </button>
 

@@ -85,6 +85,24 @@ async function cleanupEmbeddedPostgresDir(dataDir: string): Promise<void> {
 }
 
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
+  if (process.env.PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS === "true") {
+    return {
+      supported: false,
+      reason: "PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS=true",
+    };
+  }
+
+  if (
+    process.platform === "win32" &&
+    process.env.PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS !== "true"
+  ) {
+    return {
+      supported: false,
+      reason:
+        "embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them",
+    };
+  }
+
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-postgres-probe-"));
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();

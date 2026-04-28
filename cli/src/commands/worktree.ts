@@ -473,6 +473,27 @@ function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   }
 }
 
+function isRetriableCleanupError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? (error.code as string | undefined) : undefined;
+  return code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForEmbeddedPostgresRelease(dataDir: string): Promise<void> {
+  const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!existsSync(postmasterPidFile) || readRunningPostmasterPid(postmasterPidFile) === null) {
+      await sleep(25 * (attempt + 1));
+      return;
+    }
+    await sleep(50 * (attempt + 1));
+  }
+}
+
 async function isPortAvailable(port: number): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     const server = createServer();
@@ -1084,7 +1105,11 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
     port,
     startedByThisProcess: true,
     stop: async () => {
-      await instance.stop();
+      try {
+        await instance.stop();
+      } finally {
+        await waitForEmbeddedPostgresRelease(dataDir);
+      }
     },
   };
 }

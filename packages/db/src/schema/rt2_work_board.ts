@@ -1,0 +1,99 @@
+import { date, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
+import { issues } from "./issues.js";
+
+export const rt2WorkBoardCards = pgTable(
+  "rt2_work_board_cards",
+  {
+    issueId: uuid("issue_id").primaryKey().references(() => issues.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    dueDate: date("due_date"),
+    qualityStatus: text("quality_status").notNull().default("none"),
+    priceGold: integer("price_gold"),
+    detailNotes: text("detail_notes"),
+    updatedByUserId: text("updated_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyDueDateIdx: index("rt2_work_board_cards_company_due_idx").on(table.companyId, table.dueDate),
+    companyQualityIdx: index("rt2_work_board_cards_company_quality_idx").on(table.companyId, table.qualityStatus),
+  }),
+);
+
+export const rt2WorkBoardChecklistItems = pgTable(
+  "rt2_work_board_checklist_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    checked: integer("checked").notNull().default(0),
+    position: integer("position").notNull().default(0),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    issuePositionIdx: index("rt2_work_board_checklist_issue_position_idx").on(table.companyId, table.issueId, table.position),
+  }),
+);
+
+export const rt2WorkBoardAttachments = pgTable(
+  "rt2_work_board_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    url: text("url").notNull(),
+    contentType: text("content_type"),
+    previewKind: text("preview_kind").notNull().default("link"),
+    position: integer("position").notNull().default(0),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    issuePositionIdx: index("rt2_work_board_attachment_issue_position_idx").on(table.companyId, table.issueId, table.position),
+  }),
+);
+
+export const rt2CaptureDrafts = pgTable(
+  "rt2_capture_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    channel: text("channel"),
+    externalUserId: text("external_user_id"),
+    rawText: text("raw_text").notNull(),
+    normalizedHash: text("normalized_hash").notNull(),
+    parsedDraft: jsonb("parsed_draft").$type<Record<string, unknown>>().notNull(),
+    status: text("status").notNull().default("review_required"),
+    promotionTarget: text("promotion_target"),
+    promotedIssueId: uuid("promoted_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    promotedWorkProductId: uuid("promoted_work_product_id"),
+    duplicateOfDraftId: uuid("duplicate_of_draft_id"),
+    failureCode: text("failure_code"),
+    failureMessage: text("failure_message"),
+    permissionStatus: text("permission_status").notNull().default("allowed"),
+    auditTrail: jsonb("audit_trail").$type<Array<Record<string, unknown>>>().notNull().default([]),
+    createdByUserId: text("created_by_user_id"),
+    reviewedByUserId: text("reviewed_by_user_id"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companySourceStatusIdx: index("rt2_capture_drafts_company_source_status_idx").on(table.companyId, table.source, table.status),
+    companyCreatedIdx: index("rt2_capture_drafts_company_created_idx").on(table.companyId, table.createdAt),
+    duplicateLookupUq: uniqueIndex("rt2_capture_drafts_duplicate_lookup_uq").on(
+      table.companyId,
+      table.source,
+      table.channel,
+      table.externalUserId,
+      table.normalizedHash,
+    ),
+  }),
+);

@@ -68,25 +68,25 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEM-01 | Phase 33 | Pending |
-| SEM-02 | Phase 33 | Pending |
-| SEM-03 | Phase 33 | Pending |
-| SEM-04 | Phase 33 | Pending |
-| SEARCH-01 | Phase 34 | Pending |
-| SEARCH-02 | Phase 34 | Pending |
-| SEARCH-03 | Phase 34 | Pending |
-| SEARCH-04 | Phase 34 | Pending |
-| CONTRA-01 | Phase 35 | Pending |
-| CONTRA-02 | Phase 35 | Pending |
-| CONTRA-03 | Phase 35 | Pending |
-| CONTRA-04 | Phase 35 | Pending |
-| JARVIS-01 | Phase 36 | Pending |
-| JARVIS-02 | Phase 36 | Pending |
-| JARVIS-03 | Phase 36 | Pending |
-| JARVIS-04 | Phase 36 | Pending |
-| OPS-01 | Phase 37 | Pending |
-| OPS-02 | Phase 37 | Pending |
-| OPS-03 | Phase 37 | Pending |
+| SEM-01 | Phase 33 | Complete |
+| SEM-02 | Phase 33 | Complete |
+| SEM-03 | Phase 33 | Complete |
+| SEM-04 | Phase 33 | Complete |
+| SEARCH-01 | Phase 34 | Complete |
+| SEARCH-02 | Phase 34 | Complete |
+| SEARCH-03 | Phase 34 | Complete |
+| SEARCH-04 | Phase 34 | Complete |
+| CONTRA-01 | Phase 35 | Complete |
+| CONTRA-02 | Phase 35 | Complete |
+| CONTRA-03 | Phase 35 | Complete |
+| CONTRA-04 | Phase 35 | Complete |
+| JARVIS-01 | Phase 36 | Complete |
+| JARVIS-02 | Phase 36 | Complete |
+| JARVIS-03 | Phase 36 | Complete |
+| JARVIS-04 | Phase 36 | Complete |
+| OPS-01 | Phase 37 | Complete |
+| OPS-02 | Phase 37 | Complete |
+| OPS-03 | Phase 37 | Complete |
 
 **Coverage:**
 - v2.5 requirements: 19 total

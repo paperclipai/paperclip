@@ -15,6 +15,7 @@ export const rt2V33DailyWikiPages = pgTable(
     shortSummary: jsonb("short_summary").$type<string[]>().notNull().default([]),
     markdown: text("markdown").notNull().default(""),
     history: jsonb("history").$type<Rt2DailyActivityEntry[]>().notNull().default([]),
+    sourceEventIds: jsonb("source_event_ids").$type<string[]>().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

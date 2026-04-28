@@ -29,6 +29,12 @@ import { Rt2DailyBoard } from "./Rt2DailyBoard";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("Rt2DailyBoard", () => {
+  function buildDragEvent(type: string, dataTransfer: { getData: (type: string) => string; setData: (type: string, value: string) => void; effectAllowed?: string }) {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+    return event;
+  }
+
   it("renders the approved three-lane board and saves card lane changes", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -57,8 +63,50 @@ describe("Rt2DailyBoard", () => {
                 note: "오전 착수",
                 status: "in_progress",
                 updatedAt: new Date("2026-04-17T09:00:00Z"),
+                deliverableCount: 1,
+                submittedDeliverableCount: 0,
+                taskDeliverableCount: 0,
+                basePriceTotal: 1000,
+                qualityStatus: "pending_review",
+                okrContextStatus: "connected",
+                gapFlags: [],
               },
             ],
+            cockpit: {
+              summary: {
+                tasksWorked: 1,
+                todosCompleted: 0,
+                deliverablesDefined: 1,
+                deliverablesSubmitted: 0,
+                effortNoteCount: 1,
+                goldImpact: 10,
+                xpImpact: 5,
+                qualityStatus: "pending_review",
+              },
+              traceRows: [
+                {
+                  taskIssueId: "task-1",
+                  todoIssueId: "todo-1",
+                  taskTitle: "주간 보고",
+                  todoTitle: "주간 보고서 작성",
+                  projectId: "project-1",
+                  projectTitle: "운영 자동화",
+                  projectStatus: "in_progress",
+                  goalPath: [
+                    {
+                      id: "goal-1",
+                      title: "운영 리듬 개선",
+                      level: "objective",
+                      status: "active",
+                      parentId: null,
+                    },
+                  ],
+                  gapFlags: [],
+                },
+              ],
+              gapFlags: [],
+              aiSummary: ["1개 task가 오늘 보고에 연결되었습니다."],
+            },
           }}
           pendingTodoIssueId={null}
           onSaveCard={onSaveCard}
@@ -91,6 +139,35 @@ describe("Rt2DailyBoard", () => {
         projectId: "project-1",
         reportDate: "2026-04-17",
         lane: "support_1",
+      }),
+    );
+
+    const dragStore = new Map<string, string>();
+    const dataTransfer = {
+      getData: (type: string) => dragStore.get(type) ?? "",
+      setData: (type: string, value: string) => {
+        dragStore.set(type, value);
+      },
+      effectAllowed: "move",
+    };
+    const card = container.querySelector('article[draggable="true"]');
+    const supportLane = container.querySelector('section[aria-label="보조창 2 lane"]');
+
+    expect(card).toBeDefined();
+    expect(supportLane).toBeDefined();
+
+    act(() => {
+      card?.dispatchEvent(buildDragEvent("dragstart", dataTransfer));
+      supportLane?.dispatchEvent(buildDragEvent("dragover", dataTransfer));
+      supportLane?.dispatchEvent(buildDragEvent("drop", dataTransfer));
+    });
+
+    expect(onSaveCard).toHaveBeenCalledWith(
+      "todo-1",
+      expect.objectContaining({
+        projectId: "project-1",
+        reportDate: "2026-04-17",
+        lane: "support_2",
       }),
     );
 

@@ -1,9 +1,10 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import { rt2TasksApi } from "../api/rt2-tasks";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
@@ -53,7 +54,7 @@ import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTr
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
-import type { Issue, Project } from "@paperclipai/shared";
+import type { Issue, Project, Rt2BoardCardMeta } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 150;
@@ -63,7 +64,7 @@ const ISSUE_ROW_RENDER_BATCH_DELAY_MS = 0;
 /* ── View state ── */
 
 export type IssueViewState = IssueFilterState & {
-  sortField: "status" | "priority" | "title" | "created" | "updated";
+  sortField: "status" | "priority" | "title" | "created" | "updated" | "due" | "price" | "quality";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
@@ -72,31 +73,38 @@ export type IssueViewState = IssueFilterState & {
   collapsedParents: string[];
 };
 
-const defaultViewState: IssueViewState = {
-  ...defaultIssueFilterState,
-  sortField: "updated",
-  sortDir: "desc",
-  groupBy: "none",
-  viewMode: "list",
-  nestingEnabled: true,
-  collapsedGroups: [],
-  collapsedParents: [],
-};
+function createDefaultViewState(viewMode: IssueViewState["viewMode"] = "list"): IssueViewState {
+  return {
+    ...defaultIssueFilterState,
+    sortField: "updated",
+    sortDir: "desc",
+    groupBy: "none",
+    viewMode,
+    nestingEnabled: true,
+    collapsedGroups: [],
+    collapsedParents: [],
+  };
+}
 
-function getViewState(key: string): IssueViewState {
+function getViewState(key: string, defaultViewMode?: IssueViewState["viewMode"]): IssueViewState {
+  const fallback = createDefaultViewState(defaultViewMode);
   try {
     const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultViewState, ...JSON.parse(raw) };
+    if (raw) return { ...fallback, ...JSON.parse(raw) };
   } catch { /* ignore */ }
-  return { ...defaultViewState };
+  return fallback;
 }
 
 function saveViewState(key: string, state: IssueViewState) {
   localStorage.setItem(key, JSON.stringify(state));
 }
 
-function getInitialViewState(key: string, initialAssignees?: string[]): IssueViewState {
-  const stored = getViewState(key);
+function getInitialViewState(
+  key: string,
+  initialAssignees?: string[],
+  defaultViewMode?: IssueViewState["viewMode"],
+): IssueViewState {
+  const stored = getViewState(key, defaultViewMode);
   if (!initialAssignees) return stored;
   return {
     ...stored,
@@ -154,6 +162,32 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   return sorted;
 }
 
+function sortBoardIssues(issues: Issue[], state: IssueViewState, boardCards: Map<string, Rt2BoardCardMeta>): Issue[] {
+  if (!["due", "price", "quality"].includes(state.sortField)) return sortIssues(issues, state);
+  const sorted = [...issues];
+  const dir = state.sortDir === "asc" ? 1 : -1;
+  sorted.sort((a, b) => {
+    const aCard = boardCards.get(a.id);
+    const bCard = boardCards.get(b.id);
+    if (state.sortField === "due") {
+      return dir * ((aCard?.dueDate ?? "9999-12-31").localeCompare(bCard?.dueDate ?? "9999-12-31"));
+    }
+    if (state.sortField === "price") {
+      return dir * ((aCard?.priceGold ?? 0) - (bCard?.priceGold ?? 0));
+    }
+    return dir * ((aCard?.qualityStatus ?? "none").localeCompare(bCard?.qualityStatus ?? "none"));
+  });
+  return sorted;
+}
+
+function issueMatchesDueFilter(issue: Issue, boardCards: Map<string, Rt2BoardCardMeta>, dueFilter: string[]) {
+  if (dueFilter.length === 0) return true;
+  const dueDate = boardCards.get(issue.id)?.dueDate ?? null;
+  const today = new Date().toISOString().slice(0, 10);
+  const bucket = !dueDate ? "none" : dueDate < today ? "overdue" : dueDate === today ? "today" : "upcoming";
+  return dueFilter.includes(bucket);
+}
+
 /* ── Component ── */
 
 interface Agent {
@@ -179,6 +213,7 @@ interface IssuesListProps {
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
+  defaultViewMode?: IssueViewState["viewMode"];
   enableRoutineVisibilityFilter?: boolean;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
@@ -237,9 +272,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label="Search tasks"
         data-page-search-target="true"
       />
     </div>
@@ -261,12 +296,14 @@ export function IssuesList({
   searchFilters,
   baseCreateIssueDefaults,
   createIssueLabel,
+  defaultViewMode,
   enableRoutineVisibilityFilter = false,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const queryClient = useQueryClient();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -283,10 +320,12 @@ export function IssuesList({
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
 
-  const [viewState, setViewState] = useState<IssueViewState>(() => getInitialViewState(scopedKey, initialAssignees));
+  const [viewState, setViewState] = useState<IssueViewState>(() => getInitialViewState(scopedKey, initialAssignees, defaultViewMode));
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
+  const [boardDueFilters, setBoardDueFilters] = useState<string[]>([]);
+  const [boardQualityFilters, setBoardQualityFilters] = useState<string[]>([]);
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const deferredIssueSearch = useDeferredValue(issueSearch);
@@ -302,9 +341,9 @@ export function IssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialViewState(scopedKey, initialAssignees));
+      setViewState(getInitialViewState(scopedKey, initialAssignees, defaultViewMode));
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey]);
+  }, [scopedKey, initialAssignees, initialAssigneesKey, defaultViewMode]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -451,6 +490,22 @@ export function IssuesList({
     return map;
   }, [issues]);
 
+  const boardIssueIds = useMemo(() => issues.map((issue) => issue.id), [issues]);
+  const { data: boardOverview } = useQuery({
+    queryKey: selectedCompanyId
+      ? ["rt2", "work-board", selectedCompanyId, boardIssueIds.join("|")]
+      : ["rt2", "work-board", "__disabled__"],
+    queryFn: () => rt2TasksApi.getBoardOverview(selectedCompanyId!, boardIssueIds),
+    enabled: !!selectedCompanyId && boardIssueIds.length > 0,
+  });
+  const boardCards = useMemo(() => {
+    const map = new Map<string, Rt2BoardCardMeta>();
+    for (const card of boardOverview?.cards ?? []) {
+      map.set(card.issueId, card);
+    }
+    return map;
+  }, [boardOverview]);
+
   const issueTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const issue of issues) {
@@ -462,8 +517,15 @@ export function IssuesList({
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
     const filteredByControls = applyIssueFilters(sourceIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
-    return sortIssues(filteredByControls, viewState);
-  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter]);
+    const filteredByBoard = filteredByControls.filter((issue) => {
+      const quality = boardCards.get(issue.id)?.qualityStatus ?? "none";
+      return (
+        issueMatchesDueFilter(issue, boardCards, boardDueFilters) &&
+        (boardQualityFilters.length === 0 || boardQualityFilters.includes(quality))
+      );
+    });
+    return sortBoardIssues(filteredByBoard, viewState, boardCards);
+  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter, boardCards, boardDueFilters, boardQualityFilters]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -556,9 +618,10 @@ export function IssuesList({
 
   const remainingIssueRowCount = Math.max(filtered.length - renderedIssueRowLimit, 0);
 
-  const newIssueDefaults = useCallback((groupKey?: string) => {
+  const newIssueDefaults = useCallback((groupKey?: string, statusOverride?: string) => {
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
+    if (statusOverride) defaults.status = statusOverride;
     if (groupKey) {
       if (viewState.groupBy === "status") defaults.status = groupKey;
       else if (viewState.groupBy === "priority") defaults.priority = groupKey;
@@ -575,10 +638,11 @@ export function IssuesList({
     return defaults;
   }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
-  const openCreateIssueDialog = useCallback((groupKey?: string) => {
-    openNewIssue(newIssueDefaults(groupKey));
+  const normalizedCreateLabel = createIssueLabel === "Sub-issue" ? "Sub-task" : createIssueLabel;
+  const createActionLabel = normalizedCreateLabel ? `Create ${normalizedCreateLabel}` : "Create Task";
+  const createButtonLabel = normalizedCreateLabel ? `New ${normalizedCreateLabel}` : "New Task";
+  const openCreateIssueDialog = useCallback((groupKey?: string, statusOverride?: string) => {
+    openNewIssue(newIssueDefaults(groupKey, statusOverride));
   }, [newIssueDefaults, openNewIssue]);
 
   const filterToWorkspace = useCallback((workspaceId: string) => {
@@ -604,6 +668,11 @@ export function IssuesList({
     setAssigneePickerIssueId(null);
     setAssigneeSearch("");
   }, [onUpdateIssue]);
+
+  const refetchBoardOverview = useCallback(() => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({ queryKey: ["rt2", "work-board", selectedCompanyId] });
+  }, [queryClient, selectedCompanyId]);
 
   let remainingRowsToRender = viewState.viewMode === "list" ? renderedIssueRowLimit : Number.POSITIVE_INFINITY;
 
@@ -631,14 +700,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title="목록 보기"
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title="보드 보기"
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -662,7 +731,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title="Choose which task columns stay visible"
             iconOnly
           />
 
@@ -722,6 +791,66 @@ export function IssuesList({
             </Popover>
           )}
 
+          {viewState.viewMode === "board" && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Board filters">
+                  <ArrowUpDown className="h-3.5 w-3.5" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-56 p-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-medium">기한</p>
+                  <div className="flex flex-wrap gap-1">
+                    {(["overdue", "today", "upcoming", "none"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={`rounded-sm px-2 py-1 text-xs ${boardDueFilters.includes(value) ? "bg-accent text-foreground" : "bg-muted text-muted-foreground"}`}
+                        onClick={() => setBoardDueFilters((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])}
+                      >
+                        {value}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="pt-1 text-xs font-medium">Quality</p>
+                  <div className="flex flex-wrap gap-1">
+                    {(["none", "pending_review", "reviewed", "needs_work"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={`rounded-sm px-2 py-1 text-xs ${boardQualityFilters.includes(value) ? "bg-accent text-foreground" : "bg-muted text-muted-foreground"}`}
+                        onClick={() => setBoardQualityFilters((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])}
+                      >
+                        {value}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="pt-1 text-xs font-medium">Sort</p>
+                  {([
+                    ["due", "기한"],
+                    ["price", "가격"],
+                    ["quality", "품질"],
+                    ["priority", "우선순위"],
+                  ] as const).map(([field, label]) => (
+                    <button
+                      key={field}
+                      type="button"
+                      className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-xs ${viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"}`}
+                      onClick={() => {
+                        if (viewState.sortField === field) updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
+                        else updateView({ sortField: field, sortDir: "asc" });
+                      }}
+                    >
+                      <span>{label}</span>
+                      {viewState.sortField === field ? <Check className="h-3 w-3" /> : null}
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
+
           {/* Group (list view only) */}
           {viewState.viewMode === "list" && (
             <Popover>
@@ -737,7 +866,7 @@ export function IssuesList({
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
                     ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
+                    ["parent", "Parent Task"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
@@ -768,7 +897,7 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message="No tasks match the current filters or search."
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -779,7 +908,29 @@ export function IssuesList({
           issues={filtered}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          boardCards={boardCards}
           onUpdateIssue={onUpdateIssue}
+          onUpdateBoardCard={(id, data) => {
+            if (!selectedCompanyId) return;
+            void rt2TasksApi.updateBoardCard(selectedCompanyId, id, data).then(refetchBoardOverview);
+          }}
+          onAddChecklistItem={(id, title) => {
+            if (!selectedCompanyId) return;
+            void rt2TasksApi.addChecklistItem(selectedCompanyId, id, { title }).then(refetchBoardOverview);
+          }}
+          onUpdateChecklistItem={(id, itemId, data) => {
+            if (!selectedCompanyId) return;
+            void rt2TasksApi.updateChecklistItem(selectedCompanyId, id, itemId, data).then(refetchBoardOverview);
+          }}
+          onReorderChecklist={(id, orderedItemIds) => {
+            if (!selectedCompanyId) return;
+            void rt2TasksApi.reorderChecklist(selectedCompanyId, id, orderedItemIds).then(refetchBoardOverview);
+          }}
+          onAddAttachment={(id, data) => {
+            if (!selectedCompanyId) return;
+            void rt2TasksApi.addBoardAttachment(selectedCompanyId, id, data).then(refetchBoardOverview);
+          }}
+          onCreateTask={(status) => openCreateIssueDialog(undefined, status)}
         />
       ) : (
         <>

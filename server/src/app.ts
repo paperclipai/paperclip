@@ -17,6 +17,26 @@ import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { routineRoutes } from "./routes/routines.js";
 import { rt2TaskRoutes } from "./routes/rt2-tasks.js";
+import { rt2TaskMeshRoutes } from "./routes/rt2-task-mesh.js";
+import { rt2KnowledgeRoutes } from "./routes/rt2-knowledge.js";
+import { rt2KnowledgeOperationsRoutes } from "./routes/rt2-knowledge-operations.js";
+import { rt2JarvisRoutes } from "./routes/rt2-jarvis.js";
+import { rt2GovernanceRoutes } from "./routes/rt2-governance.js";
+import { rt2GamificationRoutes } from "./routes/rt2-gamification.js";
+import { rt2CollaborationRoutes } from "./routes/rt2-collaboration.js";
+import { rt2CollaborationRewardsRoutes } from "./routes/rt2-collaboration-rewards.js";
+import { rt2PersonalPnLRoutes } from "./routes/rt2-personal-pnl.js";
+import { rt2CoPilotRoutes } from "./routes/rt2-copilot.js";
+import { rt2AgentMarketplaceRoutes } from "./routes/rt2-agent-marketplace.js";
+import { rt2CareerMateRoutes } from "./routes/rt2-career-mate.js";
+import { rt2AdvancedAIRoutes } from "./routes/rt2-advanced-ai.js";
+import { rt2EnterpriseRoutes } from "./routes/rt2-enterprise.js";
+import { rt2AutoEvaluationRoutes } from "./routes/rt2-auto-evaluation.js";
+import { rt2ReputationExpansionRoutes } from "./routes/rt2-reputation-expansion.js";
+import { rt2TemplateApplicationRoutes } from "./routes/rt2-template-application.js";
+import { rt2HybridSearchRoutes } from "./routes/rt2-hybrid-search.js";
+import { rt2SemanticIndexRoutes } from "./routes/rt2-semantic-index.js";
+import { rt2ContradictionReviewRoutes } from "./routes/rt2-contradiction-review.js";
 import { rt2DailyReportRoutes } from "./routes/rt2-daily-report.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
@@ -45,6 +65,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
+import { createRt2WikiLintScheduler } from "./services/rt2-wiki-lint.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
@@ -200,6 +221,26 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
   }));
   api.use(rt2TaskRoutes(db));
+  api.use(rt2TaskMeshRoutes(db));
+  api.use(rt2KnowledgeRoutes(db));
+  api.use(rt2KnowledgeOperationsRoutes(db));
+  api.use(rt2JarvisRoutes(db));
+  api.use(rt2GovernanceRoutes(db));
+  api.use(rt2GamificationRoutes(db));
+  api.use(rt2CollaborationRoutes(db));
+  api.use(rt2CollaborationRewardsRoutes(db));
+  api.use(rt2PersonalPnLRoutes(db));
+  api.use(rt2CoPilotRoutes(db));
+  api.use(rt2AgentMarketplaceRoutes(db));
+  api.use(rt2CareerMateRoutes(db));
+  api.use(rt2AdvancedAIRoutes(db));
+  api.use(rt2EnterpriseRoutes(db));
+  api.use(rt2AutoEvaluationRoutes(db));
+  api.use(rt2ReputationExpansionRoutes(db));
+  api.use(rt2TemplateApplicationRoutes(db));
+  api.use(rt2HybridSearchRoutes(db));
+  api.use(rt2SemanticIndexRoutes(db));
+  api.use(rt2ContradictionReviewRoutes(db));
   api.use(rt2DailyReportRoutes(db));
   api.use(routineRoutes(db));
   api.use(executionWorkspaceRoutes(db));
@@ -225,6 +266,7 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  const rt2WikiLintScheduler = createRt2WikiLintScheduler(db);
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
@@ -397,6 +439,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  rt2WikiLintScheduler.start();
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -431,6 +474,7 @@ export async function createApp(
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    rt2WikiLintScheduler.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

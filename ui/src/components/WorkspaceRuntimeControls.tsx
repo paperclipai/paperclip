@@ -166,7 +166,7 @@ export function buildWorkspaceRuntimeControlSections(input: {
       workspaceCommandId: null,
       runtimeServiceId: runtimeService.id,
       serviceIndex: runtimeService.configIndex ?? null,
-      disabledReason: "This runtime service no longer matches a configured workspace command.",
+      disabledReason: "This runtime service no longer matches a configured execution command.",
     }));
 
   return {
@@ -354,8 +354,8 @@ export function WorkspaceRuntimeControls({
   items,
   isPending = false,
   pendingRequest = null,
-  serviceEmptyMessage = "No services are configured for this workspace.",
-  jobEmptyMessage = "No one-shot jobs are configured for this workspace.",
+  serviceEmptyMessage = "No services are configured for this execution environment.",
+  jobEmptyMessage = "No one-shot jobs are configured for this execution environment.",
   emptyMessage,
   disabledHint = null,
   onAction,
@@ -379,7 +379,7 @@ export function WorkspaceRuntimeControls({
     <div className={cn("space-y-4", className)}>
       <div className="rounded-xl border border-border/70 bg-background/60 p-3">
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution commands</div>
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(
@@ -404,7 +404,7 @@ export function WorkspaceRuntimeControls({
 
       <CommandSection
         title="Services"
-        description="Long-running commands that Paperclip can supervise for this workspace."
+        description="Long-running commands that RealTycoon2 can supervise for this execution environment."
         items={resolvedSections.services}
         emptyMessage={resolvedServiceEmptyMessage}
         disabledHint={visibleDisabledHint}
@@ -426,7 +426,7 @@ export function WorkspaceRuntimeControls({
       {resolvedSections.otherServices.length > 0 ? (
         <CommandSection
           title="Untracked services"
-          description="Running services that no longer match the current workspace command config."
+          description="Running services that no longer match the current execution command config."
           items={resolvedSections.otherServices}
           emptyMessage=""
           isPending={isPending}

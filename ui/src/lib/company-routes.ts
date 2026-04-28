@@ -1,4 +1,11 @@
 const BOARD_ROUTE_ROOTS = new Set([
+  "one-liner",
+  "knowledge",
+  "marketplace",
+  "pnl",
+  "governance",
+  "plan-alignment",
+  "control-plane",
   "dashboard",
   "companies",
   "company",

@@ -28,7 +28,7 @@ function saveCompanyPath(companyId: string, path: string) {
 
 /**
  * Remembers the last visited page per company and navigates to it on company switch.
- * Falls back to /dashboard if no page was previously visited for a company.
+ * Falls back to /one-liner if no page was previously visited for a company.
  */
 export function useCompanyPageMemory() {
   const { companies, selectedCompanyId, selectedCompany, selectionSource } = useCompany();

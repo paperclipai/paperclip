@@ -46,6 +46,15 @@ export function Rt2TaskPanel({
         </div>
       </div>
 
+      <div className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+        <div className="text-sm font-medium text-foreground">Execution</div>
+        <div>
+          {detail.execution
+            ? `${detail.execution.state.replaceAll("_", " ")}${detail.execution.executorId ? ` by ${detail.execution.executorId}` : ""}`
+            : "idle"}
+        </div>
+      </div>
+
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span>Assign participant</span>
         <select
@@ -129,6 +138,9 @@ export function Rt2TaskPanel({
               <div className="text-sm font-medium">{todo.title}</div>
               <div className="text-xs text-muted-foreground">
                 {todo.assigneeUserId ?? "unassigned"} · {todo.submittedDeliverableCount} / {todo.deliverableCount} deliverables
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {todo.execution ? `execution ${todo.execution.state}` : "execution idle"}
               </div>
             </div>
             {todo.status === "todo" ? (

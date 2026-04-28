@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   listPaperclipSkillEntries,
+  materializePath,
   removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
 
@@ -47,16 +48,23 @@ describe("paperclip skill utils", () => {
     await fs.mkdir(skillsHome, { recursive: true });
     await fs.mkdir(runtimeSkill, { recursive: true });
     await fs.mkdir(customSkill, { recursive: true });
+    await fs.mkdir(staleMaintainerSkill, { recursive: true });
+    await fs.writeFile(path.join(runtimeSkill, "SKILL.md"), "# Runtime skill\n", "utf8");
+    await fs.writeFile(path.join(customSkill, "SKILL.md"), "# Custom skill\n", "utf8");
+    await fs.writeFile(path.join(staleMaintainerSkill, "SKILL.md"), "# Stale maintainer skill\n", "utf8");
 
-    await fs.symlink(runtimeSkill, path.join(skillsHome, "paperclip"));
-    await fs.symlink(customSkill, path.join(skillsHome, "release-notes"));
-    await fs.symlink(staleMaintainerSkill, path.join(skillsHome, "release"));
+    const runtimeMaterialized = await materializePath(runtimeSkill, path.join(skillsHome, "paperclip"));
+    const customMaterialized = await materializePath(customSkill, path.join(skillsHome, "release-notes"));
+    const staleMaterialized = await materializePath(staleMaintainerSkill, path.join(skillsHome, "release"));
 
     const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, ["paperclip"]);
 
     expect(removed).toEqual(["release"]);
     await expect(fs.lstat(path.join(skillsHome, "release"))).rejects.toThrow();
-    expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
-    expect((await fs.lstat(path.join(skillsHome, "release-notes"))).isSymbolicLink()).toBe(true);
+    expect(await fs.readFile(path.join(skillsHome, "paperclip", "SKILL.md"), "utf8")).toBe("# Runtime skill\n");
+    expect(await fs.readFile(path.join(skillsHome, "release-notes", "SKILL.md"), "utf8")).toBe("# Custom skill\n");
+    expect(runtimeMaterialized.kind).toBe(process.platform === "win32" ? "junction" : "symlink");
+    expect(customMaterialized.kind).toBe(process.platform === "win32" ? "junction" : "symlink");
+    expect(staleMaterialized.kind).toBe(process.platform === "win32" ? "junction" : "symlink");
   });
 });

@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { FileText, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
-import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
@@ -13,6 +12,7 @@ import { NewProjectDialog } from "./NewProjectDialog";
 import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
+import { FloatingOneLinerCapture } from "./FloatingOneLinerCapture";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
@@ -57,7 +57,7 @@ function readRememberedInstanceSettingsPath(): string {
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const { openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
   const {
     companies,
@@ -80,7 +80,11 @@ export function Layout() {
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [oneLinerOpen, setOneLinerOpen] = useState(false);
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const planAlignmentHref = selectedCompany?.issuePrefix
+    ? `/${selectedCompany.issuePrefix}/plan-alignment`
+    : "/plan-alignment";
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -167,7 +171,7 @@ export function Layout() {
 
   useKeyboardShortcuts({
     enabled: keyboardShortcutsEnabled,
-    onNewIssue: () => openNewIssue(),
+    onNewIssue: () => setOneLinerOpen(true),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,
@@ -340,19 +344,16 @@ export function Layout() {
             )}
           >
             <div className="flex flex-1 min-h-0 overflow-hidden">
-              <CompanyRail />
               {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
             </div>
             <div className="border-t border-r border-border px-3 py-2 bg-background">
               <div className="flex items-center gap-1">
                 <a
-                  href="https://docs.paperclip.ing/"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={planAlignmentHref}
                   className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                 >
-                  <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
+                  <FileText className="h-4 w-4 shrink-0" />
+                  <span className="truncate">개발기획서</span>
                 </a>
                 {health?.version && (
                   <Tooltip>
@@ -366,8 +367,8 @@ export function Layout() {
                   <Link
                     to={instanceSettingsTarget}
                     state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
+                    aria-label="RealTycoon2 settings"
+                    title="RealTycoon2 settings"
                     onClick={() => {
                       if (isMobile) setSidebarOpen(false);
                     }}
@@ -381,8 +382,8 @@ export function Layout() {
                   size="icon-sm"
                   className="text-muted-foreground shrink-0"
                   onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
+                  aria-label={`${nextTheme} mode로 전환`}
+                  title={`${nextTheme} mode로 전환`}
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>
@@ -392,7 +393,6 @@ export function Layout() {
         ) : (
           <div className="flex h-full flex-col shrink-0">
             <div className="flex flex-1 min-h-0">
-              <CompanyRail />
               <div
                 className={cn(
                   "overflow-hidden transition-[width] duration-100 ease-out",
@@ -405,13 +405,11 @@ export function Layout() {
             <div className="border-t border-r border-border px-3 py-2">
               <div className="flex items-center gap-1">
                 <a
-                  href="https://docs.paperclip.ing/"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={planAlignmentHref}
                   className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                 >
-                  <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
+                  <FileText className="h-4 w-4 shrink-0" />
+                  <span className="truncate">개발기획서</span>
                 </a>
                 {health?.version && (
                   <Tooltip>
@@ -425,8 +423,8 @@ export function Layout() {
                   <Link
                     to={instanceSettingsTarget}
                     state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
+                    aria-label="RealTycoon2 settings"
+                    title="RealTycoon2 settings"
                     onClick={() => {
                       if (isMobile) setSidebarOpen(false);
                     }}
@@ -440,8 +438,8 @@ export function Layout() {
                   size="icon-sm"
                   className="text-muted-foreground shrink-0"
                   onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
+                  aria-label={`${nextTheme} mode로 전환`}
+                  title={`${nextTheme} mode로 전환`}
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>
@@ -488,6 +486,7 @@ export function Layout() {
       <NewGoalDialog />
       <NewAgentDialog />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <FloatingOneLinerCapture open={oneLinerOpen} onOpenChange={setOneLinerOpen} />
       <ToastViewport />
       </div>
     </GeneralSettingsProvider>

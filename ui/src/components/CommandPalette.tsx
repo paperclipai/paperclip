@@ -18,11 +18,15 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import {
+  BookOpen,
   CircleDot,
+  ClipboardList,
   Bot,
+  Boxes,
   Hexagon,
+  Network,
+  ShieldCheck,
   Target,
-  LayoutDashboard,
   Inbox,
   DollarSign,
   History,
@@ -37,7 +41,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialog();
+  const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
 
@@ -106,22 +110,21 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder="작업, Jarvis, 프로젝트 검색..."
         value={query}
         onValueChange={setQuery}
       />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandEmpty>검색 결과가 없습니다.</CommandEmpty>
 
-        <CommandGroup heading="Actions">
+        <CommandGroup heading="빠른 실행">
           <CommandItem
             onSelect={() => {
-              setOpen(false);
-              openNewIssue();
+              go("/one-liner");
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
+            업무 기록
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
           <CommandItem
@@ -131,55 +134,88 @@ export function CommandPalette() {
             }}
           >
             <Plus className="mr-2 h-4 w-4" />
-            Create new agent
+            Jarvis 추가
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
-            Create new project
+            프로젝트 추가
           </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
 
-        <CommandGroup heading="Pages">
+        <CommandGroup heading="RT2">
+          <CommandItem onSelect={() => go("/one-liner")}>
+            <SquarePen className="mr-2 h-4 w-4" />
+            일일 업무 기록
+          </CommandItem>
+          <CommandItem onSelect={() => go("/knowledge")}>
+            <BookOpen className="mr-2 h-4 w-4" />
+            지식
+          </CommandItem>
+          <CommandItem onSelect={() => go("/marketplace")}>
+            <Boxes className="mr-2 h-4 w-4" />
+            Jarvis 마켓
+          </CommandItem>
+          <CommandItem onSelect={() => go("/pnl")}>
+            <DollarSign className="mr-2 h-4 w-4" />
+            성과 정산
+          </CommandItem>
+          <CommandItem onSelect={() => go("/org")}>
+            <Network className="mr-2 h-4 w-4" />
+            조직
+          </CommandItem>
+          <CommandItem onSelect={() => go("/governance")}>
+            <ShieldCheck className="mr-2 h-4 w-4" />
+            승인/거버넌스
+          </CommandItem>
+          <CommandItem onSelect={() => go("/plan-alignment")}>
+            <ClipboardList className="mr-2 h-4 w-4" />
+            개발계획 정합성
+          </CommandItem>
+        </CommandGroup>
+
+        <CommandSeparator />
+
+        <CommandGroup heading="운영">
           <CommandItem onSelect={() => go("/dashboard")}>
-            <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
+            <ClipboardList className="mr-2 h-4 w-4" />
+            업무 대시보드
           </CommandItem>
           <CommandItem onSelect={() => go("/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            받은 요청
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            작업
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
-            Projects
+            프로젝트
           </CommandItem>
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
-            Goals
+            목표
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
-            Agents
+            Jarvis
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
-            Costs
+            비용
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />
-            Activity
+            운영 기록
           </CommandItem>
         </CommandGroup>
 
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading="작업">
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
@@ -208,7 +244,7 @@ export function CommandPalette() {
         {agents.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Agents">
+            <CommandGroup heading="Jarvis">
               {agents.slice(0, 10).map((agent) => (
                 <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
                   <Bot className="mr-2 h-4 w-4" />
@@ -223,7 +259,7 @@ export function CommandPalette() {
         {projects.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Projects">
+            <CommandGroup heading="프로젝트">
               {projects.slice(0, 10).map((project) => (
                 <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
                   <Hexagon className="mr-2 h-4 w-4" />

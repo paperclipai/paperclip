@@ -8,7 +8,9 @@ import {
   companies,
   companyMemberships,
   createDb,
+  goals,
   issues,
+  issueWorkProducts,
   projects,
   rt2V33DailyReportCards,
   rt2V33DailyWikiPages,
@@ -49,10 +51,12 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
     await db.delete(activityLog);
     await db.delete(rt2V33DailyReportCards);
     await db.delete(rt2V33DailyWikiPages);
+    await db.delete(issueWorkProducts);
     await db.delete(rt2V33TaskProfiles);
     await db.delete(issues);
     await db.delete(companyMemberships);
     await db.delete(projects);
+    await db.delete(goals);
     await db.delete(companies);
   });
 
@@ -84,6 +88,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const boardUserId = "board-user";
+    const goalId = randomUUID();
     const taskIssueId = randomUUID();
     const todoIssueId = randomUUID();
 
@@ -109,10 +114,19 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       membershipRole: "owner",
     });
 
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Improve daily operating cadence",
+      level: "objective",
+      status: "active",
+    });
+
     await db.insert(issues).values({
       id: taskIssueId,
       companyId,
       projectId,
+      goalId,
       title: "Launch daily report flow",
       status: "in_progress",
       priority: "medium",
@@ -123,6 +137,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       issueId: taskIssueId,
       companyId,
       projectId,
+      goalId,
       taskMode: "collab",
       capacity: 1,
     });
@@ -137,6 +152,26 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       priority: "medium",
       assigneeUserId: boardUserId,
       createdByUserId: boardUserId,
+    });
+
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      projectId,
+      issueId: todoIssueId,
+      type: "document",
+      provider: "paperclip",
+      title: "Daily report cockpit note",
+      status: "draft",
+      reviewState: "none",
+      summary: "Daily report evidence",
+      metadata: {
+        rt2Deliverable: true,
+        rt2State: "defined",
+        rt2Type: "document",
+        rt2Owner: "todo",
+        rt2Required: true,
+        rt2BasePrice: 1000,
+      },
     });
 
     return {
@@ -167,6 +202,27 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
         lane: "today",
         progressPercent: 100,
         status: "done",
+        deliverableCount: 1,
+        basePriceTotal: 1000,
+        okrContextStatus: "connected",
+      }),
+    );
+    expect(boardResponse.body.cockpit).toEqual(
+      expect.objectContaining({
+        summary: expect.objectContaining({
+          tasksWorked: 1,
+          todosCompleted: 1,
+          deliverablesDefined: 1,
+          goldImpact: 10,
+        }),
+        traceRows: expect.arrayContaining([
+          expect.objectContaining({
+            todoIssueId: fixture.todoIssueId,
+            goalPath: expect.arrayContaining([
+              expect.objectContaining({ title: "Improve daily operating cadence" }),
+            ]),
+          }),
+        ]),
       }),
     );
 

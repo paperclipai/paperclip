@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
   issueWorkProducts,
+  rt2V33ExecutionAttempts,
   issues,
   rt2V33TaskParticipants,
   rt2V33TaskProfiles,
@@ -16,6 +17,7 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { issueService } from "./issues.js";
+import { rt2DomainEventService } from "./rt2-domain-events.js";
 import { workProductService } from "./work-products.js";
 
 type TaskMeta = {
@@ -31,6 +33,7 @@ type TaskMeta = {
 type ParticipantRow = typeof rt2V33TaskParticipants.$inferSelect;
 type WorkProductRow = typeof issueWorkProducts.$inferSelect;
 type CompanyMembershipRow = typeof companyMemberships.$inferSelect;
+type ExecutionAttemptRow = typeof rt2V33ExecutionAttempts.$inferSelect;
 
 function readRt2Metadata(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -44,6 +47,7 @@ function isRt2Deliverable(row: WorkProductRow) {
 export function rt2TaskEngineService(db: Db) {
   const issuesSvc = issueService(db);
   const workProducts = workProductService(db);
+  const domainEvents = rt2DomainEventService(db);
 
   async function getTaskMeta(taskIssueId: string): Promise<TaskMeta> {
     const row = await db
@@ -85,8 +89,9 @@ export function rt2TaskEngineService(db: Db) {
     deliverables: CreateRt2Task["deliverables"] | CreateRt2Todo["deliverables"],
   ) {
     const txWorkProducts = workProductService(tx);
+    const created: WorkProductRow[] = [];
     for (const deliverable of deliverables) {
-      await txWorkProducts.createForIssue(issueId, companyId, {
+      const workProduct = await txWorkProducts.createForIssue(issueId, companyId, {
         projectId,
         type: deliverable.type,
         provider: "paperclip",
@@ -102,9 +107,12 @@ export function rt2TaskEngineService(db: Db) {
           rt2Type: deliverable.type,
           rt2Owner: owner,
           rt2Required: true,
+          rt2BasePrice: deliverable.basePrice,
         },
       });
+      created.push(workProduct as WorkProductRow);
     }
+    return created;
   }
 
   async function endParticipantInTx(
@@ -178,6 +186,7 @@ export function rt2TaskEngineService(db: Db) {
       title: row.title,
       type: (metadata?.rt2Type as "document" | "artifact" | undefined) ?? "document",
       state: (metadata?.rt2State as "defined" | "submitted" | undefined) ?? "defined",
+      basePrice: typeof metadata?.rt2BasePrice === "number" ? metadata.rt2BasePrice : null,
       summary: row.summary ?? null,
       isRequired: metadata?.rt2Required !== false,
     };
@@ -188,6 +197,40 @@ export function rt2TaskEngineService(db: Db) {
       userId: row.principalId,
       membershipRole: row.membershipRole ?? null,
     };
+  }
+
+  function buildExecutionSummary(row: ExecutionAttemptRow) {
+    return {
+      id: row.id,
+      taskIssueId: row.taskIssueId,
+      todoIssueId: row.todoIssueId ?? null,
+      state: row.state as "queued" | "claimed" | "running" | "completed" | "failed" | "cancelled" | "blocked",
+      executorType: row.executorType as "user" | "jarvis" | "runtime" | null,
+      executorId: row.executorId ?? null,
+      executionWorkspaceId: row.executionWorkspaceId ?? null,
+      runtimeServiceId: row.runtimeServiceId ?? null,
+      heartbeatRunId: row.heartbeatRunId ?? null,
+      deliverableWorkProductId: row.deliverableWorkProductId ?? null,
+      resultWorkProductId: row.resultWorkProductId ?? null,
+      retryOfAttemptId: row.retryOfAttemptId ?? null,
+      failureReason: row.failureReason ?? null,
+      missingDeliverableReason: row.missingDeliverableReason ?? null,
+      queuedAt: row.queuedAt,
+      claimedAt: row.claimedAt ?? null,
+      startedAt: row.startedAt ?? null,
+      completedAt: row.completedAt ?? null,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  function latestExecutionByIssueId(rows: ExecutionAttemptRow[], owner: "task" | "todo") {
+    const latest = new Map<string, ReturnType<typeof buildExecutionSummary>>();
+    for (const row of rows) {
+      const key = owner === "task" ? row.taskIssueId : row.todoIssueId;
+      if (!key || latest.has(key)) continue;
+      latest.set(key, buildExecutionSummary(row));
+    }
+    return latest;
   }
 
   async function addParticipant(
@@ -242,6 +285,22 @@ export function rt2TaskEngineService(db: Db) {
       })
       .returning();
 
+    const participantMutation = actorUserId === participantUserId ? "joined" : "assigned";
+    await domainEvents.appendAndProject({
+      companyId: task.companyId,
+      eventType: participantMutation === "joined" ? "rt2.participant.joined" : "rt2.participant.assigned",
+      actorType: "user",
+      actorId: actorUserId,
+      entityType: "participant",
+      entityId: participant.id,
+      idempotencyKey: `rt2.participant.${participantMutation}:${participant.id}`,
+      payload: {
+        taskIssueId: task.issueId,
+        projectId: task.projectId,
+        participantUserId,
+      },
+    });
+
     return participant;
   }
 
@@ -276,7 +335,7 @@ export function rt2TaskEngineService(db: Db) {
       }
 
       const taskIssueIds = taskRows.map((row) => row.issueId);
-      const [activeParticipants, todoRows, deliverableRows] = await Promise.all([
+      const [activeParticipants, todoRows, deliverableRows, executionRows] = await Promise.all([
         db
           .select()
           .from(rt2V33TaskParticipants)
@@ -302,6 +361,11 @@ export function rt2TaskEngineService(db: Db) {
           .select()
           .from(issueWorkProducts)
           .where(inArray(issueWorkProducts.issueId, taskIssueIds)),
+        db
+          .select()
+          .from(rt2V33ExecutionAttempts)
+          .where(inArray(rt2V33ExecutionAttempts.taskIssueId, taskIssueIds))
+          .orderBy(desc(rt2V33ExecutionAttempts.updatedAt), desc(rt2V33ExecutionAttempts.createdAt)),
       ]);
 
       const activeParticipantCountByTask = new Map<string, number>();
@@ -334,6 +398,8 @@ export function rt2TaskEngineService(db: Db) {
         );
       }
 
+      const latestTaskExecutionByIssueId = latestExecutionByIssueId(executionRows, "task");
+
       return taskRows.map((row) => ({
         issueId: row.issueId,
         projectId: row.profileProjectId,
@@ -347,6 +413,7 @@ export function rt2TaskEngineService(db: Db) {
         deliverableCount: deliverableCountByTask.get(row.issueId) ?? 0,
         todoCount: todoCountByTask.get(row.issueId) ?? 0,
         todoInProgressCount: todoInProgressCountByTask.get(row.issueId) ?? 0,
+        execution: latestTaskExecutionByIssueId.get(row.issueId) ?? null,
       }));
     },
 
@@ -376,10 +443,17 @@ export function rt2TaskEngineService(db: Db) {
       ]);
 
       const deliverableIssueIds = [taskIssueId, ...todos.map((todo) => todo.id)];
-      const deliverableRows = await db
-        .select()
-        .from(issueWorkProducts)
-        .where(inArray(issueWorkProducts.issueId, deliverableIssueIds));
+      const [deliverableRows, executionRows] = await Promise.all([
+        db
+          .select()
+          .from(issueWorkProducts)
+          .where(inArray(issueWorkProducts.issueId, deliverableIssueIds)),
+        db
+          .select()
+          .from(rt2V33ExecutionAttempts)
+          .where(inArray(rt2V33ExecutionAttempts.taskIssueId, [taskIssueId]))
+          .orderBy(desc(rt2V33ExecutionAttempts.updatedAt), desc(rt2V33ExecutionAttempts.createdAt)),
+      ]);
 
       const taskDeliverables = deliverableRows
         .filter((row) => row.issueId === taskIssueId && isRt2Deliverable(row))
@@ -392,6 +466,9 @@ export function rt2TaskEngineService(db: Db) {
         bucket.push(deliverable);
         todoDeliverablesByIssueId.set(deliverable.issueId, bucket);
       }
+
+      const latestTaskExecutionByIssueId = latestExecutionByIssueId(executionRows, "task");
+      const latestTodoExecutionByIssueId = latestExecutionByIssueId(executionRows, "todo");
 
       return {
         issueId: taskIssue.id,
@@ -406,6 +483,7 @@ export function rt2TaskEngineService(db: Db) {
         deliverableCount: taskDeliverables.length,
         todoCount: todos.length,
         todoInProgressCount: todos.filter((todo) => todo.status === "in_progress").length,
+        execution: latestTaskExecutionByIssueId.get(taskIssueId) ?? null,
         participants: participants.map(buildParticipantSummary),
         deliverables: taskDeliverables,
         todos: todos.map((todo) => {
@@ -420,6 +498,7 @@ export function rt2TaskEngineService(db: Db) {
             submittedDeliverableCount: todoDeliverables.filter((deliverable) => {
               return readRt2Metadata(deliverable.metadata)?.rt2State === "submitted";
             }).length,
+            execution: latestTodoExecutionByIssueId.get(todo.id) ?? null,
           };
         }),
       };
@@ -449,7 +528,45 @@ export function rt2TaskEngineService(db: Db) {
           capacity: input.capacity,
         });
 
-        await createDeliverables(txDb, issue.id, companyId, input.projectId, "task", input.deliverables);
+        const deliverables = await createDeliverables(txDb, issue.id, companyId, input.projectId, "task", input.deliverables);
+        const txEvents = rt2DomainEventService(txDb);
+        await txEvents.appendAndProject({
+          companyId,
+          eventType: "rt2.task.created",
+          actorType: "user",
+          actorId: actorUserId,
+          entityType: "task",
+          entityId: issue.id,
+          idempotencyKey: `rt2.task.created:${issue.id}`,
+          payload: {
+            taskIssueId: issue.id,
+            projectId: input.projectId,
+            goalId: input.goalId ?? null,
+            title: input.title,
+            taskMode: input.taskMode,
+            capacity: input.capacity,
+            deliverableWorkProductIds: deliverables.map((deliverable) => deliverable.id),
+          },
+        });
+
+        for (const deliverable of deliverables) {
+          await txEvents.appendAndProject({
+            companyId,
+            eventType: "rt2.deliverable.defined",
+            actorType: "user",
+            actorId: actorUserId,
+            entityType: "deliverable",
+            entityId: deliverable.id,
+            idempotencyKey: `rt2.deliverable.defined:${deliverable.id}`,
+            payload: {
+              taskIssueId: issue.id,
+              projectId: input.projectId,
+              deliverableWorkProductId: deliverable.id,
+              title: deliverable.title,
+              type: deliverable.type,
+            },
+          });
+        }
 
         return issue;
       });
@@ -538,7 +655,44 @@ export function rt2TaskEngineService(db: Db) {
           createdByUserId: actorUserId,
         });
 
-        await createDeliverables(txDb, todo.id, task.companyId, task.projectId, "todo", input.deliverables);
+        const deliverables = await createDeliverables(txDb, todo.id, task.companyId, task.projectId, "todo", input.deliverables);
+        const txEvents = rt2DomainEventService(txDb);
+        await txEvents.appendAndProject({
+          companyId: task.companyId,
+          eventType: "rt2.todo.created",
+          actorType: "user",
+          actorId: actorUserId,
+          entityType: "todo",
+          entityId: todo.id,
+          idempotencyKey: `rt2.todo.created:${todo.id}`,
+          payload: {
+            taskIssueId,
+            todoIssueId: todo.id,
+            projectId: task.projectId,
+            assigneeUserId: input.assigneeUserId,
+            deliverableWorkProductIds: deliverables.map((deliverable) => deliverable.id),
+          },
+        });
+
+        for (const deliverable of deliverables) {
+          await txEvents.appendAndProject({
+            companyId: task.companyId,
+            eventType: "rt2.deliverable.defined",
+            actorType: "user",
+            actorId: actorUserId,
+            entityType: "deliverable",
+            entityId: deliverable.id,
+            idempotencyKey: `rt2.deliverable.defined:${deliverable.id}`,
+            payload: {
+              taskIssueId,
+              todoIssueId: todo.id,
+              projectId: task.projectId,
+              deliverableWorkProductId: deliverable.id,
+              title: deliverable.title,
+              type: deliverable.type,
+            },
+          });
+        }
 
         return todo;
       });
@@ -587,6 +741,21 @@ export function rt2TaskEngineService(db: Db) {
             endedByUserId: actorUserId,
           });
         }
+        await rt2DomainEventService(txDb).appendAndProject({
+          companyId: task.companyId,
+          eventType: "rt2.task.capacity_changed",
+          actorType: "user",
+          actorId: actorUserId,
+          entityType: "task",
+          entityId: taskIssueId,
+          idempotencyKey: `rt2.task.capacity_changed:${taskIssueId}:${Date.now()}`,
+          payload: {
+            taskIssueId,
+            projectId: task.projectId,
+            capacity: input.capacity,
+            endedUserIds,
+          },
+        });
       });
 
       return {
@@ -606,11 +775,27 @@ export function rt2TaskEngineService(db: Db) {
       const task = await getTaskMeta(taskIssueId);
 
       await db.transaction(async (tx) => {
-        await endParticipantInTx(tx as unknown as Db, {
+        const txDb = tx as unknown as Db;
+        await endParticipantInTx(txDb, {
           taskIssueId,
           userId,
           reason: input.reason,
           endedByUserId: actorUserId,
+        });
+        await rt2DomainEventService(txDb).appendAndProject({
+          companyId: task.companyId,
+          eventType: "rt2.participant.ended",
+          actorType: "user",
+          actorId: actorUserId,
+          entityType: "participant",
+          entityId: `${taskIssueId}:${userId}`,
+          idempotencyKey: `rt2.participant.ended:${taskIssueId}:${userId}:${Date.now()}`,
+          payload: {
+            taskIssueId,
+            projectId: task.projectId,
+            participantUserId: userId,
+            reason: input.reason,
+          },
         });
       });
 
@@ -649,6 +834,21 @@ export function rt2TaskEngineService(db: Db) {
             })
             .where(eq(issues.id, task.issueId));
         }
+
+        await rt2DomainEventService(txDb).appendAndProject({
+          companyId: task.companyId,
+          eventType: "rt2.todo.started",
+          actorType: "user",
+          actorId: todo.assigneeUserId ?? "unknown",
+          entityType: "todo",
+          entityId: todo.id,
+          idempotencyKey: `rt2.todo.started:${todo.id}`,
+          payload: {
+            taskIssueId: task.issueId,
+            projectId: task.projectId,
+            todoIssueId: todo.id,
+          },
+        });
 
         return {
           todo: updatedTodo,

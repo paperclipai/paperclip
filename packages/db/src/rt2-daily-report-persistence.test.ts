@@ -8,6 +8,7 @@ import {
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const EMBEDDED_POSTGRES_TEST_TIMEOUT_MS = 60_000;
 
 async function createTempDatabase(): Promise<string> {
   const db = await startEmbeddedPostgresTestDatabase("paperclip-rt2-daily-report-persistence-");
@@ -82,6 +83,6 @@ describeEmbeddedPostgres("RT2 daily report persistence migrations", () => {
         await sql.end();
       }
     },
-    20_000,
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 });

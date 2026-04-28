@@ -2,16 +2,23 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  goals,
   issues,
+  issueWorkProducts,
+  projects,
+  projectGoals,
   rt2V33DailyReportCards,
   rt2V33DailyWikiPages,
   rt2V33TaskProfiles,
 } from "@paperclipai/db";
 import type {
+  Rt2DailyCockpit,
   Rt2DailyActivityEntry,
+  Rt2DailyGapFlag,
   Rt2DailyActivityType,
   Rt2DailyBoard,
   Rt2DailyLane,
+  Rt2DailyOkrNode,
   Rt2DailyReportCard,
   Rt2DailyWikiAnswer,
   Rt2DailyWikiPage,
@@ -31,6 +38,7 @@ type TodoRow = {
 
 type SavedCardRow = typeof rt2V33DailyReportCards.$inferSelect;
 type ActivityRow = typeof activityLog.$inferSelect;
+type WorkProductRow = typeof issueWorkProducts.$inferSelect;
 
 const DEFAULT_DAILY_LANE: Rt2DailyLane = "today";
 const DAILY_ACTIVITY_TYPES = new Set<Rt2DailyActivityType>([
@@ -69,6 +77,38 @@ function defaultProgressPercent(todoStatus: Rt2DailyReportCard["status"], persis
     return persistedProgressPercent;
   }
   return todoStatus === "done" ? 100 : 0;
+}
+
+function readRt2WorkProductMetadata(row: WorkProductRow) {
+  return row.metadata && typeof row.metadata === "object" ? row.metadata : null;
+}
+
+function isRt2Deliverable(row: WorkProductRow) {
+  return row.type === "rt2_deliverable" || readRt2WorkProductMetadata(row)?.rt2Deliverable === true;
+}
+
+function readBasePrice(row: WorkProductRow) {
+  const metadata = readRt2WorkProductMetadata(row);
+  return typeof metadata?.rt2BasePrice === "number" ? metadata.rt2BasePrice : 0;
+}
+
+function isSubmittedDeliverable(row: WorkProductRow) {
+  const metadata = readRt2WorkProductMetadata(row);
+  return row.status === "submitted" || metadata?.rt2State === "submitted";
+}
+
+function resolveQualityStatus(rows: WorkProductRow[]): Rt2DailyReportCard["qualityStatus"] {
+  if (rows.length === 0) return "none";
+  if (rows.some((row) => row.reviewState !== "none")) return "reviewed";
+  return "pending_review";
+}
+
+function summarizeGoldImpact(basePriceTotal: number) {
+  return Math.max(0, Math.round(basePriceTotal * 0.01));
+}
+
+function summarizeXpImpact(basePriceTotal: number, submittedDeliverableCount: number) {
+  return Math.max(0, Math.round(basePriceTotal * 0.005) + submittedDeliverableCount * 5);
 }
 
 function inferActivityType(previous: SavedCardRow | null, next: UpsertRt2DailyReportCard): Rt2DailyActivityType {
@@ -219,9 +259,65 @@ export function rt2DailyReportService(db: Db) {
         ),
       );
 
+    const deliverableIssueIds = [...new Set(todos.flatMap((todo) => [todo.taskIssueId, todo.todoIssueId]))];
+    const deliverableRows = deliverableIssueIds.length > 0
+      ? await db
+          .select()
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, companyId),
+              inArray(issueWorkProducts.issueId, deliverableIssueIds),
+            ),
+          )
+      : [];
+    const deliverablesByIssueId = new Map<string, WorkProductRow[]>();
+    for (const deliverable of deliverableRows) {
+      if (!isRt2Deliverable(deliverable)) continue;
+      const bucket = deliverablesByIssueId.get(deliverable.issueId) ?? [];
+      bucket.push(deliverable);
+      deliverablesByIssueId.set(deliverable.issueId, bucket);
+    }
+
+    const [taskProfiles, projectGoalRows, projectRow] = await Promise.all([
+      db
+        .select({
+          taskIssueId: rt2V33TaskProfiles.issueId,
+          goalId: rt2V33TaskProfiles.goalId,
+        })
+        .from(rt2V33TaskProfiles)
+        .where(
+          and(
+            eq(rt2V33TaskProfiles.companyId, companyId),
+            eq(rt2V33TaskProfiles.projectId, projectId),
+            inArray(rt2V33TaskProfiles.issueId, [...new Set(todos.map((todo) => todo.taskIssueId))]),
+          ),
+        ),
+      db
+        .select({ goalId: projectGoals.goalId })
+        .from(projectGoals)
+        .where(and(eq(projectGoals.companyId, companyId), eq(projectGoals.projectId, projectId))),
+      db
+        .select({ goalId: projects.goalId })
+        .from(projects)
+        .where(and(eq(projects.companyId, companyId), eq(projects.id, projectId)))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    const taskGoalIdByIssueId = new Map(taskProfiles.map((profile) => [profile.taskIssueId, profile.goalId ?? null]));
+    const projectFallbackGoalId = projectRow?.goalId ?? projectGoalRows[0]?.goalId ?? null;
+
     const persistedByTodoId = new Map(persistedRows.map((row) => [row.todoIssueId, row]));
     return todos.map((todo) => {
       const persisted = persistedByTodoId.get(todo.todoIssueId);
+      const taskDeliverables = deliverablesByIssueId.get(todo.taskIssueId) ?? [];
+      const todoDeliverables = deliverablesByIssueId.get(todo.todoIssueId) ?? [];
+      const allDeliverables = [...taskDeliverables, ...todoDeliverables];
+      const deliverableCount = allDeliverables.length;
+      const submittedDeliverableCount = allDeliverables.filter(isSubmittedDeliverable).length;
+      const basePriceTotal = allDeliverables.reduce((total, deliverable) => total + readBasePrice(deliverable), 0);
+      const gapFlags: Rt2DailyGapFlag[] = [];
+      if (deliverableCount === 0) gapFlags.push("missing_deliverable");
+      if (!(taskGoalIdByIssueId.get(todo.taskIssueId) ?? projectFallbackGoalId)) gapFlags.push("missing_okr_context");
       return {
         taskIssueId: todo.taskIssueId,
         todoIssueId: todo.todoIssueId,
@@ -235,8 +331,161 @@ export function rt2DailyReportService(db: Db) {
         note: persisted?.note ?? "",
         status: (persisted?.status ?? todo.todoStatus) as Rt2DailyReportCard["status"],
         updatedAt: persisted?.updatedAt ?? todo.todoUpdatedAt,
+        deliverableCount,
+        submittedDeliverableCount,
+        taskDeliverableCount: taskDeliverables.length,
+        basePriceTotal,
+        qualityStatus: resolveQualityStatus(allDeliverables),
+        okrContextStatus: (taskGoalIdByIssueId.get(todo.taskIssueId) ?? projectFallbackGoalId) ? "connected" : "missing_goal",
+        gapFlags,
       } satisfies Rt2DailyReportCard;
     });
+  }
+
+  async function buildGoalPaths(companyId: string, seedGoalIds: string[]) {
+    if (seedGoalIds.length === 0) return new Map<string, Rt2DailyOkrNode[]>();
+
+    const allGoals = await db
+      .select({
+        id: goals.id,
+        title: goals.title,
+        level: goals.level,
+        status: goals.status,
+        parentId: goals.parentId,
+      })
+      .from(goals)
+      .where(eq(goals.companyId, companyId));
+    const goalById = new Map(allGoals.map((goal) => [goal.id, goal]));
+    const paths = new Map<string, Rt2DailyOkrNode[]>();
+
+    for (const seedGoalId of seedGoalIds) {
+      const path: Rt2DailyOkrNode[] = [];
+      const seen = new Set<string>();
+      let cursor: string | null = seedGoalId;
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        const goal = goalById.get(cursor);
+        if (!goal) break;
+        path.unshift({
+          id: goal.id,
+          title: goal.title,
+          level: goal.level,
+          status: goal.status,
+          parentId: goal.parentId ?? null,
+        });
+        cursor = goal.parentId ?? null;
+      }
+      paths.set(seedGoalId, path);
+    }
+
+    return paths;
+  }
+
+  async function buildCockpit(companyId: string, projectId: string, cards: Rt2DailyReportCard[]): Promise<Rt2DailyCockpit> {
+    const project = await db
+      .select({
+        id: projects.id,
+        title: projects.name,
+        status: projects.status,
+        goalId: projects.goalId,
+      })
+      .from(projects)
+      .where(and(eq(projects.companyId, companyId), eq(projects.id, projectId)))
+      .then((rows) => rows[0] ?? null);
+
+    const taskIds = [...new Set(cards.map((card) => card.taskIssueId))];
+    const [taskProfiles, projectGoalRows] = await Promise.all([
+      taskIds.length > 0
+        ? db
+            .select({
+              taskIssueId: rt2V33TaskProfiles.issueId,
+              goalId: rt2V33TaskProfiles.goalId,
+            })
+            .from(rt2V33TaskProfiles)
+            .where(
+              and(
+                eq(rt2V33TaskProfiles.companyId, companyId),
+                eq(rt2V33TaskProfiles.projectId, projectId),
+                inArray(rt2V33TaskProfiles.issueId, taskIds),
+              ),
+            )
+        : [],
+      db
+        .select({ goalId: projectGoals.goalId })
+        .from(projectGoals)
+        .where(and(eq(projectGoals.companyId, companyId), eq(projectGoals.projectId, projectId))),
+    ]);
+    const taskGoalById = new Map(taskProfiles.map((profile) => [profile.taskIssueId, profile.goalId ?? null]));
+    const projectFallbackGoalId = project?.goalId ?? projectGoalRows[0]?.goalId ?? null;
+    const seedGoalIds = [
+      ...new Set([
+        ...taskProfiles.map((profile) => profile.goalId).filter((goalId): goalId is string => Boolean(goalId)),
+        ...(projectFallbackGoalId ? [projectFallbackGoalId] : []),
+      ]),
+    ];
+    const goalPaths = await buildGoalPaths(companyId, seedGoalIds);
+
+    const traceRows = cards.map((card) => {
+      const taskGoalId = taskGoalById.get(card.taskIssueId) ?? projectFallbackGoalId;
+      const goalPath = taskGoalId ? goalPaths.get(taskGoalId) ?? [] : [];
+      const gapFlags = [...card.gapFlags];
+      if (goalPath.length === 0 && !gapFlags.includes("missing_okr_context")) {
+        gapFlags.push("missing_okr_context");
+      }
+      return {
+        taskIssueId: card.taskIssueId,
+        todoIssueId: card.todoIssueId,
+        taskTitle: card.taskTitle,
+        todoTitle: card.todoTitle,
+        projectId,
+        projectTitle: project?.title ?? "Project",
+        projectStatus: project?.status ?? "unknown",
+        goalPath,
+        gapFlags,
+      };
+    });
+
+    const deliverablesDefined = cards.reduce((total, card) => total + card.deliverableCount, 0);
+    const deliverablesSubmitted = cards.reduce((total, card) => total + card.submittedDeliverableCount, 0);
+    const basePriceTotal = cards.reduce((total, card) => total + card.basePriceTotal, 0);
+    const qualityStatus: Rt2DailyReportCard["qualityStatus"] = cards.some((card) => card.qualityStatus === "reviewed")
+      ? "reviewed"
+      : cards.some((card) => card.qualityStatus === "pending_review")
+        ? "pending_review"
+        : "none";
+    const gapFlags = traceRows.flatMap((trace) =>
+      trace.gapFlags.map((kind) => ({
+        kind,
+        taskIssueId: trace.taskIssueId,
+        todoIssueId: trace.todoIssueId,
+        label:
+          kind === "missing_deliverable"
+            ? `${trace.todoTitle}: 산출물이 없습니다`
+            : `${trace.todoTitle}: OKR/KPI 상위 맥락이 없습니다`,
+      })),
+    );
+
+    const summary = {
+      tasksWorked: new Set(cards.map((card) => card.taskIssueId)).size,
+      todosCompleted: cards.filter((card) => card.status === "done" || card.progressPercent >= 100).length,
+      deliverablesDefined,
+      deliverablesSubmitted,
+      effortNoteCount: cards.filter((card) => card.note.trim().length > 0).length,
+      goldImpact: summarizeGoldImpact(basePriceTotal),
+      xpImpact: summarizeXpImpact(basePriceTotal, deliverablesSubmitted),
+      qualityStatus,
+    };
+
+    return {
+      summary,
+      traceRows,
+      gapFlags,
+      aiSummary: [
+        `${summary.tasksWorked}개 task, ${summary.todosCompleted}개 to-do가 오늘 보고에 연결되었습니다.`,
+        `${summary.deliverablesDefined}개 산출물과 ${summary.goldImpact} gold 영향이 확인되었습니다.`,
+        gapFlags.length > 0 ? `${gapFlags.length}개 context/deliverable gap을 먼저 보완해야 합니다.` : "산출물과 OKR 맥락이 연결되어 있습니다.",
+      ],
+    };
   }
 
   async function materializeDailyWikiPage(
@@ -474,6 +723,40 @@ export function rt2DailyReportService(db: Db) {
         },
       });
 
+      const deliverableRows = await txDb
+        .select()
+        .from(issueWorkProducts)
+        .where(
+          and(
+            eq(issueWorkProducts.companyId, companyId),
+            inArray(issueWorkProducts.issueId, [todo.taskIssueId, todoIssueId]),
+          ),
+        );
+      const rt2Deliverables = deliverableRows.filter(isRt2Deliverable);
+      const taskDeliverables = rt2Deliverables.filter((deliverable) => deliverable.issueId === todo.taskIssueId);
+      const submittedDeliverableCount = rt2Deliverables.filter(isSubmittedDeliverable).length;
+      const basePriceTotal = rt2Deliverables.reduce((total, deliverable) => total + readBasePrice(deliverable), 0);
+      const [taskProfile, projectGoalRows, projectRow] = await Promise.all([
+        txDb
+          .select({ goalId: rt2V33TaskProfiles.goalId })
+          .from(rt2V33TaskProfiles)
+          .where(eq(rt2V33TaskProfiles.issueId, todo.taskIssueId))
+          .then((rows) => rows[0] ?? null),
+        txDb
+          .select({ goalId: projectGoals.goalId })
+          .from(projectGoals)
+          .where(and(eq(projectGoals.companyId, companyId), eq(projectGoals.projectId, input.projectId))),
+        txDb
+          .select({ goalId: projects.goalId })
+          .from(projects)
+          .where(and(eq(projects.companyId, companyId), eq(projects.id, input.projectId)))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      const usableGoalId = taskProfile?.goalId ?? projectRow?.goalId ?? projectGoalRows[0]?.goalId ?? null;
+      const gapFlags: Rt2DailyGapFlag[] = [];
+      if (rt2Deliverables.length === 0) gapFlags.push("missing_deliverable");
+      if (!usableGoalId) gapFlags.push("missing_okr_context");
+
       return {
         card: {
           taskIssueId: savedRow.taskIssueId,
@@ -488,6 +771,13 @@ export function rt2DailyReportService(db: Db) {
           note: savedRow.note ?? "",
           status: savedRow.status as Rt2DailyReportCard["status"],
           updatedAt: savedRow.updatedAt,
+          deliverableCount: rt2Deliverables.length,
+          submittedDeliverableCount,
+          taskDeliverableCount: taskDeliverables.length,
+          basePriceTotal,
+          qualityStatus: resolveQualityStatus(rt2Deliverables),
+          okrContextStatus: usableGoalId ? "connected" : "missing_goal",
+          gapFlags,
         } satisfies Rt2DailyReportCard,
       };
     });
@@ -512,13 +802,17 @@ export function rt2DailyReportService(db: Db) {
   }
 
   return {
-    listDailyBoard: async (companyId: string, userId: string, projectId: string, reportDate: string): Promise<Rt2DailyBoard> => ({
-      companyId,
-      projectId,
-      userId,
-      reportDate,
-      cards: await listCards(companyId, projectId, userId, reportDate),
-    }),
+    listDailyBoard: async (companyId: string, userId: string, projectId: string, reportDate: string): Promise<Rt2DailyBoard> => {
+      const cards = await listCards(companyId, projectId, userId, reportDate);
+      return {
+        companyId,
+        projectId,
+        userId,
+        reportDate,
+        cards,
+        cockpit: await buildCockpit(companyId, projectId, cards),
+      };
+    },
     saveDailyCard,
     materializeDailyWikiPage: materializeAndGetDailyWiki,
     queryDailyWiki,

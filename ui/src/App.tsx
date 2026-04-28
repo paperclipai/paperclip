@@ -45,6 +45,14 @@ import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
+import { OneLinerPage } from "./pages/rt2/OneLinerPage";
+import { KnowledgePage } from "./pages/rt2/KnowledgePage";
+import { MarketplacePage } from "./pages/rt2/MarketplacePage";
+import { PnlPage } from "./pages/rt2/PnlPage";
+import { GovernancePage } from "./pages/rt2/GovernancePage";
+import { ControlPlanePage } from "./pages/rt2/ControlPlanePage";
+import { PlanAlignmentPage } from "./pages/rt2/PlanAlignmentPage";
+import { EnterpriseRolloutPage } from "./pages/rt2/EnterpriseRolloutPage";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -58,11 +66,11 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
         <h1 className="text-xl font-semibold">Instance setup required</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {hasActiveInvite
-            ? "No instance admin exists yet. A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:"
-            : "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"}
+            ? "No instance admin exists yet. A bootstrap invite is already active. Check your RealTycoon2 startup logs for the first admin invite URL, or run this command to rotate it:"
+            : "No instance admin exists yet. Run this command in your RealTycoon2 environment to generate the first admin invite URL:"}
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm paperclipai auth bootstrap-ceo`}
+{`pnpm realtycoon2 auth bootstrap-ceo`}
         </pre>
       </div>
     </div>
@@ -121,7 +129,15 @@ function CloudAccessGate() {
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<Navigate to="one-liner" replace />} />
+      <Route path="one-liner" element={<OneLinerPage />} />
+      <Route path="knowledge" element={<KnowledgePage />} />
+      <Route path="marketplace" element={<MarketplacePage />} />
+      <Route path="pnl" element={<PnlPage />} />
+      <Route path="governance" element={<GovernancePage />} />
+      <Route path="enterprise-rollout" element={<EnterpriseRolloutPage />} />
+      <Route path="plan-alignment" element={<PlanAlignmentPage />} />
+      <Route path="control-plane" element={<ControlPlanePage />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
@@ -258,7 +274,7 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return <Navigate to={`/${targetCompany.issuePrefix}/one-liner`} replace />;
 }
 
 function UnprefixedBoardRedirect() {
@@ -331,6 +347,15 @@ export function App() {
             <Route path="adapters" element={<AdapterManager />} />
           </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          <Route path="one-liner" element={<UnprefixedBoardRedirect />} />
+          <Route path="knowledge" element={<UnprefixedBoardRedirect />} />
+          <Route path="marketplace" element={<UnprefixedBoardRedirect />} />
+          <Route path="pnl" element={<UnprefixedBoardRedirect />} />
+          <Route path="governance" element={<UnprefixedBoardRedirect />} />
+          <Route path="enterprise-rollout" element={<UnprefixedBoardRedirect />} />
+          <Route path="plan-alignment" element={<UnprefixedBoardRedirect />} />
+          <Route path="control-plane" element={<UnprefixedBoardRedirect />} />
+          <Route path="org" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />

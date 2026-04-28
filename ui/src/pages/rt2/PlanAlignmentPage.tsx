@@ -53,13 +53,13 @@ const ALIGNMENT_ITEMS: AlignmentItem[] = [
     area: "RT2 shell and product identity",
     status: "shipped",
     validationStatus: "validated",
-    current: "Company-prefixed RT2 shell, One-Liner, knowledge, marketplace, P&L, governance, and control-plane routes exist. Phase 15 strict validation now records product-facing RT2 identity evidence.",
+    current: "Company-prefixed RealTycoon2 shell, 일일 업무 기록, 지식 위키/그래프, Jarvis 마켓, 성과 정산, 승인/거버넌스, control-plane routes exist. Phase 15 strict validation now records product-facing RT2 identity evidence.",
     gap: "Internal package/API/route compatibility names remain engine-layer only.",
     phase: "Phase 15",
   },
   {
     id: "one-liner",
-    area: "One-Liner capture",
+    area: "일일 업무 기록",
     status: "shipped",
     validationStatus: "deferred",
     current: "Structured capture, floating widget, global shortcut, voice draft, messenger inbound draft, and immediate reward evidence are present.",
@@ -98,9 +98,9 @@ const ALIGNMENT_ITEMS: AlignmentItem[] = [
     area: "wikiLLM and Graphify knowledge loop",
     status: "shipped",
     validationStatus: "validated",
-    current: "Knowledge workspace includes wiki pages, real graph panel, graph reports, God Nodes, warnings, pending events, vault export, import preview, and Phase 19 route fallback validation.",
-    gap: "Actual Obsidian local writer and bidirectional conflict resolution are Phase 21 scope.",
-    phase: "Phase 17 / 19",
+    current: "Knowledge workspace includes wiki pages, real graph panel, graph reports, God Nodes, warnings, pending events, vault writer dry-run, import preview candidates, approved import apply, conflict resolution, and route fallback validation.",
+    gap: "Actual desktop Obsidian writer daemon and continuous file watcher remain future hardening.",
+    phase: "Phase 17 / 19 / 21",
   },
   {
     id: "jarvis",
@@ -116,18 +116,18 @@ const ALIGNMENT_ITEMS: AlignmentItem[] = [
     area: "Amoeba economy and marketplace",
     status: "shipped",
     validationStatus: "validated",
-    current: "P&L, coin ledger, marketplace evidence, collaboration rewards, quality-backed pricing, settlement evidence, and Phase 19 route fallback validation are materially present.",
-    gap: "Pricing negotiation, settlement approval, and anti-gaming depth are Phase 22 scope.",
-    phase: "Phase 18 / 19",
+    current: "P&L, coin ledger, marketplace evidence, collaboration rewards, quality-backed pricing, settlement evidence, settlement approval/rejection, negotiation comments, anti-gaming signals, and Phase 19/22 fallback validation are materially present.",
+    gap: "Automatic penalty/reputation demotion and external payroll export remain future governance hardening.",
+    phase: "Phase 18 / 19 / 22",
   },
   {
     id: "enterprise",
     area: "Enterprise rollout",
     status: "shipped",
     validationStatus: "validated",
-    current: "RT2-labeled rollout surface configures SSO, company template, access mode, and policy defaults with saved-value hydrate and Phase 19 route fallback validation.",
-    gap: "Actual SSO metadata validation and SCIM preview are Phase 20 scope.",
-    phase: "Phase 18 / 19",
+    current: "RT2-labeled rollout surface configures SSO, company template, access mode, and policy defaults with saved-value hydrate, SSO metadata validation, SCIM preview, readiness checks, and audit log.",
+    gap: "Live IdP handshake and SCIM apply mutation remain future hardening.",
+    phase: "Phase 18 / 20",
   },
   {
     id: "mobile-native",
@@ -281,14 +281,14 @@ export function PlanAlignmentPage() {
           <div>
             <h2 className="text-sm font-semibold">Next implementation owner</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Phase 19에서 v2.2 validation debt는 닫혔고, 남은 운영 깊이는 Phase 20-23으로 분리됩니다.
+              Phase 19에서 v2.2 validation debt는 닫혔고, Phase 20에서 enterprise connector 검수 흐름을 완료했습니다.
             </p>
           </div>
           <Link
             to="/enterprise-rollout"
             className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-accent/40"
           >
-            Enterprise Rollout
+            기업 연동
             <ExternalLink className="h-4 w-4" />
           </Link>
         </div>

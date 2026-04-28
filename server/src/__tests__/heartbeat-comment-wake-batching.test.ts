@@ -221,6 +221,21 @@ describe("heartbeat comment wake batching", () => {
   let instance: EmbeddedPostgresInstance | null = null;
   let dataDir = "";
 
+  async function rmWithRetries(targetPath: string): Promise<void> {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        fs.rmSync(targetPath, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!["EBUSY", "ENOTEMPTY", "EPERM"].includes(code ?? "") || attempt === 7) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      }
+    }
+  }
+
   beforeAll(async () => {
     const started = await startTempDatabase();
     db = createDb(started.connectionString);
@@ -232,7 +247,7 @@ describe("heartbeat comment wake batching", () => {
     await closeDbClient(db);
     await instance?.stop();
     if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      await rmWithRetries(dataDir);
     }
   });
 

@@ -246,9 +246,8 @@ describe("cursor execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect((await fs.lstat(path.join(root, ".cursor", "skills", "ascii-heart"))).isSymbolicLink()).toBe(true);
-      expect(await fs.realpath(path.join(root, ".cursor", "skills", "ascii-heart"))).toBe(
-        await fs.realpath(asciiHeartDir),
+      expect(await fs.readFile(path.join(root, ".cursor", "skills", "ascii-heart", "SKILL.md"), "utf8")).toBe(
+        await fs.readFile(path.join(asciiHeartDir, "SKILL.md"), "utf8"),
       );
     } finally {
       if (previousHome === undefined) {

@@ -20,6 +20,13 @@ export interface Rt2DailyReportCard {
   note: string;
   status: "todo" | "in_progress" | "in_review" | "done" | "blocked" | "cancelled";
   updatedAt: Date;
+  deliverableCount: number;
+  submittedDeliverableCount: number;
+  taskDeliverableCount: number;
+  basePriceTotal: number;
+  qualityStatus: "none" | "pending_review" | "reviewed";
+  okrContextStatus: "connected" | "missing_goal";
+  gapFlags: Rt2DailyGapFlag[];
 }
 
 export interface Rt2DailyBoard {
@@ -28,6 +35,52 @@ export interface Rt2DailyBoard {
   userId: string;
   reportDate: string;
   cards: Rt2DailyReportCard[];
+  cockpit: Rt2DailyCockpit;
+}
+
+export type Rt2DailyGapFlag = "missing_deliverable" | "missing_okr_context";
+
+export interface Rt2DailyOkrNode {
+  id: string;
+  title: string;
+  level: string;
+  status: string;
+  parentId: string | null;
+}
+
+export interface Rt2DailyTraceRow {
+  taskIssueId: string;
+  todoIssueId: string;
+  taskTitle: string;
+  todoTitle: string;
+  projectId: string;
+  projectTitle: string;
+  projectStatus: string;
+  goalPath: Rt2DailyOkrNode[];
+  gapFlags: Rt2DailyGapFlag[];
+}
+
+export interface Rt2DailyCockpitSummary {
+  tasksWorked: number;
+  todosCompleted: number;
+  deliverablesDefined: number;
+  deliverablesSubmitted: number;
+  effortNoteCount: number;
+  goldImpact: number;
+  xpImpact: number;
+  qualityStatus: "none" | "pending_review" | "reviewed";
+}
+
+export interface Rt2DailyCockpit {
+  summary: Rt2DailyCockpitSummary;
+  traceRows: Rt2DailyTraceRow[];
+  gapFlags: Array<{
+    kind: Rt2DailyGapFlag;
+    taskIssueId: string;
+    todoIssueId: string;
+    label: string;
+  }>;
+  aiSummary: string[];
 }
 
 export interface Rt2DailyActivityEntry {
@@ -51,6 +104,12 @@ export interface Rt2DailyWikiPage {
   shortSummary: string[];
   markdown: string;
   history: Rt2DailyActivityEntry[];
+  sourceEventIds?: string[];
+}
+
+export interface Rt2DailyWikiPageList {
+  companyId: string;
+  pages: Rt2DailyWikiPage[];
 }
 
 export interface Rt2DailyWikiAnswer {

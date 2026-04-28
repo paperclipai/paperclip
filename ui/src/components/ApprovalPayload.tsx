@@ -2,7 +2,7 @@ import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
-  hire_agent: "Hire Agent",
+  hire_agent: "Add Jarvis",
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
@@ -26,7 +26,7 @@ export function approvalSubject(payload?: Record<string, unknown> | null): strin
   );
 }
 
-/** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
+/** Build a contextual label for an approval, e.g. "Add Jarvis: Designer" */
 export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
   const base = typeLabel[type] ?? type;
   const subject = approvalSubject(payload);

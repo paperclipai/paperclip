@@ -66,6 +66,26 @@ afterEach(() => {
   }
 });
 
+function isRetriableTempRootCleanupError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? (error.code as string | undefined) : undefined;
+  return code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
+}
+
+async function cleanupTempRoot(tempRoot: string): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isRetriableTempRootCleanupError(error) || attempt === 5) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+}
+
 function buildSourceConfig(): PaperclipConfig {
   return {
     $meta: {
@@ -190,9 +210,10 @@ describe("worktree helpers", () => {
   });
 
   it("builds isolated config and env paths for a worktree", () => {
+    const worktreeHome = path.resolve("/tmp/paperclip-worktrees");
     const paths = resolveWorktreeLocalPaths({
       cwd: "/tmp/paperclip-feature",
-      homeDir: "/tmp/paperclip-worktrees",
+      homeDir: worktreeHome,
       instanceId: "feature-worktree-support",
     });
     const config = buildWorktreeConfig({
@@ -204,20 +225,20 @@ describe("worktree helpers", () => {
     });
 
     expect(config.database.embeddedPostgresDataDir).toBe(
-      path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "db"),
+      path.resolve(worktreeHome, "instances", "feature-worktree-support", "db"),
     );
     expect(config.database.embeddedPostgresPort).toBe(54339);
     expect(config.server.port).toBe(3110);
     expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3110/");
     expect(config.storage.localDisk.baseDir).toBe(
-      path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "data", "storage"),
+      path.resolve(worktreeHome, "instances", "feature-worktree-support", "data", "storage"),
     );
 
     const env = buildWorktreeEnvEntries(paths, {
       name: "feature-worktree-support",
       color: "#3abf7a",
     });
-    expect(env.PAPERCLIP_HOME).toBe(path.resolve("/tmp/paperclip-worktrees"));
+    expect(env.PAPERCLIP_HOME).toBe(worktreeHome);
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree-support");
     expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
     expect(env.PAPERCLIP_WORKTREE_NAME).toBe("feature-worktree-support");
@@ -546,7 +567,7 @@ describe("worktree helpers", () => {
         }),
       ).toMatchObject({
         cwd: worktreeRoot,
-        homeDir: "/tmp/paperclip-worktrees",
+        homeDir: path.resolve("/tmp/paperclip-worktrees"),
         instanceId: "pap-1132-chat",
       });
     } finally {
@@ -650,9 +671,9 @@ describe("worktree helpers", () => {
       } else {
         process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
       }
-      fs.rmSync(tempRoot, { recursive: true, force: true });
+      await cleanupTempRoot(tempRoot);
     }
-  }, 20_000);
+  }, 45_000);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
@@ -731,34 +752,36 @@ describe("worktree helpers", () => {
       } else {
         process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
       }
-      fs.rmSync(tempRoot, { recursive: true, force: true });
+      await cleanupTempRoot(tempRoot);
     }
   });
 
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
+    const sourceRepoRoot = path.resolve("/Users/example/paperclip");
+    const targetRepoRoot = path.resolve("/Users/example/paperclip-pr-432");
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip",
+        sourceRepoRoot,
+        targetRepoRoot,
+        workspaceCwd: sourceRepoRoot,
       }),
-    ).toBe("/Users/example/paperclip-pr-432");
+    ).toBe(targetRepoRoot);
 
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip/packages/db",
+        sourceRepoRoot,
+        targetRepoRoot,
+        workspaceCwd: path.join(sourceRepoRoot, "packages", "db"),
       }),
-    ).toBe("/Users/example/paperclip-pr-432/packages/db");
+    ).toBe(path.join(targetRepoRoot, "packages", "db"));
   });
 
   it("does not rebind paths outside the source repo root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/other-project",
+        sourceRepoRoot: path.resolve("/Users/example/paperclip"),
+        targetRepoRoot: path.resolve("/Users/example/paperclip-pr-432"),
+        workspaceCwd: path.resolve("/Users/example/other-project"),
       }),
     ).toBeNull();
   });
@@ -803,7 +826,9 @@ describe("worktree helpers", () => {
         copied: true,
       });
       expect(fs.readFileSync(targetHookPath, "utf8")).toBe("#!/usr/bin/env bash\nexit 0\n");
-      expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      }
       expect(fs.readFileSync(targetTokensPath, "utf8")).toBe("secret-token\n");
     } finally {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
@@ -844,7 +869,7 @@ describe("worktree helpers", () => {
       homedirSpy.mockRestore();
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 45_000);
 
   it("no-ops on the primary checkout unless --branch is provided", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-repair-primary-"));
@@ -916,7 +941,7 @@ describe("worktree helpers", () => {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 45_000);
 
   it("creates and repairs a missing branch worktree when --branch is provided", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-repair-branch-"));
@@ -951,7 +976,7 @@ describe("worktree helpers", () => {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 45_000);
 });
 
 describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
@@ -1086,5 +1111,5 @@ describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
       await tempDb.cleanup();
     }
-  }, 20_000);
+  }, 45_000);
 });

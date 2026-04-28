@@ -2,6 +2,7 @@ import { useEffect, useMemo, useCallback } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { rt2TasksApi } from "../api/rt2-tasks";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -11,7 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
-import { CircleDot } from "lucide-react";
+import { AlertTriangle, CircleDot, FileUp, GitBranch, Smartphone } from "lucide-react";
 
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
@@ -72,7 +73,7 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        "업무 보드",
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
@@ -80,7 +81,7 @@ export function Issues() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
+    setBreadcrumbs([{ label: "업무 보드" }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
@@ -102,26 +103,116 @@ export function Issues() {
     },
   });
 
+  const { data: captureQueue } = useQuery({
+    queryKey: selectedCompanyId ? ["rt2", "capture-drafts", selectedCompanyId] : ["rt2", "capture-drafts", "__disabled__"],
+    queryFn: () => rt2TasksApi.listCaptureQueue(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const promoteCaptureDraft = useMutation({
+    mutationFn: ({ draftId, projectId }: { draftId: string; projectId: string }) =>
+      rt2TasksApi.promoteCaptureDraft(selectedCompanyId!, draftId, {
+        target: "task",
+        projectId,
+        priority: "medium",
+        taskMode: "solo",
+        capacity: 1,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rt2", "capture-drafts", selectedCompanyId] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+    },
+  });
+
+  const failCaptureDraft = useMutation({
+    mutationFn: ({ draftId, failureCode, failureMessage }: { draftId: string; failureCode: "duplicate" | "permission" | "source_failure" | "parse_error"; failureMessage: string }) =>
+      rt2TasksApi.failCaptureDraft(selectedCompanyId!, draftId, { failureCode, failureMessage }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rt2", "capture-drafts", selectedCompanyId] });
+    },
+  });
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return <EmptyState icon={CircleDot} message="업무 보드를 보려면 회사를 선택하세요." />;
   }
 
+  const defaultProjectId = projects?.[0]?.id ?? null;
+  const visibleDrafts = (captureQueue?.drafts ?? []).slice(0, 5);
+
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      issueLinkState={issueLinkState}
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialSearch={initialSearch}
-      onSearchChange={handleSearchChange}
-      enableRoutineVisibilityFilter
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId ? { participantAgentId } : undefined}
-    />
+    <div className="space-y-4">
+      <section className="rounded-md border border-border bg-card p-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Smartphone className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <h2 className="text-sm font-semibold">Native capture queue</h2>
+              <p className="text-xs text-muted-foreground">mobile/native/messenger draft review</p>
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap gap-1 text-xs text-muted-foreground">
+            <span className="rounded-sm bg-muted px-2 py-1">review {captureQueue?.summary.reviewRequired ?? 0}</span>
+            <span className="rounded-sm bg-muted px-2 py-1">duplicate {captureQueue?.summary.duplicate ?? 0}</span>
+            <span className="rounded-sm bg-muted px-2 py-1">permission {captureQueue?.summary.permissionBlocked ?? 0}</span>
+            <span className="rounded-sm bg-muted px-2 py-1">failed {captureQueue?.summary.failed ?? 0}</span>
+          </div>
+        </div>
+        {visibleDrafts.length > 0 ? (
+          <div className="mt-3 grid gap-2">
+            {visibleDrafts.map((draft) => (
+              <div key={draft.id} className="grid gap-2 rounded-md border border-border bg-background p-2 text-xs md:grid-cols-[1fr_auto]">
+                <div className="min-w-0">
+                  <div className="mb-1 flex flex-wrap items-center gap-1">
+                    <span className="rounded-sm bg-muted px-1.5 py-0.5">{draft.source}</span>
+                    <span className="rounded-sm bg-muted px-1.5 py-0.5">{draft.status}</span>
+                    {draft.duplicateOfDraftId ? <span className="rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-amber-700">duplicate</span> : null}
+                    {draft.permissionStatus !== "allowed" ? <span className="rounded-sm bg-red-500/10 px-1.5 py-0.5 text-red-700">{draft.permissionStatus}</span> : null}
+                  </div>
+                  <p className="truncate font-medium">{String(draft.parsedDraft.taskTitle ?? draft.rawText)}</p>
+                  <p className="truncate text-muted-foreground">{draft.rawText}</p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2 text-xs disabled:opacity-50"
+                    disabled={!defaultProjectId || draft.status !== "review_required" || promoteCaptureDraft.isPending}
+                    onClick={() => defaultProjectId && promoteCaptureDraft.mutate({ draftId: draft.id, projectId: defaultProjectId })}
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Task
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2 text-xs disabled:opacity-50"
+                    disabled={draft.status === "promoted" || failCaptureDraft.isPending}
+                    onClick={() => failCaptureDraft.mutate({ draftId: draft.id, failureCode: draft.duplicateOfDraftId ? "duplicate" : "source_failure", failureMessage: draft.duplicateOfDraftId ? "Duplicate capture reviewed." : "Source problem reviewed by operator." })}
+                  >
+                    {draft.duplicateOfDraftId ? <FileUp className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                    Audit
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        viewStateKey="realtycoon2:work-board"
+        issueLinkState={issueLinkState}
+        defaultViewMode="board"
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialSearch={initialSearch}
+        onSearchChange={handleSearchChange}
+        enableRoutineVisibilityFilter
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        searchFilters={participantAgentId ? { participantAgentId } : undefined}
+      />
+    </div>
   );
 }

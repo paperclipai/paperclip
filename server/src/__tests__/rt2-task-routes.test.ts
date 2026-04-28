@@ -5,11 +5,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { and, eq } from "drizzle-orm";
 import {
   companies,
+  activityLog,
   companyMemberships,
   createDb,
   issueWorkProducts,
   issues,
   projects,
+  rt2V33DomainEvents,
+  rt2V33ExecutionAttempts,
+  rt2V33ProjectorEvents,
+  rt2V33ProjectorState,
   rt2V33TaskParticipants,
   rt2V33TaskProfiles,
   startEmbeddedPostgresTestDatabase,
@@ -58,6 +63,11 @@ describeEmbeddedPostgres("rt2 task routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(rt2V33ProjectorEvents);
+    await db.delete(rt2V33ProjectorState);
+    await db.delete(rt2V33DomainEvents);
+    await db.delete(activityLog);
+    await db.delete(rt2V33ExecutionAttempts);
     await db.delete(issueWorkProducts);
     await db.delete(rt2V33TaskParticipants);
     await db.delete(rt2V33TaskProfiles);
@@ -233,11 +243,23 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         title: "Prepare investor update",
         taskMode: "collab",
         capacity: 2,
-        deliverables: [{ title: "Investor memo", type: "document" }],
+        deliverables: [{ title: "Investor memo", type: "document", basePrice: 250000 }],
       });
 
     expect(response.status).toBe(201);
     expect(response.body.issueId).toEqual(expect.any(String));
+    expect(response.body.rewardEvidence).toEqual(expect.objectContaining({
+      earnedGold: 2500,
+      xp: 1250,
+      settlementState: "proposed",
+    }));
+    expect(response.body.deliverables).toEqual([
+      expect.objectContaining({
+        title: "Investor memo",
+        type: "document",
+        basePrice: 250000,
+      }),
+    ]);
 
     const [taskProfile] = await db
       .select()
@@ -266,9 +288,60 @@ describeEmbeddedPostgres("rt2 task routes", () => {
           rt2Type: "document",
           rt2Owner: "task",
           rt2Required: true,
+          rt2BasePrice: 250000,
         }),
       }),
     );
+
+    const events = await db
+      .select()
+      .from(rt2V33DomainEvents)
+      .where(eq(rt2V33DomainEvents.companyId, fixture.companyId));
+
+    expect(events.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining(["rt2.task.created", "rt2.deliverable.defined"]),
+    );
+    expect(events.find((event) => event.eventType === "rt2.task.created")).toEqual(
+      expect.objectContaining({
+        actorId: fixture.managerUserId,
+        entityType: "task",
+        entityId: response.body.issueId,
+      }),
+    );
+  });
+
+  it("creates a reviewed One-Liner draft from messenger-style inbound text", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+
+    const response = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "slack",
+        channel: "daily-work",
+        externalUserId: "U123",
+        text: "task: Review B2B quote; todo: Check discount line; deliverable: Quote review note; price: 90000",
+      })
+      .expect(201);
+
+    expect(response.body).toEqual({
+      draft: expect.objectContaining({
+        rawInput: expect.stringContaining("Review B2B quote"),
+        taskTitle: "Review B2B quote",
+        todoTitle: "Check discount line",
+        deliverableTitle: "Quote review note",
+        basePrice: 90000,
+        taskMode: "solo",
+        capacity: 1,
+        warnings: [],
+      }),
+      inbound: {
+        source: "slack",
+        channel: "daily-work",
+        externalUserId: "U123",
+        reviewRequired: true,
+      },
+    });
   });
 
   it("preserves artifact deliverable types when creating task definitions", async () => {
@@ -282,7 +355,7 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         title: "Prepare launch kit",
         taskMode: "collab",
         capacity: 2,
-        deliverables: [{ title: "Prototype asset pack", type: "artifact" }],
+        deliverables: [{ title: "Prototype asset pack", type: "artifact", basePrice: 540000 }],
       });
 
     expect(response.status).toBe(201);
@@ -298,6 +371,7 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         type: "artifact",
         metadata: expect.objectContaining({
           rt2Type: "artifact",
+          rt2BasePrice: 540000,
         }),
       }),
     );
@@ -419,6 +493,152 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     expect(startedTodo?.status).toBe("in_progress");
   });
 
+  it("runs the RT2 execution lifecycle and exposes the latest attempt on task detail", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+
+    const created = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/tasks`)
+      .send({
+        projectId: fixture.projectId,
+        title: "Execute store launch package",
+        taskMode: "solo",
+        capacity: 1,
+        deliverables: [{ title: "Launch package", type: "artifact", basePrice: 420000 }],
+      })
+      .expect(201);
+
+    const [deliverable] = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, created.body.issueId));
+
+    const queued = await request(app)
+      .post(`/api/rt2/tasks/${created.body.issueId}/executions`)
+      .send({ deliverableWorkProductId: deliverable.id })
+      .expect(201);
+
+    expect(queued.body).toEqual(expect.objectContaining({
+      taskIssueId: created.body.issueId,
+      deliverableWorkProductId: deliverable.id,
+      state: "queued",
+    }));
+
+    const claimed = await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .send({ executorType: "jarvis", executorId: "jarvis-launch" })
+      .expect(200);
+
+    expect(claimed.body).toEqual(expect.objectContaining({
+      state: "claimed",
+      executorType: "jarvis",
+      executorId: "jarvis-launch",
+    }));
+
+    await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/start`)
+      .send({})
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.state).toBe("running");
+      });
+
+    const completed = await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/complete`)
+      .send({ resultWorkProductId: deliverable.id })
+      .expect(200);
+
+    expect(completed.body).toEqual(expect.objectContaining({
+      state: "completed",
+      resultWorkProductId: deliverable.id,
+    }));
+
+    const executionEvents = await db
+      .select()
+      .from(rt2V33DomainEvents)
+      .where(eq(rt2V33DomainEvents.entityType, "execution"));
+
+    expect(executionEvents.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining([
+        "rt2.execution.enqueued",
+        "rt2.execution.claimed",
+        "rt2.execution.started",
+        "rt2.execution.completed",
+      ]),
+    );
+    expect(executionEvents.every((event) => event.companyId === fixture.companyId)).toBe(true);
+
+    const detail = await request(app)
+      .get(`/api/rt2/tasks/${created.body.issueId}`)
+      .expect(200);
+
+    expect(detail.body.execution).toEqual(expect.objectContaining({
+      id: queued.body.id,
+      state: "completed",
+      executorId: "jarvis-launch",
+    }));
+  });
+
+  it("prevents duplicate execution claims", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({ capacity: 1, participants: [] });
+
+    const queued = await request(app)
+      .post(`/api/rt2/tasks/${task.issueId}/executions`)
+      .send({})
+      .expect(201);
+
+    await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .send({ executorType: "user", executorId: fixture.managerUserId })
+      .expect(200);
+
+    const duplicate = await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .send({ executorType: "user", executorId: fixture.userAId });
+
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body.error).toBe("RT2_EXECUTION_ALREADY_CLAIMED");
+  });
+
+  it("creates a retry attempt after a failed execution", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({ capacity: 1, participants: [] });
+
+    const queued = await request(app)
+      .post(`/api/rt2/tasks/${task.issueId}/executions`)
+      .send({})
+      .expect(201);
+
+    await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .send({ executorType: "runtime", executorId: "worker-1" })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/start`)
+      .send({})
+      .expect(200);
+
+    await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/fail`)
+      .send({ failureReason: "runtime exited" })
+      .expect(200);
+
+    const retry = await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/retry`)
+      .send({})
+      .expect(201);
+
+    expect(retry.body).toEqual(expect.objectContaining({
+      state: "queued",
+      retryOfAttemptId: queued.body.id,
+      taskIssueId: task.issueId,
+    }));
+  });
+
   it("covers the full M1.3 demo flow", async () => {
     fixture = await seedFixture();
     const managerApp = await createApp(fixture.companyId, fixture.managerUserId);
@@ -432,7 +652,7 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         title: "Store opening launch",
         taskMode: "collab",
         capacity: 2,
-        deliverables: [{ title: "Opening report", type: "document" }],
+        deliverables: [{ title: "Opening report", type: "document", basePrice: 320000 }],
       })
       .expect(201);
 
@@ -452,7 +672,7 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         taskIssueId: created.body.issueId,
         title: "Confirm inventory",
         assigneeUserId: fixture.userAId,
-        deliverables: [{ title: "Inventory checklist", type: "document" }],
+        deliverables: [{ title: "Inventory checklist", type: "document", basePrice: 180000 }],
       })
       .expect(201);
 

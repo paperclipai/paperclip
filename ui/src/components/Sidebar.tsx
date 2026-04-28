@@ -1,23 +1,25 @@
 import {
-  Inbox,
-  CircleDot,
-  Target,
-  LayoutDashboard,
+  BookOpen,
+  Bot,
+  ClipboardList,
   DollarSign,
-  History,
-  Search,
-  SquarePen,
   Network,
   Boxes,
-  Repeat,
   Settings,
+  ShieldCheck,
+  Search,
+  SquarePen,
+  Building2,
+  GitBranch,
+  FileText,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
-import { useDialog } from "../context/DialogContext";
+import { CompanySwitcher } from "./CompanySwitcher";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
@@ -26,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
-  const { openNewIssue } = useDialog();
+  const navigate = useNavigate();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: liveRuns } = useQuery({
@@ -47,47 +49,36 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
-          />
-        )}
-        <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
-          {selectedCompany?.name ?? "Select company"}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          onClick={openSearch}
-        >
-          <Search className="h-4 w-4" />
-        </Button>
+    <aside className="w-64 h-full min-h-0 border-r border-border bg-background flex flex-col">
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md border border-emerald-500/40 bg-emerald-500/10 text-xs font-semibold text-emerald-500">
+            RT
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-500">RealTycoon2</div>
+            <CompanySwitcher />
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground shrink-0"
+            onClick={openSearch}
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
+      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-3">
         <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
           <button
-            onClick={() => openNewIssue()}
+            onClick={() => navigate("/one-liner")}
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">업무 빠른 기록</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
-          <SidebarNavItem
-            to="/inbox"
-            label="Inbox"
-            icon={Inbox}
-            badge={inboxBadge.inbox}
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
-          />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}
@@ -97,22 +88,30 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+        <SidebarSection label="업무 운영">
+          <SidebarNavItem to="/one-liner" label="일일 업무 기록" icon={SquarePen} />
+          <SidebarNavItem to="/issues" label="업무 보드" icon={ClipboardList} />
+          <SidebarNavItem to="/knowledge" label="지식 위키/그래프" icon={BookOpen} />
+          <SidebarNavItem to="/pnl" label="성과 정산" icon={DollarSign} />
+          <SidebarNavItem to="/org" label="조직/OKR" icon={Network} />
+          <SidebarNavItem to="/governance" label="승인/거버넌스" icon={ShieldCheck} badge={inboxBadge.approvals} />
+        </SidebarSection>
+
+        <SidebarSection label="확장 운영">
+          <SidebarNavItem to="/enterprise-rollout" label="기업 연동" icon={Building2} />
+          <SidebarNavItem to="/marketplace" label="Jarvis 마켓" icon={Boxes} />
+          <SidebarNavItem to="/plan-alignment" label="개발기획서 정합성" icon={FileText} />
+          <SidebarNavItem to="/activity" label="자동화 실행 기록" icon={GitBranch} liveCount={liveRunCount} />
         </SidebarSection>
 
         <SidebarProjects />
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+        <SidebarSection label="관리">
+          <SidebarNavItem to="/costs" label="비용/예산" icon={DollarSign} />
+          <SidebarNavItem to="/skills" label="재사용 스킬" icon={Bot} />
+          <SidebarNavItem to="/company/settings" label="회사 설정" icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet

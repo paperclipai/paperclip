@@ -90,7 +90,7 @@ function parseWorkspaceRuntimeJson(value: string) {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
         ok: false as const,
-        error: "Workspace commands JSON must be a JSON object.",
+        error: "Execution commands JSON must be a JSON object.",
       };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
@@ -523,11 +523,11 @@ export function ExecutionWorkspaceDetail() {
 
         <div className="space-y-2">
           <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            Execution workspace
+            작업 실행 환경
           </div>
           <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
+            Configure the concrete runtime environment that RealTycoon2 reuses for this task flow.
             <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
           </p>
         </div>
@@ -535,7 +535,7 @@ export function ExecutionWorkspaceDetail() {
         <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
-              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution commands</div>
               <h2 className="text-lg font-semibold">Services and jobs</h2>
               <p className="text-sm text-muted-foreground">
                 Source: {runtimeConfigSource === "execution_workspace"
@@ -560,7 +560,7 @@ export function ExecutionWorkspaceDetail() {
             disabledHint={
               canStartRuntimeServices
                 ? null
-                : "Execution workspaces need a working directory before local commands can run, and services also need runtime config."
+                : "Execution environments need a working directory before local commands can run, and services also need runtime config."
             }
             onAction={(request) => controlRuntimeServices.mutate(request)}
           />
@@ -612,7 +612,7 @@ export function ExecutionWorkspaceDetail() {
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.name}
                     onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
-                    placeholder="Execution workspace name"
+                    placeholder="Execution environment name"
                   />
                 </Field>
 
@@ -661,7 +661,7 @@ export function ExecutionWorkspaceDetail() {
                   />
                 </Field>
 
-                <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                <Field label="Provision command" hint="Runs when RealTycoon2 prepares this execution environment">
                   <textarea
                     className="min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none sm:min-h-28"
                     value={form.provisionCommand}
@@ -726,7 +726,7 @@ export function ExecutionWorkspaceDetail() {
                     Override the inherited workspace command model only when this execution workspace truly needs different service or job behavior.
                   </p>
                   <div className="mt-3">
-                    <Field label="Workspace commands JSON" hint="Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                    <Field label="Execution commands JSON" hint="Legacy `services` arrays still work, but `commands` supports both services and jobs.">
                       <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
                         <input
                           id="inherit-runtime-config"

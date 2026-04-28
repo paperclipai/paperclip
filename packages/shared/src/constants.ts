@@ -363,7 +363,7 @@ export const LIVE_EVENT_TYPES = [
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
-export const RT2_GRAPH_NODE_TYPES = ["project", "task", "todo", "daily_wiki_page"] as const;
+export const RT2_GRAPH_NODE_TYPES = ["project", "task", "todo", "daily_wiki_page", "deliverable", "actor", "event"] as const;
 export type Rt2GraphNodeType = (typeof RT2_GRAPH_NODE_TYPES)[number];
 
 export const RT2_GRAPH_EDGE_TYPES = [
@@ -371,6 +371,12 @@ export const RT2_GRAPH_EDGE_TYPES = [
   "task_todo",
   "daily_wiki_task",
   "task_dependency",
+  "task_deliverable",
+  "project_deliverable",
+  "project_daily_wiki_page",
+  "project_event",
+  "actor_event",
+  "event_entity",
 ] as const;
 export type Rt2GraphEdgeType = (typeof RT2_GRAPH_EDGE_TYPES)[number];
 

@@ -68,7 +68,12 @@ vi.mock("./Identity", () => ({
 vi.mock("@/components/ui/command", () => ({
   CommandDialog: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? <div>{children}</div> : null),
   CommandEmpty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  CommandGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  CommandGroup: ({ children, heading }: { children: ReactNode; heading?: string }) => (
+    <div>
+      {heading ? <div>{heading}</div> : null}
+      {children}
+    </div>
+  ),
   CommandInput: ({
     value,
     onValueChange,
@@ -181,6 +186,29 @@ describe("CommandPalette", () => {
         limit: 10,
         includeRoutineExecutions: true,
       });
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses RealTycoon2 product copy instead of Paperclip-shaped labels", async () => {
+    const { root } = renderWithQueryClient(<CommandPalette />, container);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Jarvis 추가");
+      expect(container.textContent).toContain("프로젝트 추가");
+      expect(container.textContent).toContain("작업");
+      expect(container.textContent).toContain("Jarvis");
+      expect(container.textContent).not.toContain("Create new agent");
+      expect(container.textContent).not.toContain("Agents");
+      expect(container.textContent).not.toContain("Control Plane");
+      expect(container.textContent).not.toContain("Paperclip");
     });
 
     act(() => {

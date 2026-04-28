@@ -47,6 +47,27 @@ describe("Rt2TaskPanel", () => {
             deliverableCount: 1,
             todoCount: 1,
             todoInProgressCount: 1,
+            execution: {
+              id: "attempt-1",
+              taskIssueId: "issue-1",
+              todoIssueId: null,
+              state: "running",
+              executorType: "jarvis",
+              executorId: "jarvis-1",
+              executionWorkspaceId: null,
+              runtimeServiceId: null,
+              heartbeatRunId: null,
+              deliverableWorkProductId: null,
+              resultWorkProductId: null,
+              retryOfAttemptId: null,
+              failureReason: null,
+              missingDeliverableReason: null,
+              queuedAt: new Date("2026-04-16T00:00:00Z"),
+              claimedAt: new Date("2026-04-16T00:01:00Z"),
+              startedAt: new Date("2026-04-16T00:02:00Z"),
+              completedAt: null,
+              updatedAt: new Date("2026-04-16T00:02:00Z"),
+            },
             participants: [
               {
                 id: "participant-1",
@@ -82,6 +103,7 @@ describe("Rt2TaskPanel", () => {
               title: "Event brief",
               type: "document",
               state: "defined",
+              basePrice: 240000,
               summary: null,
               isRequired: true,
             }],
@@ -93,6 +115,7 @@ describe("Rt2TaskPanel", () => {
               assigneeUserId: "user-1",
               deliverableCount: 1,
               submittedDeliverableCount: 0,
+              execution: null,
             }],
           }}
           onJoin={onJoin}
@@ -117,6 +140,8 @@ describe("Rt2TaskPanel", () => {
     expect(container.textContent).toContain("capacity_reduced");
     expect(container.textContent).toContain("0 / 1 deliverables");
     expect(container.textContent).toContain("Assign participant");
+    expect(container.textContent).toContain("running by jarvis-1");
+    expect(container.textContent).toContain("execution idle");
 
     const buttons = Array.from(container.querySelectorAll("button"));
     const joinButton = buttons.find((button) => button.textContent === "Join");

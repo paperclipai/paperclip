@@ -414,6 +414,174 @@
       "when": 1776384361105,
       "tag": "0058_rt2_v33_daily_report_wiki",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776396000000,
+      "tag": "0059_rt2_v33_project_graph_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1776402000000,
+      "tag": "0060_rt2_v33_deliverable_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1776489600000,
+      "tag": "0061_rt2_v33_jarvis_overlay",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1776466800000,
+      "tag": "0062_rt2_v33_gamification",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1776643200000,
+      "tag": "0063_rt2_v33_quality_shadow",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1776728649153,
+      "tag": "0064_rt2_v33_knowledge_upgrade",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1776733200000,
+      "tag": "0065_rt2_v33_collaboration_rewards",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1776736800000,
+      "tag": "0066_rt2_v33_phase_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776740400000,
+      "tag": "0067_rt2_v33_coin_ledger_rule_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776744000000,
+      "tag": "0068_rt2_v33_execution_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776747600000,
+      "tag": "0069_rt2_v33_domain_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1776751200000,
+      "tag": "0070_rt2_v33_cumulative_wiki_pages",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1776754800000,
+      "tag": "0071_rt2_phase6_intelligence_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1776755100000,
+      "tag": "0072_rt2_phase7_economy_marketplace_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1776755400000,
+      "tag": "0073_rt2_phase12_jarvis_runtime_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1776755700000,
+      "tag": "0074_rt2_phase13_enterprise_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1776756000000,
+      "tag": "0075_rt2_phase21_knowledge_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1776756300000,
+      "tag": "0076_rt2_phase22_settlement_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1776756600000,
+      "tag": "0077_rt2_phase23_work_board_capture",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1776756900000,
+      "tag": "0078_rt2_ledger_atomicity",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1776757200000,
+      "tag": "0079_rt2_daily_wiki_source_event_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1776757500000,
+      "tag": "0080_rt2_settlement_governance_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1776757800000,
+      "tag": "0081_rt2_v33_semantic_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1776758100000,
+      "tag": "0082_rt2_contradiction_review",
+      "breakpoints": true
     }
   ]
 }

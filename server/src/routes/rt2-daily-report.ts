@@ -6,10 +6,11 @@ import {
   rt2DailyReportDateSchema,
   upsertRt2DailyReportCardSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { rt2DailyReportService } from "../services/rt2-daily-report.js";
+import { rt2WikiLintService } from "../services/rt2-wiki-lint.js";
 import { assertCompanyAccess } from "./authz.js";
 
 const queryRt2DailyWikiRequestSchema = z.object({
@@ -40,6 +41,7 @@ function emitLiveEventSafely(input: Parameters<typeof publishLiveEvent>[0]) {
 export function rt2DailyReportRoutes(db: Db) {
   const router = Router();
   const svc = rt2DailyReportService(db);
+  const wikiLintSvc = rt2WikiLintService(db);
 
   router.get("/companies/:companyId/rt2/daily-report", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -117,6 +119,37 @@ export function rt2DailyReportRoutes(db: Db) {
       res.json(answer);
     },
   );
+
+  // M2.5: Wiki lint - check wiki pages for quality issues
+  router.get("/companies/:companyId/rt2/wiki-lint", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const projectId = req.query.projectId as string;
+    if (!projectId) {
+      throw badRequest("projectId is required");
+    }
+
+    const startDate = req.query.startDate as string | undefined;
+    const endDate = req.query.endDate as string | undefined;
+
+    const result = await wikiLintSvc.lintWikiPages(companyId, projectId, startDate, endDate);
+    res.json(result);
+  });
+
+  // M2.5: Wiki quality score (0-100)
+  router.get("/companies/:companyId/rt2/wiki-quality-score", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const projectId = req.query.projectId as string;
+    if (!projectId) {
+      throw badRequest("projectId is required");
+    }
+
+    const score = await wikiLintSvc.getWikiQualityScore(companyId, projectId);
+    res.json({ projectId, score });
+  });
 
   return router;
 }
