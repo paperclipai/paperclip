@@ -36,6 +36,7 @@ import {
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
+import { linearAuthRoutes } from "./routes/linear-auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { workspaceScanRoutes } from "./routes/workspace-scan.js";
@@ -311,6 +312,21 @@ if(window.opener){window.opener.postMessage({type:"linear-oauth-callback",code:$
 ${error ? "" : "setTimeout(function(){window.close()},2000)"}
 </script></body></html>`);
   });
+
+  // Mount the legacy linear-auth router AFTER the inline /callback above so
+  // Express's first-match precedence keeps the postMessage page in front of
+  // the router's server-side token exchange. The router still handles
+  // /import, /sync, /start, /status, /configure, /disconnect — endpoints the
+  // @lucitra/paperclip-plugin-linear UI bundle calls directly.
+  app.use(
+    "/api/auth/linear",
+    linearAuthRoutes(db, {
+      clientId: appConfig.linearOAuthClientId,
+      clientSecret: appConfig.linearOAuthClientSecret,
+      redirectUri: appConfig.linearOAuthRedirectUri,
+      secretsProvider: appConfig.secretsProvider,
+    }),
+  );
 
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
