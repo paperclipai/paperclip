@@ -20,6 +20,7 @@
 - 최신 로컬 커밋:
   - `d4bc9114 feat(rt2): ship semantic knowledge intelligence`
   - `160ed2d9 docs(37): record phase ship status`
+  - `5f4db7db docs: update next session ship handoff`
 - 검증:
   - `pnpm typecheck` 통과
   - `pnpm test` 통과: 266 files passed, 24 skipped / 1461 tests passed, 126 skipped
@@ -37,10 +38,10 @@
 권장 시작 명령:
 
 ```sh
-$gsd-ship 37 --auto
+$gsd-do "PR #4650의 upstream/master merge conflict를 해결하고 pnpm typecheck && pnpm test 통과 후 branch를 push한다"
 ```
 
-단, `gsd-ship`이 이미 PR을 만든 상태이므로 다음 순서로 진행한다:
+주의: `$gsd-ship 37 --auto`는 이미 실행 완료했다. 다음 세션에서 다시 ship workflow를 반복하지 않는다. 다음 순서로 conflict 해결만 진행한다:
 
 1. `git status --short --branch`로 작업트리가 merge 중이 아닌지 확인한다.
 2. `git fetch upstream master`로 최신 base를 가져온다.
