@@ -64,6 +64,8 @@ const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-linear",
   "@lucitra/paperclip-plugin-chat",
   "@lucitra/paperclip-plugin-updater",
+  "@lucitra/paperclip-plugin-secrets",
+  "paperclip-plugin-slack",
 ];
 
 async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
@@ -711,27 +713,56 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
-  // Ensure plugins directory uses the workspace SDK (with fork extensions).
-  // Must run BEFORE createApp which spawns plugin workers.
-  try {
-    const pluginsSdkDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk");
-    const thisDir = path.dirname(new URL(import.meta.url).pathname);
-    const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
-    const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
-    if (fs.existsSync(workspaceSdkDist) && fs.existsSync(pluginsSdkDir)) {
-      if (fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
-        fs.unlinkSync(pluginsSdkDir);
-        fs.mkdirSync(pluginsSdkDir, { recursive: true });
+  // Overwrite only the SDK JS files that contain our fork extensions.
+  // We must NOT delete the whole SDK dir or its package.json — the npm-installed
+  // SDK has proper dependency resolution for @paperclipai/shared that we need.
+  function copyWorkspaceSdkFiles() {
+    try {
+      const pluginsSdkDist = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk", "dist");
+      const thisDir = path.dirname(new URL(import.meta.url).pathname);
+      const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
+      if (!fs.existsSync(workspaceSdkDist) || !fs.existsSync(pluginsSdkDist)) return;
+
+      // Only overwrite the specific files we changed (fork extensions)
+      const filesToCopy = [
+        "worker-rpc-host.js",
+        "worker-rpc-host.js.map",
+        "worker-rpc-host.d.ts",
+        "worker-rpc-host.d.ts.map",
+        "host-client-factory.js",
+        "host-client-factory.js.map",
+        "host-client-factory.d.ts",
+        "host-client-factory.d.ts.map",
+        "protocol.js",
+        "protocol.js.map",
+        "protocol.d.ts",
+        "protocol.d.ts.map",
+        "types.js",
+        "types.js.map",
+        "types.d.ts",
+        "types.d.ts.map",
+        "testing.js",
+        "testing.js.map",
+        "testing.d.ts",
+        "testing.d.ts.map",
+      ];
+      let copied = 0;
+      for (const file of filesToCopy) {
+        const src = path.join(workspaceSdkDist, file);
+        const dest = path.join(pluginsSdkDist, file);
+        if (fs.existsSync(src)) {
+          fs.cpSync(src, dest, { force: true });
+          copied++;
+        }
       }
-      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
-      if (fs.existsSync(workspaceSdkPkg)) {
-        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
+      if (copied > 0) {
+        logger.info(`Patched ${copied} workspace SDK files into local plugins directory`);
       }
-      logger.info("Copied workspace plugin SDK dist to local plugins directory");
+    } catch (err) {
+      logger.warn({ err }, "Failed to patch workspace SDK files (non-fatal)");
     }
-  } catch (err) {
-    logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
   }
+  copyWorkspaceSdkFiles();
 
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
@@ -1084,7 +1115,10 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any).catch((err) => {
+  void autoInstallBundledPlugins(db as any).then(() => {
+    // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
+    copyWorkspaceSdkFiles();
+  }).catch((err) => {
     logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
   });
 

@@ -2428,8 +2428,7 @@ export function issueRoutes(
       };
     }
 
-    const assigneeChanged =
-      issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    const assigneeChanged = assigneeWillChange;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&

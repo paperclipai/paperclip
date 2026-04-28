@@ -10,7 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronUp, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -93,7 +93,6 @@ interface CommentThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
   onAttachImage?: (file: File) => Promise<void>;
@@ -559,7 +558,6 @@ const TimelineList = memo(function TimelineList({
   feedbackTermsUrl = null,
   onVote,
   votingTargetId,
-  currentUserId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
@@ -585,13 +583,31 @@ const TimelineList = memo(function TimelineList({
   currentUserId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const COLLAPSE_THRESHOLD = 10;
+  const VISIBLE_WHEN_COLLAPSED = 3;
+  const [expanded, setExpanded] = useState(false);
+
+  const collapsible = timeline.length > COLLAPSE_THRESHOLD;
+  const hiddenCount = collapsible && !expanded ? timeline.length - VISIBLE_WHEN_COLLAPSED : 0;
+  const visibleItems = collapsible && !expanded ? timeline.slice(-VISIBLE_WHEN_COLLAPSED) : timeline;
+
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
 
   return (
     <div className="space-y-3">
-      {timeline.map((item) => {
+      {collapsible && !expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(true)}
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          Show {hiddenCount} earlier {hiddenCount === 1 ? "item" : "items"}
+        </button>
+      )}
+      {visibleItems.map((item) => {
         if (item.kind === "event") {
           return (
             <TimelineEventCard
@@ -709,6 +725,16 @@ const TimelineList = memo(function TimelineList({
           />
         );
       })}
+      {collapsible && expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(false)}
+        >
+          <ChevronUp className="h-3.5 w-3.5" />
+          Show less
+        </button>
+      )}
     </div>
   );
 });
@@ -732,7 +758,6 @@ export function CommentThread({
   onAdd,
   issueStatus,
   agentMap,
-  currentUserId,
   imageUploadHandler,
   onAttachImage,
   draftKey,
