@@ -153,12 +153,12 @@ kubectl -n paperclip exec paperclip-0 -- \
 | ingress.annotations | object | `{}` | Annotations on the Ingress (e.g. cert-manager, rate limits). |
 | ingress.hosts | list | single host at `paperclip.example.com` serving `/`. | Hosts and paths served by the Ingress. |
 | ingress.tls | list | `[]` | TLS configuration. Leave empty to serve HTTP only. Example: `[{hosts: [paperclip.example.com], secretName: paperclip-tls}]`. |
-| env | object | `{"extra":[],"host":"0.0.0.0","instanceId":"default","port":3100,"serveUi":true}` | Paperclip runtime environment. |
+| env | object | `{"extra":[],"extraAllowedHostnames":[],"host":"0.0.0.0","instanceId":"default","port":3100,"serveUi":true}` | Paperclip runtime environment. |
 | env.host | string | `"0.0.0.0"` | Bind address. |
 | env.port | int | `3100` | HTTP port inside the container (must match `service.port`). |
 | env.serveUi | bool | `true` | Serve the bundled web UI alongside the API. |
 | env.instanceId | string | `"default"` | Paperclip instance identifier. Directory under `/paperclip/instances/` is named after this. |
-| env.extra | list | `[]` | Extra environment variables merged verbatim into the container spec. Example: `[{name: NODE_OPTIONS, value: --max-old-space-size=3072}]`. |
+| env.extraAllowedHostnames | list | `[]` | Extra hostnames the server accepts on its `Host` header (e.g. public ingress hosts). Rendered as `PAPERCLIP_ALLOWED_HOSTNAMES`, with `127.0.0.1` **always prepended by the chart** so spawned agents get `http://127.0.0.1:{{ env.port }}` as `PAPERCLIP_API_URL` (the server picks `allowedHostnames[0] + env.port` to build that URL). Do not list public hosts here expecting them to be reachable from inside the pod — they're served on `:443`/HTTPS via an ingress, but the URL the server constructs always uses `http://` and `env.port`, so they'd be unreachable as `allowedHostnames[0]`. The leading `127.0.0.1` neutralises that. Example: `["paperclip.example.com"]`. |
 | secret | object | `{"agentJwtSecret":"","existingSecret":"","masterKey":""}` | Secret containing `agentJwtSecret` and optional `masterKey` seed. |
 | secret.agentJwtSecret | string | `""` | JWT secret for the Paperclip agent. Only used when `existingSecret` is empty — avoid under GitOps (non-deterministic render). |
 | secret.masterKey | string | `""` | Base64-encoded master key to seed `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored if the file already exists on the PVC. Only used when `existingSecret` is empty. Leave empty to let Paperclip generate its own on first run. |
