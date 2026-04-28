@@ -6,10 +6,14 @@ tags:
   - ledger
   - transactions
   - reconciliation
+requirements-completed:
+  - LEDGER-02
+  - LEDGER-03
 key-files:
   - server/src/services/rt2-personal-pnl.ts
 metrics:
   tests: verified by 27-UAT.md
+closure_phase: 31
 ---
 
 # Plan 27-02 Summary

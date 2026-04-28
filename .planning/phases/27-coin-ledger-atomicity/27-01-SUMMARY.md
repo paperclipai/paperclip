@@ -6,12 +6,17 @@ tags:
   - ledger
   - migration
   - atomicity
+requirements-completed:
+  - LEDGER-01
+  - LEDGER-04
+  - LEDGER-05
 key-files:
   - packages/db/src/schema/rt2_personal_pnl.ts
   - packages/db/src/migrations/0078_rt2_ledger_atomicity.sql
   - server/src/services/rt2-personal-pnl.ts
 metrics:
   tests: verified by 27-UAT.md
+closure_phase: 31
 ---
 
 # Plan 27-01 Summary

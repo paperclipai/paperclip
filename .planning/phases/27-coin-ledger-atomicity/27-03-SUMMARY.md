@@ -6,12 +6,15 @@ tags:
   - ledger
   - security
   - concurrency
+requirements-completed:
+  - LEDGER-01
 key-files:
   - server/src/services/rt2-personal-pnl.ts
   - server/src/__tests__/rt2-phase7-economy-marketplace.test.ts
 metrics:
   typecheck: passed
   targeted-tests: passed
+closure_phase: 31
 ---
 
 # Plan 27-03 Summary
