@@ -1,60 +1,102 @@
 ---
-phase: 32
-phase_name: Lint Traceability and Milestone Acceptance Closure
+phase: 32-lint-traceability-and-milestone-acceptance-closure
+verified: 2026-04-28T13:32:50+09:00
 status: passed
-verified: "2026-04-28T04:20:59Z"
-requirements:
-  - LINT-01
-  - LINT-02
-  - LINT-03
-  - LINT-04
+score: 5/5 must-haves verified
+overrides_applied: 0
+re_verification:
+  previous_status: gaps_found
+  previous_score: 4/5
+  gaps_closed:
+    - "REQUIREMENTS.md now marks LINT-01 through LINT-04 complete and records accepted coverage as 24/24 with 0 pending gap closure."
+  gaps_remaining: []
+  regressions: []
 ---
 
-# Phase 32 Verification: Lint Traceability and Milestone Acceptance Closure
+# Phase 32: Lint Traceability and Milestone Acceptance Closure Verification Report
 
-## Result
+**Phase Goal:** Close remaining consistency lint traceability and Nyquist gaps, then make v2.4 ready for milestone re-audit  
+**Verified:** 2026-04-28T13:32:50+09:00  
+**Status:** passed  
+**Re-verification:** Yes - after requirements traceability fix.
 
-Status: PASSED
+## Goal Achievement
 
-Phase 32 closes the remaining v2.4 LINT audit gap without source changes. LINT-01 through LINT-04 are accepted from aligned evidence across `.planning/REQUIREMENTS.md`, Phase 29 summary frontmatter, `29-VERIFICATION.md`, new `29-VALIDATION.md`, current code/test evidence, and the focused command results below.
+### Observable Truths
 
-## Command Outcomes
+| # | Truth | Status | Evidence |
+|---|-------|--------|----------|
+| 1 | Phase 29 summary includes `requirements-completed` frontmatter for LINT-01..LINT-04. | VERIFIED | `.planning/phases/29-consistency-linting-batch/29-01-SUMMARY.md` frontmatter lists only LINT-01, LINT-02, LINT-03, and LINT-04. |
+| 2 | Phase 29 has Nyquist validation covering scheduled, evidence-only, read-only batch lint behavior. | VERIFIED | `.planning/phases/29-consistency-linting-batch/29-VALIDATION.md` contains scenarios for scoped comparison, evidence-only findings, `embedding_consistency`, read-only row behavior, scheduler gating, overlap prevention, and no on-write trigger. |
+| 3 | Cross-phase evidence links graph/wiki content stabilization to scheduled consistency linting. | VERIFIED | `29-VALIDATION.md` cites Phase 30 WIKI/GRAPH closure; `rt2WikiLintService.lintWikiPages()` reads daily wiki pages and `createRt2WikiLintScheduler()` runs over discovered company/project scopes. |
+| 4 | LINT-01 through LINT-04 are accepted only if focused lint verification still supports Phase 29 claims. | VERIFIED | Previous verification evidence preserved: `PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true pnpm --filter @paperclipai/server exec vitest run src/__tests__/rt2-wiki-lint.test.ts --reporter=default` exited 0 with 4 tests passed; `pnpm --filter @paperclipai/server typecheck` and `pnpm typecheck` exited 0. |
+| 5 | v2.4 re-audit can pass requirements, phase artifact, integration, and flow gates or isolate only explicitly deferred tech debt. | VERIFIED | `.planning/REQUIREMENTS.md` now marks LINT-01..LINT-04 checked and maps each to `Phase 32 | Complete`; coverage records 24 v1 requirements, 24 mapped, 24 accepted, 0 pending. `.planning/v2.4-MILESTONE-REAUDIT.md` records requirements `24/24` and LINT-01..LINT-04 as Accepted. |
 
-| Command | Result | Notes |
-|---------|--------|-------|
-| `pnpm --filter @paperclipai/server test -- rt2-wiki-lint` | exit 0, passed | Required focused lint gate. The command completed successfully. |
-| `pnpm --filter @paperclipai/server typecheck` | exit 0, passed | Required server typecheck gate; built `@paperclipai/plugin-sdk` and `@paperclipai/shared`, then ran `tsc --noEmit`. |
-| `pnpm typecheck` | exit 0, passed | Full workspace typecheck completed successfully in this run. |
-| `pnpm test` | exit 0, passed | Default Vitest suite completed: 265 files passed, 23 skipped; 1460 tests passed, 121 skipped. Embedded Postgres tests were skipped on this Windows host unless explicitly enabled. |
-| `pnpm test:e2e` | not run | Explicitly excluded by AGENTS.md and the Phase 32 plan. |
+**Score:** 5/5 truths verified
 
-## Requirement Verification Matrix
+### Required Artifacts
 
-| Requirement | Status | Implementation Evidence | Test/Artifact Evidence |
-|-------------|--------|-------------------------|------------------------|
-| LINT-01 | Passed | `server/src/services/rt2-wiki-lint.ts` `rt2WikiLintService.lintWikiPages()` reads scoped daily wiki pages by company/project/date and performs pairwise semantic comparisons with `semanticComparisons`. | `29-VERIFICATION.md` records passed focused lint verification; `29-VALIDATION.md` includes scoped pairwise comparison and Phase 30 upstream corpus scenarios; focused lint command exited 0. |
-| LINT-02 | Passed | `Rt2WikiLintIssue` carries evidence and related page metadata, and linting returns findings without update/delete calls against wiki rows. | `server/src/__tests__/rt2-wiki-lint.test.ts` asserts wiki rows are unchanged before and after linting; `29-VALIDATION.md` records evidence-only and read-only scenarios. |
-| LINT-03 | Passed | `embedding_consistency` is a first-class issue type, produced by semantic analysis, counted in `embeddingConsistency`, and reflected in summary metrics. | Focused tests assert contradiction evidence and semantic comparison counts; `29-VALIDATION.md` maps this to the `embedding_consistency` Nyquist scenario. |
-| LINT-04 | Passed | `createRt2WikiLintScheduler()` has nightly window gating, `lastRunDate`, overlap prevention, and startup/shutdown wiring from `server/src/app.ts`; `server/src/routes/rt2-daily-report.ts` keeps daily wiki writes separate from lint execution. | Scheduler tests cover gating behavior; `29-VALIDATION.md` includes scheduled execution, overlap prevention, and no on-write trigger scenarios; focused lint command exited 0. |
+| Artifact | Expected | Status | Details |
+|----------|----------|--------|---------|
+| `.planning/phases/29-consistency-linting-batch/29-01-SUMMARY.md` | Phase 29 summary with LINT requirements-completed frontmatter | VERIFIED | Exists and lists only LINT-01..LINT-04 in `requirements-completed`. |
+| `.planning/phases/29-consistency-linting-batch/29-VALIDATION.md` | Nyquist validation scenarios for LINT closure | VERIFIED | Exists and is substantive; scenarios map to LINT-01..LINT-04 and cite code/test evidence. |
+| `.planning/phases/32-lint-traceability-and-milestone-acceptance-closure/32-01-SUMMARY.md` | Phase 32 execution summary | VERIFIED | Exists and records closure artifacts, requirements-completed frontmatter, and command claims. |
+| `.planning/phases/32-lint-traceability-and-milestone-acceptance-closure/32-VERIFICATION.md` | Phase 32 verification report | VERIFIED | Updated by this re-verification to close the prior structured gap and record passed status. |
+| `.planning/v2.4-MILESTONE-REAUDIT.md` | Post-closure milestone re-audit preserving original audit context | VERIFIED | Exists, preserves original audit context, records `requirements: 24/24`, and accepts LINT-01..LINT-04 with evidence. |
 
-## Cross-Phase Acceptance
+### Key Link Verification
 
-| Flow | Status | Evidence |
-|------|--------|----------|
-| WIKI -> GRAPH | Passed | `30-VERIFICATION.md` accepts WIKI-01 through WIKI-05 and GRAPH-01 through GRAPH-06, proving board/domain events produce stable daily wiki pages and graph projection consumes them. |
-| GRAPH/WIKI -> LINT | Passed | Phase 29 lint service reads the stabilized daily wiki corpus verified by Phase 30, and Phase 32 adds missing summary and validation traceability. |
-| LEDGER -> SETTLE | Passed prerequisite | `31-VERIFICATION.md` accepts LEDGER-01 through LEDGER-05 and SETTLE-01 through SETTLE-04, including the fixed SETTLE-03 ledger evidence gap. |
+| From | To | Via | Status | Details |
+|------|----|-----|--------|---------|
+| `.planning/REQUIREMENTS.md` | `29-01-SUMMARY.md` | LINT-01..LINT-04 IDs and `requirements-completed` frontmatter | WIRED | REQUIREMENTS now checks LINT-01..LINT-04, maps each to Phase 32 Complete, and the Phase 29 summary lists those same IDs in `requirements-completed`. |
+| `29-VERIFICATION.md` | `29-VALIDATION.md` | Evidence-backed Nyquist scenarios for each lint behavior | WIRED | Verification and validation both cover scoped comparison, evidence-only findings, `embedding_consistency`, and scheduled/non-on-write behavior. |
+| `30-VERIFICATION.md` | `32-VERIFICATION.md` | Graph/wiki stabilization evidence feeding scheduled lint acceptance | WIRED | Phase 30 WIKI/GRAPH closure is referenced by `29-VALIDATION.md`, the re-audit, and this report. |
+| `31-VERIFICATION.md` | `.planning/v2.4-MILESTONE-REAUDIT.md` | Economy closure prerequisite for final milestone acceptance | WIRED | Re-audit cites Phase 31 LEDGER/SETTLE closure and REQUIREMENTS maps LEDGER/SETTLE items to Phase 31 Complete. |
 
-## Artifact Checks
+### Data-Flow Trace (Level 4)
 
-| Artifact | Status | Notes |
-|----------|--------|-------|
-| `.planning/phases/29-consistency-linting-batch/29-01-SUMMARY.md` | passed | Frontmatter now lists only LINT-01, LINT-02, LINT-03, and LINT-04 under `requirements-completed`. |
-| `.planning/phases/29-consistency-linting-batch/29-VALIDATION.md` | passed | Nyquist scenarios cover scoped comparison, evidence-only findings, `embedding_consistency`, read-only behavior, scheduler gating, overlap prevention, and no on-write trigger. |
-| `.planning/phases/32-lint-traceability-and-milestone-acceptance-closure/32-VERIFICATION.md` | passed | This file records command outcomes and per-requirement evidence. |
-| `.planning/v2.4-MILESTONE-REAUDIT.md` | passed | New post-closure audit preserves original audit context instead of overwriting it. |
+| Artifact | Data Variable | Source | Produces Real Data | Status |
+|----------|---------------|--------|--------------------|--------|
+| `server/src/services/rt2-wiki-lint.ts` | `pages`, `allIssues`, `semanticComparisons`, `summary.embeddingConsistency` | Drizzle query over `rt2V33DailyWikiPages`, scoped by company/project/date, followed by structural and pairwise semantic checks | Yes | VERIFIED |
+| `server/src/services/rt2-wiki-lint.ts` scheduler | project scopes, lint run summary | `listProjectScopes()` selects company/project pairs from daily wiki rows, then calls `svc.lintWikiPages()` per scope | Yes | VERIFIED |
+| `server/src/routes/rt2-daily-report.ts` | manual lint result | `GET /companies/:companyId/rt2/wiki-lint` calls `wikiLintSvc.lintWikiPages()` after `assertCompanyAccess` | Yes | VERIFIED |
 
-## Residual Risk
+### Behavioral Spot-Checks
 
-- Live provider-backed LLM/embedding contradiction analysis remains deferred; Phase 29 acceptance is based on deterministic local heuristics plus injectable analyzer coverage.
-- Embedded Postgres cases in the default full test run are skipped on this Windows host unless `PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true`.
+| Behavior | Command | Result | Status |
+|----------|---------|--------|--------|
+| Requirements traceability fix | PowerShell check for checked LINT-01..LINT-04, Phase 32 Complete traceability rows, `Accepted complete after audit: 24`, and `Pending gap closure: 0` | exit 0; `requirements traceability ok` | PASS |
+| Re-audit LINT acceptance alignment | PowerShell check for `requirements: 24/24`, strict score `24/24`, and LINT-01..LINT-04 Accepted rows | exit 0; `reaudit lint acceptance ok` | PASS |
+| Documented focused lint command | `pnpm --filter @paperclipai/server test -- rt2-wiki-lint` | Prior report preserved: exit 0 with no test output; `server/package.json` has no `test` script, so this is not relied on as primary evidence. | WARNING |
+| Actual focused lint test file, default Windows mode | `pnpm --filter @paperclipai/server exec vitest run src/__tests__/rt2-wiki-lint.test.ts --reporter=basic` | Prior report preserved: exit 0; 1 file passed; 2 tests passed, 2 embedded Postgres tests skipped by default on Windows. | PASS WITH LIMITATION |
+| Actual focused lint test file with embedded Postgres enabled | `PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true pnpm --filter @paperclipai/server exec vitest run src/__tests__/rt2-wiki-lint.test.ts --reporter=default` | Prior report preserved: exit 0; 1 file passed; 4 tests passed. | PASS |
+| Server typecheck | `pnpm --filter @paperclipai/server typecheck` | Prior report preserved: exit 0. | PASS |
+| Workspace typecheck | `pnpm typecheck` | Prior report preserved: exit 0. | PASS |
+
+### Requirements Coverage
+
+| Requirement | Source Plan | Description | Status | Evidence |
+|-------------|-------------|-------------|--------|----------|
+| LINT-01 | `32-01-PLAN.md` | Nightly batch LLM scan compares wiki pages for contradictions and inconsistencies. | SATISFIED | Code evidence: `lintWikiPages()` scopes daily wiki pages and performs pairwise semantic comparisons; scheduler invokes lint per discovered scope. Traceability evidence: REQUIREMENTS has checked LINT-01 and `Phase 32 | Complete`. |
+| LINT-02 | `32-01-PLAN.md` | Lint issues flagged with evidence, not auto-fixed. | SATISFIED | Code evidence: issues carry evidence and embedded test asserts rows unchanged after linting. Traceability evidence: REQUIREMENTS has checked LINT-02 and `Phase 32 | Complete`. |
+| LINT-03 | `32-01-PLAN.md` | `rt2WikiLintService` extended with `embedding_consistency` check. | SATISFIED | Code evidence: issue union, analyzer output, summary count, and tests cover `embedding_consistency`. Traceability evidence: REQUIREMENTS has checked LINT-03 and `Phase 32 | Complete`. |
+| LINT-04 | `32-01-PLAN.md` | Lint runner executes on schedule, not on every wiki write. | SATISFIED | Code evidence: scheduler has nightly gating, last-run state, startup wiring, and route separation from daily wiki writes. Traceability evidence: REQUIREMENTS has checked LINT-04 and `Phase 32 | Complete`. |
+
+### Anti-Patterns Found
+
+| File | Line | Pattern | Severity | Impact |
+|------|------|---------|----------|--------|
+| `.planning/phases/32-lint-traceability-and-milestone-acceptance-closure/32-01-SUMMARY.md` | Verification table | Claims `pnpm --filter @paperclipai/server test -- rt2-wiki-lint` passed as focused lint verification. | WARNING | The command returned exit 0 but did not emit test output because the server package has no `test` script. The report preserves the actual Vitest command evidence that verifies the behavior. |
+
+### Human Verification Required
+
+None.
+
+### Gaps Summary
+
+No gaps remain. The prior blocker was a planning-artifact contradiction: the re-audit claimed 24/24 accepted while REQUIREMENTS still showed pending LINT entries. REQUIREMENTS now records LINT-01 through LINT-04 as complete, maps them to Phase 32, and reports 24 accepted requirements with 0 pending gap closure. This aligns the requirements source with the Phase 29 summary, Phase 29 validation, Phase 32 verification evidence, and v2.4 re-audit.
+
+---
+
+_Verified: 2026-04-28T13:32:50+09:00_  
+_Verifier: the agent (gsd-verifier)_
