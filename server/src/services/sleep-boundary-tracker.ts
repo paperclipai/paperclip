@@ -53,13 +53,20 @@ export interface SleepBoundaryTracker {
   getStats(): SleepBoundaryStats;
   /** True when a sleep boundary ended within `recentWakeWindowMs` of `at`. */
   recentlyWoke(at?: Date): boolean;
-  /** Test-only: feed a synthetic sample point. */
+}
+
+/**
+ * Test-only handle returned by `createSleepBoundaryTracker`. Exposes a synthetic
+ * sample injector so tests don't have to wait on a real timer; production
+ * callers consume the narrower `SleepBoundaryTracker` interface.
+ */
+export interface SleepBoundaryTrackerTestHandle extends SleepBoundaryTracker {
   recordSampleForTest(now: number, expected: number): SleepBoundary | null;
 }
 
 export function createSleepBoundaryTracker(
   options: SleepBoundaryTrackerOptions = {},
-): SleepBoundaryTracker {
+): SleepBoundaryTrackerTestHandle {
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const thresholdMs = options.thresholdMs ?? DEFAULT_THRESHOLD_MS;
   const maxBoundaries = options.maxBoundaries ?? DEFAULT_MAX_BOUNDARIES;

@@ -41,7 +41,10 @@ dashboard reports "1 sleep-stranded" alongside the failure count.
   `false`, NOT NULL). Migration `0073_run_sleep_boundary_crossed`.
 * `HeartbeatRun.sleepBoundaryCrossed` in `@paperclipai/shared`.
 * `DashboardRunActivityDay.sleepBoundaryFailed` (subset of `failed` in the
-  dashboard summary endpoint).
+  dashboard summary endpoint -- counts runs whose `status` is `failed` or
+  `timed_out` and which crossed a sleep boundary; cancelled tagged runs are
+  intentionally excluded since they aggregate into `other`, not `failed`,
+  and the metric exists to de-noise the failure bucket).
 * Structured warn-level log line `heartbeat run wall-clock spans a host sleep
   boundary; tagged sleepBoundaryCrossed=true` on each tagged finalization.
 * Structured warn-level log line `heartbeat run started inside DarkWake window
