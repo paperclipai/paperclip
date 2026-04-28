@@ -224,6 +224,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    capacityCritical: false,
     variables: [],
     createdByAgentId: null,
     createdByUserId: null,

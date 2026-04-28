@@ -1729,6 +1729,19 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
 
+        // Check capacity before dispatching
+        const capacityBand = await readCapacityBand(row.routine.companyId);
+        const shouldSkip = await shouldSkipRoutineFireDueToCapacity(row.routine, capacityBand);
+
+        if (shouldSkip) {
+          await createSkippedRoutineRun(db, {
+            routine: row.routine,
+            trigger: row.trigger,
+            failureReason: `capacity_band_${capacityBand.band}_or_higher`,
+          });
+          continue;
+        }
+
         for (let i = 0; i < runCount; i += 1) {
           await dispatchRoutineRun({
             routine: row.routine,
