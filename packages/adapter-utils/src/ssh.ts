@@ -112,34 +112,283 @@ function normalizeHttpUrlCandidate(value: string): string | null {
   }
 }
 
+const DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS = 10_000;
+const DEFAULT_PAPERCLIP_API_PROBE_RETRIES = 3;
+const MAX_PAPERCLIP_API_PROBE_RETRIES = 10;
+const DEFAULT_PAPERCLIP_API_PROBE_BACKOFF_MS: readonly number[] = [2_000, 5_000];
+const PROBE_STDERR_TAIL_BYTES = 512;
+
+function resolveProbeTimeoutMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_TIMEOUT_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS;
+}
+
+function resolveProbeRetries(explicit?: number): number {
+  // Cap at MAX_PAPERCLIP_API_PROBE_RETRIES so a fat-fingered "9999" can't
+  // strand a heartbeat looping over a flapping upstream.
+  const clamp = (value: number): number =>
+    Math.min(MAX_PAPERCLIP_API_PROBE_RETRIES, Math.max(1, Math.floor(value)));
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 1) {
+    return clamp(explicit);
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return clamp(parsed);
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_RETRIES;
+}
+
+function resolveProbeBackoffMs(explicit?: readonly number[]): readonly number[] {
+  const sanitize = (values: unknown): number[] | null => {
+    if (!Array.isArray(values)) return null;
+    const cleaned = values
+      .map((entry) => (typeof entry === "number" ? entry : Number(entry)))
+      .filter((entry): entry is number => Number.isFinite(entry) && entry >= 0)
+      // Cap each sleep at 30s so a fat-fingered config can never strand a heartbeat.
+      .map((entry) => Math.min(entry, 30_000));
+    return cleaned.length > 0 ? cleaned : null;
+  };
+  if (explicit) {
+    const cleaned = sanitize(explicit);
+    if (cleaned) return cleaned;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON;
+  if (raw) {
+    try {
+      const cleaned = sanitize(JSON.parse(raw));
+      if (cleaned) return cleaned;
+    } catch {
+      // Fall through to the default. A malformed knob must never crash acquireRunLease.
+    }
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_BACKOFF_MS;
+}
+
+/**
+ * Per-attempt detail captured during a Paperclip API probe over SSH. Surfaced
+ * via {@link ProbeResult.attempts} so callers can attach the full failure
+ * trail to their thrown error / structured log instead of swallowing it.
+ */
+export interface PaperclipApiProbeAttempt {
+  candidate: string;
+  attempt: number; // 1-indexed within this candidate
+  ok: boolean;
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  classification: "ok" | "transient" | "permanent";
+  error: string | null;
+}
+
+export interface PaperclipApiProbeResult {
+  url: string | null;
+  attempts: PaperclipApiProbeAttempt[];
+}
+
+const TRANSIENT_HTTP_STATUSES = new Set<number>([408, 425, 429]);
+
+function classifyHttpStatus(status: number | null): "ok" | "transient" | "permanent" {
+  if (status === null) return "transient";
+  if (status >= 200 && status < 300) return "ok";
+  if (status >= 500 && status < 600) return "transient";
+  if (TRANSIENT_HTTP_STATUSES.has(status)) return "transient";
+  return "permanent";
+}
+
+const PROBE_STATUS_SENTINEL = "__PAPERCLIP_PROBE_HTTP_CODE__:";
+
+/**
+ * Test seam: the probe runner. Production code uses {@link runSingleProbe}
+ * which executes curl over SSH; tests can pass a fake to avoid spinning up
+ * a real sshd + http server per case.
+ */
+export type SingleProbeRunner = (input: {
+  config: SshConnectionConfig;
+  healthUrl: string;
+  curlSeconds: number;
+  timeoutMs: number;
+}) => Promise<SingleProbeAttempt>;
+
+export interface SingleProbeAttempt {
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  sshError: string | null;
+}
+
+async function runSingleProbe(input: {
+  config: SshConnectionConfig;
+  healthUrl: string;
+  curlSeconds: number;
+  timeoutMs: number;
+}): Promise<SingleProbeAttempt> {
+  // Capture %{http_code} explicitly. We deliberately drop curl's `-f` so a 5xx
+  // returns exit 0 with the actual status code in stdout — letting us
+  // distinguish transient (5xx) from permanent (4xx) without parsing stderr.
+  // Connection errors keep their non-zero curl exit and surface as null status.
+  const remote = `curl -sS -m ${input.curlSeconds} -o /dev/null -w '${PROBE_STATUS_SENTINEL}%{http_code}\\n' ${shellQuote(input.healthUrl)}`;
+  const startedAt = Date.now();
+  try {
+    const result = await runSshCommand(
+      input.config,
+      `sh -lc ${shellQuote(remote)}`,
+      { timeoutMs: input.timeoutMs },
+    );
+    const durationMs = Date.now() - startedAt;
+    const httpStatus = parseProbeHttpStatus(result.stdout);
+    return {
+      exitCode: 0,
+      httpStatus,
+      durationMs,
+      stderrTail: tailString(result.stderr, PROBE_STDERR_TAIL_BYTES),
+      sshError: null,
+    };
+  } catch (err) {
+    const durationMs = Date.now() - startedAt;
+    const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string };
+    const stdout = typeof e?.stdout === "string" ? e.stdout : "";
+    const stderr = typeof e?.stderr === "string" ? e.stderr : "";
+    const exitCodeRaw = (e as { code?: unknown })?.code;
+    const exitCode =
+      typeof exitCodeRaw === "number"
+        ? exitCodeRaw
+        : typeof exitCodeRaw === "string" && /^\d+$/.test(exitCodeRaw)
+          ? Number(exitCodeRaw)
+          : null;
+    return {
+      exitCode,
+      httpStatus: parseProbeHttpStatus(stdout),
+      durationMs,
+      stderrTail: tailString(stderr, PROBE_STDERR_TAIL_BYTES),
+      sshError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function parseProbeHttpStatus(stdout: string): number | null {
+  const idx = stdout.lastIndexOf(PROBE_STATUS_SENTINEL);
+  if (idx < 0) return null;
+  const tail = stdout.slice(idx + PROBE_STATUS_SENTINEL.length).trim();
+  const match = tail.match(/^(\d{3})/);
+  if (!match) return null;
+  const status = Number.parseInt(match[1], 10);
+  // curl writes 000 when no HTTP response was received (DNS/TCP/TLS failure).
+  return status === 0 ? null : status;
+}
+
+function tailString(value: string | null | undefined, bytes: number): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= bytes) return trimmed;
+  return `…${trimmed.slice(-bytes)}`;
+}
+
+function dedupeCandidates(...sources: ReadonlyArray<readonly string[]>): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const source of sources) {
+    for (const candidate of source) {
+      const normalized = normalizeHttpUrlCandidate(candidate);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      ordered.push(normalized);
+    }
+  }
+  return ordered;
+}
+
 export async function findReachablePaperclipApiUrlOverSsh(input: {
   config: SshConnectionConfig;
   candidates: string[];
+  /** If provided, this candidate is probed first (cache short-circuit). */
+  preferredCandidate?: string | null;
   timeoutMs?: number;
-}): Promise<string | null> {
-  const uniqueCandidates = Array.from(
-    new Set(
-      input.candidates
-        .map((candidate) => normalizeHttpUrlCandidate(candidate))
-        .filter((candidate): candidate is string => candidate !== null),
-    ),
+  retries?: number;
+  /** Sleep between retries in ms; index N is the wait BEFORE attempt N+2. */
+  backoffMs?: readonly number[];
+  /** Test-only seam to skip real sleeps in unit tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test-only seam to fake the curl-over-SSH runner. */
+  runProbe?: SingleProbeRunner;
+}): Promise<PaperclipApiProbeResult> {
+  const orderedCandidates = dedupeCandidates(
+    input.preferredCandidate ? [input.preferredCandidate] : [],
+    input.candidates,
   );
 
-  for (const candidate of uniqueCandidates) {
+  const timeoutMs = resolveProbeTimeoutMs(input.timeoutMs);
+  const curlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const retries = resolveProbeRetries(input.retries);
+  const backoff = resolveProbeBackoffMs(input.backoffMs);
+  const sleep = input.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const runProbe: SingleProbeRunner = input.runProbe ?? runSingleProbe;
+
+  const attempts: PaperclipApiProbeAttempt[] = [];
+
+  for (const candidate of orderedCandidates) {
     const healthUrl = new URL("/api/health", candidate).toString();
-    try {
-      await runSshCommand(
-        input.config,
-        `sh -lc ${shellQuote(`curl -fsS -m ${Math.max(1, Math.ceil((input.timeoutMs ?? 5_000) / 1000))} ${shellQuote(healthUrl)} >/dev/null`)}`,
-        { timeoutMs: input.timeoutMs ?? 5_000 },
-      );
-      return candidate;
-    } catch {
-      continue;
+    for (let attemptIndex = 0; attemptIndex < retries; attemptIndex++) {
+      const probe = await runProbe({ config: input.config, healthUrl, curlSeconds, timeoutMs });
+      // Classification rules:
+      //  - ok: HTTP 2xx with curl exit 0
+      //  - permanent: HTTP 3xx/4xx (except 408/425/429) — retrying won't help
+      //  - transient: anything else (5xx, 408/425/429, curl exit != 0, ssh
+      //    timeout / network blip). Default to transient on uncertainty so a
+      //    misclassified failure still gets the retry budget rather than
+      //    falling through to "all candidates dead" on the first hiccup.
+      const classification: PaperclipApiProbeAttempt["classification"] = (() => {
+        if (probe.exitCode === 0 && probe.httpStatus !== null) {
+          return classifyHttpStatus(probe.httpStatus);
+        }
+        return "transient";
+      })();
+
+      const ok = classification === "ok";
+      attempts.push({
+        candidate,
+        attempt: attemptIndex + 1,
+        ok,
+        exitCode: probe.exitCode,
+        httpStatus: probe.httpStatus,
+        durationMs: probe.durationMs,
+        stderrTail: probe.stderrTail,
+        classification,
+        error: ok
+          ? null
+          : probe.sshError ??
+            (probe.httpStatus !== null ? `HTTP ${probe.httpStatus}` : `curl exit ${probe.exitCode ?? "?"}`),
+      });
+
+      if (ok) {
+        return { url: candidate, attempts };
+      }
+
+      // Permanent failures — don't burn the retry budget on this candidate.
+      if (classification === "permanent") {
+        break;
+      }
+
+      const isLastAttempt = attemptIndex === retries - 1;
+      if (isLastAttempt) break;
+      const waitMs = backoff[Math.min(attemptIndex, backoff.length - 1)] ?? 0;
+      if (waitMs > 0) {
+        await sleep(waitMs);
+      }
     }
   }
 
-  return null;
+  return { url: null, attempts };
 }
 
 async function execFileText(
