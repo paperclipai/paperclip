@@ -8,7 +8,9 @@ import {
   assets,
   companies,
   companyMemberships,
+  costEvents,
   documents,
+  financeEvents,
   goals,
   heartbeatRuns,
   executionWorkspaces,
@@ -554,6 +556,26 @@ function decodeNumericHtmlEntity(digits: string, radix: 16 | 10): string | null 
   } catch {
     return null;
   }
+}
+
+/** Checks if a comment body contains a plain-text @mention of a multi-word agent name. */
+function containsPlainTextAgentMention(bodyLower: string, agentNameLower: string): boolean {
+  const needle = `@${agentNameLower}`;
+  let index = bodyLower.indexOf(needle);
+
+  while (index !== -1) {
+    const before = index > 0 ? bodyLower[index - 1] : "";
+    const afterIndex = index + needle.length;
+    const after = afterIndex < bodyLower.length ? bodyLower[afterIndex] : "";
+
+    const startsMention = before === "" || /[^a-z0-9_]/.test(before);
+    const endsMention = after === "" || /[\s,!?;:.)\]}>"'`]/.test(after);
+    if (startsMention && endsMention) return true;
+
+    index = bodyLower.indexOf(needle, index + 1);
+  }
+
+  return false;
 }
 
 /** Decodes HTML character references in a raw @mention capture so UI-encoded bodies match agent names. */
@@ -2691,6 +2713,14 @@ export function issueService(db: Db) {
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
 
+        // Clean up FK references that don't use CASCADE or SET NULL
+        await tx.delete(issueComments).where(eq(issueComments.issueId, id));
+        await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
+        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.issueId, id));
+        await tx.update(financeEvents).set({ issueId: null }).where(eq(financeEvents.issueId, id));
+        await tx.update(costEvents).set({ issueId: null }).where(eq(costEvents.issueId, id));
+        await tx.update(issues).set({ parentId: null }).where(eq(issues.parentId, id));
+
         const removedIssue = await tx
           .delete(issues)
           .where(eq(issues.id, id))
@@ -3494,9 +3524,14 @@ export function issueService(db: Db) {
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
+      const bodyLower = body.toLowerCase();
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
+        const agentNameLower = agent.name.toLowerCase();
+        if (
+          tokens.has(agentNameLower) ||
+          (agentNameLower.includes(" ") && containsPlainTextAgentMention(bodyLower, agentNameLower))
+        ) {
           resolved.add(agent.id);
         }
       }

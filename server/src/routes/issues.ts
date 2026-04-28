@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { issueExecutionDecisions } from "@paperclipai/db";
+import { issueExecutionDecisions, issueAttachments } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -929,9 +930,18 @@ export function issueRoutes(
       return;
     }
 
+    const assigneeAgentId = req.query.assigneeAgentId as string | undefined;
+    const includeRoutineExecutionsExplicit =
+      req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1";
+    const includeRoutineExecutionsImplicit =
+      req.query.includeRoutineExecutions === undefined &&
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      assigneeAgentId === req.actor.agentId;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
@@ -945,8 +955,7 @@ export function issueRoutes(
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
-      includeRoutineExecutions:
-        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+      includeRoutineExecutions: includeRoutineExecutionsExplicit || includeRoutineExecutionsImplicit,
       excludeRoutineExecutions:
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       q: req.query.q as string | undefined,

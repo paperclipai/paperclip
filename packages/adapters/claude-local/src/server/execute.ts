@@ -42,6 +42,7 @@ import {
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
+  isClaudeSilentFailure,
   isClaudeUnknownSessionError,
   isClaudeQuotaExhausted,
 } from "./parse.js";
@@ -705,6 +706,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const resolvedSummary = parsedStream.summary || asString(parsed.result, "");
     const parsedIsError = asBoolean(parsed.is_error, false);
     const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
     const errorMessage = failed
@@ -731,6 +733,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "claude_auth_required"
       : transientUpstream
       ? "claude_transient_upstream"
+      : isClaudeQuotaExhausted(parsed)
+      ? "provider_quota_exhausted"
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
@@ -739,6 +743,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
 
+    // Only check for silent failure when exit code indicates success.
+    let silentFailure: { reason: string } | null = null;
+    if (!failed) {
+      const check = isClaudeSilentFailure(parsed, resolvedSummary);
+      if (check.detected) {
+        silentFailure = { reason: check.reason! };
+      }
+    }
+
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
@@ -746,15 +759,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorCode: resolvedErrorCode,
       errorFamily: transientUpstream ? "transient_upstream" : null,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-      errorMessage:
-        (proc.exitCode ?? 0) === 0
-          ? null
-          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin
-        ? resolvedErrorCode 
-        : isClaudeQuotaExhausted(parsed)
-          ? "provider_quota_exhausted"
-          : null,
+      errorMessage,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -766,7 +771,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: mergedResultJson,
-      summary: parsedStream.summary || asString(parsed.result, ""),
+      summary: resolvedSummary,
+      silentFailure,
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };

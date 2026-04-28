@@ -90,6 +90,7 @@ export interface AdapterExecutionResult {
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
+  silentFailure?: { reason: string } | null;
   clearSession?: boolean;
   question?: {
     prompt: string;

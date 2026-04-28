@@ -13,6 +13,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
+import type { Issue } from "@paperclipai/shared";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 
@@ -103,7 +104,24 @@ export function Issues() {
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
-    onSuccess: () => {
+    onMutate: async ({ id, data }) => {
+      const listKey = queryKeys.issues.list(selectedCompanyId!);
+      await queryClient.cancelQueries({ queryKey: listKey });
+      const previousIssues = queryClient.getQueryData<Issue[]>(listKey);
+      if (previousIssues) {
+        queryClient.setQueryData(
+          listKey,
+          previousIssues.map((issue) => (issue.id === id ? { ...issue, ...data } : issue)),
+        );
+      }
+      return { previousIssues };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousIssues) {
+        queryClient.setQueryData(queryKeys.issues.list(selectedCompanyId!), context.previousIssues);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
     },
   });

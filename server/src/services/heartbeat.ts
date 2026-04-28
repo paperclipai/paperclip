@@ -16,6 +16,16 @@ import {
   type RunLivenessState,
 } from "@paperclipai/shared";
 import {
+  HEARTBEAT_POLICY_COOLDOWN_MAX_SEC,
+  HEARTBEAT_POLICY_COOLDOWN_MIN_SEC,
+  HEARTBEAT_POLICY_INTERVAL_MAX_SEC,
+  HEARTBEAT_POLICY_INTERVAL_MIN_SEC,
+  HEARTBEAT_POLICY_MAX_CONCURRENT_MAX,
+  HEARTBEAT_POLICY_MAX_CONCURRENT_MIN,
+  HEARTBEAT_PRESET_CONFIGS,
+  type HeartbeatPreset,
+} from "@paperclipai/shared/validators/agent";
+import {
   agents,
   agentRuntimeState,
   agentTaskSessions,
@@ -844,10 +854,67 @@ export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_C
   return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
 }
 
-function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
-  return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+function normalizeHeartbeatIntervalSec(value: unknown, fallback: number) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(HEARTBEAT_POLICY_INTERVAL_MIN_SEC, Math.min(HEARTBEAT_POLICY_INTERVAL_MAX_SEC, parsed));
+}
+
+function normalizeHeartbeatCooldownSec(value: unknown, fallback: number) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(HEARTBEAT_POLICY_COOLDOWN_MIN_SEC, Math.min(HEARTBEAT_POLICY_COOLDOWN_MAX_SEC, parsed));
+}
+
+function normalizeMaxConcurrentRuns(value: unknown, fallback: number = HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(HEARTBEAT_POLICY_MAX_CONCURRENT_MIN, Math.min(HEARTBEAT_POLICY_MAX_CONCURRENT_MAX, parsed));
+}
+
+type ParsedHeartbeatPolicy = {
+  preset: HeartbeatPreset | null;
+  enabled: boolean;
+  intervalSec: number;
+  wakeOnDemand: boolean;
+  cooldownSec: number;
+  maxConcurrentRuns: number;
+  idleAutoPauseAfter: number;
+};
+
+export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unknown): ParsedHeartbeatPolicy {
+  const runtimeConfig = parseObject(runtimeConfigValue);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
+  const presetCandidate = readNonEmptyString(heartbeat.preset);
+  const preset =
+    presetCandidate && presetCandidate in HEARTBEAT_PRESET_CONFIGS
+      ? (presetCandidate as HeartbeatPreset)
+      : null;
+  const presetConfig = preset ? HEARTBEAT_PRESET_CONFIGS[preset] : null;
+
+  const enabled = asBoolean(heartbeat.enabled, presetConfig?.enabled ?? true);
+  const intervalSec = normalizeHeartbeatIntervalSec(heartbeat.intervalSec, presetConfig?.intervalSec ?? 3600);
+  const wakeOnDemand = asBoolean(
+    heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation,
+    presetConfig?.wakeOnDemand ?? true,
+  );
+  const maxConcurrentRuns = normalizeMaxConcurrentRuns(
+    heartbeat.maxConcurrentRuns,
+    presetConfig?.maxConcurrentRuns ?? HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  );
+  const desiredCooldownSec = normalizeHeartbeatCooldownSec(heartbeat.cooldownSec, presetConfig?.cooldownSec ?? 0);
+  const cooldownSec = enabled ? Math.min(desiredCooldownSec, intervalSec) : desiredCooldownSec;
+  const idleAutoPauseAfter = Math.max(0, asNumber(heartbeat.idleAutoPauseAfter, 0));
+
+  return {
+    preset,
+    enabled,
+    intervalSec,
+    wakeOnDemand: enabled ? wakeOnDemand : true,
+    cooldownSec,
+    maxConcurrentRuns,
+    idleAutoPauseAfter,
+  };
 }
 
 interface WakeupOptions {
@@ -3688,15 +3755,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
-
-    return {
-      enabled: asBoolean(heartbeat.enabled, false),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
-    };
+    return resolveHeartbeatPolicyForRuntimeConfig(agent.runtimeConfig);
   }
 
   function issueRunPriorityRank(priority: string | null | undefined) {
@@ -4381,6 +4440,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
+    // Idle circuit breaker: track consecutive idle timer runs atomically via jsonb_set.
+    // A "timer idle" run = timer-triggered, succeeded, low output tokens.
+    const isTimerIdle =
+      run.invocationSource === "timer" &&
+      run.status === "succeeded" &&
+      outputTokens < 2000;
+    const idleCounterUpdate = isTimerIdle
+      ? sql`jsonb_set(
+          COALESCE(${agentRuntimeState.stateJson}::jsonb, '{}'::jsonb),
+          '{consecutiveTimerIdleRuns}',
+          to_jsonb(COALESCE((${agentRuntimeState.stateJson}::jsonb->>'consecutiveTimerIdleRuns')::int, 0) + 1)
+        )`
+      : sql`jsonb_set(
+          COALESCE(${agentRuntimeState.stateJson}::jsonb, '{}'::jsonb),
+          '{consecutiveTimerIdleRuns}',
+          '0'::jsonb
+        )`;
+
     await db
       .update(agentRuntimeState)
       .set({
@@ -4389,6 +4466,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         lastRunId: run.id,
         lastRunStatus: run.status,
         lastError: result.errorMessage ?? null,
+        stateJson: idleCounterUpdate,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -5415,13 +5493,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+      let silentFailureMessage: string | null = null;
       const latestRun = await getRun(run.id);
       if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        if (adapterResult.silentFailure) {
+          outcome = "failed";
+          silentFailureMessage = `Agent exited cleanly but performed no work: ${adapterResult.silentFailure.reason}`;
+        } else {
+          outcome = "succeeded";
+        }
       } else {
         outcome = "failed";
       }
@@ -5431,7 +5515,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                silentFailureMessage ?? adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               );
       const runErrorCode =
@@ -5440,7 +5524,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? "adapter_failed")
+              ? (silentFailureMessage ? "silent_failure" : adapterResult.errorCode ?? "adapter_failed")
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -6262,6 +6346,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+    if (policy.cooldownSec > 0 && agent.lastHeartbeatAt) {
+      const elapsedMs = Date.now() - new Date(agent.lastHeartbeatAt).getTime();
+      const cooldownMs = policy.cooldownSec * 1000;
+      if (elapsedMs < cooldownMs) {
+        const remainingSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
+        await writeSkippedRequest("heartbeat.cooldown.active");
+        logger.debug(
+          { agentId, source, cooldownSec: policy.cooldownSec, cooldownRemainingSec: remainingSec, preset: policy.preset },
+          "Wakeup skipped due to heartbeat cooldown",
+        );
+        return null;
+      }
     }
 
     if (issueId) {
@@ -7346,6 +7443,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -7356,6 +7454,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Idle circuit breaker: skip timer wakeup if agent has been idle for N consecutive runs.
+        // Event-based wakeups (assignments, mentions) are unaffected and reset the counter.
+        if (policy.idleAutoPauseAfter > 0) {
+          const runtimeState = await getRuntimeState(agent.id);
+          const stateJson = parseObject(runtimeState?.stateJson);
+          const consecutiveIdle = asNumber(stateJson.consecutiveTimerIdleRuns, 0);
+          if (consecutiveIdle >= policy.idleAutoPauseAfter) {
+            logger.debug(
+              { agentId: agent.id, agentName: agent.name, consecutiveIdle, threshold: policy.idleAutoPauseAfter },
+              "idle circuit breaker: skipping timer wakeup",
+            );
+            idleSkipped += 1;
+            skipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -7373,7 +7488,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),

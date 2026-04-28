@@ -1,6 +1,58 @@
 import type { Goal } from "@paperclipai/shared";
+import type { WorkspaceScanResult } from "../api/workspace";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
+
+export const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
+
+export const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
+
+- hire a founding engineer
+- write a hiring plan
+- break the roadmap into concrete tasks and start delegating work`;
+
+export function buildContextualTaskDescription(
+  scan: WorkspaceScanResult | null,
+): { title: string; description: string } {
+  if (!scan) {
+    return { title: DEFAULT_TASK_TITLE, description: DEFAULT_TASK_DESCRIPTION };
+  }
+
+  const projectLabel = scan.projectName ?? "this project";
+  const langLabel = scan.languages.length > 0
+    ? ` (${scan.languages.join(", ")})`
+    : "";
+
+  const lines: string[] = [
+    `You are the CEO. Your team is working on **${projectLabel}**${langLabel}.`,
+    "",
+    `The workspace is at \`${scan.cwd}\`.`,
+  ];
+
+  if (scan.configFiles.length > 0) {
+    lines.push(`Key files: ${scan.configFiles.join(", ")}.`);
+  }
+
+  if (scan.readmeExcerpt) {
+    const excerpt = scan.readmeExcerpt.length > 500
+      ? scan.readmeExcerpt.slice(0, 500) + "..."
+      : scan.readmeExcerpt;
+    lines.push("", "Project overview:", excerpt);
+  }
+
+  lines.push(
+    "",
+    "- Review the codebase and create an initial technical assessment",
+    "- Break the roadmap into concrete tasks based on the actual code",
+    "- Delegate work to your team",
+  );
+
+  const title = scan.projectName
+    ? `Review ${scan.projectName} and create a technical roadmap`
+    : "Review the codebase and create a technical roadmap";
+
+  return { title, description: lines.join("\n") };
+}
 
 function goalCreatedAt(goal: Goal) {
   const createdAt = goal.createdAt instanceof Date ? goal.createdAt : new Date(goal.createdAt);

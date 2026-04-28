@@ -38,6 +38,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { workspaceScanRoutes } from "./routes/workspace-scan.js";
 import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -348,6 +349,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     ),
   );
   api.use(adapterRoutes());
+  api.use(workspaceScanRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
