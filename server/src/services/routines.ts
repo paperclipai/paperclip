@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -365,21 +367,50 @@ interface CapacityBand {
 }
 
 async function readCapacityBand(companyId: string): Promise<CapacityBand> {
-  // Fail open if unable to read capacity. In production, this reads from ../../../USAGE.md
-  // For now, we assume green band as default. In implementation, parse USAGE.md for:
-  // all_models_weekly_usage_pct and cross-reference with SHUTDOWN_TIERS.md thresholds.
-  // Amber = >=70%, Orange = >=85%, Red = >=95%
   try {
-    // This would read from a runtime cache or file system in production
-    // For now, return green as safe default
-    return { band: "green", percentageUsed: 0 };
+    // Read USAGE.md from the company runtime directory
+    const usagePath = path.join(process.cwd(), "..", "..", "..", "USAGE.md");
+    
+    let content: string;
+    try {
+      content = readFileSync(usagePath, "utf-8");
+    } catch {
+      // If USAGE.md is not accessible, fail open (return green to allow routine fire)
+      return { band: "green", percentageUsed: 0 };
+    }
+
+    // Parse USAGE.md for all_models_weekly_usage_pct
+    const usageMatch = content.match(/all_models_weekly_usage_pct[:\s]+(\d+(?:\.\d+)?)/);
+    if (!usageMatch) {
+      // Field not found, fail open
+      return { band: "green", percentageUsed: 0 };
+    }
+
+    const percentageUsed = parseFloat(usageMatch[1]);
+    if (isNaN(percentageUsed)) {
+      return { band: "green", percentageUsed: 0 };
+    }
+
+    // Map percentage to band: Green < 70%, Amber 70-84%, Orange 85-94%, Red >= 95%
+    let band: CapacityBand["band"];
+    if (percentageUsed >= 95) {
+      band = "red";
+    } else if (percentageUsed >= 85) {
+      band = "orange";
+    } else if (percentageUsed >= 70) {
+      band = "amber";
+    } else {
+      band = "green";
+    }
+
+    return { band, percentageUsed };
   } catch {
-    // Fail open: allow routine to fire if we can't read capacity
+    // Unexpected error: fail open to avoid breaking routine scheduler
     return { band: "green", percentageUsed: 0 };
   }
 }
 
-async function shouldSkipRoutineFireDueToCapacity(routine: typeof routines.$inferSelect, capacityBand: CapacityBand): Promise<boolean> {
+function shouldSkipRoutineFireDueToCapacity(routine: typeof routines.$inferSelect, capacityBand: CapacityBand): boolean {
   // Skip fire if band >= Amber (70%) unless routine is capacity_critical
   if (capacityBand.percentageUsed >= 70 && !routine.capacityCritical) {
     return true;
@@ -1731,7 +1762,7 @@ export function routineService(
 
         // Check capacity before dispatching
         const capacityBand = await readCapacityBand(row.routine.companyId);
-        const shouldSkip = await shouldSkipRoutineFireDueToCapacity(row.routine, capacityBand);
+        const shouldSkip = shouldSkipRoutineFireDueToCapacity(row.routine, capacityBand);
 
         if (shouldSkip) {
           await createSkippedRoutineRun(db, {
