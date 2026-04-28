@@ -237,6 +237,57 @@ describe("Dark Factory bridge projection plugin", () => {
     expect(migration).toContain("ON dark_factory_bridge_poc.journal_cursors (company_id, issue_id)");
   });
 
+
+  it("uses bounded relative mock timestamps anchored to the current runtime clock", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const before = Date.now();
+    const summary = await harness.getData<{
+      projection: { lastUpdatedAt: string };
+      providerHealth: { lastUpdatedAt: string; lastSuccessAt: string | null; lastFailureAt: string | null; cooldownUntil: string | null };
+    }>("projection-summary", { companyId, issueId });
+    const after = Date.now();
+    const lowerBound = before - 2 * 60 * 60_000;
+    const upperBound = after + 2 * 60 * 60_000;
+
+    for (const value of [
+      summary.projection.lastUpdatedAt,
+      summary.providerHealth.lastUpdatedAt,
+      summary.providerHealth.lastSuccessAt,
+      summary.providerHealth.lastFailureAt,
+      summary.providerHealth.cooldownUntil,
+    ].filter((value): value is string => value !== null)) {
+      const timestamp = Date.parse(value);
+      expect(Number.isNaN(timestamp)).toBe(false);
+      expect(timestamp).toBeGreaterThanOrEqual(lowerBound);
+      expect(timestamp).toBeLessThanOrEqual(upperBound);
+    }
+
+    expect(summary.projection.lastUpdatedAt).not.toMatch(/^2026-01-15T/);
+  });
+
+  it("keeps migration namespace explicit and forbids authoritative journal or secret storage", async () => {
+    const migration = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../migrations/001_dark_factory_projection.sql", import.meta.url), "utf8"));
+
+    expect(migration).toContain("CREATE SCHEMA IF NOT EXISTS dark_factory_bridge_poc");
+    expect(migration).toContain("projection/cache/cursor/receipt data");
+    expect(migration).toMatch(/CHECK \(authoritative IS false\)/);
+    expect(migration).not.toMatch(/\b(api_key|password_hash|access_token|refresh_token|connection_string)\b/i);
+  });
+
+  it("documents Phase 2 as a product-branch draft without stale CI or HEAD claims", async () => {
+    const draft = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../../../../../docs/dark-factory/DARK_FACTORY_BRIDGE_PHASE2_PR_DRAFT.md", import.meta.url), "utf8"));
+
+    expect(draft).toContain("Branch: dark-factory-product-main");
+    expect(draft).toContain("Status: product-branch draft only");
+    expect(draft).not.toMatch(/Current remote HEAD/i);
+    expect(draft).not.toMatch(/CI passed/i);
+    expect(draft).toContain("fork 当前 CI 不可见或未触发");
+  });
+
   it("returns projection summary through getData for dashboard/detail tabs", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

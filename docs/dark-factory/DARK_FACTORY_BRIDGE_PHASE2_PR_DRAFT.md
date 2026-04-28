@@ -1,9 +1,8 @@
 PR Draft: Productize Dark Factory bridge plugin projection semantics
 
-Status: local draft only. This file is not a created PR.
+Status: product-branch draft only. This file is not a created PR.
 
 Branch: dark-factory-product-main
-Current remote HEAD after whitespace fix: 51c5f7f411a340c453fd0381f8d7faa12985d36e
 
 Summary
 
@@ -82,6 +81,7 @@ A redacted keyword classification scan was run over files changed versus origin/
 
 CI status
 
+- fork 当前 CI 不可见或未触发。
 - The fork branch currently has no visible GitHub Actions run.
 - gh run list for siyuah/paperclip on dark-factory-product-main returned an empty list.
 - Do not state that CI succeeded.

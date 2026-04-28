@@ -108,9 +108,8 @@ function stableInt(input: string, modulo: number): number {
 }
 
 function isoFromOffset(input: string, minutesOffset = 0): string {
-  const base = Date.UTC(2026, 0, 15, 12, 0, 0);
-  const offset = stableInt(input, 1440) + minutesOffset;
-  return new Date(base + offset * 60_000).toISOString();
+  const boundedMinutes = stableInt(input, 60) + minutesOffset;
+  return new Date(Date.now() - boundedMinutes * 60_000).toISOString();
 }
 
 function runId(issueId: string): string {

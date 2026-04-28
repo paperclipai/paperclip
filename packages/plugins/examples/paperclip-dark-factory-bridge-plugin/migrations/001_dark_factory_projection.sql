@@ -1,5 +1,7 @@
 -- Dark Factory bridge projection POC namespace tables.
 -- These tables intentionally store only derived projection/cache/cursor/receipt data.
+CREATE SCHEMA IF NOT EXISTS dark_factory_bridge_poc;
+
 -- They do not store secrets, tokens, provider credentials, or authoritative Dark Factory Journal records.
 -- The Dark Factory Journal remains the truth source; this plugin namespace is not a second truth source.
 
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS dark_factory_bridge_poc.projection_cache (
   stale_reason text,
   source text NOT NULL DEFAULT 'dark-factory-projection',
   truth_source text NOT NULL DEFAULT 'dark-factory-journal',
-  authoritative boolean NOT NULL DEFAULT false,
+  authoritative boolean NOT NULL DEFAULT false CHECK (authoritative IS false),
   last_updated_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
