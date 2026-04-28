@@ -54,6 +54,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
+  && curl https://cursor.com/install -fsS | bash \
+  && ln -sf /root/.local/bin/agent /usr/local/bin/agent \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 

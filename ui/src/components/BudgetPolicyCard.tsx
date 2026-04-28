@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
-import { cn, formatCents } from "../lib/utils";
+import { cn, formatCents, formatTokens } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,24 @@ function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
 }
 
+function tokensInputValue(value: number) {
+  return value <= 0 ? "" : String(Math.floor(value));
+}
+
 function parseDollarInput(value: string) {
   const normalized = value.trim();
   if (normalized.length === 0) return 0;
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.round(parsed * 100);
+}
+
+function parseTokensInput(value: string) {
+  const normalized = value.trim();
+  if (normalized.length === 0) return 0;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.floor(parsed);
 }
 
 function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
@@ -36,28 +48,36 @@ export function BudgetPolicyCard({
   variant = "card",
 }: {
   summary: BudgetPolicySummary;
-  onSave?: (amountCents: number) => void;
+  onSave?: (amount: number) => void;
   isSaving?: boolean;
   compact?: boolean;
   variant?: "card" | "plain";
 }) {
-  const [draftBudget, setDraftBudget] = useState(centsInputValue(summary.amount));
+  const isTokenMetric = summary.metric === "inference_tokens";
+  const [draftBudget, setDraftBudget] = useState(
+    isTokenMetric ? tokensInputValue(summary.amount) : centsInputValue(summary.amount),
+  );
 
   useEffect(() => {
-    setDraftBudget(centsInputValue(summary.amount));
-  }, [summary.amount]);
+    setDraftBudget(isTokenMetric ? tokensInputValue(summary.amount) : centsInputValue(summary.amount));
+  }, [summary.amount, isTokenMetric]);
 
-  const parsedDraft = parseDollarInput(draftBudget);
+  const parsedDraft = isTokenMetric ? parseTokensInput(draftBudget) : parseDollarInput(draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
   const progress = summary.amount > 0 ? Math.min(100, summary.utilizationPercent) : 0;
   const StatusIcon = summary.status === "hard_stop" ? ShieldAlert : summary.status === "warning" ? AlertTriangle : Wallet;
   const isPlain = variant === "plain";
 
+  const fmtObserved = isTokenMetric ? formatTokens : formatCents;
+  const fmtLimit = isTokenMetric ? formatTokens : formatCents;
+
+  const metricSubtitle = isTokenMetric ? "Inference tokens (input + cached + output)" : "Billed spend (USD)";
+
   const observedBudgetGrid = isPlain ? (
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
-        <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
+        <div className="mt-2 text-xl font-semibold tabular-nums">{fmtObserved(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
@@ -65,7 +85,7 @@ export function BudgetPolicyCard({
       <div>
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
+          {summary.amount > 0 ? fmtLimit(summary.amount) : "Disabled"}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
@@ -76,7 +96,7 @@ export function BudgetPolicyCard({
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
-        <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
+        <div className="mt-2 text-xl font-semibold tabular-nums">{fmtObserved(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
@@ -84,7 +104,7 @@ export function BudgetPolicyCard({
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
+          {summary.amount > 0 ? fmtLimit(summary.amount) : "Disabled"}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
@@ -97,7 +117,7 @@ export function BudgetPolicyCard({
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
+        <span>{summary.amount > 0 ? fmtLimit(summary.remainingAmount) : "Unlimited"}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
@@ -130,14 +150,14 @@ export function BudgetPolicyCard({
     <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3")}>
       <div className="min-w-0 flex-1">
         <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-          Budget (USD)
+          {isTokenMetric ? "Monthly token cap" : "Budget (USD)"}
         </label>
         <Input
           value={draftBudget}
           onChange={(event) => setDraftBudget(event.target.value)}
           className="mt-2"
-          inputMode="decimal"
-          placeholder="0.00"
+          inputMode={isTokenMetric ? "numeric" : "decimal"}
+          placeholder={isTokenMetric ? "e.g. 500000" : "0.00"}
         />
       </div>
       <Button
@@ -151,6 +171,10 @@ export function BudgetPolicyCard({
     </div>
   ) : null;
 
+  const validationHint = isTokenMetric
+    ? "Enter a valid non-negative whole number of tokens."
+    : "Enter a valid non-negative dollar amount.";
+
   if (isPlain) {
     return (
       <div className="space-y-6">
@@ -161,6 +185,7 @@ export function BudgetPolicyCard({
             </div>
             <div className="mt-2 text-xl font-semibold">{summary.scopeName}</div>
             <div className="mt-2 text-sm text-muted-foreground">{windowLabel(summary.windowKind)}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{metricSubtitle}</div>
           </div>
           <div
             className={cn(
@@ -182,7 +207,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{validationHint}</p>
         ) : null}
       </div>
     );
@@ -198,6 +223,7 @@ export function BudgetPolicyCard({
             </div>
             <CardTitle className="mt-1 text-base">{summary.scopeName}</CardTitle>
             <CardDescription className="mt-1">{windowLabel(summary.windowKind)}</CardDescription>
+            <CardDescription className="mt-0.5 text-xs">{metricSubtitle}</CardDescription>
           </div>
           <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em]", statusTone(summary.status))}>
             <StatusIcon className="h-3.5 w-3.5" />
@@ -211,7 +237,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{validationHint}</p>
         ) : null}
       </CardContent>
     </Card>

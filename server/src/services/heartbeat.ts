@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lte, notInArr
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  buildAgentMentionHref,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -126,6 +127,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { areContinuationLoopGuardCommentsSimilar } from "./continuation-loop-guard.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -1012,6 +1014,10 @@ function didAutomaticRecoveryFail(
     )
   );
 }
+
+const CONTINUATION_LOOP_GUARD_SKIP_REASON = "continuation_loop_guard.similar_recent_comment";
+const CONTINUATION_LOOP_GUARD_AUTO_BLOCK_REASON = "continuation_loop_guard.auto_blocked";
+const CONTINUATION_LOOP_GUARD_BLOCK_THRESHOLD = 3;
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
@@ -4473,8 +4479,757 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function getLatestIssueRun(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function hasActiveExecutionPath(companyId: string, issueId: string) {
+    const [run, deferredWake] = await Promise.all([
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    return Boolean(run || deferredWake);
+  }
+
+  async function getLatestSuccessfulIssueRun(companyId: string, issueId: string, agentId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.updatedAt), desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function hasExternalContinuationDelta(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    since: Date;
+  }) {
+    const [comment, issueActivity, documentRevision, relation, approvalApproved] = await Promise.all([
+      db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, input.companyId),
+            eq(issueComments.issueId, input.issueId),
+            gt(issueComments.createdAt, input.since),
+            or(
+              sql`${issueComments.authorUserId} is not null`,
+              and(
+                sql`${issueComments.authorAgentId} is not null`,
+                sql`${issueComments.authorAgentId} <> ${input.agentId}`,
+              ),
+            ),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, input.issueId),
+            gt(activityLog.createdAt, input.since),
+            inArray(activityLog.action, [
+              "issue.updated",
+              "issue.blockers_updated",
+              "issue.reviewers_updated",
+              "issue.approvers_updated",
+              "issue.approval_linked",
+              "issue.approval_unlinked",
+            ]),
+            or(
+              eq(activityLog.actorType, "user"),
+              and(
+                eq(activityLog.actorType, "agent"),
+                sql`${activityLog.agentId} <> ${input.agentId}`,
+              ),
+            ),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: documentRevisions.id })
+        .from(documentRevisions)
+        .innerJoin(issueDocuments, eq(documentRevisions.documentId, issueDocuments.documentId))
+        .where(
+          and(
+            eq(documentRevisions.companyId, input.companyId),
+            eq(issueDocuments.companyId, input.companyId),
+            eq(issueDocuments.issueId, input.issueId),
+            gt(documentRevisions.createdAt, input.since),
+            sql`${issueDocuments.key} != ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY}`,
+            or(
+              sql`${documentRevisions.createdByUserId} is not null`,
+              and(
+                sql`${documentRevisions.createdByAgentId} is not null`,
+                sql`${documentRevisions.createdByAgentId} <> ${input.agentId}`,
+              ),
+            ),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issueRelations.id })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, input.companyId),
+            or(eq(issueRelations.issueId, input.issueId), eq(issueRelations.relatedIssueId, input.issueId)),
+            gt(issueRelations.updatedAt, input.since),
+            or(
+              sql`${issueRelations.createdByUserId} is not null`,
+              and(
+                sql`${issueRelations.createdByAgentId} is not null`,
+                sql`${issueRelations.createdByAgentId} <> ${input.agentId}`,
+              ),
+            ),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.action, "approval.approved"),
+            gt(activityLog.createdAt, input.since),
+            sql`exists (
+              select 1
+              from jsonb_array_elements_text(coalesce(${activityLog.details}->'linkedIssueIds', '[]'::jsonb)) as approval_issue_ids(value)
+              where approval_issue_ids.value = ${input.issueId}
+            )`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    return Boolean(comment || issueActivity || documentRevision || relation || approvalApproved);
+  }
+
+  async function getRecentAgentIssueComments(companyId: string, issueId: string, agentId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        createdAt: issueComments.createdAt,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.authorAgentId, agentId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(2);
+  }
+
+  async function countPriorContinuationLoopGuardAttempts(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    since: Date;
+  }) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.status, "skipped"),
+          gt(agentWakeupRequests.createdAt, input.since),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+          sql`${agentWakeupRequests.reason} like 'continuation_loop_guard.%'`,
+        ),
+      );
+    return Number(row?.count ?? 0);
+  }
+
+  async function evaluateContinuationLoopGuard(input: {
+    issue: typeof issues.$inferSelect;
+    agent: typeof agents.$inferSelect;
+  }) {
+    const latestSuccessfulRun = await getLatestSuccessfulIssueRun(
+      input.issue.companyId,
+      input.issue.id,
+      input.agent.id,
+    );
+    if (!latestSuccessfulRun) {
+      return {
+        shouldSkip: false,
+        shouldBlock: false,
+        externalDeltaSignal: true,
+        similarRecentComment: false,
+        staleWakeAttempts: 0,
+        latestSuccessfulRunId: null,
+      };
+    }
+
+    const since =
+      latestSuccessfulRun.finishedAt ??
+      latestSuccessfulRun.updatedAt ??
+      latestSuccessfulRun.createdAt;
+    const externalDeltaSignal = await hasExternalContinuationDelta({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      agentId: input.agent.id,
+      since,
+    });
+    if (externalDeltaSignal) {
+      return {
+        shouldSkip: false,
+        shouldBlock: false,
+        externalDeltaSignal,
+        similarRecentComment: false,
+        staleWakeAttempts: 0,
+        latestSuccessfulRunId: latestSuccessfulRun.id,
+      };
+    }
+
+    const recentComments = await getRecentAgentIssueComments(input.issue.companyId, input.issue.id, input.agent.id);
+    const similarRecentComment =
+      recentComments.length >= 2 &&
+      areContinuationLoopGuardCommentsSimilar(recentComments[0]!.body, recentComments[1]!.body);
+    if (!similarRecentComment) {
+      return {
+        shouldSkip: false,
+        shouldBlock: false,
+        externalDeltaSignal,
+        similarRecentComment,
+        staleWakeAttempts: 0,
+        latestSuccessfulRunId: latestSuccessfulRun.id,
+      };
+    }
+
+    const staleWakeAttempts = await countPriorContinuationLoopGuardAttempts({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      agentId: input.agent.id,
+      since,
+    }).then((priorAttempts) => priorAttempts + 1);
+
+    return {
+      shouldSkip: true,
+      shouldBlock: staleWakeAttempts >= CONTINUATION_LOOP_GUARD_BLOCK_THRESHOLD,
+      externalDeltaSignal,
+      similarRecentComment,
+      staleWakeAttempts,
+      latestSuccessfulRunId: latestSuccessfulRun.id,
+    };
+  }
+
+  async function insertContinuationLoopGuardSkippedWake(input: {
+    issue: typeof issues.$inferSelect;
+    agentId: string;
+    staleWakeAttempts: number;
+    latestSuccessfulRunId: string | null;
+    reason?: string;
+  }) {
+    await db.insert(agentWakeupRequests).values({
+      companyId: input.issue.companyId,
+      agentId: input.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: input.reason ?? CONTINUATION_LOOP_GUARD_SKIP_REASON,
+      payload: {
+        issueId: input.issue.id,
+        staleWakeAttempts: input.staleWakeAttempts,
+        latestSuccessfulRunId: input.latestSuccessfulRunId,
+        loopGuard: {
+          externalDeltaSignal: false,
+          similarRecentComment: true,
+          staleWakeAttempts: input.staleWakeAttempts,
+          autoBlocked: input.reason === CONTINUATION_LOOP_GUARD_AUTO_BLOCK_REASON,
+        },
+      },
+      status: "skipped",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat.continuation_loop_guard",
+      finishedAt: new Date(),
+    });
+  }
+
+  async function buildContinuationLoopGuardAutoBlockedComment(input: {
+    agent: typeof agents.$inferSelect;
+    staleWakeAttempts: number;
+  }) {
+    const manager = input.agent.reportsTo
+      ? await db
+        .select({ id: agents.id, name: agents.name, icon: agents.icon })
+        .from(agents)
+        .where(and(eq(agents.companyId, input.agent.companyId), eq(agents.id, input.agent.reportsTo)))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const managerMention = manager
+      ? `\n\nManager: [@${manager.name}](${buildAgentMentionHref(manager.id, manager.icon)})`
+      : "";
+
+    return [
+      `Loop guard: ${input.staleWakeAttempts} continuation heartbeats without an external signal, auto-blocked.`,
+      "",
+      "Reason: `stale_no_external_signal`.",
+      "",
+      "To unblock: add a new external comment, change upstream status/blockers, or resolve a blocker.",
+      managerMention,
+    ].filter(Boolean).join("\n");
+  }
+
+  async function enqueueStrandedIssueRecovery(input: {
+    issueId: string;
+    agentId: string;
+    reason: "issue_assignment_recovery" | "issue_continuation_needed";
+    retryReason: "assignment_recovery" | "issue_continuation_needed";
+    source: string;
+    retryOfRunId?: string | null;
+  }) {
+    const queued = await enqueueWakeup(input.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: input.reason,
+      payload: {
+        issueId: input.issueId,
+        ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: input.issueId,
+        taskId: input.issueId,
+        wakeReason: input.reason,
+        retryReason: input.retryReason,
+        source: input.source,
+        ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+      },
+    });
+
+    if (queued && input.retryOfRunId) {
+      return db
+        .update(heartbeatRuns)
+        .set({
+          retryOfRunId: input.retryOfRunId,
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, queued.id))
+        .returning()
+        .then((rows) => rows[0] ?? queued);
+    }
+
+    return queued;
+  }
+
+  function formatIssueLinksForComment(relations: Array<{ identifier?: string | null }>) {
+    const identifiers = [
+      ...new Set(
+        relations
+          .map((relation) => relation.identifier)
+          .filter((identifier): identifier is string => Boolean(identifier)),
+      ),
+    ];
+    if (identifiers.length === 0) return "another open issue";
+    return identifiers
+      .slice(0, 5)
+      .map((identifier) => {
+        const prefix = identifier.split("-")[0] || "PAP";
+        return `[${identifier}](/${prefix}/issues/${identifier})`;
+      })
+      .join(", ");
+  }
+
+  async function reconcileUnassignedBlockingIssues() {
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        createdByAgentId: issues.createdByAgentId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.type, "blocks"),
+          inArray(issues.status, ["todo", "blocked"]),
+          isNull(issues.assigneeAgentId),
+          isNull(issues.assigneeUserId),
+          sql`${issues.createdByAgentId} is not null`,
+          sql`exists (
+            select 1
+            from issues blocked_issue
+            where blocked_issue.id = ${issueRelations.relatedIssueId}
+              and blocked_issue.company_id = ${issues.companyId}
+              and blocked_issue.status not in ('done', 'cancelled')
+          )`,
+        ),
+      );
+
+    let assigned = 0;
+    let skipped = 0;
+    const issueIds: string[] = [];
+    const seen = new Set<string>();
+
+    for (const candidate of candidates) {
+      if (seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+
+      const creatorAgentId = candidate.createdByAgentId;
+      if (!creatorAgentId) {
+        skipped += 1;
+        continue;
+      }
+      const creatorAgent = await getAgent(creatorAgentId);
+      if (
+        !creatorAgent ||
+        creatorAgent.companyId !== candidate.companyId ||
+        creatorAgent.status === "paused" ||
+        creatorAgent.status === "terminated" ||
+        creatorAgent.status === "pending_approval"
+      ) {
+        skipped += 1;
+        continue;
+      }
+
+      const relations = await issuesSvc.getRelationSummaries(candidate.id);
+      const blockingLinks = formatIssueLinksForComment(relations.blocks);
+      const updated = await issuesSvc.update(candidate.id, {
+        assigneeAgentId: creatorAgent.id,
+        assigneeUserId: null,
+      });
+      if (!updated) {
+        skipped += 1;
+        continue;
+      }
+
+      await issuesSvc.addComment(
+        candidate.id,
+        [
+          "## Assigned Orphan Blocker",
+          "",
+          `Paperclip found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
+          "",
+          "- Assigned it back to the agent that created the blocker.",
+          "- Next action: resolve this blocker or reassign it to the right owner.",
+        ].join("\n"),
+        {},
+      );
+
+      await logActivity(db, {
+        companyId: candidate.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: candidate.id,
+        details: {
+          identifier: candidate.identifier,
+          assigneeAgentId: creatorAgent.id,
+          source: "heartbeat.reconcile_unassigned_blocking_issue",
+        },
+      });
+
+      const queued = await enqueueWakeup(creatorAgent.id, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId: candidate.id,
+          mutation: "unassigned_blocker_recovery",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: candidate.id,
+          taskId: candidate.id,
+          wakeReason: "issue_assigned",
+          source: "issue.unassigned_blocker_recovery",
+        },
+      });
+
+      if (queued) {
+        assigned += 1;
+        issueIds.push(candidate.id);
+      } else {
+        skipped += 1;
+      }
+    }
+
+    return { assigned, skipped, issueIds };
+  }
+
+  async function escalateStrandedAssignedIssue(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: Pick<
+      typeof heartbeatRuns.$inferSelect,
+      "id" | "status" | "error" | "errorCode" | "contextSnapshot"
+    > | null;
+    comment: string;
+  }) {
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+    });
+    if (!updated) return null;
+
+    await issuesSvc.addComment(input.issue.id, input.comment, {});
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "blocked",
+        previousStatus: input.previousStatus,
+        source: "heartbeat.reconcile_stranded_assigned_issue",
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+      },
+    });
+
+    return updated;
+  }
+
   async function reconcileStrandedAssignedIssues() {
-    return recovery.reconcileStrandedAssignedIssues();
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          isNull(issues.assigneeUserId),
+          inArray(issues.status, ["todo", "in_progress"]),
+          sql`${issues.assigneeAgentId} is not null`,
+        ),
+      );
+
+    const result = {
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      orphanBlockersAssigned: 0,
+      escalated: 0,
+      skipped: 0,
+      issueIds: [] as string[],
+    };
+
+    for (const issue of candidates) {
+      const agentId = issue.assigneeAgentId;
+      if (!agentId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const agent = await getAgent(agentId);
+      if (!agent || agent.companyId !== issue.companyId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (issue.status === "todo") {
+        if (!latestRun || latestRun.status === "succeeded") {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment:
+              "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+              `but it still has no live execution path.${failureSummary ?? ""} ` +
+              "Moving it to `blocked` so it is visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        const queued = await enqueueStrandedIssueRecovery({
+          issueId: issue.id,
+          agentId,
+          reason: "issue_assignment_recovery",
+          retryReason: "assignment_recovery",
+          source: "issue.assignment_recovery",
+          retryOfRunId: latestRun.id,
+        });
+        if (queued) {
+          result.dispatchRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
+            "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      const loopGuard = await evaluateContinuationLoopGuard({ issue, agent });
+      if (loopGuard.shouldSkip) {
+        await insertContinuationLoopGuardSkippedWake({
+          issue,
+          agentId,
+          staleWakeAttempts: loopGuard.staleWakeAttempts,
+          latestSuccessfulRunId: loopGuard.latestSuccessfulRunId,
+          reason: loopGuard.shouldBlock
+            ? CONTINUATION_LOOP_GUARD_AUTO_BLOCK_REASON
+            : CONTINUATION_LOOP_GUARD_SKIP_REASON,
+        });
+
+        if (loopGuard.shouldBlock) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            comment: await buildContinuationLoopGuardAutoBlockedComment({
+              agent,
+              staleWakeAttempts: loopGuard.staleWakeAttempts,
+            }),
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: issue.id,
+        agentId,
+        reason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+        retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+      });
+      if (queued) {
+        result.continuationRequeued += 1;
+        result.issueIds.push(issue.id);
+      } else {
+        result.skipped += 1;
+      }
+    }
+
+    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
+    result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
+    result.skipped += orphanBlockerRecovery.skipped;
+    result.issueIds.push(...orphanBlockerRecovery.issueIds);
+
+    return result;
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -7235,6 +7990,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  async function getContinuationLoopGuardHeartbeatContext(issueId: string, companyId: string) {
+    const issueRow = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issueRow?.assigneeAgentId) return null;
+
+    const assignee = await getAgent(issueRow.assigneeAgentId);
+    if (!assignee) return null;
+
+    const evaluation = await evaluateContinuationLoopGuard({ issue: issueRow, agent: assignee });
+    return {
+      externalDeltaSignal: evaluation.externalDeltaSignal,
+      similarRecentComment: evaluation.similarRecentComment,
+      staleWakeAttempts: evaluation.staleWakeAttempts,
+      skipStaleContinuationRecovery: evaluation.shouldSkip,
+      autoBlockThresholdReached: evaluation.shouldBlock,
+      latestSuccessfulRunId: evaluation.latestSuccessfulRunId,
+    };
+  }
+
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
@@ -7485,6 +8262,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
     },
+
+    getContinuationLoopGuardHeartbeatContext,
 
     reconcileStrandedAssignedIssues,
 

@@ -9,6 +9,7 @@ import {
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
+import { costsApi } from "../api/costs";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
@@ -694,41 +695,96 @@ export function AgentDetail() {
     staleTime: 5_000,
   });
 
+  const utcMonthBounds = useMemo(() => {
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    return { from: start.toISOString(), to: end.toISOString() };
+  }, []);
+
+  const { data: agentMonthCostRows } = useQuery({
+    queryKey: queryKeys.costs(resolvedCompanyId ?? "__none__", utcMonthBounds.from, utcMonthBounds.to),
+    queryFn: () => costsApi.byAgent(resolvedCompanyId!, utcMonthBounds.from, utcMonthBounds.to),
+    enabled: !!resolvedCompanyId && !!agent?.id && activeView === "budget",
+    staleTime: 10_000,
+  });
+
   const assignedIssues = (allIssues ?? [])
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
-  const agentBudgetSummary = useMemo(() => {
-    const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
+  const agentBudgetSummaries = useMemo((): BudgetPolicySummary[] => {
+    if (!agent?.id || !resolvedCompanyId) return [];
+    const fromOverview = (budgetOverview?.policies ?? []).filter(
+      (policy) => policy.scopeType === "agent" && policy.scopeId === agent.id,
     );
-    if (matched) return matched;
-    const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
-    const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
-    return {
-      policyId: "",
-      companyId: resolvedCompanyId ?? "",
-      scopeType: "agent",
-      scopeId: agent?.id ?? routeAgentRef,
-      scopeName: agent?.name ?? "Agent",
-      metric: "billed_cents",
-      windowKind: "calendar_month_utc",
-      amount: budgetMonthlyCents,
-      observedAmount: spentMonthlyCents,
-      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
-      utilizationPercent:
-        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
-      warnPercent: 80,
-      hardStopEnabled: true,
-      notifyEnabled: true,
-      isActive: budgetMonthlyCents > 0,
-      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
-      paused: agent?.status === "paused",
-      pauseReason: agent?.pauseReason ?? null,
-      windowStart: new Date(),
-      windowEnd: new Date(),
-    } satisfies BudgetPolicySummary;
-  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
+    const hasBilledFromServer = fromOverview.some((p) => p.metric === "billed_cents");
+    const hasTokenFromServer = fromOverview.some((p) => p.metric === "inference_tokens");
+    const costRow = agentMonthCostRows?.find((r) => r.agentId === agent.id);
+    const monthlyTokens = costRow
+      ? costRow.inputTokens + costRow.cachedInputTokens + costRow.outputTokens
+      : 0;
+
+    const result: BudgetPolicySummary[] = [...fromOverview].sort((a, b) => {
+      if (a.metric === b.metric) return 0;
+      return a.metric === "billed_cents" ? -1 : 1;
+    });
+
+    if (!hasBilledFromServer) {
+      const budgetMonthlyCents = agent.budgetMonthlyCents ?? 0;
+      const spentMonthlyCents = agent.spentMonthlyCents ?? 0;
+      result.unshift({
+        policyId: "",
+        companyId: resolvedCompanyId,
+        scopeType: "agent",
+        scopeId: agent.id,
+        scopeName: agent.name ?? "Agent",
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: budgetMonthlyCents,
+        observedAmount: spentMonthlyCents,
+        remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
+        utilizationPercent:
+          budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: budgetMonthlyCents > 0,
+        status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+        paused: agent.status === "paused",
+        pauseReason: agent.pauseReason ?? null,
+        windowStart: new Date(),
+        windowEnd: new Date(),
+      });
+    }
+
+    if (!hasTokenFromServer) {
+      result.push({
+        policyId: "",
+        companyId: resolvedCompanyId,
+        scopeType: "agent",
+        scopeId: agent.id,
+        scopeName: agent.name ?? "Agent",
+        metric: "inference_tokens",
+        windowKind: "calendar_month_utc",
+        amount: 0,
+        observedAmount: monthlyTokens,
+        remainingAmount: 0,
+        utilizationPercent: 0,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: false,
+        status: "ok",
+        paused: agent.status === "paused",
+        pauseReason: agent.pauseReason ?? null,
+        windowStart: new Date(),
+        windowEnd: new Date(),
+      });
+    }
+
+    return result;
+  }, [agent, agentMonthCostRows, budgetOverview?.policies, resolvedCompanyId]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -802,6 +858,7 @@ export function AgentDetail() {
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "agent",
         scopeId: agent?.id ?? routeAgentRef,
+        metric: "billed_cents",
         amount,
         windowKind: "calendar_month_utc",
       }),
@@ -812,6 +869,23 @@ export function AgentDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.costs(resolvedCompanyId) });
+    },
+  });
+
+  const tokenBudgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "agent",
+        scopeId: agent!.id,
+        metric: "inference_tokens",
+        amount,
+        windowKind: "calendar_month_utc",
+      }),
+    onSuccess: () => {
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.costs(resolvedCompanyId) });
     },
   });
 
@@ -1145,13 +1219,24 @@ export function AgentDetail() {
       )}
 
       {activeView === "budget" && resolvedCompanyId ? (
-        <div className="max-w-3xl">
-          <BudgetPolicyCard
-            summary={agentBudgetSummary}
-            isSaving={budgetMutation.isPending}
-            onSave={(amount) => budgetMutation.mutate(amount)}
-            variant="plain"
-          />
+        <div className="max-w-3xl space-y-10">
+          {agentBudgetSummaries.map((summary) => (
+            <BudgetPolicyCard
+              key={`${summary.metric}-${summary.policyId || "default"}`}
+              summary={summary}
+              isSaving={
+                summary.metric === "inference_tokens"
+                  ? tokenBudgetMutation.isPending
+                  : budgetMutation.isPending
+              }
+              onSave={(amount) =>
+                summary.metric === "inference_tokens"
+                  ? tokenBudgetMutation.mutate(amount)
+                  : budgetMutation.mutate(amount)
+              }
+              variant="plain"
+            />
+          ))}
         </div>
       ) : null}
     </div>

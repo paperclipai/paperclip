@@ -151,6 +151,64 @@ describe("budgetService", () => {
     });
   });
 
+  it("creates a hard-stop when monthly inference tokens exceed a token budget", async () => {
+    const policy = {
+      id: "policy-tokens-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "inference_tokens",
+      windowKind: "calendar_month_utc",
+      amount: 1000,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 5000 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Budget Agent",
+        status: "running",
+        pauseReason: null,
+      }],
+    ]);
+    dbStub.queueInsert([{
+      id: "approval-tokens-1",
+      companyId: "company-1",
+      status: "pending",
+    }]);
+    dbStub.queueInsert([{
+      id: "incident-tokens-1",
+      companyId: "company-1",
+      policyId: "policy-tokens-1",
+      approvalId: "approval-tokens-1",
+    }]);
+    dbStub.queueUpdate([]);
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(dbStub.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policyId: "policy-tokens-1",
+        thresholdType: "hard",
+        amountLimit: 1000,
+        amountObserved: 5000,
+      }),
+    );
+    expect(cancelWorkForScope).toHaveBeenCalled();
+  });
+
   it("blocks new work when an agent hard-stop remains exceeded even if the agent is not paused yet", async () => {
     const agentPolicy = {
       id: "policy-agent-1",

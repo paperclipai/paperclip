@@ -1390,7 +1390,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { agentId, companyId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
     });
@@ -2055,37 +2055,95 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
   });
 
-  it("re-enqueues continuation when the latest automatic continuation succeeded without closing the issue", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+  it("skips stale continuation recovery when the latest successful continuation only produced similar self-comments", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       retryReason: "issue_continuation_needed",
     });
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: "I am still waiting for input before I can continue.",
+      },
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: "I am still waiting for input before I can continue.",
+      },
+    ]);
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
     expect(result.escalated).toBe(0);
-    expect(result.issueIds).toEqual([issueId]);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
-
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(0);
 
     const runs = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(2);
+    expect(runs).toHaveLength(1);
 
-    const retryRun = runs.find((row) => row.id !== runId);
-    expect(retryRun?.id).toBeTruthy();
-    expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("issue_continuation_needed");
-    if (retryRun) {
-      await waitForRunToSettle(heartbeat, retryRun.id);
-    }
+    const skippedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows.find((row) => row.reason === "continuation_loop_guard.similar_recent_comment") ?? null);
+    expect(skippedWake).toBeTruthy();
+    expect(skippedWake?.status).toBe("skipped");
+  });
+
+  it("auto-blocks after repeated similar self-comments without external deltas", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+    });
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: "I am still waiting for input before I can continue.",
+      },
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: "I am still waiting for input before I can continue.",
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const third = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(third.escalated).toBe(1);
+    expect(third.issueIds).toEqual([issueId]);
+
+    const blocked = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(blocked?.status).toBe("blocked");
+
+    const autoBlockedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) =>
+        rows.find((row) => row.reason === "continuation_loop_guard.auto_blocked") ?? null,
+      );
+    expect(autoBlockedWake).toBeTruthy();
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {

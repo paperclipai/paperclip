@@ -1050,6 +1050,16 @@ export function issueRoutes(
         currentExecutionWorkspacePromise,
       ]);
 
+    let continuationLoopGuardSnapshot = null;
+    if (issue.assigneeAgentId) {
+      try {
+        continuationLoopGuardSnapshot =
+          await heartbeat.getContinuationLoopGuardHeartbeatContext(issue.id, issue.companyId);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to compute continuation loop guard snapshot");
+      }
+    }
+
     res.json({
       issue: {
         id: issue.id,
@@ -1105,16 +1115,22 @@ export function issueRoutes(
         contentPath: withContentPath(a).contentPath,
         createdAt: a.createdAt,
       })),
-      continuationSummary: continuationSummary
-        ? {
-            key: continuationSummary.key,
-            title: continuationSummary.title,
-            body: continuationSummary.body,
-            latestRevisionId: continuationSummary.latestRevisionId,
-            latestRevisionNumber: continuationSummary.latestRevisionNumber,
-            updatedAt: continuationSummary.updatedAt,
-          }
-        : null,
+      continuationSummary:
+        !continuationSummary && !continuationLoopGuardSnapshot
+          ? null
+          : {
+              ...(continuationSummary
+                ? {
+                    key: continuationSummary.key,
+                    title: continuationSummary.title,
+                    body: continuationSummary.body,
+                    latestRevisionId: continuationSummary.latestRevisionId,
+                    latestRevisionNumber: continuationSummary.latestRevisionNumber,
+                    updatedAt: continuationSummary.updatedAt,
+                  }
+                : {}),
+              ...(continuationLoopGuardSnapshot ? { loopGuard: continuationLoopGuardSnapshot } : {}),
+            },
       currentExecutionWorkspace,
     });
   });
