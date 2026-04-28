@@ -23,6 +23,20 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 | `graceSec` | number | No | Grace period before force-kill |
 | `yolo` | boolean | No | Pass `--approval-mode yolo` for unattended operation |
 
+## Selectable Models
+
+The built-in dropdown lists model IDs verified against the Gemini CLI `--model` chat path:
+
+- `auto`
+- `gemini-3.1-pro-preview`
+- `gemini-3-flash-preview`
+- `gemini-3.1-flash-lite-preview`
+- `gemini-2.5-pro`
+- `gemini-2.5-flash`
+- `gemini-2.5-flash-lite`
+
+Image and video generation IDs are intentionally not selectable here. The standard Gemini CLI non-interactive chat route rejects `gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`, and `veo-3.1-generate-preview`; use a dedicated Gemini media-generation API or extension route for Nano Banana / Veo workflows instead.
+
 ## Session Persistence
 
 The adapter persists Gemini session IDs between heartbeats. On the next wake, it resumes the existing conversation with `--resume` so the agent retains context.

@@ -12,16 +12,11 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 }
 
 export const models = [
-  { id: "gpt-5.4", label: "gpt-5.4" },
+  { id: "gpt-5.5", label: "gpt-5.5 (supports image generation tools)" },
+  { id: "gpt-5.4", label: "gpt-5.4 (Fast mode supported)" },
+  { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
-  { id: "gpt-5", label: "gpt-5" },
-  { id: "o3", label: "o3" },
-  { id: "o4-mini", label: "o4-mini" },
-  { id: "gpt-5-mini", label: "gpt-5-mini" },
-  { id: "gpt-5-nano", label: "gpt-5-nano" },
-  { id: "o3-mini", label: "o3-mini" },
-  { id: "codex-mini-latest", label: "Codex Mini" },
 ];
 
 export const agentConfigurationDoc = `# codex_local agent configuration
@@ -55,5 +50,6 @@ Notes:
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is currently supported on GPT-5.4 only. When enabled, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- GPT Image 2 is available through Codex's image generation tool surface on supported ChatGPT subscription models such as gpt-5.5; do not configure \`gpt-image-2\` as the Codex \`--model\` value because the CLI rejects that direct chat model selection.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

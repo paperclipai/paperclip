@@ -28,6 +28,9 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("codex_local");
 
     expect(models).toEqual(codexFallbackModels);
+    expect(models.some((model) => model.id === "gpt-5.5")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-image-2")).toBe(false);
+    expect(models.some((model) => model.id === "codex-mini-latest")).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -49,7 +52,17 @@ describe("adapter model listing", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
-    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(first.some((model) => model.id === "gpt-5.5")).toBe(true);
+  });
+
+  it("returns Gemini CLI fallback models verified for the chat model flag", async () => {
+    const models = await listAdapterModels("gemini_local");
+
+    expect(models.some((model) => model.id === "gemini-3.1-pro-preview")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3-flash-preview")).toBe(true);
+    expect(models.some((model) => model.id === "gemini-3.1-flash-image-preview")).toBe(false);
+    expect(models.some((model) => model.id === "veo-3.1-generate-preview")).toBe(false);
+    expect(models.some((model) => model.id === "gemini-2.0-flash")).toBe(false);
   });
 
   it("falls back to static codex models when OpenAI model discovery fails", async () => {

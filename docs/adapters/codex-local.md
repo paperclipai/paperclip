@@ -23,6 +23,18 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
 
+## Selectable Models
+
+The built-in dropdown lists model IDs verified against the Codex CLI `--model` chat path for ChatGPT subscription auth:
+
+- `gpt-5.5` — flagship model; can invoke Codex image generation tools, including GPT Image 2, from the agent workflow.
+- `gpt-5.4` — supports Codex Fast mode.
+- `gpt-5.4-mini`
+- `gpt-5.3-codex`
+- `gpt-5.3-codex-spark`
+
+Do not set `model` to `gpt-image-2`. GPT Image 2 is a media-generation tool/model surface, not a Codex CLI chat model value; configure a supported Codex chat model such as `gpt-5.5` and let the agent call the image generation tool.
+
 ## Session Persistence
 
 Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
