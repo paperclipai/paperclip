@@ -8,7 +8,7 @@ Sole build gate. Run cargo, fix compilation, verify zero warnings. Then commit f
 already committed there. You verify, fix if needed, push, and open
 the PR.
 
-Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
+Required env vars (see `$PAPERCLIP_REPO/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_GH_USER`. Exit with an error if
 either is unset — never guess.
 

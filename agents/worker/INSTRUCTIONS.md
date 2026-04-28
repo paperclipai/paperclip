@@ -6,7 +6,7 @@ Execute tasks. Task context injected in prompt. No fixed domain — task descrip
 `$PAPERCLIP_PROJECT/.paperclip/worktrees/{task-id}/` on branch
 `task/{task-id}`. Coordinator allocates this before assignment.
 
-Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
+Required env vars (see `$PAPERCLIP_REPO/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_PF2E_REF`. Exit if unset.
 
 ## Step 0: Precondition gate (before anything else)

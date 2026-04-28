@@ -123,7 +123,7 @@ config (e.g. `~/.paperclip/env`) before launching agents:
 | Var | Purpose | Example shape |
 |---|---|---|
 | `PAPERCLIP_PROJECT` | Absolute path to the project repo agents work on | `/path/to/your-project` |
-| `PAPERCLIP_HOME` | Absolute path to this Paperclip checkout | `/path/to/paperclip` |
+| `PAPERCLIP_REPO` | Absolute path to this Paperclip checkout (the source code, not the data dir) | `/path/to/paperclip` |
 | `PAPERCLIP_PF2E_REF` | Absolute path to the PF2e Foundry data reference (Worker only, project-specific) | `/path/to/pf2e` |
 | `PAPERCLIP_GH_USER` | GitHub account with write access to the project repo | `<your-github-username>` |
 
@@ -177,7 +177,7 @@ launch:
 export PAPERCLIP_PROJECT="/absolute/path/to/your-project"
 
 # Path to this Paperclip checkout
-export PAPERCLIP_HOME="/absolute/path/to/paperclip"
+export PAPERCLIP_REPO="/absolute/path/to/paperclip"
 
 # Path to the PF2e Foundry data reference (Worker only, project-specific)
 export PAPERCLIP_PF2E_REF="/absolute/path/to/pf2e"
@@ -189,6 +189,14 @@ export PAPERCLIP_GH_USER="your-github-username"
 If any are unset when an agent launches, the agent exits immediately
 with a clear error rather than guessing — silent fallbacks are how
 dirty state leaks across machines (§3.5).
+
+**Do NOT export `PAPERCLIP_HOME`.** Paperclip's server uses
+`PAPERCLIP_HOME` internally as the *data* directory root (defaults to
+`~/.paperclip`, holding the postgres DB, instance configs, runtime
+state). If you set `PAPERCLIP_HOME` to your code checkout the server
+will spin up a fresh empty instance there, separate from your real
+data. The env var for the code checkout is `PAPERCLIP_REPO` —
+distinct name, no collision.
 
 ### 6.2 Shared cargo build cache
 
@@ -223,7 +231,7 @@ any other project this pipeline points at.
 # All four agent env vars set, no defaults
 $ env | grep ^PAPERCLIP_
 PAPERCLIP_PROJECT=/...
-PAPERCLIP_HOME=/...
+PAPERCLIP_REPO=/...
 PAPERCLIP_PF2E_REF=/...
 PAPERCLIP_GH_USER=...
 

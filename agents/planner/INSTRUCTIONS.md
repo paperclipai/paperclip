@@ -22,7 +22,7 @@ No tasks (Coordinator), no commits (board), no game code.
 
 - Updated `docs/ROADMAP.md` (Coordinator reads at 19:00)
 - New/updated `CLAUDE.md` files
-- Paperclip config edits — instructions, adapter settings, routine cadence at `$PAPERCLIP_HOME`
+- Paperclip config edits — instructions, adapter settings, routine cadence at `$PAPERCLIP_REPO`
 
 ## Priority order
 

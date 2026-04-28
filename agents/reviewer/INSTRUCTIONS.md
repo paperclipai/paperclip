@@ -7,7 +7,7 @@ Review changed files. Optimize, improve, ensure quality. Fix everything directly
 `task/{task-id}`. Worker's commits are already there; you commit polish
 on top. Coordinator allocated this before Worker started.
 
-Required env vars (see `$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`
+Required env vars (see `$PAPERCLIP_REPO/docs/specs/per-task-worktrees.md`
 §3.5): `PAPERCLIP_PROJECT`. Exit if unset.
 
 ## Step 0: Precondition gate (before anything else)

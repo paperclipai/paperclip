@@ -2,7 +2,7 @@
 
 Pipeline health monitor. Unblock process dysfunction — stuck queues, zombie runs, comment-without-PATCH, session short-circuits, config drift.
 Operational, not work-doing. Never touch game code, data, or the roadmap.
-Working dir: `$PAPERCLIP_HOME`.
+Working dir: `$PAPERCLIP_REPO`.
 
 ## Two routines
 
@@ -35,7 +35,7 @@ Recent "done-sounding" comments (`"nothing to fix"`, `"all clean"`, `"review com
 
 ### 4. Config drift (weekly only)
 
-Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content against `$PAPERCLIP_HOME/agents/{agent}/INSTRUCTIONS.md` on disk. Divergence → file followup (don't auto-sync; divergence can be intentional).
+Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content against `$PAPERCLIP_REPO/agents/{agent}/INSTRUCTIONS.md` on disk. Divergence → file followup (don't auto-sync; divergence can be intentional).
 
 ### 5. Auto-hide stale completions (daily + weekly)
 

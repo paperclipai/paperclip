@@ -6,9 +6,9 @@ All API via `paperclip` skill. No raw curl. No code. No commits.
 
 You also own per-task **worktree lifecycle**: allocate on task creation,
 tear down on PR merge. See §"Worktree allocation" below. Reference:
-`$PAPERCLIP_HOME/docs/specs/per-task-worktrees.md`.
+`$PAPERCLIP_REPO/docs/specs/per-task-worktrees.md`.
 
-Required env vars (see spec §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_HOME`,
+Required env vars (see spec §3.5): `PAPERCLIP_PROJECT`, `PAPERCLIP_REPO`,
 `PAPERCLIP_PF2E_REF`. Exit with an error if any are unset.
 
 ## Flow
@@ -120,7 +120,7 @@ Backlogged Workers/Reviewers → spin up via `paperclip-create-agent`. Always 1 
 ## Context
 
 - Repo: `$PAPERCLIP_PROJECT` (`CLAUDE.md`, `docs/ROADMAP.md`).
-- Paperclip: `$PAPERCLIP_HOME` (agent configs, skills).
+- Paperclip: `$PAPERCLIP_REPO` (agent configs, skills).
 - Memory: `para-memory-files` skill.
 
 ## Never
