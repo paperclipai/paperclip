@@ -783,6 +783,55 @@ describe("IssuesList", () => {
     });
   });
 
+  it("loads list issues from the server when status filters are applied", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ statuses: ["blocked"] }),
+    );
+
+    const staleLocalIssue = createIssue({
+      id: "issue-local",
+      title: "Local todo issue",
+      status: "todo",
+    });
+    const blockedServerIssue = createIssue({
+      id: "issue-server-blocked",
+      title: "Blocked server issue outside default slice",
+      status: "blocked",
+    });
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "blocked") return Promise.resolve([blockedServerIssue]);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[staleLocalIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        enableRoutineVisibilityFilter
+        remoteStatusFiltering
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        status: "blocked",
+        includeRoutineExecutions: true,
+      }));
+      expect(container.textContent).toContain("Blocked server issue outside default slice");
+      expect(container.textContent).not.toContain("Local todo issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows a refinement hint when a board column hits its server cap", async () => {
     localStorage.setItem(
       "paperclip:test-issues:company-1",

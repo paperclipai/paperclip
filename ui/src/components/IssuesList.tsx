@@ -70,6 +70,7 @@ import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@pap
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
+const ISSUE_STATUS_FILTER_RESULT_LIMIT = 1000;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_ROW_RENDER_BATCH_DELAY_MS = 0;
@@ -306,6 +307,7 @@ interface IssuesListProps {
   defaultSortField?: IssueSortField;
   showProgressSummary?: boolean;
   enableRoutineVisibilityFilter?: boolean;
+  remoteStatusFiltering?: boolean;
   mutedIssueIds?: Set<string>;
   issueBadgeById?: Map<string, string>;
   onSearchChange?: (search: string) => void;
@@ -475,6 +477,7 @@ export function IssuesList({
   defaultSortField,
   showProgressSummary = false,
   enableRoutineVisibilityFilter = false,
+  remoteStatusFiltering = false,
   mutedIssueIds,
   issueBadgeById,
   onSearchChange,
@@ -574,6 +577,34 @@ export function IssuesList({
       }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
+  });
+  const remoteStatusFilter = viewState.statuses.length > 0 ? viewState.statuses.join(",") : null;
+  const { data: statusFilteredIssues = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
+      "status-filter",
+      remoteStatusFilter ?? "__all-statuses__",
+      projectId ?? "__all-projects__",
+      searchFilters ?? {},
+      ISSUE_STATUS_FILTER_RESULT_LIMIT,
+      enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+    ],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        ...searchFilters,
+        projectId,
+        status: remoteStatusFilter ?? undefined,
+        limit: ISSUE_STATUS_FILTER_RESULT_LIMIT,
+        ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+      }),
+    enabled:
+      !!selectedCompanyId
+      && remoteStatusFiltering
+      && viewState.viewMode === "list"
+      && !searchWithinLoadedIssues
+      && normalizedIssueSearch.length === 0
+      && remoteStatusFilter != null,
+    placeholderData: (previousData: Issue[] | undefined) => previousData,
   });
   const boardIssueQueries = useQueries({
     queries: boardIssueStatuses.map((status) => ({
@@ -813,7 +844,16 @@ export function IssuesList({
 
   const filtered = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+    const useRemoteStatusFilter =
+      remoteStatusFiltering
+      && viewState.viewMode === "list"
+      && !searchWithinLoadedIssues
+      && normalizedIssueSearch.length === 0
+      && viewState.statuses.length > 0;
+    const sourceIssues = boardIssues
+      ?? (useRemoteSearch
+        ? searchedIssues
+        : (useRemoteStatusFilter ? statusFilteredIssues : issues));
     const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
       : sourceIssues;
@@ -830,7 +870,9 @@ export function IssuesList({
     boardIssues,
     issues,
     searchedIssues,
+    statusFilteredIssues,
     searchWithinLoadedIssues,
+    remoteStatusFiltering,
     viewState,
     normalizedIssueSearch,
     currentUserId,
