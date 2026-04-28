@@ -963,31 +963,91 @@ export function routineService(
           }
 
           const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: existingIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
+          if (!existingIssue) {
+            // Constraint hit but no live execution found: the prior routine_execution
+            // issue is orphaned (its heartbeat run terminated without reconciling the
+            // issue — typically after a server SIGKILL or an adapter timeout).
+            // Look up the orphan directly, hide it, and retry the create so the
+            // routine can self-heal instead of failing every subsequent dispatch.
+            const orphan = await txDb
+              .select({
+                id: issues.id,
+                identifier: issues.identifier,
+                status: issues.status,
+                updatedAt: issues.updatedAt,
+              })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, input.routine.companyId),
+                  eq(issues.originKind, "routine_execution"),
+                  eq(issues.originId, input.routine.id),
+                  isNull(issues.hiddenAt),
+                ),
+              )
+              .orderBy(desc(issues.updatedAt))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (!orphan) throw error;
+            logger.warn(
+              {
+                routineId: input.routine.id,
+                orphanIssueId: orphan.id,
+                orphanIdentifier: orphan.identifier,
+                orphanStatus: orphan.status,
+                orphanUpdatedAt: orphan.updatedAt,
+              },
+              "auto-hiding orphaned routine_execution issue with no live heartbeat run",
+            );
+            await txDb
+              .update(issues)
+              .set({ hiddenAt: new Date() })
+              .where(eq(issues.id, orphan.id));
+            createdIssue = await issueSvc.create(input.routine.companyId, {
+              projectId,
+              goalId: input.routine.goalId,
+              parentId: input.routine.parentIssueId,
+              title,
+              description,
+              status: "todo",
+              priority: input.routine.priority,
+              assigneeAgentId,
+              createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
+              createdByUserId: manualRunnerUserId,
+              originKind: "routine_execution",
+              originId: input.routine.id,
+              originRunId: createdRun.id,
+              originFingerprint: dispatchFingerprint,
+              executionWorkspaceId: input.executionWorkspaceId ?? null,
+              executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+              executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
             });
+          } else {
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            if (manualRunnerUserId) {
+              await touchIssueForUserInbox(txDb, {
+                companyId: input.routine.companyId,
+                issueId: existingIssue.id,
+                userId: manualRunnerUserId,
+                touchedAt: triggeredAt,
+              });
+            }
+            const updated = await finalizeRun(createdRun.id, {
+              status,
+              linkedIssueId: existingIssue.id,
+              coalescedIntoRunId: existingIssue.originRunId,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status,
+              issueId: existingIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
           }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
