@@ -1,12 +1,25 @@
-# Paperclip + Hermes 本地工作流（已在本机验证）
+# Paperclip + Hermes 本地工作流（可复现）
 
-> 环境：`/Users/neo/projects/paperclip` + `/Users/neo/projects/hermes-paperclip-adapter`
+> 本文档使用占位变量：`PAPERCLIP_REPO=<path-to-paperclip>`、`HERMES_ADAPTER_REPO=<path-to-hermes-paperclip-adapter>`。
 >
-> 本文档记录一套在这台机器上已经实跑成功的最小可用工作流：启动 Paperclip、本地接入 Hermes、创建 agent、下发 issue、观察执行结果。
+> 本文档记录一套可复现的最小可用工作流：启动 Paperclip、本地接入 Hermes、创建 agent、下发 issue、观察执行结果。
 
 ---
 
-## 0. 新增：一键入口
+## 0. 路径约定
+
+以下命令使用环境变量表示本地路径，避免写死任何个人机器目录：
+
+```bash
+export PAPERCLIP_REPO="<path-to-paperclip>"
+export HERMES_ADAPTER_REPO="<path-to-hermes-paperclip-adapter>"
+export PAPERCLIP_CONFIG="$PAPERCLIP_REPO/.paperclip/config.json"
+export PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-paperclip-local}"
+export PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE:-http://127.0.0.1:3100/api}"
+cd "$PAPERCLIP_REPO"
+```
+
+## 0.1 新增：一键入口
 
 在 `paperclip` repo 根目录现在可直接运行：
 
@@ -84,9 +97,9 @@ pnpm hermes:demo -- \
 
 ## 1. 当前本机已验证的前提
 
-- Paperclip 仓库：`/Users/neo/projects/paperclip`
-- Hermes adapter 仓库：`/Users/neo/projects/hermes-paperclip-adapter`
-- Paperclip config：`/Users/neo/projects/paperclip/.paperclip/config.json`
+- Paperclip 仓库：`$PAPERCLIP_REPO`
+- Hermes adapter 仓库：`$HERMES_ADAPTER_REPO`
+- Paperclip config：`$PAPERCLIP_CONFIG`
 - Paperclip instance id：`paperclip-local`
 - Paperclip API / UI：`http://127.0.0.1:3100`
 - Hermes CLI：本机可运行
@@ -99,8 +112,8 @@ pnpm hermes:demo -- \
 在 Paperclip repo 根目录运行：
 
 ```bash
-cd /Users/neo/projects/paperclip
-PAPERCLIP_CONFIG=/Users/neo/projects/paperclip/.paperclip/config.json \
+cd "$PAPERCLIP_REPO"
+PAPERCLIP_CONFIG="$PAPERCLIP_CONFIG" \
 PAPERCLIP_INSTANCE_ID=paperclip-local \
 node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts run
 ```
@@ -113,7 +126,7 @@ node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts run
 快速检查：
 
 ```bash
-curl -sS http://127.0.0.1:3100/api/adapters
+curl -sS "$PAPERCLIP_API_BASE/adapters"
 ```
 
 预期能看到：
@@ -133,7 +146,7 @@ curl -sS http://127.0.0.1:3100/api/adapters
 ### 3.1 重新 build adapter
 
 ```bash
-cd /Users/neo/projects/hermes-paperclip-adapter
+cd "$HERMES_ADAPTER_REPO"
 export PATH="$HOME/.bun/bin:$PATH"
 npm run build
 ```
@@ -159,15 +172,17 @@ curl -sS "$PAPERCLIP_API_BASE/adapters"
 ### 推荐：直接运行一键验证
 
 ```bash
-cd /Users/neo/projects/paperclip
+cd "$PAPERCLIP_REPO"
 pnpm hermes:verify
 ```
 
 ### 底层 API 等价命令
 
 ```bash
+COMPANY_ID="<your-company-id>"
+
 curl -sS -X POST \
-  http://127.0.0.1:3100/api/companies/test-co/adapters/hermes_local/test-environment \
+  "$PAPERCLIP_API_BASE/companies/$COMPANY_ID/adapters/hermes_local/test-environment" \
   -H 'Content-Type: application/json' \
   -d '{"adapterConfig":{}}'
 ```
@@ -190,7 +205,7 @@ curl -sS -X POST \
 如果还没有测试 company，可以用：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:3100/api/companies \
+curl -sS -X POST "$PAPERCLIP_API_BASE/companies" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "Hermes Paperclip Test Co",
@@ -202,7 +217,7 @@ curl -sS -X POST http://127.0.0.1:3100/api/companies \
 列出 company：
 
 ```bash
-curl -sS http://127.0.0.1:3100/api/companies
+curl -sS "$PAPERCLIP_API_BASE/companies"
 ```
 
 ---
@@ -229,14 +244,15 @@ COMPANY_ID="<your-company-id>"
 
 python - <<'PY' >/tmp/hermes-local-agent.filled.json
 import json
+import os
 from pathlib import Path
-p = Path('/Users/neo/projects/paperclip/doc/templates/hermes-local-agent.json')
+p = Path('doc/templates/hermes-local-agent.json')
 data = json.loads(p.read_text())
-data['adapterConfig']['paperclipApiUrl'] = 'http://127.0.0.1:3100/api'
+data['adapterConfig']['paperclipApiUrl'] = os.environ.get('PAPERCLIP_API_BASE', 'http://127.0.0.1:3100/api')
 print(json.dumps(data))
 PY
 
-curl -sS -X POST "http://127.0.0.1:3100/api/companies/$COMPANY_ID/agents" \
+curl -sS -X POST "$PAPERCLIP_API_BASE/companies/$COMPANY_ID/agents" \
   -H 'Content-Type: application/json' \
   --data @/tmp/hermes-local-agent.filled.json
 ```
@@ -244,7 +260,7 @@ curl -sS -X POST "http://127.0.0.1:3100/api/companies/$COMPANY_ID/agents" \
 列出 agent：
 
 ```bash
-curl -sS "http://127.0.0.1:3100/api/companies/$COMPANY_ID/agents"
+curl -sS "$PAPERCLIP_API_BASE/companies/$COMPANY_ID/agents"
 ```
 
 ---
@@ -254,14 +270,14 @@ curl -sS "http://127.0.0.1:3100/api/companies/$COMPANY_ID/agents"
 ### 推荐：直接运行一键 demo
 
 ```bash
-cd /Users/neo/projects/paperclip
+cd "$PAPERCLIP_REPO"
 pnpm hermes:demo
 ```
 
 ### 回归模式：复用已有 company / agent
 
 ```bash
-cd /Users/neo/projects/paperclip
+cd "$PAPERCLIP_REPO"
 pnpm hermes:demo -- \
   --company-id <company-id> \
   --agent-id <agent-id> \
@@ -281,7 +297,7 @@ AGENT_ID="<your-agent-id>"
 python - <<'PY'
 import json
 from pathlib import Path
-p = Path('/Users/neo/projects/paperclip/doc/templates/hermes-demo-issue.json')
+p = Path('doc/templates/hermes-demo-issue.json')
 data = json.loads(p.read_text())
 data['assigneeAgentId'] = 'REPLACE_AGENT_ID'
 print(json.dumps(data))
@@ -291,7 +307,7 @@ PY
 更直接的方式：把模板里的 `REPLACE_AGENT_ID` 替换掉后执行：
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:3100/api/companies/$COMPANY_ID/issues" \
+curl -sS -X POST "$PAPERCLIP_API_BASE/companies/$COMPANY_ID/issues" \
   -H 'Content-Type: application/json' \
   --data @/path/to/hermes-demo-issue.filled.json
 ```
@@ -312,26 +328,26 @@ curl -sS -X POST "http://127.0.0.1:3100/api/companies/$COMPANY_ID/issues" \
 ### 看 issue 列表
 
 ```bash
-curl -sS "http://127.0.0.1:3100/api/companies/$COMPANY_ID/issues"
+curl -sS "$PAPERCLIP_API_BASE/companies/$COMPANY_ID/issues"
 ```
 
 ### 看某个 issue 详情
 
 ```bash
 ISSUE_ID="<issue-id>"
-curl -sS "http://127.0.0.1:3100/api/issues/$ISSUE_ID"
+curl -sS "$PAPERCLIP_API_BASE/issues/$ISSUE_ID"
 ```
 
 ### 看 comments
 
 ```bash
-curl -sS "http://127.0.0.1:3100/api/issues/$ISSUE_ID/comments"
+curl -sS "$PAPERCLIP_API_BASE/issues/$ISSUE_ID/comments"
 ```
 
 ### 看 heartbeat runs
 
 ```bash
-curl -sS "http://127.0.0.1:3100/api/companies/$COMPANY_ID/heartbeat-runs?agentId=$AGENT_ID&limit=20"
+curl -sS "$PAPERCLIP_API_BASE/companies/$COMPANY_ID/heartbeat-runs?agentId=$AGENT_ID&limit=20"
 ```
 
 ### 看某次 run 的详情 / 事件 / 日志
@@ -339,9 +355,9 @@ curl -sS "http://127.0.0.1:3100/api/companies/$COMPANY_ID/heartbeat-runs?agentId
 ```bash
 RUN_ID="<run-id>"
 
-curl -sS "http://127.0.0.1:3100/api/heartbeat-runs/$RUN_ID"
-curl -sS "http://127.0.0.1:3100/api/heartbeat-runs/$RUN_ID/events"
-curl -sS "http://127.0.0.1:3100/api/heartbeat-runs/$RUN_ID/log"
+curl -sS "$PAPERCLIP_API_BASE/heartbeat-runs/$RUN_ID"
+curl -sS "$PAPERCLIP_API_BASE/heartbeat-runs/$RUN_ID/events"
+curl -sS "$PAPERCLIP_API_BASE/heartbeat-runs/$RUN_ID/log"
 ```
 
 ---

@@ -52,7 +52,7 @@
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
     "hermes:doctor": "node cli/node_modules/tsx/dist/cli.mjs scripts/hermes-local-doctor.ts",
-    "hermes:test-local": "node cli/node_modules/tsx/dist/cli.mjs scripts/__tests__/hermes-local-common.test.ts"
+    "hermes:test-local": "pnpm exec vitest run --project scripts"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

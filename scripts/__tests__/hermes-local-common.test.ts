@@ -1,8 +1,10 @@
-import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 
 import {
   buildLocalDoctorReport,
   classifyLocalDoctorReport,
+  formatPaperclipStartCommand,
+  summarizeLaunchAgents,
   type LocalDoctorInput,
 } from "../hermes-local-common.ts";
 
@@ -28,7 +30,7 @@ const baseInput: LocalDoctorInput = {
     ],
   },
   automation: {
-    launchAgents: ["com.neo.paperclip.service", "com.neo.paperclip.healthcheck"],
+    launchAgents: ["io.paperclip.local.service.plist", "io.paperclip.local.healthcheck.plist"],
     serviceLoaded: true,
     healthcheckLoaded: true,
     patchRefreshLoaded: false,
@@ -36,18 +38,52 @@ const baseInput: LocalDoctorInput = {
   },
 };
 
-{
-  const report = buildLocalDoctorReport(baseInput);
-  assert.equal(report.status, "warn");
-  assert.equal(report.items.find((item) => item.id === "hermes_no_api_keys")?.severity, "warn");
-  assert.match(report.summary, /可用但有非阻塞 warning/);
-}
+describe("Hermes local doctor report", () => {
+  it("keeps missing LLM API keys as a non-blocking warning", () => {
+    const report = buildLocalDoctorReport(baseInput);
 
-{
-  const report = buildLocalDoctorReport({ ...baseInput, adapters: [] });
-  assert.equal(report.status, "fail");
-  assert.equal(report.items.find((item) => item.id === "hermes_adapter")?.severity, "fail");
-}
+    expect(report.status).toBe("warn");
+    expect(report.items.find((item) => item.id === "hermes_no_api_keys")?.severity).toBe("warn");
+    expect(report.summary).toMatch(/可用但有非阻塞 warning/);
+  });
 
-assert.equal(classifyLocalDoctorReport(["pass", "warn", "fail"]), "fail");
-console.log("hermes-local-common tests passed");
+  it("fails when hermes_local is not registered", () => {
+    const report = buildLocalDoctorReport({ ...baseInput, adapters: [] });
+
+    expect(report.status).toBe("fail");
+    expect(report.items.find((item) => item.id === "hermes_adapter")?.severity).toBe("fail");
+  });
+
+  it("classifies mixed severities by the highest severity", () => {
+    expect(classifyLocalDoctorReport(["pass", "warn", "fail"])).toBe("fail");
+  });
+});
+
+describe("portable local workflow helpers", () => {
+  it("formats the start command from the caller repo instead of a personal machine path", () => {
+    const command = formatPaperclipStartCommand({
+      repoRoot: "/tmp/example paperclip",
+      configPath: "/tmp/example paperclip/.paperclip/config.json",
+      instanceId: "paperclip-local",
+    });
+
+    expect(command).toContain("cd '/tmp/example paperclip'");
+    expect(command).toContain("PAPERCLIP_CONFIG='/tmp/example paperclip/.paperclip/config.json'");
+    expect(command).not.toContain("/Users/");
+  });
+
+  it("detects Paperclip LaunchAgents without requiring personal reverse-DNS names", () => {
+    const summary = summarizeLaunchAgents([
+      "io.paperclip.local.service.plist",
+      "io.paperclip.local.healthcheck.plist",
+      "io.paperclip.local.patch-refresh.plist",
+      "io.paperclip.local.upstream-upgrade.plist",
+    ]);
+
+    expect(summary.launchAgents).toHaveLength(4);
+    expect(summary.serviceLoaded).toBe(true);
+    expect(summary.healthcheckLoaded).toBe(true);
+    expect(summary.patchRefreshLoaded).toBe(true);
+    expect(summary.upstreamUpgradeLoaded).toBe(true);
+  });
+});

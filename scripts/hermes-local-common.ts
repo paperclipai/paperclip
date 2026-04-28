@@ -12,12 +12,32 @@ const FALLBACK_API_BASE = "http://127.0.0.1:3100/api";
 const DEFAULT_CONFIG_PATH = path.resolve(process.cwd(), ".paperclip/config.json");
 const DEFAULT_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID ?? "paperclip-local";
 const DEFAULT_AUTH_STORE_PATH = path.join(os.homedir(), ".paperclip", "auth.json");
-const DEFAULT_PAPERCLIP_START_COMMAND = [
-  "cd /Users/neo/projects/paperclip",
-  `PAPERCLIP_CONFIG=${process.env.PAPERCLIP_CONFIG ?? DEFAULT_CONFIG_PATH} \\`,
-  `PAPERCLIP_INSTANCE_ID=${DEFAULT_INSTANCE_ID} \\`,
-  "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts run",
-].join("\n");
+const DEFAULT_REPO_ROOT = process.env.PAPERCLIP_REPO_ROOT ?? process.cwd();
+
+export interface PaperclipStartCommandOptions {
+  repoRoot?: string;
+  configPath?: string;
+  instanceId?: string;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function formatPaperclipStartCommand(options: PaperclipStartCommandOptions = {}): string {
+  const repoRoot = options.repoRoot ?? DEFAULT_REPO_ROOT;
+  const configPath = options.configPath ?? process.env.PAPERCLIP_CONFIG ?? path.join(repoRoot, ".paperclip", "config.json");
+  const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
+
+  return [
+    `cd ${shellQuote(repoRoot)}`,
+    `PAPERCLIP_CONFIG=${shellQuote(configPath)} \\`,
+    `PAPERCLIP_INSTANCE_ID=${shellQuote(instanceId)} \\`,
+    "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts run",
+  ].join("\n");
+}
+
+const DEFAULT_PAPERCLIP_START_COMMAND = formatPaperclipStartCommand();
 
 export const API_BASE = resolveApiBase();
 export const API_ORIGIN = resolveApiOrigin(API_BASE);
@@ -126,6 +146,31 @@ export interface LocalDoctorAutomationSummary {
   healthcheckLoaded: boolean;
   patchRefreshLoaded: boolean;
   upstreamUpgradeLoaded: boolean;
+}
+
+export const PAPERCLIP_LAUNCH_AGENT_PREFIX = process.env.PAPERCLIP_LAUNCH_AGENT_PREFIX ?? "io.paperclip.local";
+
+export function getPaperclipLaunchAgentExpectedNames(prefix = PAPERCLIP_LAUNCH_AGENT_PREFIX): Record<
+  "service" | "healthcheck" | "patchRefresh" | "upstreamUpgrade",
+  string
+> {
+  return {
+    service: `${prefix}.service.plist`,
+    healthcheck: `${prefix}.healthcheck.plist`,
+    patchRefresh: `${prefix}.patch-refresh.plist`,
+    upstreamUpgrade: `${prefix}.upstream-upgrade.plist`,
+  };
+}
+
+export function summarizeLaunchAgents(launchAgents: string[], prefix = PAPERCLIP_LAUNCH_AGENT_PREFIX): LocalDoctorAutomationSummary {
+  const expected = getPaperclipLaunchAgentExpectedNames(prefix);
+  return {
+    launchAgents,
+    serviceLoaded: launchAgents.includes(expected.service),
+    healthcheckLoaded: launchAgents.includes(expected.healthcheck),
+    patchRefreshLoaded: launchAgents.includes(expected.patchRefresh),
+    upstreamUpgradeLoaded: launchAgents.includes(expected.upstreamUpgrade),
+  };
 }
 
 export interface LocalDoctorInput {

@@ -15,9 +15,14 @@ import {
   getHermesTestEnvironment,
   getHermesVersion,
   section,
+  summarizeLaunchAgents,
   step,
   success,
   warn,
+  type AdapterSummary,
+  type CompanyRecord,
+  type HermesVersionInfo,
+  type TestEnvironmentResult,
   type LocalDoctorAutomationSummary,
   type LocalDoctorItem,
 } from "./hermes-local-common.ts";
@@ -67,23 +72,11 @@ function severityIcon(severity: LocalDoctorItem["severity"]): string {
 
 function detectLaunchAgents(): LocalDoctorAutomationSummary {
   const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
-  const expected = {
-    service: "com.neo.paperclip.service.plist",
-    healthcheck: "com.neo.paperclip.healthcheck.plist",
-    patchRefresh: "com.neo.paperclip.patch-refresh.plist",
-    upstreamUpgrade: "com.neo.paperclip.upstream-upgrade.plist",
-  };
   const launchAgents = fs.existsSync(launchAgentsDir)
-    ? fs.readdirSync(launchAgentsDir).filter((name) => name.startsWith("com.neo.paperclip") && name.endsWith(".plist"))
+    ? fs.readdirSync(launchAgentsDir).filter((name) => name.toLowerCase().includes("paperclip") && name.endsWith(".plist"))
     : [];
 
-  return {
-    launchAgents,
-    serviceLoaded: launchAgents.includes(expected.service),
-    healthcheckLoaded: launchAgents.includes(expected.healthcheck),
-    patchRefreshLoaded: launchAgents.includes(expected.patchRefresh),
-    upstreamUpgradeLoaded: launchAgents.includes(expected.upstreamUpgrade),
-  };
+  return summarizeLaunchAgents(launchAgents);
 }
 
 async function main() {
@@ -93,10 +86,10 @@ async function main() {
 
   let health: Record<string, unknown> | null = null;
   let apiReachable = false;
-  let adapters = [];
-  let companies = [];
-  let hermesVersion = null;
-  let testEnvironment = null;
+  let adapters: AdapterSummary[] = [];
+  let companies: CompanyRecord[] = [];
+  let hermesVersion: HermesVersionInfo | null = null;
+  let testEnvironment: TestEnvironmentResult | null = null;
   let selectedCompanyId: string | null = null;
 
   try {

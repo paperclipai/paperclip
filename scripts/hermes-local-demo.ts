@@ -11,7 +11,6 @@ import {
   getAgents,
   getCompanies,
   getHeartbeatRun,
-  getHeartbeatRunEvents,
   getHeartbeatRunLog,
   getHeartbeatRuns,
   getIssue,
@@ -128,7 +127,7 @@ Options:
   --company-name <name>   临时创建 company 时使用的名称
   --agent-name <name>     创建新 agent 时使用的名称，默认 Hermes Worker
   --issue-title <title>   指定 demo issue 标题
-  --timeout-sec <sec>     最大等待秒数，默认 180
+  --timeout-sec <sec>     总体 wall-clock 等待秒数，默认 180
   --poll-sec <sec>        轮询间隔秒数，默认 5
 `);
 }
@@ -228,11 +227,19 @@ async function resolveAgent(companyId: string, options: DemoOptions): Promise<Re
   return { id: agent.id, name: agent.name, mode: "reused" };
 }
 
-async function waitForExecutionRun(companyId: string, agentId: string, issueId: string, timeoutMs: number, pollMs: number) {
-  const start = Date.now();
+function remainingMs(deadlineAt: number): number {
+  return Math.max(0, deadlineAt - Date.now());
+}
+
+async function sleepUntilNextPoll(pollMs: number, deadlineAt: number): Promise<void> {
+  const delay = Math.min(pollMs, remainingMs(deadlineAt));
+  if (delay > 0) await sleep(delay);
+}
+
+async function waitForExecutionRun(companyId: string, agentId: string, issueId: string, deadlineAt: number, pollMs: number) {
   let lastSeenRunId: string | null = null;
 
-  while (Date.now() - start < timeoutMs) {
+  while (remainingMs(deadlineAt) > 0) {
     const issue = await getIssue(issueId);
     if (issue.executionRunId) {
       return { issue, runId: issue.executionRunId };
@@ -251,17 +258,16 @@ async function waitForExecutionRun(companyId: string, agentId: string, issueId: 
       lastSeenRunId = runs[0]?.id ?? null;
       step(`已观察到最近 heartbeat run：${lastSeenRunId}，继续等待其与 issue 绑定...`);
     }
-    await sleep(pollMs);
+    await sleepUntilNextPoll(pollMs, deadlineAt);
   }
 
-  fail(`在 ${Math.round(timeoutMs / 1000)} 秒内未等到 issue 绑定 execution run。`);
+  fail("在总体 timeout 预算内未等到 issue 绑定 execution run。");
 }
 
-async function waitForRunCompletion(runId: string, timeoutMs: number, pollMs: number) {
-  const start = Date.now();
+async function waitForRunCompletion(runId: string, deadlineAt: number, pollMs: number) {
   let previousStatus: string | null = null;
 
-  while (Date.now() - start < timeoutMs) {
+  while (remainingMs(deadlineAt) > 0) {
     const run = await getHeartbeatRun(runId);
     if (run.status !== previousStatus) {
       previousStatus = run.status;
@@ -270,10 +276,10 @@ async function waitForRunCompletion(runId: string, timeoutMs: number, pollMs: nu
     if (!["queued", "running"].includes(run.status)) {
       return run;
     }
-    await sleep(pollMs);
+    await sleepUntilNextPoll(pollMs, deadlineAt);
   }
 
-  fail(`在 ${Math.round(timeoutMs / 1000)} 秒内 run 仍未结束：${runId}`);
+  fail(`总体 timeout 预算耗尽，run 仍未结束：${runId}`);
 }
 
 async function main() {
@@ -287,6 +293,8 @@ async function main() {
   } else {
     step(`临时模式：将创建 company ${options.companyName}`);
   }
+
+  const deadlineAt = Date.now() + options.timeoutMs;
 
   const company = await resolveCompany(options);
   const agent = await resolveAgent(company.id, options);
@@ -303,15 +311,14 @@ async function main() {
   success(`issue 已创建：${issue.identifier ?? issue.id} (${issue.id})`);
 
   step("等待 Paperclip 为该 issue 建立 execution run");
-  const runBinding = await waitForExecutionRun(company.id, agent.id, issue.id, options.timeoutMs, options.pollIntervalMs);
+  const runBinding = await waitForExecutionRun(company.id, agent.id, issue.id, deadlineAt, options.pollIntervalMs);
   success(`已绑定 execution run：${runBinding.runId}`);
 
   step("等待 run 执行完成");
-  const finalRun = await waitForRunCompletion(runBinding.runId, options.timeoutMs, options.pollIntervalMs);
+  const finalRun = await waitForRunCompletion(runBinding.runId, deadlineAt, options.pollIntervalMs);
   const finalIssue = await getIssue(issue.id);
   const comments = await getIssueComments(issue.id);
   const log = await getHeartbeatRunLog(finalRun.id, 20000);
-  const events = await getHeartbeatRunEvents(finalRun.id);
 
   const demoComment = comments.find((comment) => comment.body.includes("DEMO_DONE"));
 
@@ -339,7 +346,6 @@ async function main() {
       commentFound: Boolean(demoComment),
       commentId: demoComment?.id ?? null,
       commentsCount: comments.length,
-      eventsCount: events.length,
     }),
   );
 
