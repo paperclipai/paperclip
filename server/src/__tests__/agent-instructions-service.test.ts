@@ -358,4 +358,73 @@ describe("agent instructions service", () => {
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
+
+  it("migrates name-based instructions and writes a .migrated marker", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-migrate-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    // Create a name-based instructions directory (simulating CEO writing to agents/CTO/instructions)
+    const nameBasedPath = path.join(
+      paperclipHome, "instances", "test-instance", "companies", "company-1", "agents", "CTO", "instructions",
+    );
+    await fs.mkdir(nameBasedPath, { recursive: true });
+    await fs.writeFile(path.join(nameBasedPath, "AGENTS.md"), "# CTO Instructions\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent: TestAgent = {
+      id: "cto-uuid-001",
+      companyId: "company-1",
+      name: "CTO",
+      adapterConfig: {},
+    };
+
+    const bundle = await svc.getBundle(agent);
+
+    // Agent should recover its instructions via migration
+    expect(bundle.mode).toBe("managed");
+    expect(bundle.files.map((f) => f.path)).toEqual(["AGENTS.md"]);
+    await expect(fs.readFile(path.join(bundle.managedRootPath, "AGENTS.md"), "utf8")).resolves.toBe("# CTO Instructions\n");
+
+    // A .migrated marker should exist in the source directory
+    await expect(fs.readFile(path.join(nameBasedPath, ".migrated"), "utf8")).resolves.toBe("cto-uuid-001");
+
+    // Source files should still exist (not deleted)
+    await expect(fs.stat(path.join(nameBasedPath, "AGENTS.md"))).resolves.toBeTruthy();
+  });
+
+  it("warns when a second agent with the same display name finds a .migrated marker", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-collision-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    // Create a name-based directory with a .migrated marker from the first agent
+    const nameBasedPath = path.join(
+      paperclipHome, "instances", "test-instance", "companies", "company-1", "agents", "Assistant", "instructions",
+    );
+    await fs.mkdir(nameBasedPath, { recursive: true });
+    await fs.writeFile(path.join(nameBasedPath, "AGENTS.md"), "# Assistant Instructions\n", "utf8");
+    await fs.writeFile(path.join(nameBasedPath, ".migrated"), "assistant-uuid-001", "utf8");
+
+    const svc = agentInstructionsService();
+    const secondAgent: TestAgent = {
+      id: "assistant-uuid-002",
+      companyId: "company-1",
+      name: "Assistant",
+      adapterConfig: {},
+    };
+
+    const bundle = await svc.getBundle(secondAgent);
+
+    // Second agent should NOT get managed instructions (no UUID-based dir exists)
+    expect(bundle.mode).toBeNull();
+    expect(bundle.rootPath).toBeNull();
+
+    // But should have a warning about the collision
+    expect(bundle.warnings).toEqual([
+      expect.stringContaining("already migrated by agent assistant-uuid-001"),
+    ]);
+  });
 });

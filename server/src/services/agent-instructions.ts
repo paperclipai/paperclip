@@ -279,12 +279,21 @@ function deriveBundleState(agent: AgentLike): BundleState {
  * The system expects instructions at `agents/{agent.id}/instructions`, so these name-based
  * directories are invisible. This function detects such misplaced directories and migrates
  * the files to the correct UUID-based path.
+ *
+ * Name collision: agent.name is not unique. If two agents share the same display name,
+ * they resolve to the same nameBasedPath. To handle this, a `.migrated` marker file is
+ * written into the source directory after migration, recording which agent UUID claimed it.
+ * Subsequent agents with the same name will see the marker and emit a warning instead of
+ * silently losing their instructions. The source directory is NOT deleted so that operators
+ * can inspect it if needed.
  */
-async function migrateNameBasedInstructionsIfFound(agent: AgentLike): Promise<void> {
-  if (!agent.name || typeof agent.name !== "string" || agent.name.trim().length === 0) return;
+const MIGRATION_MARKER_FILE = ".migrated";
+
+async function migrateNameBasedInstructionsIfFound(agent: AgentLike): Promise<string | null> {
+  if (!agent.name || typeof agent.name !== "string" || agent.name.trim().length === 0) return null;
   // Avoid false positives for UUID-like names
   const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (UUID_PATTERN.test(agent.name)) return;
+  if (UUID_PATTERN.test(agent.name)) return null;
 
   const nameBasedPath = path.resolve(
     resolvePaperclipInstanceRoot(),
@@ -295,10 +304,19 @@ async function migrateNameBasedInstructionsIfFound(agent: AgentLike): Promise<vo
     "instructions",
   );
   const nameStat = await statIfExists(nameBasedPath);
-  if (!nameStat?.isDirectory()) return;
+  if (!nameStat?.isDirectory()) return null;
+
+  // Check if another agent with the same name already migrated this directory.
+  const markerPath = path.join(nameBasedPath, MIGRATION_MARKER_FILE);
+  const markerContent = await fs.readFile(markerPath, "utf8").catch(() => null);
+  if (markerContent !== null) {
+    if (markerContent.trim() === agent.id) return null; // already migrated for this agent — no-op
+    // Another agent claimed this directory first.
+    return `Name-based instructions directory at ${nameBasedPath} was already migrated by agent ${markerContent.trim()}; agent ${agent.id} shares the display name "${agent.name}" and may have lost its instructions.`;
+  }
 
   const files = await listFilesRecursive(nameBasedPath);
-  if (files.length === 0) return;
+  if (files.length === 0) return null;
 
   const managedRootPath = resolveManagedInstructionsRoot(agent);
   await fs.mkdir(managedRootPath, { recursive: true });
@@ -312,18 +330,11 @@ async function migrateNameBasedInstructionsIfFound(agent: AgentLike): Promise<vo
     await fs.copyFile(srcPath, dstPath);
   }
 
-  // Remove only the instructions/ subdirectory (NOT the parent agent-name directory,
-  // which may contain sibling files like memory.md). Then clean up the parent if empty.
-  await fs.rm(nameBasedPath, { recursive: true, force: true });
-  const parentDir = path.dirname(nameBasedPath);
-  try {
-    const remaining = await fs.readdir(parentDir);
-    if (remaining.length === 0) {
-      await fs.rmdir(parentDir);
-    }
-  } catch {
-    // Parent directory already removed or inaccessible — nothing to do.
-  }
+  // Write a marker file so subsequent agents with the same display name know this
+  // directory has already been claimed, rather than silently losing instructions.
+  await fs.writeFile(markerPath, agent.id, "utf8");
+
+  return null;
 }
 
 async function recoverManagedBundleState(agent: AgentLike, state: BundleState): Promise<BundleState> {
@@ -333,11 +344,11 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
     // No UUID-based instructions directory exists — check for a misplaced agent-name-based
     // directory (e.g. when the CEO agent wrote instruction files using the agent name instead
     // of the agent UUID). If found, migrate the files to the correct UUID-based path.
-    // NOTE: agent.name is a display name, not unique. If two agents share the same name,
-    // the first one to resolve will migrate the shared directory; subsequent agents with
-    // the same name will find the name-based directory gone and fall through gracefully.
     try {
-      await migrateNameBasedInstructionsIfFound(agent);
+      const collisionWarning = await migrateNameBasedInstructionsIfFound(agent);
+      if (collisionWarning) {
+        return { ...state, warnings: [...state.warnings, collisionWarning] };
+      }
     } catch (err) {
       const warning = `Name-based instructions migration failed for agent ${agent.id} (${agent.name}): ${err instanceof Error ? err.message : String(err)}`;
       return { ...state, warnings: [...state.warnings, warning] };
