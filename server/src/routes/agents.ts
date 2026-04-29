@@ -248,16 +248,8 @@ export function agentRoutes(
   async function buildSafeAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
   ) {
-    const [chainOfCommand, accessState] = await Promise.all([
-      svc.getChainOfCommand(agent.id),
-      buildAgentAccessState(agent),
-    ]);
-
-    return {
-      ...withSafeAdapterConfig(agent),
-      chainOfCommand,
-      access: accessState,
-    };
+    const detail = await buildAgentDetail(agent);
+    return withSafeAdapterConfig(detail);
   }
 
   async function applyDefaultAgentTaskAssignGrant(

@@ -356,4 +356,37 @@ describe.sequential("agent detail secret redaction", () => {
 
     assertNoSecretLeaks(res.body);
   });
+
+  it("PATCH /api/agents/:id/permissions response omits adapterConfig secrets", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin",
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}/permissions`)
+        .send({ canCreateAgents: false, canAssignTasks: false }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toBeDefined();
+    expect(res.body.adapterConfig.devicePrivateKeyPem).toBeUndefined();
+    expect(res.body.adapterConfig.deviceToken).toBeUndefined();
+    expect(res.body.adapterConfig.headers).toBeUndefined();
+    expect(res.body.adapterConfig.sessionKey).toBeUndefined();
+    expect(res.body.adapterConfig.url).toBe("ws://example.invalid:18789/");
+    expect(res.body.adapterConfig.env).toBeDefined();
+    expect(res.body.adapterConfig.env.SAMPLE_API_KEY).toBe("***REDACTED***");
+
+    expect(res.body.chainOfCommand).toBeDefined();
+    expect(res.body.access).toBeDefined();
+
+    assertNoSecretLeaks(res.body);
+  });
 });
