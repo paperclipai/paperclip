@@ -607,8 +607,9 @@ export function renderPaperclipWakePrompt(
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        // Omit volatile fields that break prefix caching:
+        // `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+        // `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
@@ -624,8 +625,9 @@ export function renderPaperclipWakePrompt(
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        // Omit volatile fields that break prefix caching:
+        // `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+        // `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
 
@@ -658,9 +660,10 @@ export function renderPaperclipWakePrompt(
       lines.push(`- active tree hold: ${hold.holdId ?? "unknown"}${hold.rootIssueId ? ` rooted at ${hold.rootIssueId}` : ""}${hold.mode ? ` (${hold.mode})` : ""}`);
     }
   }
-  if (normalized.missingCount > 0) {
-    lines.push(`- omitted comments: ${normalized.missingCount}`);
-  }
+  // Omit volatile missingCount field that breaks prefix caching
+  // if (normalized.missingCount > 0) {
+  //   lines.push(`- omitted comments: ${normalized.missingCount}`);
+  // }
 
   if (executionStage) {
     lines.push(
