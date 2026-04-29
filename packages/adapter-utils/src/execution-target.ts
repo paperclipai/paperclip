@@ -130,6 +130,17 @@ export function adapterExecutionTargetRemoteCwd(
   return target?.kind === "remote" ? target.remoteCwd : localCwd;
 }
 
+export function resolveAdapterExecutionTargetCwd(
+  target: AdapterExecutionTarget | null | undefined,
+  configuredCwd: string | null | undefined,
+  localFallbackCwd: string,
+): string {
+  if (typeof configuredCwd === "string" && configuredCwd.trim().length > 0) {
+    return configuredCwd;
+  }
+  return adapterExecutionTargetRemoteCwd(target, localFallbackCwd);
+}
+
 export function adapterExecutionTargetPaperclipApiUrl(
   target: AdapterExecutionTarget | null | undefined,
 ): string | null {
@@ -334,6 +345,64 @@ export async function ensureAdapterExecutionTargetFile(
     `mkdir -p ${shellQuote(path.posix.dirname(filePath))} && : > ${shellQuote(filePath)}`,
     options,
   );
+}
+
+/**
+ * Ensure a working directory exists (and is a directory) on the execution target.
+ *
+ * For local targets this delegates to the local `ensureAbsoluteDirectory` helper
+ * (Node fs). For remote (SSH/sandbox) targets it shells out and runs
+ * `mkdir -p` (when allowed) followed by a `[ -d ]` check so the result reflects
+ * the directory state inside the environment, not on the Paperclip host.
+ *
+ * Throws an Error with a human-readable message on failure.
+ */
+export async function ensureAdapterExecutionTargetDirectory(
+  runId: string,
+  target: AdapterExecutionTarget | null | undefined,
+  cwd: string,
+  options: AdapterExecutionTargetShellOptions & { createIfMissing?: boolean },
+): Promise<void> {
+  const createIfMissing = options.createIfMissing ?? false;
+
+  if (!target || target.kind === "local") {
+    const { ensureAbsoluteDirectory } = await import("./server-utils.js");
+    await ensureAbsoluteDirectory(cwd, { createIfMissing });
+    return;
+  }
+
+  // Remote (SSH or sandbox): both expect POSIX absolute paths inside the env.
+  if (!cwd.startsWith("/")) {
+    throw new Error(`Working directory must be an absolute POSIX path on the remote target: "${cwd}"`);
+  }
+
+  const quoted = shellQuote(cwd);
+  const script = createIfMissing
+    ? `mkdir -p ${quoted} && [ -d ${quoted} ]`
+    : `[ -d ${quoted} ]`;
+
+  const result = await runAdapterExecutionTargetShellCommand(runId, target, script, {
+    cwd: target.kind === "remote" ? target.remoteCwd : cwd,
+    env: options.env,
+    timeoutSec: options.timeoutSec ?? 15,
+    graceSec: options.graceSec ?? 5,
+    onLog: options.onLog,
+  });
+
+  if (result.timedOut) {
+    throw new Error(`Timed out checking working directory on remote target: "${cwd}"`);
+  }
+  if ((result.exitCode ?? 1) !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim();
+    if (createIfMissing) {
+      throw new Error(
+        `Could not create working directory "${cwd}" on remote target${detail ? `: ${detail}` : "."}`,
+      );
+    }
+    throw new Error(
+      `Working directory does not exist on remote target: "${cwd}"${detail ? ` (${detail})` : ""}`,
+    );
+  }
 }
 
 export function adapterExecutionTargetSessionIdentity(
