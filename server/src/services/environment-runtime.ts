@@ -637,11 +637,12 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
+          const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
           return await pluginWorkerManager.call(pluginId, "environmentExecute", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
-            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+            config: sanitizedConfig,
             lease: {
               providerLeaseId: input.lease.providerLeaseId,
               metadata: input.lease.metadata ?? undefined,

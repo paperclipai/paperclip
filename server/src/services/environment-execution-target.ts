@@ -60,9 +60,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     const paperclipApiUrl =
       typeof input.leaseMetadata?.paperclipApiUrl === "string" && input.leaseMetadata.paperclipApiUrl.trim().length > 0
         ? input.leaseMetadata.paperclipApiUrl.trim()
-        : typeof process.env.PAPERCLIP_RUNTIME_API_URL === "string" && process.env.PAPERCLIP_RUNTIME_API_URL.trim().length > 0
-          ? process.env.PAPERCLIP_RUNTIME_API_URL.trim()
-          : null;
+        : null;
 
     return {
       kind: "remote",
@@ -72,6 +70,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       paperclipApiUrl,
+      paperclipTransport: paperclipApiUrl ? "direct" : "bridge",
       timeoutMs,
       runner: input.environmentRuntime && input.lease
         ? {
