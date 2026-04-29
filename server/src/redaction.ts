@@ -78,3 +78,25 @@ export function redactSensitiveText(input: string): string {
     .replace(GITHUB_TOKEN_TEXT_RE, REDACTED_EVENT_VALUE)
     .replace(JWT_TEXT_RE, REDACTED_EVENT_VALUE);
 }
+
+// Top-level adapterConfig keys whose mere presence in API responses constitutes
+// a leak: their values are bearer credentials or signing material that the
+// redactEventPayload key-name regex above does not catch (e.g. "deviceToken"
+// has no separator between "device" and "token", and "headers" is a generic
+// container whose composition varies by adapter type).
+export const OMITTED_ADAPTER_CONFIG_KEYS: readonly string[] = [
+  "devicePrivateKeyPem",
+  "deviceToken",
+  "headers",
+  "sessionKey",
+];
+
+export function omitAdapterConfigSecrets(adapterConfig: unknown): unknown {
+  if (!isPlainObject(adapterConfig)) return adapterConfig ?? {};
+  const stripped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(adapterConfig)) {
+    if (OMITTED_ADAPTER_CONFIG_KEYS.includes(key)) continue;
+    stripped[key] = value;
+  }
+  return redactEventPayload(stripped) ?? stripped;
+}
