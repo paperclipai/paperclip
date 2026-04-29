@@ -14,6 +14,14 @@ function isWildcardHost(host: string): boolean {
   return normalized === "0.0.0.0" || normalized === "::";
 }
 
+function isLinkLocalHost(host: string): boolean {
+  const normalized = normalizeHost(host).toLowerCase();
+  if (normalized.startsWith("169.254.")) return true;
+  // IPv6 link-local block is fe80::/10 (fe80:: through febf::)
+  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
+  return false;
+}
+
 function formatOrigin(protocol: string, host: string, port: number): string {
   const normalizedHost = host.includes(":") && !host.startsWith("[") && !host.endsWith("]")
     ? `[${host}]`
@@ -68,7 +76,36 @@ export function choosePrimaryRuntimeApiUrl(input: {
   return formatOrigin("http:", "localhost", input.port);
 }
 
+export function collectReachableInterfaceHosts(input: {
+  networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
+} = {}): string[] {
+  const interfaces = input.networkInterfacesMap ?? os.networkInterfaces();
+  const rankedHosts: Array<{ host: string; rank: number; index: number }> = [];
+  const seen = new Set<string>();
+  let index = 0;
+
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.internal) continue;
+      const host = normalizeHost(entry.address);
+      if (!host || isLoopbackHost(host) || isWildcardHost(host) || isLinkLocalHost(host)) continue;
+      if (seen.has(host)) continue;
+      seen.add(host);
+      rankedHosts.push({
+        host,
+        rank: entry.family === "IPv4" ? 0 : 1,
+        index: index++,
+      });
+    }
+  }
+
+  return rankedHosts
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map((entry) => entry.host);
+}
+
 export function buildRuntimeApiCandidateUrls(input: {
+  preferredApiUrl?: string | null;
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
   bindHost: string;
@@ -88,6 +125,7 @@ export function buildRuntimeApiCandidateUrls(input: {
   })();
   const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
 
+  pushCandidate(candidates, seen, input.preferredApiUrl);
   pushCandidate(candidates, seen, explicitOrigin);
 
   for (const rawHost of input.allowedHostnames) {
@@ -108,14 +146,8 @@ export function buildRuntimeApiCandidateUrls(input: {
     }
   }
 
-  const interfaces = input.networkInterfacesMap ?? os.networkInterfaces();
-  for (const entries of Object.values(interfaces)) {
-    for (const entry of entries ?? []) {
-      if (entry.internal) continue;
-      const host = normalizeHost(entry.address);
-      if (!host || isLoopbackHost(host) || isWildcardHost(host)) continue;
-      pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
-    }
+  for (const host of collectReachableInterfaceHosts({ networkInterfacesMap: input.networkInterfacesMap })) {
+    pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
   }
 
   if (candidates.length === 0) {
