@@ -60,9 +60,17 @@ COPY --chown=node:node --from=build /app /app
 # (server/src/services/ccrotate-tier-gate.ts) shells out to. With HOME=/paperclip,
 # its profilesDir/claudeDir/configFile resolve into /paperclip/.ccrotate and
 # /paperclip/.claude on the shared RWX PVC, so a single `ccrotate refresh` from
-# inside this pod populates the gate's tier-cache in place. Pinned to a known
-# version to avoid surprise upgrades inside an image build.
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai ccrotate@1.0.13 \
+# inside this pod populates the gate's tier-cache in place.
+#
+# Vendored from ~/src/ccrotate@1.1.0 (upstream somersby10ml/ccrotate). 1.1.0 adds
+# `--target codex`, `tier-cache` JSON output, and the `serviceTier` reporting the
+# gate depends on — npm latest (1.0.13) lacks all three. Upgrade procedure:
+#   cd ~/src/ccrotate && npm run build && cd dist && npm pack
+#   mv ccrotate-<NEW>.tgz <kkroo>/vendor/
+#   bump ARG CCROTATE_TARBALL below
+COPY vendor/ccrotate-1.1.0.tgz /tmp/ccrotate.tgz
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
+  && rm /tmp/ccrotate.tgz \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
   && rm -rf /var/lib/apt/lists/* \
