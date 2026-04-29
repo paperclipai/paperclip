@@ -46,6 +46,7 @@ RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @kkroo/paperclip-plugin-ccrotate build
 RUN pnpm --filter @kkroo/paperclip-plugin-linear build
+RUN pnpm --filter paperclip-plugin-alertmanager build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
