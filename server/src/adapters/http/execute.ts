@@ -2,7 +2,7 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.j
 import { asString, asNumber, parseObject } from "../utils.js";
 
 // In-process sliding window: agentId -> recent invocation timestamps
-const httpAgentCallHistory = new Map<string, number[]>();
+export const httpAgentCallHistory = new Map<string, number[]>();
 
 function checkHttpRateGuard(
   agentId: string,
