@@ -442,13 +442,15 @@
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0.05rem 0.45rem;
+  padding: 0 0.45rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
-  line-height: 1.3;
+  line-height: 1.25;
   text-decoration: none;
-  vertical-align: baseline;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
   white-space: nowrap;
   user-select: none;
 }
@@ -860,15 +862,19 @@ span.paperclip-project-mention-chip {
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0.05rem 0.45rem;
+  padding: 0 0.45rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
-  line-height: 1.3;
+  line-height: 1.25;
   text-decoration: none;
-  /* Align the pill relative to the surrounding text baseline instead of its
-     x-height midpoint so it sits on the text line rather than floating above. */
-  vertical-align: baseline;
+  /* Center the pill on the surrounding x-height so it sits on the text line
+     instead of hanging below it. inline-flex baseline alignment is unreliable
+     across browsers, so use vertical-align: middle for a predictable result.
+     Nudge up 1px so it visually centers with the cap height of the text. */
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
   white-space: nowrap;
 }
 
