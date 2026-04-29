@@ -18,7 +18,8 @@ function hasPathSeparator(command: string): boolean {
 function prependPosixPathEntry(pathValue: string, entry: string): string {
   const parts = pathValue.split(":").filter(Boolean);
   if (parts.includes(entry)) return pathValue;
-  return parts.length > 0 ? `${entry}:${pathValue}` : entry;
+  const cleaned = parts.join(":");
+  return cleaned.length > 0 ? `${entry}:${cleaned}` : entry;
 }
 
 type SandboxCursorRuntimeInfo = {

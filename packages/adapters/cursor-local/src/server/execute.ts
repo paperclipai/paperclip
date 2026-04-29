@@ -302,6 +302,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  // Probe the sandbox before the managed-home override so we discover
+  // cursor-agent from the real system HOME (e.g. ~/.local/bin/cursor-agent).
+  // The managed HOME set later is for runtime isolation, not for finding the CLI.
   const sandboxCommand = await prepareCursorSandboxCommand({
     runId,
     target: executionTarget,
