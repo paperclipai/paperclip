@@ -70,6 +70,60 @@ spec:
                 fi
               done
               chown -R 1000:1000 "${BASE}/.local" 2>/dev/null || true
+              # Install bundled adapter tarballs from /opt/paperclip-bundled-adapters
+              # into the runtime adapter-plugins dir on the shared PVC. This makes the
+              # patched paperclip-adapter-claude-k8s (kkroo fork) self-bootstrapping —
+              # a fresh PVC doesn't need an out-of-band kubectl-cp + /api/adapters/install
+              # round-trip. Skipped if the adapter package dir already exists with the
+              # bundled version (so paperclip's runtime install path can still upgrade).
+              if [ -d /opt/paperclip-bundled-adapters ]; then
+                ADAPTER_DIR="${BASE}/adapter-plugins"
+                mkdir -p "${ADAPTER_DIR}/node_modules"
+                for tgz in /opt/paperclip-bundled-adapters/*.tgz; do
+                  [ -f "${tgz}" ] || continue
+                  pkg_name=$(tar -xzOf "${tgz}" package/package.json 2>/dev/null | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+                  pkg_ver=$(tar -xzOf "${tgz}" package/package.json 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+                  [ -n "${pkg_name}" ] || continue
+                  installed_ver=""
+                  if [ -f "${ADAPTER_DIR}/node_modules/${pkg_name}/package.json" ]; then
+                    installed_ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${ADAPTER_DIR}/node_modules/${pkg_name}/package.json" | head -1)
+                  fi
+                  if [ "${installed_ver}" = "${pkg_ver}" ]; then
+                    echo "seed: bundled adapter ${pkg_name}@${pkg_ver} already installed"
+                    continue
+                  fi
+                  echo "seed: installing bundled adapter ${pkg_name}@${pkg_ver} (was: ${installed_ver:-none})"
+                  rm -rf "${ADAPTER_DIR}/node_modules/${pkg_name}"
+                  mkdir -p "${ADAPTER_DIR}/node_modules/${pkg_name}"
+                  tar -xzf "${tgz}" -C "${ADAPTER_DIR}/node_modules/${pkg_name}" --strip-components=1
+                  # Ensure adapter-plugins.json registry entry exists / is updated.
+                  python3 - "${BASE}/adapter-plugins.json" "${pkg_name}" "${pkg_ver}" "${ADAPTER_DIR}/node_modules/${pkg_name}" <<'PY' || echo "seed: registry update for ${pkg_name} failed (non-fatal)"
+              import json, os, sys
+              path, name, ver, local_path = sys.argv[1:5]
+              # adapter-plugins.json stores [{packageName,version,type,installedAt,localPath?}]
+              # We don't know the adapter `type` field without loading the dist — leave it
+              # to the runtime /api/adapters reload to populate. Just ensure the shape so
+              # paperclip's loadFromRecord picks it up. If existing record present, update.
+              records = []
+              if os.path.exists(path):
+                  try:
+                      with open(path) as f: records = json.load(f) or []
+                  except Exception: records = []
+              # Find by packageName
+              hit = next((r for r in records if isinstance(r, dict) and r.get("packageName") == name), None)
+              if hit is None:
+                  records.append({"packageName": name, "version": ver, "localPath": local_path, "type": "", "installedAt": "1970-01-01T00:00:00.000Z"})
+              else:
+                  hit["version"] = ver
+                  hit["localPath"] = local_path
+              with open(path, "w") as f: json.dump(records, f, indent=2)
+              PY
+                done
+                chown -R 1000:1000 "${ADAPTER_DIR}" 2>/dev/null || true
+                if [ -f "${BASE}/adapter-plugins.json" ]; then
+                  chown 1000:1000 "${BASE}/adapter-plugins.json" 2>/dev/null || true
+                fi
+              fi
           env:
             {{- if .Values.secret.masterKey }}
             - name: PAPERCLIP_MASTER_KEY_SEED
