@@ -4,6 +4,8 @@ import type {
   Rt2EnterpriseRolloutSettingsResult,
   Rt2RolloutSsoValidationInput,
   Rt2RolloutSsoValidationResult,
+  Rt2ScimApplyRequest,
+  Rt2ScimApplyResult,
   Rt2ScimSyncPreviewInput,
   Rt2ScimSyncPreviewResult,
   Rt2TemplateApplicationPreview,
@@ -20,6 +22,8 @@ export const rt2EnterpriseApi = {
     api.post<Rt2RolloutSsoValidationResult>(`/companies/${companyId}/rt2/enterprise/sso/validate`, input),
   previewScim: (companyId: string, input: Rt2ScimSyncPreviewInput) =>
     api.post<Rt2ScimSyncPreviewResult>(`/companies/${companyId}/rt2/enterprise/scim/preview`, input),
+  applyScim: (companyId: string, input: Rt2ScimApplyRequest) =>
+    api.post<Rt2ScimApplyResult>(`/companies/${companyId}/rt2/enterprise/scim/apply`, input),
   previewTemplate: (companyId: string, templateId: string) =>
     api.get<Rt2TemplateApplicationPreview>(`/companies/${companyId}/rt2/templates/${templateId}/preview`),
   applyTemplate: (companyId: string, templateId: string) =>
