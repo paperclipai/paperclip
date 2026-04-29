@@ -5638,6 +5638,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
+      const adapterResultEnvelope = parseObject(adapterResult.resultJson);
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
@@ -5646,6 +5647,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+        outcome = "succeeded";
+      } else if (
+        readNonEmptyString(adapterResultEnvelope.subtype) === "success" &&
+        asBoolean(adapterResultEnvelope.is_error, false) !== true
+      ) {
         outcome = "succeeded";
       } else {
         outcome = "failed";

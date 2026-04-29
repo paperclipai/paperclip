@@ -113,6 +113,23 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", res
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeSuccessThenExit143ClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-143", model: "claude-sonnet" }));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  session_id: "claude-session-143",
+  result: "done",
+  usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 }
+}));
+process.exit(143);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function setupExecuteEnv(
   root: string,
   options?: { commandWriter?: (commandPath: string) => Promise<void> },
@@ -366,6 +383,40 @@ describe("claude execute", () => {
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
       expect(result.sessionId).toBe("claude-session-2");
       expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null errorMessage when parsed envelope is success even if process exits 143", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-success-143-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeSuccessThenExit143ClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-success-143",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(143);
+      expect(result.resultJson).toMatchObject({
+        subtype: "success",
+        is_error: false,
+      });
+      expect(result.errorMessage).toBeNull();
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

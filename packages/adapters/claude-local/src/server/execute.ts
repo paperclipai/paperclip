@@ -770,7 +770,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    const parsedSuccess =
+      asString(parsed.subtype, "") === "success" && !parsedIsError;
+    const failed = ((proc.exitCode ?? 0) !== 0 || parsedIsError) && !parsedSuccess;
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
