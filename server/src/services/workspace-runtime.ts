@@ -930,7 +930,7 @@ async function provisionExecutionWorktree(input: {
       commandSource: commandLabel,
       resolvedCommand: resolvedProvisionCommand === command ? null : resolvedProvisionCommand,
     },
-    successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
+    successMessage: `${commandLabel === "setup" ? "Set up" : "Provisioned"} workspace at ${input.worktreePath}\n`,
   });
 }
 
