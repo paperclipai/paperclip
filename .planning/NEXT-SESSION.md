@@ -8,62 +8,58 @@
 
 ## 현재 상태
 
-- v2.6 `운영 커넥터 및 자율성 하드닝` milestone의 Phase 39-43이 완료되었다.
-- Phase 43 `Validation Debt and Milestone Gate Closure` 완료.
+- v2.6 `운영 커넥터 및 자율성 하드닝` milestone이 archive/tag 준비까지 완료되었다.
+- `.planning/REQUIREMENTS.md`는 archive 후 삭제되었으므로 다음 milestone에서 fresh requirements를 만들어야 한다.
 - 최근 커밋:
-  - `e8a0b0dc` — `docs(43): capture phase context`
-  - `6e5f0167` — `docs(43): create phase plan`
-  - `326277f2` — `feat(43): close validation debt and add milestone gate`
+  - `e982f9e2` — `chore: archive v2.6 milestone files`
+  - `91259e98` — `chore: remove REQUIREMENTS.md for v2.6 milestone`
 
-## Phase 43 완료 요약
+## v2.6 완료 요약
 
-- Phase 19-24 strict `*-VALIDATION.md` historical debt를 closure했다.
-- Phase 40-42 `*-VALIDATION.md`도 추가해 현재 v2.6 artifact gate가 검증 가능한 상태가 되었다.
-- Legacy UAT unknown을 `43-LEGACY-UAT-CLOSURE.md`에서 재분류했다.
-  - `01-UAT.md`: reverified/closed.
-  - `m1-6-UAT.md`: superseded/obsolete/reverified via replacement evidence.
-- Deterministic milestone artifact gate를 추가했다.
-  - `scripts/rt2-milestone-artifact-gate.mjs`
-  - `scripts/rt2-milestone-artifact-gate.test.mjs`
-  - `pnpm run rt2:milestone-gate`
-  - `pnpm run test:milestone-gate`
-- `.planning/REQUIREMENTS.md`는 v2.6 12/12 complete로 동기화되었다.
+- Phase 39-43 완료.
+- Requirements 12/12, phases 5/5, integration 5/5, flows 5/5.
+- Audit은 `tech_debt`로 archive되었다.
+- Archive files:
+  - `.planning/milestones/v2.6-ROADMAP.md`
+  - `.planning/milestones/v2.6-REQUIREMENTS.md`
+  - `.planning/milestones/v2.6-MILESTONE-AUDIT.md`
+- Living docs updated:
+  - `.planning/ROADMAP.md`
+  - `.planning/MILESTONES.md`
+  - `.planning/PROJECT.md`
+  - `.planning/STATE.md`
+  - `.planning/RETROSPECTIVE.md`
 
 ## 검증 상태
 
 통과:
 
 ```sh
-pnpm run test:milestone-gate
 pnpm run rt2:milestone-gate
-pnpm typecheck
-node C:\Users\고상진\.codex\get-shit-done\bin\gsd-tools.cjs verify references .planning\phases\43-validation-debt-and-milestone-gate-closure\43-CONTEXT.md --raw
-node C:\Users\고상진\.codex\get-shit-done\bin\gsd-tools.cjs verify plan-structure .planning\phases\43-validation-debt-and-milestone-gate-closure\43-01-PLAN.md
 ```
 
 주의:
 
-- `pnpm test`는 10분 제한에서 timeout되었다. 실패 summary는 캡처되지 않았다.
-- Phase 40-42에서도 full suite timeout이 반복되었으므로, milestone close 전 가능하면 더 긴 timeout 또는 CI 환경에서 `pnpm test` completion을 확인한다.
+- v2.6 audit은 Phase 40-43 full `pnpm test` timeout과 Windows embedded Postgres skip을 accepted tech debt로 기록했다.
+- Pre-close artifact audit은 legacy UAT 관련 3개 unknown item을 보고했다. Phase 43 closure evidence와 0 pending scenarios를 근거로 acknowledged/deferred 처리했다.
 
 ## 다음 업무 지시어
 
-다음 세션의 기본 목표는 v2.6 milestone close/audit이다.
+다음 세션의 기본 목표는 새 milestone 정의다.
 
 권장 시작 명령:
 
 ```sh
-$gsd-complete-milestone v2.6
+$gsd-new-milestone
 ```
 
 시작 전 확인할 파일:
 
-- `.planning/REQUIREMENTS.md`
 - `.planning/ROADMAP.md`
 - `.planning/STATE.md`
-- `.planning/phases/43-validation-debt-and-milestone-gate-closure/43-VERIFICATION.md`
-- `.planning/phases/43-validation-debt-and-milestone-gate-closure/43-MILESTONE-GATE.md`
-- `scripts/rt2-milestone-artifact-gate.mjs`
+- `.planning/PROJECT.md`
+- `.planning/MILESTONES.md`
+- `.planning/milestones/v2.6-MILESTONE-AUDIT.md`
 
 ## 남겨진 로컬 주의사항
 
@@ -80,4 +76,4 @@ $gsd-complete-milestone v2.6
 - `pnpm-lock.yaml` 변경은 PR에 포함하지 않는다.
 
 ---
-*상태 업데이트: 2026-04-29, Phase 43 complete; next v2.6 milestone close*
+*상태 업데이트: 2026-04-29, v2.6 milestone complete; next new milestone planning*
