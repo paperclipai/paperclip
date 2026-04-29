@@ -37,6 +37,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "metrics.write",
     "jobs.schedule",
     "agent.tools.register",
+    "users.read",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

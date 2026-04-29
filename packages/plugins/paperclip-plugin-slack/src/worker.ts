@@ -65,6 +65,7 @@ import {
   checkWatches,
   BUILTIN_WATCH_TEMPLATES,
 } from "./proactive-suggestions.js";
+import { resolveSlackUserId } from "./user-mapping.js";
 import type {
   SlackPluginConfig,
   EscalationRecord,
@@ -1433,6 +1434,19 @@ const plugin = definePlugin({
       });
     }
     slackAdapter = new SlackAdapter(ctx, token);
+
+    // Cross-system user mapping. Other plugins (Linear, etc.) ask "what's
+    // the slack id for this paperclip user?" by calling
+    // ctx.data.get("slack:resolve-user", { paperclipUserId }).
+    ctx.data.register("slack:resolve-user", async (params) => {
+      const paperclipUserId = (params as { paperclipUserId?: string })
+        .paperclipUserId;
+      if (!paperclipUserId) {
+        return { slackUserId: null, source: "missing-email" };
+      }
+      return resolveSlackUserId(ctx, token, paperclipUserId);
+    });
+
     ctx.logger.info("Slack Chat OS plugin started (v2.0.0) - all 5 phases active");
   },
   // =========================================================================

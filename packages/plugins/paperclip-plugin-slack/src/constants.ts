@@ -35,6 +35,7 @@ export const STATE_KEYS = {
   budgetAlert: (id: string, bucket: number) => `budget-alert-${id}-${bucket}`,
   watchRegistry: (ch: string, ts: string) => `watches_${ch}_${ts}`,
   commandRegistry: "custom-commands",
+  slackUser: (paperclipUserId: string) => `slack-user-${paperclipUserId}`,
 } as const;
 
 export const DEFAULT_CONFIG: SlackPluginConfig = {
