@@ -35,6 +35,7 @@
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
+    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",

@@ -80,6 +80,9 @@ jobs:
       - name: Run tests
         run: pnpm test:run
 
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
+
       - name: Build
         run: pnpm build
 
