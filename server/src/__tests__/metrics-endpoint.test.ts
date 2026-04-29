@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import { createApp } from "../app.js";
+import { placeholderCapHits, placeholderCapOverrides } from "../observability/prom.js";
 import type { StorageService } from "../storage/types.js";
 
 const { loadAllMock, schedulerStartMock, coordinatorStartMock, dispatcherInitializeMock } = vi.hoisted(() => ({
@@ -98,5 +99,7 @@ describe("GET /metrics", () => {
       "# HELP paperclip_placeholder_cap_overrides_total Times a board override bypassed the placeholder-comment cap.",
     );
     expect(res.text).toContain("# TYPE paperclip_placeholder_cap_overrides_total counter");
+    expect((placeholderCapHits as unknown as { labelNames: string[] }).labelNames).toEqual(["agent_id"]);
+    expect((placeholderCapOverrides as unknown as { labelNames: string[] }).labelNames).toEqual(["agent_id"]);
   });
 });

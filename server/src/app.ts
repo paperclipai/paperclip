@@ -41,6 +41,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { register as metricsRegister } from "./observability/prom.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -160,6 +161,15 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  // Intentionally unauthenticated so Prometheus can scrape it; the private hostname guard still applies.
+  app.get("/metrics", async (_req, res, next) => {
+    try {
+      res.set("Content-Type", metricsRegister.contentType);
+      res.end(await metricsRegister.metrics());
+    } catch (err) {
+      next(err);
+    }
+  });
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
