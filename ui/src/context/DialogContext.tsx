@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
 interface NewIssueDefaults {
   status?: string;
@@ -48,7 +48,22 @@ interface DialogContextValue {
   closeOnboarding: () => void;
 }
 
-const DialogContext = createContext<DialogContextValue | null>(null);
+type DialogStateValue = Pick<
+  DialogContextValue,
+  | "newIssueOpen"
+  | "newIssueDefaults"
+  | "newProjectOpen"
+  | "newGoalOpen"
+  | "newGoalDefaults"
+  | "newAgentOpen"
+  | "onboardingOpen"
+  | "onboardingOptions"
+>;
+
+type DialogActionsValue = Omit<DialogContextValue, keyof DialogStateValue>;
+
+const DialogStateContext = createContext<DialogStateValue | null>(null);
+const DialogActionsContext = createContext<DialogActionsValue | null>(null);
 
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [newIssueOpen, setNewIssueOpen] = useState(false);
@@ -106,38 +121,84 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setOnboardingOptions({});
   }, []);
 
+  const stateValue = useMemo<DialogStateValue>(
+    () => ({
+      newIssueOpen,
+      newIssueDefaults,
+      newProjectOpen,
+      newGoalOpen,
+      newGoalDefaults,
+      newAgentOpen,
+      onboardingOpen,
+      onboardingOptions,
+    }),
+    [
+      newIssueOpen,
+      newIssueDefaults,
+      newProjectOpen,
+      newGoalOpen,
+      newGoalDefaults,
+      newAgentOpen,
+      onboardingOpen,
+      onboardingOptions,
+    ],
+  );
+
+  const actionsValue = useMemo<DialogActionsValue>(
+    () => ({
+      openNewIssue,
+      closeNewIssue,
+      openNewProject,
+      closeNewProject,
+      openNewGoal,
+      closeNewGoal,
+      openNewAgent,
+      closeNewAgent,
+      openOnboarding,
+      closeOnboarding,
+    }),
+    [
+      openNewIssue,
+      closeNewIssue,
+      openNewProject,
+      closeNewProject,
+      openNewGoal,
+      closeNewGoal,
+      openNewAgent,
+      closeNewAgent,
+      openOnboarding,
+      closeOnboarding,
+    ],
+  );
+
   return (
-    <DialogContext.Provider
-      value={{
-        newIssueOpen,
-        newIssueDefaults,
-        openNewIssue,
-        closeNewIssue,
-        newProjectOpen,
-        openNewProject,
-        closeNewProject,
-        newGoalOpen,
-        newGoalDefaults,
-        openNewGoal,
-        closeNewGoal,
-        newAgentOpen,
-        openNewAgent,
-        closeNewAgent,
-        onboardingOpen,
-        onboardingOptions,
-        openOnboarding,
-        closeOnboarding,
-      }}
-    >
-      {children}
-    </DialogContext.Provider>
+    <DialogActionsContext.Provider value={actionsValue}>
+      <DialogStateContext.Provider value={stateValue}>
+        {children}
+      </DialogStateContext.Provider>
+    </DialogActionsContext.Provider>
   );
 }
 
-export function useDialog() {
-  const ctx = useContext(DialogContext);
+export function useDialogActions() {
+  const ctx = useContext(DialogActionsContext);
   if (!ctx) {
-    throw new Error("useDialog must be used within DialogProvider");
+    throw new Error("useDialogActions must be used within DialogProvider");
   }
   return ctx;
+}
+
+export function useDialogState() {
+  const ctx = useContext(DialogStateContext);
+  if (!ctx) {
+    throw new Error("useDialogState must be used within DialogProvider");
+  }
+  return ctx;
+}
+
+export function useDialog() {
+  return {
+    ...useDialogState(),
+    ...useDialogActions(),
+  };
 }
