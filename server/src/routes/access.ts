@@ -2789,7 +2789,11 @@ export function accessRoutes(
       if (logoAsset?.companyId) {
         try {
           const storage = getStorageService();
-          const logoObject = await storage.headObject(logoAsset.companyId, logoAsset.objectKey);
+          const logoObject = await storage.headObject(
+            logoAsset.companyId,
+            logoAsset.objectKey,
+            logoAsset.provider as "local_disk" | "s3",
+          );
           if (logoObject.exists) {
             logoUrl = `/api/invites/${inviteToken}/logo`;
           }
@@ -2816,6 +2820,7 @@ export function accessRoutes(
 
   async function getInviteLogoAsset(companyId: string | null): Promise<{
     companyId: string | null;
+    provider: string | null;
     objectKey: string;
     contentType: string | null;
     byteSize: number | null;
@@ -2825,6 +2830,7 @@ export function accessRoutes(
     const logoAsset = await db
       .select({
         companyId: companies.id,
+        provider: assets.provider,
         objectKey: assets.objectKey,
         contentType: assets.contentType,
         byteSize: assets.byteSize,
@@ -2839,6 +2845,7 @@ export function accessRoutes(
     if (!logoAsset?.objectKey) return null;
     return {
       companyId: logoAsset.companyId,
+      provider: logoAsset.provider,
       objectKey: logoAsset.objectKey,
       contentType: logoAsset.contentType,
       byteSize: logoAsset.byteSize,
@@ -3046,11 +3053,19 @@ export function accessRoutes(
     const companyId = logoAsset.companyId;
 
     const storage = getStorageService();
-    const logoHead = await storage.headObject(companyId, logoAsset.objectKey);
+    const logoHead = await storage.headObject(
+      companyId,
+      logoAsset.objectKey,
+      logoAsset.provider as "local_disk" | "s3",
+    );
     if (!logoHead.exists) {
       throw notFound("Invite logo not found");
     }
-    const object = await storage.getObject(companyId, logoAsset.objectKey);
+    const object = await storage.getObject(
+      companyId,
+      logoAsset.objectKey,
+      logoAsset.provider as "local_disk" | "s3",
+    );
     const responseContentType =
       logoAsset.contentType ||
       logoHead.contentType ||

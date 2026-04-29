@@ -41,6 +41,29 @@ export {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./instance.js";
 export type {
+  RecoveryState,
+  RecoveryManifestFreshness,
+  RecoveryBackupTier,
+  RecoveryDrillStatus,
+  RecoveryVaultSummary,
+  RecoveryArtifactRef,
+  RecoveryBackupArtifact,
+  RecoveryKeySnapshotArtifact,
+  RecoveryManifestRecord,
+  RecoveryDrillRecord,
+  RecoveryAssetCutoverStatus,
+  RecoveryStatusFile,
+  RecoveryStatusSnapshot,
+} from "./recovery.js";
+export {
+  RECOVERY_STATES,
+  RECOVERY_MANIFEST_FRESHNESS,
+  RECOVERY_BACKUP_TIERS,
+  RECOVERY_DRILL_STATUSES,
+  DEFAULT_RECOVERY_STATUS_FILE,
+  evaluateRecoveryStatus,
+} from "./recovery.js";
+export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
   CompanySkillCompatibility,

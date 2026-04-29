@@ -56,7 +56,7 @@ export interface PutFileResult {
 export interface StorageService {
   provider: StorageProviderId;
   putFile(input: PutFileInput): Promise<PutFileResult>;
-  getObject(companyId: string, objectKey: string): Promise<GetObjectResult>;
-  headObject(companyId: string, objectKey: string): Promise<HeadObjectResult>;
-  deleteObject(companyId: string, objectKey: string): Promise<void>;
+  getObject(companyId: string, objectKey: string, providerOverride?: StorageProviderId): Promise<GetObjectResult>;
+  headObject(companyId: string, objectKey: string, providerOverride?: StorageProviderId): Promise<HeadObjectResult>;
+  deleteObject(companyId: string, objectKey: string, providerOverride?: StorageProviderId): Promise<void>;
 }

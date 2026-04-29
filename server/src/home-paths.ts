@@ -54,6 +54,14 @@ export function resolveDefaultBackupDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
 }
 
+export function resolveDefaultRecoveryDir(): string {
+  return path.resolve(resolvePaperclipInstanceRoot(), "data", "recovery");
+}
+
+export function resolveDefaultRecoveryStatusPath(): string {
+  return path.resolve(resolveDefaultRecoveryDir(), "status.json");
+}
+
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   const trimmed = agentId.trim();
   if (!PATH_SEGMENT_RE.test(trimmed)) {

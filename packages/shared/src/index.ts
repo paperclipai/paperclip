@@ -271,6 +271,19 @@ export type {
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
   BackupRetentionPolicy,
+  RecoveryState,
+  RecoveryManifestFreshness,
+  RecoveryBackupTier,
+  RecoveryDrillStatus,
+  RecoveryVaultSummary,
+  RecoveryArtifactRef,
+  RecoveryBackupArtifact,
+  RecoveryKeySnapshotArtifact,
+  RecoveryManifestRecord,
+  RecoveryDrillRecord,
+  RecoveryAssetCutoverStatus,
+  RecoveryStatusFile,
+  RecoveryStatusSnapshot,
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
@@ -560,6 +573,14 @@ export {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./types/instance.js";
+export {
+  RECOVERY_STATES,
+  RECOVERY_MANIFEST_FRESHNESS,
+  RECOVERY_BACKUP_TIERS,
+  RECOVERY_DRILL_STATUSES,
+  DEFAULT_RECOVERY_STATUS_FILE,
+  evaluateRecoveryStatus,
+} from "./types/recovery.js";
 
 export {
   getClosedIsolatedExecutionWorkspaceMessage,

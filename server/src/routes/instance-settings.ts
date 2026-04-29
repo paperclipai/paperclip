@@ -7,7 +7,7 @@ import {
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { heartbeatService, instanceRecoveryStatusService, instanceSettingsService, logActivity } from "../services/index.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
@@ -23,6 +23,7 @@ function assertCanManageInstanceSettings(req: Request) {
 export function instanceSettingsRoutes(db: Db) {
   const router = Router();
   const svc = instanceSettingsService(db);
+  const recoveryStatus = instanceRecoveryStatusService();
   const heartbeat = heartbeatService(db);
 
   router.get("/instance/settings/general", async (req, res) => {
@@ -67,6 +68,11 @@ export function instanceSettingsRoutes(db: Db) {
     // or instance admin. Only PATCH requires instance-admin.
     assertBoardOrgAccess(req);
     res.json(await svc.getExperimental());
+  });
+
+  router.get("/instance/recovery-status", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(recoveryStatus.get());
   });
 
   router.patch(

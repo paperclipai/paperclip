@@ -318,7 +318,11 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, asset.companyId);
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    const object = await storage.getObject(
+      asset.companyId,
+      asset.objectKey,
+      asset.provider as "local_disk" | "s3",
+    );
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
     res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));

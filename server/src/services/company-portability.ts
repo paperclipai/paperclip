@@ -3180,7 +3180,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Skipped company logo ${company.logoAssetId} because the asset record was not found.`);
         } else {
           try {
-            const object = await storage.getObject(company.id, logoAsset.objectKey);
+            const object = await storage.getObject(
+              company.id,
+              logoAsset.objectKey,
+              logoAsset.provider as "local_disk" | "s3",
+            );
             const body = await streamToBuffer(object.stream);
             companyLogoPath = `images/${COMPANY_LOGO_FILE_NAME}${resolveCompanyLogoExtension(logoAsset.contentType, logoAsset.originalFilename)}`;
             files[companyLogoPath] = bufferToPortableBinaryFile(body, logoAsset.contentType);
