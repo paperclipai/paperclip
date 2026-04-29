@@ -130,6 +130,11 @@ export type MockRehydrateReceipt = ProjectionBoundary & {
   requestKind: "rehydrate_projection";
   terminalStateAdvanced: false;
   doesClaimTerminalSuccess: false;
+  idempotency: {
+    idempotencyKey: string;
+    duplicate: boolean;
+    stableReceipt: true;
+  };
   receipt: {
     receiptId: string;
     status: "requested";
@@ -137,6 +142,77 @@ export type MockRehydrateReceipt = ProjectionBoundary & {
     idempotencyKey: string;
     reason: string;
   };
+};
+
+export type ProjectionStalenessReason =
+  | "journal_sequence_gap_detected"
+  | "journal_sequence_out_of_order"
+  | "journal_sequence_duplicate"
+  | "journal_empty"
+  | "journal_cursor_regression_blocked";
+
+export type ReconciliationStatus = "current" | "stale" | "degraded" | "blocked";
+
+export type JournalReplayEntry = {
+  issueId: string;
+  runId: string;
+  sequenceNo: number;
+  eventId: string;
+  eventKind: "run_started" | "projection_observed" | "callback_observed" | "run_degraded";
+  journalRef: string;
+  observedAt: string;
+  payload: Record<string, string | number | boolean | null>;
+};
+
+export type ReconciliationCursor = ProjectionBoundary & {
+  cursorId: string;
+  issueId: string;
+  runId: string;
+  journalCursor: string;
+  lastSequenceNo: number;
+  sourceJournalRef: string;
+  reconciledAt: string;
+  staleReason: ProjectionStalenessReason | null;
+  needsReconciliation: boolean;
+};
+
+export type JournalReplayResult = ProjectionBoundary & {
+  disclaimer: typeof PROJECTION_DISCLAIMER;
+  issueId: string;
+  runId: string;
+  replayStatus: ReconciliationStatus;
+  journalCursor: string;
+  lastSequenceNo: number;
+  sourceJournalRef: string;
+  staleReason: ProjectionStalenessReason | null;
+  terminalStateAdvanced: false;
+  cursor: ReconciliationCursor;
+  projection: MockRuntimeProjection;
+};
+
+export type IdempotencyInput = {
+  issueId: string;
+  runId: string;
+  requestKind: "callback" | "rehydrate_projection" | "journal_replay";
+  idempotencyKey: string;
+};
+
+export type CallbackReceipt = ProjectionBoundary & {
+  disclaimer: typeof PROJECTION_DISCLAIMER;
+  issueId: string;
+  runId: string;
+  requestKind: IdempotencyInput["requestKind"];
+  receiptId: string;
+  receiptStatus: "observed" | "requested";
+  requestSemantics: "receipt_only_not_terminal_success";
+  terminalStateAdvanced: false;
+  doesClaimTerminalSuccess: false;
+  idempotency: {
+    idempotencyKey: string;
+    duplicate: boolean;
+    stableReceipt: true;
+  };
+  createdAt: string;
 };
 
 export function parseRuntimeContractSnapshot(value: unknown): RuntimeContractSnapshot {

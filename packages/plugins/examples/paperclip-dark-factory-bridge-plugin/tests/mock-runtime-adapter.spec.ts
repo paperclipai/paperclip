@@ -7,11 +7,17 @@ import {
   parseRuntimeContractSnapshot,
 } from "../src/runtime-contract.js";
 import {
+  createMockCallbackReceipt,
   createMockRehydrateRequest,
+  detectReplayGapOrOutOfOrder,
   getMockJournalCursor,
+  getMockJournalReplayEntries,
   getMockProviderHealth,
   getMockRunAttemptMetadata,
   getMockRuntimeProjection,
+  reconcileMockProjection,
+  replayMockJournal,
+  compareOrAdvanceCursor,
 } from "../src/mock-runtime-adapter.js";
 
 describe("Dark Factory deterministic mock runtime adapter", () => {
@@ -127,6 +133,105 @@ describe("Dark Factory deterministic mock runtime adapter", () => {
         terminalStateAdvanced: false,
         idempotencyKey: "same-key",
         reason: "operator replay",
+      },
+    });
+  });
+
+  it("replays deterministic mock journal entries into stable non-authoritative projections", () => {
+    const issueId = "issue-journal-replay";
+    const entries = getMockJournalReplayEntries(issueId);
+    const first = replayMockJournal(issueId, entries);
+    const second = replayMockJournal(issueId, entries);
+
+    expect(second).toEqual(first);
+    expect(first).toMatchObject({
+      source: "dark-factory-projection",
+      truthSource: "dark-factory-journal",
+      authoritative: false,
+      terminalStateAdvanced: false,
+      replayStatus: "current",
+      journalCursor: expect.stringMatching(/^dark-factory:\/\/journal\//),
+      sourceJournalRef: expect.stringMatching(/^dark-factory:\/\/journal\//),
+      lastSequenceNo: entries.at(-1)?.sequenceNo,
+      cursor: expect.objectContaining({
+        issueId,
+        runId: expect.stringMatching(/^df-run-/),
+        journalCursor: expect.stringMatching(/^dark-factory:\/\/journal\//),
+        lastSequenceNo: entries.at(-1)?.sequenceNo,
+        staleReason: null,
+        needsReconciliation: false,
+      }),
+    });
+    expect(first.projection.projectionStatus).toBe("current");
+    expect(first.projection.authoritative).toBe(false);
+  });
+
+  it("marks journal replay gaps, out-of-order entries, and duplicates as stale/degraded/blocked without terminal success", () => {
+    const issueId = "issue-gap-replay";
+    const entries = getMockJournalReplayEntries(issueId);
+    const gapped = [entries[0], { ...entries[2], sequenceNo: entries[0].sequenceNo + 3 }];
+    const outOfOrder = [entries[1], entries[0]];
+    const duplicate = [entries[0], entries[0], entries[1]];
+
+    expect(detectReplayGapOrOutOfOrder(gapped)).toMatchObject({ ok: false, staleReason: "journal_sequence_gap_detected" });
+    expect(detectReplayGapOrOutOfOrder(outOfOrder)).toMatchObject({ ok: false, staleReason: "journal_sequence_out_of_order" });
+    expect(detectReplayGapOrOutOfOrder(duplicate)).toMatchObject({ ok: false, staleReason: "journal_sequence_duplicate" });
+
+    for (const replay of [replayMockJournal(issueId, gapped), replayMockJournal(issueId, outOfOrder), replayMockJournal(issueId, duplicate)]) {
+      expect(["stale", "degraded", "blocked"]).toContain(replay.replayStatus);
+      expect(replay.terminalStateAdvanced).toBe(false);
+      expect(replay.authoritative).toBe(false);
+      expect(replay.cursor.needsReconciliation).toBe(true);
+      expect(replay.projection.projectionStatus).not.toBe("current");
+    }
+  });
+
+  it("keeps reconciliation cursors monotonic and refuses silent sequence rollback", () => {
+    const issueId = "issue-reconcile-cursor";
+    const entries = getMockJournalReplayEntries(issueId);
+    const replay = reconcileMockProjection(issueId, entries);
+    const advanced = compareOrAdvanceCursor(replay.cursor, { ...replay.cursor, lastSequenceNo: replay.cursor.lastSequenceNo + 1, journalCursor: `${replay.cursor.journalCursor}+1` });
+    const rollback = compareOrAdvanceCursor(advanced, { ...advanced, lastSequenceNo: replay.cursor.lastSequenceNo - 1, journalCursor: "dark-factory://journal/rollback#1" });
+
+    expect(replay.cursor).toMatchObject({
+      source: "dark-factory-projection",
+      truthSource: "dark-factory-journal",
+      authoritative: false,
+      issueId,
+      runId: expect.stringMatching(/^df-run-/),
+      journalCursor: expect.stringMatching(/^dark-factory:\/\/journal\//),
+      lastSequenceNo: entries.at(-1)?.sequenceNo,
+      sourceJournalRef: expect.stringMatching(/^dark-factory:\/\/journal\//),
+      staleReason: null,
+      needsReconciliation: false,
+    });
+    expect(Date.parse(replay.cursor.reconciledAt)).not.toBeNaN();
+    expect(advanced.lastSequenceNo).toBe(replay.cursor.lastSequenceNo + 1);
+    expect(rollback.lastSequenceNo).toBe(advanced.lastSequenceNo);
+    expect(rollback.staleReason).toBe("journal_cursor_regression_blocked");
+    expect(rollback.needsReconciliation).toBe(true);
+  });
+
+  it("creates stable callback receipts with idempotency semantics and no terminal state mutation", () => {
+    const input = { issueId: "issue-callback", runId: "df-run-callback", requestKind: "callback", idempotencyKey: "same-callback-key" } as const;
+    const first = createMockCallbackReceipt(input);
+    const second = createMockCallbackReceipt(input);
+    const different = createMockCallbackReceipt({ ...input, idempotencyKey: "other-callback-key" });
+
+    expect(second).toEqual(first);
+    expect(different.receiptId).not.toBe(first.receiptId);
+    expect(first).toMatchObject({
+      source: "dark-factory-projection",
+      truthSource: "dark-factory-journal",
+      authoritative: false,
+      terminalStateAdvanced: false,
+      doesClaimTerminalSuccess: false,
+      requestSemantics: "receipt_only_not_terminal_success",
+      receiptStatus: "observed",
+      idempotency: {
+        idempotencyKey: "same-callback-key",
+        duplicate: false,
+        stableReceipt: true,
       },
     });
   });

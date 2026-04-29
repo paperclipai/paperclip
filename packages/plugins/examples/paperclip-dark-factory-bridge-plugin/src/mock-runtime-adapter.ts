@@ -5,15 +5,21 @@ import {
   PROJECTION_AUTHORITATIVE,
   PROJECTION_DISCLAIMER,
   RUNTIME_OBSERVATION_SOURCE,
+  type CallbackReceipt,
   type BreakerState,
   type FailureClass,
+  type IdempotencyInput,
+  type JournalReplayEntry,
+  type JournalReplayResult,
   type MockJournalCursor,
   type MockProviderHealth,
   type MockRehydrateReceipt,
   type MockRunAttemptMetadata,
   type MockRuntimeProjection,
+  type ProjectionStalenessReason,
   type ProjectionStatus,
   type ProviderHealthState,
+  type ReconciliationCursor,
 } from "./runtime-contract.js";
 
 function stableHex(input: string, length = 12): string {
@@ -77,14 +83,36 @@ function reasonsFor(status: ProjectionStatus): Pick<MockRuntimeProjection, "stal
   };
 }
 
+function boundary() {
+  return {
+    source: DARK_FACTORY_PROJECTION_SOURCE,
+    truthSource: DARK_FACTORY_TRUTH_SOURCE,
+    authoritative: PROJECTION_AUTHORITATIVE,
+  } as const;
+}
+
+function cursorFor(issueId: string, runId: string, sequenceNo: number, staleReason: ProjectionStalenessReason | null): ReconciliationCursor {
+  const journalCursor = `dark-factory://journal/${runId}#${sequenceNo}`;
+  return {
+    ...boundary(),
+    cursorId: `df-reconcile-${issuePrefix(issueId)}-${sequenceNo}`,
+    issueId,
+    runId,
+    journalCursor,
+    lastSequenceNo: sequenceNo,
+    sourceJournalRef: journalCursor,
+    reconciledAt: isoFromOffset(`${issueId}:${sequenceNo}:reconciled`, 1),
+    staleReason,
+    needsReconciliation: staleReason !== null,
+  };
+}
+
 export function getMockJournalCursor(issueId: string): MockJournalCursor {
   const runId = linkedRunIdFor(issueId);
   const lastJournalSequenceNo = 100 + stableInt(`${issueId}:cursor`, 900);
   const journalRef = `dark-factory://journal/${runId}#${lastJournalSequenceNo}`;
   return {
-    source: DARK_FACTORY_PROJECTION_SOURCE,
-    truthSource: DARK_FACTORY_TRUTH_SOURCE,
-    authoritative: PROJECTION_AUTHORITATIVE,
+    ...boundary(),
     cursorId: `df-cursor-${issuePrefix(issueId)}`,
     runId,
     journalCursor: journalRef,
@@ -106,9 +134,7 @@ export function getMockProviderHealth(issueId: string): MockProviderHealth {
   const breakerState = breakerFor(issueId);
   const providerState = providerStateFor(issueId, breakerState);
   return {
-    source: DARK_FACTORY_PROJECTION_SOURCE,
-    truthSource: DARK_FACTORY_TRUTH_SOURCE,
-    authoritative: PROJECTION_AUTHORITATIVE,
+    ...boundary(),
     observationSource: RUNTIME_OBSERVATION_SOURCE,
     providerRole: "primary_execution",
     modelRole: "execution_model",
@@ -141,9 +167,7 @@ export function getMockRuntimeProjection(issueId: string): MockRuntimeProjection
   const callbackReceiptId = `df-callback-${issuePrefix(issueId)}-${cursor.lastSequenceNo}`;
   const reasons = reasonsFor(status);
   return {
-    source: DARK_FACTORY_PROJECTION_SOURCE,
-    truthSource: DARK_FACTORY_TRUTH_SOURCE,
-    authoritative: PROJECTION_AUTHORITATIVE,
+    ...boundary(),
     disclaimer: PROJECTION_DISCLAIMER,
     issueId,
     runId: linkedRunId,
@@ -184,9 +208,7 @@ export function getMockRunAttemptMetadata(issueId: string): MockRunAttemptMetada
   const health = getMockProviderHealth(issueId);
   const failureClass = failureClassFor(issueId);
   return {
-    source: DARK_FACTORY_PROJECTION_SOURCE,
-    truthSource: DARK_FACTORY_TRUTH_SOURCE,
-    authoritative: PROJECTION_AUTHORITATIVE,
+    ...boundary(),
     providerRole: "primary_execution",
     modelRole: "execution_model",
     failureClass,
@@ -199,6 +221,151 @@ export function getMockRunAttemptMetadata(issueId: string): MockRunAttemptMetada
   };
 }
 
+export function getMockJournalReplayEntries(issueId: string): JournalReplayEntry[] {
+  const runId = linkedRunIdFor(issueId);
+  const baseSequence = 100 + stableInt(`${issueId}:replay-base`, 700);
+  return ["run_started", "projection_observed", "callback_observed"].map((eventKind, index) => {
+    const sequenceNo = baseSequence + index;
+    return {
+      issueId,
+      runId,
+      sequenceNo,
+      eventId: `df-event-${stableHex(`${issueId}:${runId}:${sequenceNo}:${eventKind}`, 14)}`,
+      eventKind: eventKind as JournalReplayEntry["eventKind"],
+      journalRef: `dark-factory://journal/${runId}#${sequenceNo}`,
+      observedAt: isoFromOffset(`${issueId}:${sequenceNo}:journal`, 2 - index),
+      payload: {
+        projectionOnly: true,
+        truthSource: DARK_FACTORY_TRUTH_SOURCE,
+        terminalStateAdvanced: false,
+      },
+    };
+  });
+}
+
+export function detectReplayGapOrOutOfOrder(entries: JournalReplayEntry[]): { ok: true; staleReason: null } | { ok: false; staleReason: ProjectionStalenessReason } {
+  if (entries.length === 0) return { ok: false, staleReason: "journal_empty" };
+  const seen = new Set<number>();
+  let previous = entries[0].sequenceNo - 1;
+  for (const entry of entries) {
+    if (seen.has(entry.sequenceNo)) return { ok: false, staleReason: "journal_sequence_duplicate" };
+    if (entry.sequenceNo < previous) return { ok: false, staleReason: "journal_sequence_out_of_order" };
+    if (entry.sequenceNo !== previous + 1) return { ok: false, staleReason: "journal_sequence_gap_detected" };
+    seen.add(entry.sequenceNo);
+    previous = entry.sequenceNo;
+  }
+  return { ok: true, staleReason: null };
+}
+
+export function createMockCallbackReceipt(input: IdempotencyInput): CallbackReceipt {
+  const idempotencyKey = input.idempotencyKey.trim() || `${input.runId}:${input.requestKind}`;
+  return {
+    ...boundary(),
+    disclaimer: PROJECTION_DISCLAIMER,
+    issueId: input.issueId,
+    runId: input.runId,
+    requestKind: input.requestKind,
+    receiptId: `df-receipt-${stableHex(`${input.issueId}:${input.runId}:${input.requestKind}:${idempotencyKey}`, 16)}`,
+    receiptStatus: input.requestKind === "callback" ? "observed" : "requested",
+    requestSemantics: "receipt_only_not_terminal_success",
+    terminalStateAdvanced: false,
+    doesClaimTerminalSuccess: false,
+    idempotency: {
+      idempotencyKey,
+      duplicate: false,
+      stableReceipt: true,
+    },
+    createdAt: isoFromOffset(`${input.issueId}:${input.runId}:${idempotencyKey}:receipt`, 4),
+  };
+}
+
+export function compareOrAdvanceCursor(current: ReconciliationCursor, next: ReconciliationCursor): ReconciliationCursor {
+  if (next.lastSequenceNo < current.lastSequenceNo) {
+    return {
+      ...current,
+      staleReason: "journal_cursor_regression_blocked",
+      needsReconciliation: true,
+    };
+  }
+  if (next.lastSequenceNo === current.lastSequenceNo) {
+    return current;
+  }
+  return {
+    ...next,
+    needsReconciliation: next.staleReason !== null,
+  };
+}
+
+export function replayMockJournal(issueId: string, entries = getMockJournalReplayEntries(issueId)): JournalReplayResult {
+  const replayCheck = detectReplayGapOrOutOfOrder(entries);
+  const first = entries[0];
+  const last = entries.at(-1);
+  const runId = last?.runId ?? first?.runId ?? linkedRunIdFor(issueId);
+  const sequenceNo = last?.sequenceNo ?? 0;
+  const staleReason = replayCheck.ok ? null : replayCheck.staleReason;
+  const cursor = cursorFor(issueId, runId, sequenceNo, staleReason);
+  const projection = getMockRuntimeProjection(issueId);
+  const projectionStatus: ProjectionStatus = staleReason ? (staleReason === "journal_sequence_duplicate" ? "degraded" : "stale") : "current";
+  const replayStatus: JournalReplayResult["replayStatus"] = staleReason ? (staleReason === "journal_sequence_out_of_order" ? "blocked" : projectionStatus) : "current";
+  const callbackReceipt = createMockCallbackReceipt({
+    issueId,
+    runId,
+    requestKind: "journal_replay",
+    idempotencyKey: `${runId}:${sequenceNo}:journal-replay`,
+  });
+  const journalCursor = cursor.journalCursor;
+
+  return {
+    ...boundary(),
+    disclaimer: PROJECTION_DISCLAIMER,
+    issueId,
+    runId,
+    replayStatus,
+    journalCursor,
+    lastSequenceNo: sequenceNo,
+    sourceJournalRef: journalCursor,
+    staleReason,
+    terminalStateAdvanced: false,
+    cursor,
+    projection: {
+      ...projection,
+      runId,
+      linkedRunId: runId,
+      journalCursor,
+      lastSequenceNo: sequenceNo,
+      projectionStatus,
+      callbackReceiptId: callbackReceipt.receiptId,
+      staleReason: staleReason ?? null,
+      degradedReason: projectionStatus === "degraded" || projectionStatus === "stale" ? "journal_replay_requires_reconciliation" : null,
+      blockedReason: replayStatus === "blocked" ? "journal_replay_order_blocked" : null,
+      terminalStateAdvanced: false,
+      sourceJournalRef: journalCursor,
+      projectionJson: {
+        issueId,
+        runId,
+        cursor: journalCursor,
+        status: projectionStatus,
+      },
+      callbackReceipt: {
+        receiptId: callbackReceipt.receiptId,
+        status: "observed",
+        terminalStateAdvanced: false,
+        idempotencyKey: callbackReceipt.idempotency.idempotencyKey,
+      },
+      flags: {
+        degraded: projectionStatus === "degraded" || projectionStatus === "stale",
+        blocked: replayStatus === "blocked",
+        needsApproval: false,
+        stale: projectionStatus === "stale",
+      },
+    },
+  };
+}
+
+export function reconcileMockProjection(issueId: string, entries = getMockJournalReplayEntries(issueId)): JournalReplayResult {
+  return replayMockJournal(issueId, entries);
+}
+
 export function createMockRehydrateRequest(
   issueId: string,
   input: { reason?: string | null; idempotencyKey?: string | null } = {},
@@ -207,9 +374,7 @@ export function createMockRehydrateRequest(
   const idempotencyKey = input.idempotencyKey?.trim() || `${projection.runId}:rehydrate-request`;
   const receiptId = `df-rehydrate-${stableHex(`${issueId}:${idempotencyKey}`, 16)}`;
   return {
-    source: DARK_FACTORY_PROJECTION_SOURCE,
-    truthSource: DARK_FACTORY_TRUTH_SOURCE,
-    authoritative: PROJECTION_AUTHORITATIVE,
+    ...boundary(),
     disclaimer: PROJECTION_DISCLAIMER,
     issueId,
     runId: projection.runId,
@@ -226,6 +391,11 @@ export function createMockRehydrateRequest(
     requestKind: "rehydrate_projection",
     terminalStateAdvanced: false,
     doesClaimTerminalSuccess: false,
+    idempotency: {
+      idempotencyKey,
+      duplicate: false,
+      stableReceipt: true,
+    },
     receipt: {
       receiptId,
       status: "requested",
