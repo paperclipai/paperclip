@@ -54,8 +54,12 @@ import { logger } from "../middleware/logger.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default timeout for RPC calls in milliseconds. */
-const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+/** Default timeout for RPC calls in milliseconds. Bumped from 30s to 120s
+ * because plugin actions like Linear `trigger-import` legitimately exceed 30s
+ * for medium workspaces (~500 issues) and TIMEOUT was bubbling up to the UI
+ * even when the worker eventually completed the work. Per-call overrides
+ * still possible via `timeoutMs`; hard cap stays at MAX_RPC_TIMEOUT_MS. */
+const DEFAULT_RPC_TIMEOUT_MS = 120_000;
 
 /** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
 const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
