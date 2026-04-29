@@ -97,6 +97,13 @@ networkPolicy:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: paperclip
+    # Alertmanager webhook deliveries from monitoring/alertmanager-0 to
+    # paperclip-plugin-alertmanager. Auth on the plugin side is a static
+    # bearer token (see monitoring/alertmanager-receivers Secret); this
+    # rule is the network-layer prerequisite, not the security boundary.
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
 
 pdb:
   enabled: true
