@@ -2,12 +2,10 @@ import { Router } from "express";
 import { count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { pilotApplications } from "@paperclipai/db";
-import { pilotApplicationSchema } from "@paperclipai/shared";
+import { pilotApplicationSchema, PILOT_CAP } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { apiRateLimit } from "../middleware/rate-limit.js";
 import { sendPilotConfirmationEmail, sendPilotOpsNotification } from "../services/pilot-email.js";
-
-const PILOT_CAP = 10;
 
 export function pilotApplyRoutes(db: Db) {
   const router = Router();
@@ -65,7 +63,7 @@ export function pilotApplyRoutes(db: Db) {
 
       void Promise.all([
         sendPilotConfirmationEmail(name, email),
-        sendPilotOpsNotification(name, email, practiceType),
+        sendPilotOpsNotification(name, email, practiceType, description),
       ]);
 
       res.status(201).json({ success: true });

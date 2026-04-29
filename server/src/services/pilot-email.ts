@@ -61,6 +61,7 @@ export async function sendPilotOpsNotification(
   name: string,
   email: string,
   practiceType: string,
+  description: string,
 ): Promise<void> {
   const opsEmail = process.env.OPS_EMAIL;
   if (!opsEmail) {
@@ -76,6 +77,7 @@ export async function sendPilotOpsNotification(
       <p><strong>Name:</strong> ${escapeHtml(name)}</p>
       <p><strong>Email:</strong> ${escapeHtml(email)}</p>
       <p><strong>Practice Type:</strong> ${escapeHtml(practiceType)}</p>
+      <p><strong>Description:</strong> ${escapeHtml(description)}</p>
     `,
   });
 }

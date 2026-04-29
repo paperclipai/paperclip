@@ -16,3 +16,5 @@ export const pilotApplicationSchema = z.object({
 });
 
 export type PilotApplication = z.infer<typeof pilotApplicationSchema>;
+
+export const PILOT_CAP = 10;
