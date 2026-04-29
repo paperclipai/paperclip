@@ -112,7 +112,13 @@ export {
 export { rt2AgentMarketplace, rt2ByoaAgents, rt2AgentSubscriptions } from "./rt2_agent_marketplace.js";
 export { rt2CareerProfiles, rt2CareerPortfolio, rt2SkillTransfers, rt2CareerMilestones } from "./rt2_career_mate.js";
 export { rt2ReverseDesignRuns, rt2ProcessMiningSnapshots, rt2RuntimeSkillInjections } from "./rt2_advanced_ai.js";
-export { rt2SsoConnections, rt2CompanyTemplates, rt2TenantPolicies, rt2BindingModes } from "./rt2_enterprise.js";
+export {
+  rt2SsoConnections,
+  rt2CompanyTemplates,
+  rt2TenantPolicies,
+  rt2BindingModes,
+  rt2EnterpriseConnectorEvidence,
+} from "./rt2_enterprise.js";
 export { rt2PromotionTriggers, rt2PerformanceReviews, rt2CreditConversionLedger, CREDITS_PER_GOLD, PROMOTION_TIERS, GRADE_THRESHOLDS, calculateGrade, getTierFromReputation, calculateGoldFromCredits } from "./rt2_reputation_expansion.js";
 export { rt2SearchIndex, rt2SearchLog } from "./rt2_search.js";
 export {

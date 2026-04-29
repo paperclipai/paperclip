@@ -247,3 +247,38 @@ export const rt2BindingModes = pgTable(
     modeIdx: index("binding_modes_mode_idx").on(table.mode),
   }),
 );
+
+export const rt2EnterpriseConnectorEvidence = pgTable(
+  "rt2_enterprise_connector_evidence",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id),
+    connectorKind: text("connector_kind").notNull(),
+    evidenceType: text("evidence_type").notNull(),
+    status: text("status").notNull(),
+    provider: text("provider"),
+    sourceLabel: text("source_label"),
+    previewEvidenceId: uuid("preview_evidence_id"),
+    fingerprint: text("fingerprint"),
+    summary: jsonb("summary").$type<Record<string, unknown>>().notNull().default({}),
+    checks: jsonb("checks").$type<unknown[]>().notNull().default([]),
+    candidates: jsonb("candidates").$type<unknown[]>().notNull().default([]),
+    rollbackCandidates: jsonb("rollback_candidates").$type<unknown[]>().notNull().default([]),
+    failureReasons: jsonb("failure_reasons").$type<unknown[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+  },
+  (table) => ({
+    companyLatestIdx: index("rt2_enterprise_connector_evidence_company_latest_idx").on(
+      table.companyId,
+      table.connectorKind,
+      table.evidenceType,
+      table.createdAt,
+    ),
+    companyPreviewIdx: index("rt2_enterprise_connector_evidence_company_preview_idx").on(
+      table.companyId,
+      table.previewEvidenceId,
+    ),
+    fingerprintIdx: index("rt2_enterprise_connector_evidence_fingerprint_idx").on(table.fingerprint),
+  }),
+);

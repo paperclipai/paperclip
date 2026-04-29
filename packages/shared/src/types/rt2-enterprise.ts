@@ -50,14 +50,25 @@ export interface Rt2RolloutSsoValidationInput {
   metadataUrl?: string | null;
   certificate?: string | null;
   callbackUrl?: string | null;
+  callbackState?: string | null;
+  expectedCallbackState?: string | null;
+}
+
+export interface Rt2EnterpriseConnectorFailureReason {
+  code: string;
+  message: string;
+  field?: string;
 }
 
 export interface Rt2RolloutSsoValidationResult {
+  evidenceId?: string;
   provider: Rt2RolloutSsoProvider;
   status: Rt2RolloutValidationStatus;
   checkedAt: string;
   certificateExpiresAt: string | null;
   checks: Rt2RolloutValidationCheck[];
+  callbackStateChecks?: Rt2RolloutValidationCheck[];
+  failureReasons?: Rt2EnterpriseConnectorFailureReason[];
   warnings: string[];
 }
 
@@ -83,6 +94,7 @@ export interface Rt2ScimSyncPreviewInput {
 }
 
 export interface Rt2ScimSyncPreviewCandidate {
+  id?: string;
   kind: "user" | "group";
   action: Rt2ScimPreviewAction;
   externalId: string;
@@ -92,6 +104,8 @@ export interface Rt2ScimSyncPreviewCandidate {
 }
 
 export interface Rt2ScimSyncPreviewResult {
+  previewId?: string;
+  previewFingerprint?: string;
   status: Rt2RolloutValidationStatus;
   checkedAt: string;
   summary: {
@@ -102,6 +116,64 @@ export interface Rt2ScimSyncPreviewResult {
   };
   candidates: Rt2ScimSyncPreviewCandidate[];
   warnings: string[];
+}
+
+export type Rt2ScimApplyStatus = "applied" | "partial" | "failed";
+
+export type Rt2ScimCandidateApplyStatus = "applied" | "skipped" | "failed";
+
+export interface Rt2ScimApplyRequest {
+  previewId: string;
+  previewFingerprint: string;
+  selectedCandidateIds: string[];
+  acknowledgeDeactivations?: boolean;
+}
+
+export interface Rt2ScimApplyCandidateResult {
+  candidateId: string;
+  kind: "user" | "group";
+  action: Rt2ScimPreviewAction;
+  externalId: string;
+  label: string;
+  status: Rt2ScimCandidateApplyStatus;
+  reason: string;
+  rollbackCandidate?: Rt2ScimRollbackCandidate | null;
+  failureReason?: Rt2EnterpriseConnectorFailureReason | null;
+}
+
+export interface Rt2ScimRollbackCandidate {
+  candidateId: string;
+  kind: "user" | "group";
+  externalId: string;
+  action: Rt2ScimPreviewAction;
+  priorState: Record<string, unknown> | null;
+  targetState: Record<string, unknown>;
+  reason: string;
+}
+
+export interface Rt2ScimApplyResult {
+  evidenceId: string;
+  previewId: string;
+  previewFingerprint: string;
+  status: Rt2ScimApplyStatus;
+  appliedAt: string;
+  summary: {
+    applied: number;
+    skipped: number;
+    failed: number;
+    rollbackCandidates: number;
+  };
+  candidates: Rt2ScimApplyCandidateResult[];
+  rollbackCandidates: Rt2ScimRollbackCandidate[];
+  failureReasons: Rt2EnterpriseConnectorFailureReason[];
+}
+
+export interface Rt2EnterpriseConnectorError {
+  ok: false;
+  statusCode: 400 | 404 | 409;
+  code: "missing_preview" | "stale_preview" | "deactivate_acknowledgement_required" | "invalid_apply_request";
+  message: string;
+  failureReasons: Rt2EnterpriseConnectorFailureReason[];
 }
 
 export interface Rt2RolloutEvidenceItem {
