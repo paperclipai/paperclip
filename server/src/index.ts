@@ -669,7 +669,12 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    // Use a dedicated connection pool with no statement_timeout for the heartbeat
+    // scheduler. Recovery queries (reapOrphanedRuns, resumeQueuedRuns) scan the
+    // heartbeat_runs table and can exceed a tight server-side statement_timeout on
+    // busy instances, causing spurious "periodic heartbeat recovery failed" errors.
+    const heartbeatDb = createDb(activeDatabaseConnectionString, { statementTimeout: 0 });
+    const heartbeat = heartbeatService(heartbeatDb as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
