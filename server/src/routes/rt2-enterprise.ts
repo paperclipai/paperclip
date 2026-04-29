@@ -56,17 +56,19 @@ export function rt2EnterpriseRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      const result = enterpriseService.validateSsoProviderMetadata(req.body ?? {});
+      const result = await enterpriseService.validateSsoHandshake(companyId, req.body ?? {});
       const actor = rolloutAuditActor(req);
       await logActivity(db, {
         companyId,
         ...actor,
-        action: "rt2.rollout.sso_validated",
+        action: "rt2.rollout.sso_handshake_validated",
         entityType: "rt2_enterprise_rollout",
-        entityId: companyId,
+        entityId: result.evidenceId ?? companyId,
         details: {
+          evidenceId: result.evidenceId,
           provider: result.provider,
           status: result.status,
+          failureReasons: result.failureReasons ?? [],
           warnings: result.warnings,
         },
       });
@@ -82,7 +84,7 @@ export function rt2EnterpriseRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      const result = enterpriseService.previewScimSync(req.body ?? {});
+      const result = await enterpriseService.createScimPreview(companyId, req.body ?? {});
       const actor = rolloutAuditActor(req);
       await logActivity(db, {
         companyId,
@@ -91,6 +93,8 @@ export function rt2EnterpriseRoutes(db: Db) {
         entityType: "rt2_enterprise_rollout",
         entityId: companyId,
         details: {
+          previewId: result.previewId,
+          previewFingerprint: result.previewFingerprint,
           status: result.status,
           summary: result.summary,
         },
@@ -98,6 +102,40 @@ export function rt2EnterpriseRoutes(db: Db) {
       return res.status(200).json(result);
     } catch (error) {
       console.error("Error previewing RT2 SCIM sync:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  router.post("/companies/:companyId/rt2/enterprise/scim/apply", async (req, res) => {
+    try {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const result = await enterpriseService.applyScimPreview(companyId, req.body ?? {});
+      if (!("evidenceId" in result)) {
+        return res.status(result.statusCode).json(result);
+      }
+
+      const actor = rolloutAuditActor(req);
+      await logActivity(db, {
+        companyId,
+        ...actor,
+        action: "rt2.rollout.scim_applied",
+        entityType: "rt2_enterprise_rollout",
+        entityId: result.evidenceId,
+        details: {
+          evidenceId: result.evidenceId,
+          previewId: result.previewId,
+          previewFingerprint: result.previewFingerprint,
+          status: result.status,
+          summary: result.summary,
+          failureReasons: result.failureReasons,
+          rollbackCandidateCount: result.rollbackCandidates.length,
+        },
+      });
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("Error applying RT2 SCIM preview:", error);
       return res.status(500).json({ error: "Internal server error" });
     }
   });

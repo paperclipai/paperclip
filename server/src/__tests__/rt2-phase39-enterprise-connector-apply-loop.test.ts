@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -9,6 +11,8 @@ import {
   rt2EnterpriseConnectorEvidence,
   startEmbeddedPostgresTestDatabase,
 } from "@paperclipai/db";
+import { errorHandler } from "../middleware/index.js";
+import { rt2EnterpriseRoutes } from "../routes/rt2-enterprise.js";
 import { rt2EnterpriseService } from "../services/rt2-enterprise.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -48,6 +52,24 @@ describeEmbeddedPostgres("rt2 phase 39 enterprise connector apply loop", () => {
       issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+  }
+
+  function createApp(actorCompanyId: string) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [actorCompanyId],
+      };
+      next();
+    });
+    app.use("/api", rt2EnterpriseRoutes(db));
+    app.use(errorHandler);
+    return app;
   }
 
   it("persists SSO handshake evidence with callback-state failure reasons and hydrates overview", async () => {
@@ -171,5 +193,62 @@ describeEmbeddedPostgres("rt2 phase 39 enterprise connector apply loop", () => {
     expect(overview.readiness.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ area: "scim", status: "warning" }),
     ]));
+  });
+
+  it("writes company-scoped route audit evidence for SSO validation and SCIM apply", async () => {
+    await seedCompany();
+    const app = createApp(companyId);
+
+    const validation = await request(app)
+      .post(`/api/companies/${companyId}/rt2/enterprise/sso/validate`)
+      .send({
+        provider: "microsoft",
+        issuerUrl: "https://login.example.com",
+        metadataUrl: "https://login.example.com/.well-known/openid-configuration",
+        callbackUrl: "https://rt2.internal/auth/callback",
+        expectedCallbackState: "state-1",
+        callbackState: "state-1",
+      });
+    expect(validation.status).toBe(200);
+    expect(validation.body.evidenceId).toEqual(expect.any(String));
+
+    const preview = await request(app)
+      .post(`/api/companies/${companyId}/rt2/enterprise/scim/preview`)
+      .send({
+        users: [
+          { externalId: "u-1", email: "operator@isens.local", displayName: "Operator", role: "operator" },
+          { externalId: "u-2", email: "invalid-email", displayName: "Invalid User" },
+        ],
+      });
+    expect(preview.status).toBe(200);
+
+    const apply = await request(app)
+      .post(`/api/companies/${companyId}/rt2/enterprise/scim/apply`)
+      .send({
+        previewId: preview.body.previewId,
+        previewFingerprint: preview.body.previewFingerprint,
+        selectedCandidateIds: preview.body.candidates.map((candidate: { id: string }) => candidate.id),
+      });
+    expect(apply.status).toBe(200);
+    expect(apply.body.status).toBe("partial");
+
+    const auditRows = await db.select().from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .orderBy(desc(activityLog.createdAt));
+    expect(auditRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "rt2.rollout.sso_handshake_validated",
+        entityId: validation.body.evidenceId,
+      }),
+      expect.objectContaining({
+        action: "rt2.rollout.scim_applied",
+        entityId: apply.body.evidenceId,
+      }),
+    ]));
+    expect(auditRows.find((row) => row.action === "rt2.rollout.scim_applied")?.details).toEqual(expect.objectContaining({
+      evidenceId: apply.body.evidenceId,
+      previewId: preview.body.previewId,
+      rollbackCandidateCount: 1,
+    }));
   });
 });

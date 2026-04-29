@@ -41,7 +41,10 @@ const mocks = vi.hoisted(() => ({
     saveRolloutSettings: vi.fn(),
     getRolloutOverview: vi.fn(),
     validateSsoProviderMetadata: vi.fn(),
+    validateSsoHandshake: vi.fn(),
     previewScimSync: vi.fn(),
+    createScimPreview: vi.fn(),
+    applyScimPreview: vi.fn(),
   },
   workBoard: {
     createInboundDraft: vi.fn(),
@@ -320,6 +323,22 @@ describe("RT2 v2.3 fallback route contracts", () => {
       ],
       warnings: ["Certificate was not provided."],
     });
+    mocks.enterprise.validateSsoHandshake.mockResolvedValue({
+      evidenceId: "sso-evidence-1",
+      provider: "microsoft",
+      status: "pass",
+      checkedAt: "2026-04-25T00:00:00.000Z",
+      certificateExpiresAt: null,
+      checks: [
+        { key: "issuer", label: "Issuer URL", status: "pass", detail: "HTTPS issuer accepted." },
+        { key: "callback-state", label: "Callback state", status: "pass", detail: "Callback state matches." },
+      ],
+      callbackStateChecks: [
+        { key: "callback-state", label: "Callback state", status: "pass", detail: "Callback state matches." },
+      ],
+      failureReasons: [],
+      warnings: [],
+    });
     mocks.enterprise.previewScimSync.mockReturnValue({
       status: "warning",
       checkedAt: "2026-04-25T00:00:00.000Z",
@@ -328,6 +347,33 @@ describe("RT2 v2.3 fallback route contracts", () => {
         { kind: "user", action: "deactivate", externalId: "u-2", label: "former@isens.local", reason: "Inactive source user.", warnings: ["Requires review."] },
       ],
       warnings: ["1 deactivate candidate(s) require operator approval before apply."],
+    });
+    mocks.enterprise.createScimPreview.mockResolvedValue({
+      previewId: "scim-preview-1",
+      previewFingerprint: "fingerprint-1",
+      status: "warning",
+      checkedAt: "2026-04-25T00:00:00.000Z",
+      summary: { create: 1, update: 1, deactivate: 1, warnings: 1 },
+      candidates: [
+        { id: "user:deactivate:u-2", kind: "user", action: "deactivate", externalId: "u-2", label: "former@isens.local", reason: "Inactive source user.", warnings: ["Requires review."] },
+      ],
+      warnings: ["1 deactivate candidate(s) require operator approval before apply."],
+    });
+    mocks.enterprise.applyScimPreview.mockResolvedValue({
+      evidenceId: "scim-apply-1",
+      previewId: "scim-preview-1",
+      previewFingerprint: "fingerprint-1",
+      status: "partial",
+      appliedAt: "2026-04-25T00:01:00.000Z",
+      summary: { applied: 1, skipped: 0, failed: 1, rollbackCandidates: 1 },
+      candidates: [
+        { candidateId: "user:deactivate:u-2", kind: "user", action: "deactivate", externalId: "u-2", label: "former@isens.local", status: "applied", reason: "Candidate apply evidence recorded." },
+        { candidateId: "user:update:u-3", kind: "user", action: "update", externalId: "u-3", label: "bad", status: "failed", reason: "User email is not a valid address.", failureReason: { code: "candidate_validation_failed", message: "User email is not a valid address." } },
+      ],
+      rollbackCandidates: [
+        { candidateId: "user:deactivate:u-2", kind: "user", externalId: "u-2", action: "deactivate", priorState: { externalId: "u-2" }, targetState: { action: "deactivate" }, reason: "Operator review." },
+      ],
+      failureReasons: [{ code: "candidate_validation_failed", message: "User email is not a valid address." }],
     });
 
     mocks.workBoard.getBoardOverview.mockResolvedValue({
@@ -474,9 +520,20 @@ describe("RT2 v2.3 fallback route contracts", () => {
       .post(`/api/companies/${companyId}/rt2/enterprise/sso/validate`)
       .send({ provider: "microsoft", issuerUrl: "https://login.example.com", callbackUrl: "https://rt2.internal/auth/callback" });
     expect(validation.status).toBe(200);
+    expect(validation.body.evidenceId).toBe("sso-evidence-1");
     expect(validation.body.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "issuer", status: "pass" }),
     ]));
+    expect(mocks.enterprise.validateSsoHandshake).toHaveBeenCalledWith(companyId, expect.objectContaining({
+      provider: "microsoft",
+      callbackUrl: "https://rt2.internal/auth/callback",
+    }));
+    expect(mocks.logActivity).toHaveBeenCalledWith(null, expect.objectContaining({
+      action: "rt2.rollout.sso_handshake_validated",
+      companyId,
+      entityId: "sso-evidence-1",
+      details: expect.objectContaining({ evidenceId: "sso-evidence-1", status: "pass" }),
+    }));
 
     const scim = await request(app)
       .post(`/api/companies/${companyId}/rt2/enterprise/scim/preview`)
@@ -485,10 +542,41 @@ describe("RT2 v2.3 fallback route contracts", () => {
         groups: [],
       });
     expect(scim.status).toBe(200);
+    expect(scim.body.previewId).toBe("scim-preview-1");
     expect(scim.body.summary).toEqual(expect.objectContaining({ deactivate: 1 }));
     expect(mocks.logActivity).toHaveBeenCalledWith(null, expect.objectContaining({
       action: "rt2.rollout.scim_previewed",
       companyId,
+      details: expect.objectContaining({ previewId: "scim-preview-1", previewFingerprint: "fingerprint-1" }),
+    }));
+
+    const apply = await request(app)
+      .post(`/api/companies/${companyId}/rt2/enterprise/scim/apply`)
+      .send({
+        previewId: "scim-preview-1",
+        previewFingerprint: "fingerprint-1",
+        selectedCandidateIds: ["user:deactivate:u-2"],
+        acknowledgeDeactivations: true,
+      });
+    expect(apply.status).toBe(200);
+    expect(apply.body).toEqual(expect.objectContaining({
+      evidenceId: "scim-apply-1",
+      status: "partial",
+      summary: expect.objectContaining({ rollbackCandidates: 1 }),
+    }));
+    expect(mocks.enterprise.applyScimPreview).toHaveBeenCalledWith(companyId, expect.objectContaining({
+      previewId: "scim-preview-1",
+      acknowledgeDeactivations: true,
+    }));
+    expect(mocks.logActivity).toHaveBeenCalledWith(null, expect.objectContaining({
+      action: "rt2.rollout.scim_applied",
+      companyId,
+      entityId: "scim-apply-1",
+      details: expect.objectContaining({
+        evidenceId: "scim-apply-1",
+        previewId: "scim-preview-1",
+        rollbackCandidateCount: 1,
+      }),
     }));
   });
 
