@@ -138,8 +138,12 @@ export async function createApp(
   const app = express();
 
   app.use(express.json({
-    // Company import/export payloads can inline full portable packages.
-    limit: "10mb",
+    // Default cap: 1 MiB. Big enough for issues, agent configs, comments, approvals.
+    // Pre-fix was 10mb — confirmed DoS vector (S-CRIT-8, 2026-04-28 fuzz: 100KB
+    // titles hang the event loop, 1MB+ crashes the process).
+    // TODO: company import/export endpoints (which legitimately need >1MB) should
+    // mount a dedicated express.json({ limit: "10mb" }) on their router only.
+    limit: "1mb",
     verify: (req, _res, buf) => {
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
