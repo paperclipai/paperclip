@@ -51,6 +51,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { acceptanceCriteriaService } from "./acceptance-criteria.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -2615,6 +2616,16 @@ export function issueService(db: Db) {
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
         inheritExecutionWorkspaceFromIssueId: parent.id,
       });
+
+      const acceptanceCriteriaTexts = (acceptanceCriteria ?? []).map((item) => item.trim()).filter(Boolean);
+      if (acceptanceCriteriaTexts.length > 0) {
+        await acceptanceCriteriaService(db).bulkCreateForIssue(
+          child.id,
+          parent.companyId,
+          acceptanceCriteriaTexts,
+          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+        );
+      }
 
       if (blockParentUntilDone) {
         const existingBlockers = await db

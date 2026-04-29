@@ -130,6 +130,7 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
 } from "./work-product.js";
+export type { IssueAcceptanceCriterion } from "./acceptance-criterion.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

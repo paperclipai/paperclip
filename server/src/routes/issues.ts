@@ -10,6 +10,9 @@ import {
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
+  createIssueAcceptanceCriterionSchema,
+  updateIssueAcceptanceCriterionSchema,
+  setIssueAcceptanceCriterionStateSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
   createChildIssueSchema,
@@ -55,6 +58,7 @@ import {
   projectService,
   routineService,
   workProductService,
+  acceptanceCriteriaService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
@@ -413,6 +417,7 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
+  const acceptanceCriteriaSvc = acceptanceCriteriaService(db);
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const routinesSvc = routineService(db, {
@@ -1594,6 +1599,180 @@ export function issueRoutes(
       entityType: "issue",
       entityId: existing.issueId,
       details: { workProductId: removed.id, type: removed.type },
+    });
+    res.json(removed);
+  });
+
+  router.get("/issues/:id/acceptance-criteria", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const items = await acceptanceCriteriaSvc.listForIssue(issue.id);
+    res.json(items);
+  });
+
+  router.post(
+    "/issues/:id/acceptance-criteria",
+    validate(createIssueAcceptanceCriterionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actor = getActorInfo(req);
+      const created = await acceptanceCriteriaSvc.createForIssue(issue.id, issue.companyId, {
+        text: req.body.text,
+        notes: req.body.notes ?? null,
+        position: req.body.position,
+        state: req.body.state,
+        evidenceWorkProductId: req.body.evidenceWorkProductId ?? null,
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId ?? null,
+        },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.acceptance_criterion_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { acceptanceCriterionId: created.id, state: created.state },
+      });
+      res.status(201).json(created);
+    },
+  );
+
+  router.patch(
+    "/acceptance-criteria/:id",
+    validate(updateIssueAcceptanceCriterionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await acceptanceCriteriaSvc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Acceptance criterion not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      const issue = await svc.getById(existing.issueId);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actor = getActorInfo(req);
+      const updated = await acceptanceCriteriaSvc.update(id, {
+        ...req.body,
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId ?? null,
+        },
+      });
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.acceptance_criterion_updated",
+        entityType: "issue",
+        entityId: existing.issueId,
+        details: { acceptanceCriterionId: id, changedKeys: Object.keys(req.body).sort() },
+      });
+      res.json(updated);
+    },
+  );
+
+  router.put(
+    "/acceptance-criteria/:id/state",
+    validate(setIssueAcceptanceCriterionStateSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await acceptanceCriteriaSvc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Acceptance criterion not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      const issue = await svc.getById(existing.issueId);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actor = getActorInfo(req);
+      const updated = await acceptanceCriteriaSvc.setState(id, {
+        state: req.body.state,
+        evidenceWorkProductId: req.body.evidenceWorkProductId,
+        notes: req.body.notes,
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId ?? null,
+        },
+      });
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.acceptance_criterion_state_changed",
+        entityType: "issue",
+        entityId: existing.issueId,
+        details: {
+          acceptanceCriterionId: id,
+          previousState: existing.state,
+          state: updated.state,
+        },
+      });
+      res.json(updated);
+    },
+  );
+
+  router.delete("/acceptance-criteria/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await acceptanceCriteriaSvc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Acceptance criterion not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const removed = await acceptanceCriteriaSvc.remove(id);
+    if (!removed) {
+      res.status(404).json({ error: "Acceptance criterion not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.acceptance_criterion_deleted",
+      entityType: "issue",
+      entityId: existing.issueId,
+      details: { acceptanceCriterionId: removed.id },
     });
     res.json(removed);
   });

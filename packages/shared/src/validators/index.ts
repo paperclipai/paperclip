@@ -224,6 +224,19 @@ export {
 } from "./work-product.js";
 
 export {
+  issueAcceptanceCriterionStateSchema,
+  createIssueAcceptanceCriterionSchema,
+  updateIssueAcceptanceCriterionSchema,
+  setIssueAcceptanceCriterionStateSchema,
+  ISSUE_ACCEPTANCE_CRITERION_TEXT_MAX,
+  ISSUE_ACCEPTANCE_CRITERION_NOTES_MAX,
+  ISSUE_ACCEPTANCE_CRITERIA_MAX_PER_ISSUE,
+  type CreateIssueAcceptanceCriterion,
+  type UpdateIssueAcceptanceCriterion,
+  type SetIssueAcceptanceCriterionState,
+} from "./acceptance-criterion.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,
