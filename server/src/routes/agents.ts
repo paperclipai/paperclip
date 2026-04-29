@@ -54,6 +54,9 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { secretService } from "../services/secrets.js";
 import {
   detectAdapterModel,
@@ -167,6 +170,111 @@ export function agentRoutes(
     await assertEnvironmentSelectionForCompany(environmentService(db), companyId, environmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(adapterType),
     });
+  }
+
+  /**
+   * Resolve the execution target the adapter should run its test probes against.
+   *
+   * - No environmentId / local environment → returns a local target so the
+   *   adapter probes the Paperclip host (legacy behavior).
+   * - SSH environment → builds an SSH execution target from the environment
+   *   config so the adapter probes the remote box. No lease is required:
+   *   the SSH spec is fully derived from the saved environment config.
+   * - Sandbox / plugin environments → currently fall back to local probing
+   *   with a warning check, since lifting a temporary sandbox lease for an
+   *   ad-hoc test invocation is out of scope for this iteration.
+   */
+  async function resolveAdapterTestExecutionContext(input: {
+    companyId: string;
+    adapterType: string;
+    environmentId: string | null;
+  }): Promise<{
+    executionTarget: AdapterExecutionTarget | null;
+    environmentName: string | null;
+    fallbackChecks: AdapterEnvironmentCheck[];
+  }> {
+    if (!input.environmentId) {
+      return { executionTarget: null, environmentName: null, fallbackChecks: [] };
+    }
+
+    const environment = await environmentsSvc.getById(input.environmentId);
+    if (!environment || environment.companyId !== input.companyId) {
+      return {
+        executionTarget: null,
+        environmentName: null,
+        fallbackChecks: [
+          {
+            code: "environment_not_found",
+            level: "warn",
+            message: "Selected environment was not found. Falling back to a local probe.",
+          },
+        ],
+      };
+    }
+
+    if (environment.driver === "local") {
+      return { executionTarget: null, environmentName: environment.name, fallbackChecks: [] };
+    }
+
+    if (environment.driver === "ssh") {
+      try {
+        const target = await resolveEnvironmentExecutionTarget({
+          db,
+          companyId: input.companyId,
+          adapterType: input.adapterType,
+          environment: {
+            id: environment.id,
+            driver: environment.driver,
+            config: environment.config ?? null,
+          },
+          leaseMetadata: null,
+        });
+        if (target) {
+          return { executionTarget: target, environmentName: environment.name, fallbackChecks: [] };
+        }
+        return {
+          executionTarget: null,
+          environmentName: environment.name,
+          fallbackChecks: [
+            {
+              code: "environment_target_unavailable",
+              level: "warn",
+              message:
+                `Could not resolve an execution target for environment "${environment.name}". Falling back to a local probe.`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          executionTarget: null,
+          environmentName: environment.name,
+          fallbackChecks: [
+            {
+              code: "environment_target_failed",
+              level: "warn",
+              message:
+                `Could not connect to environment "${environment.name}" to run the test. Falling back to a local probe.`,
+              detail: err instanceof Error ? err.message : String(err),
+            },
+          ],
+        };
+      }
+    }
+
+    // sandbox / plugin / other drivers: not yet supported for ad-hoc adapter tests.
+    return {
+      executionTarget: null,
+      environmentName: environment.name,
+      fallbackChecks: [
+        {
+          code: "environment_driver_not_supported_for_test",
+          level: "warn",
+          message:
+            `Adapter testing inside ${environment.driver} environments is not yet supported. Falling back to a local probe; results may not reflect runs in "${environment.name}".`,
+          hint: "Run a real heartbeat in the environment to verify end-to-end behavior.",
+        },
+      ],
+    };
   }
 
   async function getCurrentUserRedactionOptions() {
@@ -977,6 +1085,10 @@ export function agentRoutes(
 
       const inputAdapterConfig =
         (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      const requestedEnvironmentId =
+        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
+          ? (req.body.environmentId as string)
+          : null;
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
@@ -987,11 +1099,31 @@ export function agentRoutes(
         normalizedAdapterConfig,
       );
 
+      const { executionTarget, environmentName, fallbackChecks } =
+        await resolveAdapterTestExecutionContext({
+          companyId,
+          adapterType: type,
+          environmentId: requestedEnvironmentId,
+        });
+
       const result = await adapter.testEnvironment({
         companyId,
         adapterType: type,
         config: runtimeAdapterConfig,
+        executionTarget,
+        environmentName,
       });
+
+      if (fallbackChecks.length > 0) {
+        const checks = [...fallbackChecks, ...result.checks];
+        const status: typeof result.status = checks.some((c) => c.level === "error")
+          ? "fail"
+          : checks.some((c) => c.level === "warn")
+            ? "warn"
+            : result.status;
+        res.json({ ...result, checks, status });
+        return;
+      }
 
       res.json(result);
     },
