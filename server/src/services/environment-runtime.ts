@@ -337,7 +337,6 @@ function createSandboxEnvironmentDriver(
 
     const deadline = Date.now() + Math.max(0, pluginWorkerReadyTimeoutMs);
     while (Date.now() < deadline) {
-      await delay(Math.max(1, pluginWorkerReadyPollMs));
       const retried = await resolvePluginSandboxProviderDriverByKey({
         db,
         driverKey: input.provider,
@@ -347,6 +346,7 @@ function createSandboxEnvironmentDriver(
       if (retried) {
         return { state: "running" as const, resolved: retried };
       }
+      await delay(Math.max(1, pluginWorkerReadyPollMs));
     }
 
     return { state: "worker_unavailable" as const, resolved: installed };
