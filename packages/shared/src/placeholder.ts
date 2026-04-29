@@ -2,7 +2,7 @@ export const DEFAULT_PLACEHOLDER_PATTERNS: ReadonlyArray<RegExp> = Object.freeze
   /^\s*Parked\.?\s*$/i,
   /^\s*Parking\.?\s*$/i,
   /^\s*Silent(?:\.|\s+exit\.?)?\s*$/i,
-  /^\s*Self-?wake.*$/i,
+  /^\s*Self-?wake(?:\s+(?:loop|exit|waiting(?:\s+for\s+\w+)?))?\.?\s*$/i,
   /^\s*Done for this heartbeat\.?\s*$/i,
   /^\s*Noop\.?\s*$/i,
   /^\s*Blocked\.?\s*$/i,
