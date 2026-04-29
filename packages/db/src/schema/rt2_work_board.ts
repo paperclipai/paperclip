@@ -59,6 +59,31 @@ export const rt2WorkBoardAttachments = pgTable(
   }),
 );
 
+export const rt2CaptureSources = pgTable(
+  "rt2_capture_sources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    label: text("label").notNull(),
+    installationState: text("installation_state").notNull().default("not_installed"),
+    signingStatus: text("signing_status").notNull().default("unsigned"),
+    signingSecretHash: text("signing_secret_hash"),
+    lastInboundEventAt: timestamp("last_inbound_event_at", { withTimezone: true }),
+    lastInboundEventId: text("last_inbound_event_id"),
+    lastErrorCode: text("last_error_code"),
+    blockedReason: text("blocked_reason"),
+    createdByUserId: text("created_by_user_id"),
+    updatedByUserId: text("updated_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companySourceUq: uniqueIndex("rt2_capture_sources_company_source_uq").on(table.companyId, table.source),
+    companyStateIdx: index("rt2_capture_sources_company_state_idx").on(table.companyId, table.installationState),
+  }),
+);
+
 export const rt2CaptureDrafts = pgTable(
   "rt2_capture_drafts",
   {
@@ -78,6 +103,11 @@ export const rt2CaptureDrafts = pgTable(
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     permissionStatus: text("permission_status").notNull().default("allowed"),
+    sourceInstallationId: uuid("source_installation_id").references(() => rt2CaptureSources.id, { onDelete: "set null" }),
+    sourceSigningStatus: text("source_signing_status").notNull().default("unsigned"),
+    sourceEvidence: jsonb("source_evidence").$type<Record<string, unknown>>(),
+    semanticContext: jsonb("semantic_context").$type<Array<Record<string, unknown>>>().notNull().default([]),
+    duplicateWarning: text("duplicate_warning"),
     auditTrail: jsonb("audit_trail").$type<Array<Record<string, unknown>>>().notNull().default([]),
     createdByUserId: text("created_by_user_id"),
     reviewedByUserId: text("reviewed_by_user_id"),
@@ -88,6 +118,7 @@ export const rt2CaptureDrafts = pgTable(
   (table) => ({
     companySourceStatusIdx: index("rt2_capture_drafts_company_source_status_idx").on(table.companyId, table.source, table.status),
     companyCreatedIdx: index("rt2_capture_drafts_company_created_idx").on(table.companyId, table.createdAt),
+    sourceInstallationIdx: index("rt2_capture_drafts_source_installation_idx").on(table.companyId, table.sourceInstallationId),
     duplicateLookupUq: uniqueIndex("rt2_capture_drafts_duplicate_lookup_uq").on(
       table.companyId,
       table.source,

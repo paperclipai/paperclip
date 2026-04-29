@@ -98,6 +98,16 @@ export function OneLinerPage() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: captureSources = [] } = useQuery({
+    queryKey: selectedCompanyId ? [...queryKeys.rt2Tasks.captureSources(selectedCompanyId)] : ["rt2-capture-sources-disabled"],
+    queryFn: () => rt2TasksApi.listCaptureSources(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const { data: captureQueue } = useQuery({
+    queryKey: selectedCompanyId ? [...queryKeys.rt2Tasks.captureQueue(selectedCompanyId)] : ["rt2-capture-queue-disabled"],
+    queryFn: () => rt2TasksApi.listCaptureQueue(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
 
   const activeProjects = useMemo(
     () => projects.filter((project) => !project.archivedAt),
@@ -278,8 +288,35 @@ export function OneLinerPage() {
             <div className="grid gap-2">
               {CAPTURE_ENTRYPOINTS.map((entrypoint) => (
                 <div key={entrypoint.source} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-2 py-1.5">
-                  <span className="text-xs font-medium text-foreground">{entrypoint.label}</span>
+                  <span className="min-w-0 text-xs font-medium text-foreground">{entrypoint.label}</span>
                   <code className="truncate text-[11px] text-muted-foreground">{entrypoint.route}</code>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background px-4 py-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="text-sm font-medium text-foreground">Capture source evidence</div>
+              <div className="text-xs text-muted-foreground">
+                {captureQueue?.summary.reviewRequired ?? 0} review · {captureQueue?.summary.duplicate ?? 0} duplicate
+              </div>
+            </div>
+            <div className="grid gap-2">
+              {captureSources.map((source) => (
+                <div key={source.source} className="grid gap-2 rounded-md bg-muted/40 px-2 py-2 text-xs sm:grid-cols-[7rem_1fr]">
+                  <div className="font-medium text-foreground">{source.label}</div>
+                  <div className="flex min-w-0 flex-wrap gap-1.5 text-muted-foreground">
+                    <span className="rounded-md border border-border px-2 py-0.5">{source.installationState}</span>
+                    <span className="rounded-md border border-border px-2 py-0.5">{source.signingStatus}</span>
+                    <span className="truncate rounded-md border border-border px-2 py-0.5">
+                      {source.lastInboundEventAt ? new Date(source.lastInboundEventAt).toLocaleString() : "no inbound event"}
+                    </span>
+                    {source.blockedReason ? (
+                      <span className="rounded-md border border-amber-300/70 px-2 py-0.5 text-amber-700 dark:text-amber-200">
+                        {source.blockedReason}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>

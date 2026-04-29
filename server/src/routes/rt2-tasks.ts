@@ -19,6 +19,7 @@ import {
   updateRt2BoardCardSchema,
   updateRt2BoardChecklistItemSchema,
   updateRt2TaskCapacitySchema,
+  upsertRt2CaptureSourceSchema,
   buildOneLinerRewardEvidence,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
@@ -116,11 +117,47 @@ export function rt2TaskRoutes(db: Db) {
           status: storedDraft.status,
           duplicateOfDraftId: storedDraft.duplicateOfDraftId,
           permissionStatus: storedDraft.permissionStatus,
+          sourceEvidence: storedDraft.sourceEvidence,
+          semanticContext: storedDraft.semanticContext,
+          duplicateWarning: storedDraft.duplicateWarning,
           reviewRequired: true,
         },
       });
     },
   );
+
+  router.get("/companies/:companyId/rt2/capture-sources", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoardActor(req);
+    res.json(await boardSvc.listCaptureSources(companyId));
+  });
+
+  router.put("/companies/:companyId/rt2/capture-sources/:source", validate(upsertRt2CaptureSourceSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    const source = req.params.source as string;
+    if (source !== req.body.source) {
+      throw badRequest("source path and body must match");
+    }
+    const record = await boardSvc.upsertCaptureSource(companyId, actorUserId, req.body);
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: actorUserId,
+      action: "rt2.capture.source_configured",
+      entityType: "capture_source",
+      entityId: record.id ?? source,
+      details: {
+        source: record.source,
+        installationState: record.installationState,
+        signingStatus: record.signingStatus,
+        blockedReason: record.blockedReason,
+      },
+    });
+    res.json(record);
+  });
 
   router.get("/companies/:companyId/rt2/work-board", async (req, res) => {
     const companyId = req.params.companyId as string;

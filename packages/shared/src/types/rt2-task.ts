@@ -151,6 +151,45 @@ export interface Rt2BoardOverview {
 
 export type Rt2CaptureDraftSource = "slack" | "teams" | "webhook" | "mobile" | "native";
 export type Rt2CaptureDraftStatus = "review_required" | "duplicate" | "permission_blocked" | "failed" | "promoted" | "discarded";
+export type Rt2CaptureSourceInstallationState = "not_installed" | "installed" | "blocked" | "stale" | "error";
+export type Rt2CaptureSourceSigningStatus = "unsigned" | "signed" | "invalid" | "missing" | "stale";
+
+export interface Rt2CaptureSourceSummary {
+  id: string | null;
+  companyId: string;
+  source: Rt2CaptureDraftSource;
+  label: string;
+  installationState: Rt2CaptureSourceInstallationState;
+  signingStatus: Rt2CaptureSourceSigningStatus;
+  lastInboundEventAt: Date | null;
+  lastInboundEventId: string | null;
+  lastErrorCode: string | null;
+  blockedReason: string | null;
+  updatedAt: Date | null;
+}
+
+export interface Rt2CaptureSourceEvidence {
+  sourceInstallationId: string | null;
+  installationState: Rt2CaptureSourceInstallationState;
+  signingStatus: Rt2CaptureSourceSigningStatus;
+  eventId: string | null;
+  eventTimestamp: string | null;
+  reasonCode: string | null;
+}
+
+export interface Rt2CaptureSemanticContextItem {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  sourceKey: string;
+  title: string;
+  snippet: string;
+  score: number;
+  freshness: "fresh" | "stale" | "unknown";
+  confidence: string;
+  contradictionStatus: "none" | "unknown" | "unresolved" | "resolved";
+  citationTarget: string | null;
+}
 
 export interface Rt2CaptureDraftSummary {
   id: string;
@@ -168,6 +207,9 @@ export interface Rt2CaptureDraftSummary {
   failureCode: string | null;
   failureMessage: string | null;
   permissionStatus: "allowed" | "missing_external_user" | "blocked";
+  sourceEvidence: Rt2CaptureSourceEvidence | null;
+  semanticContext: Rt2CaptureSemanticContextItem[];
+  duplicateWarning: string | null;
   auditTrail: Array<Record<string, unknown>>;
   createdAt: Date;
   updatedAt: Date;
@@ -175,6 +217,7 @@ export interface Rt2CaptureDraftSummary {
 
 export interface Rt2CaptureQueue {
   companyId: string;
+  sources: Rt2CaptureSourceSummary[];
   summary: {
     reviewRequired: number;
     duplicate: number;

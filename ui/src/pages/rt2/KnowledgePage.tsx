@@ -23,6 +23,22 @@ import { calendarDateKey, projectUrl } from "../../lib/utils";
 
 type KnowledgeView = "search" | "daily" | "wiki" | "graph" | "bridge" | "operations";
 
+function citationTarget(result: { type: string; sourceId: string; sourceKey: string }) {
+  if (result.type === "task" || result.type === "deliverable" || result.type === "work_artifact") {
+    return `/issues/${encodeURIComponent(result.sourceId)}`;
+  }
+  if (result.type === "wiki_page" || result.type === "daily_wiki_page") {
+    return `/knowledge?sourceKey=${encodeURIComponent(result.sourceKey)}`;
+  }
+  if (result.type === "graph_node" || result.type === "graph_edge") {
+    return `/knowledge?graph=${encodeURIComponent(result.sourceId)}`;
+  }
+  if (result.type === "document") {
+    return `/documents/${encodeURIComponent(result.sourceId)}`;
+  }
+  return null;
+}
+
 export function KnowledgePage() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -593,7 +609,7 @@ export function KnowledgePage() {
                           <h3 className="mt-2 truncate text-sm font-semibold">{result.title}</h3>
                           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{result.snippet}</p>
                         </div>
-                        <div className="shrink-0 text-right text-xs text-muted-foreground">
+                        <div className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
                           <div className="text-sm font-semibold text-foreground">{result.score.toFixed(2)}</div>
                           <div>{new Date(result.updatedAt).toLocaleDateString()}</div>
                         </div>
@@ -604,6 +620,23 @@ export function KnowledgePage() {
                             {item.source} · {item.reason}
                           </span>
                         ))}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        {citationTarget(result) ? (
+                          <Link
+                            to={citationTarget(result)!}
+                            className="rounded-md border border-border px-2 py-1 font-medium text-foreground hover:bg-accent"
+                          >
+                            Open citation
+                          </Link>
+                        ) : (
+                          <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
+                            Citation: {result.sourceKey}
+                          </span>
+                        )}
+                        <span className="rounded-md bg-muted px-2 py-1 text-muted-foreground">
+                          semantic + lexical fallback
+                        </span>
                       </div>
                     </article>
                   ))}

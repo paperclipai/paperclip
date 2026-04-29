@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   issueWorkProducts,
   issues,
   rt2CaptureDrafts,
+  rt2CaptureSources,
   rt2WorkBoardAttachments,
   rt2WorkBoardCards,
   rt2WorkBoardChecklistItems,
@@ -16,11 +17,13 @@ import {
   type CreateRt2BoardAttachment,
   type CreateRt2BoardChecklistItem,
   type PromoteRt2CaptureDraft,
+  type UpsertRt2CaptureSource,
   type UpdateRt2BoardCard,
   type UpdateRt2BoardChecklistItem,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { issueService } from "./issues.js";
+import { rt2HybridSearchService } from "./rt2-hybrid-search.js";
 import { rt2TaskEngineService } from "./rt2-task-engine.js";
 import { workProductService } from "./work-products.js";
 
@@ -28,9 +31,85 @@ type ChecklistRow = typeof rt2WorkBoardChecklistItems.$inferSelect;
 type AttachmentRow = typeof rt2WorkBoardAttachments.$inferSelect;
 type CardRow = typeof rt2WorkBoardCards.$inferSelect;
 type CaptureRow = typeof rt2CaptureDrafts.$inferSelect;
+type CaptureSourceRow = typeof rt2CaptureSources.$inferSelect;
+
+const CAPTURE_SOURCE_LABELS = {
+  slack: "Slack",
+  teams: "Teams",
+  webhook: "Webhook",
+  mobile: "Mobile",
+  native: "Native",
+} as const;
 
 function normalizeHash(input: string) {
   return createHash("sha256").update(input.trim().replace(/\s+/g, " ").toLowerCase()).digest("hex");
+}
+
+function hashSecret(input: string) {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+function canonicalCapturePayload(input: CreateOneLinerInboundDraft) {
+  return JSON.stringify({
+    source: input.source ?? "webhook",
+    text: input.text,
+    channel: input.channel ?? null,
+    externalUserId: input.externalUserId ?? null,
+    eventId: input.eventId ?? null,
+    eventTimestamp: input.eventTimestamp ?? null,
+  });
+}
+
+function signCapturePayload(secretHash: string, input: CreateOneLinerInboundDraft) {
+  return createHmac("sha256", secretHash).update(canonicalCapturePayload(input)).digest("hex");
+}
+
+function citationTargetFor(result: { type: string; sourceId: string; sourceKey: string }) {
+  if (result.type === "task" || result.type === "deliverable" || result.type === "work_artifact") {
+    return `/issues/${encodeURIComponent(result.sourceId)}`;
+  }
+  if (result.type === "wiki_page" || result.type === "daily_wiki_page") {
+    return `/knowledge?sourceKey=${encodeURIComponent(result.sourceKey)}`;
+  }
+  if (result.type === "graph_node" || result.type === "graph_edge") {
+    return `/knowledge?graph=${encodeURIComponent(result.sourceId)}`;
+  }
+  if (result.type === "document") {
+    return `/documents/${encodeURIComponent(result.sourceId)}`;
+  }
+  return null;
+}
+
+function toCaptureSource(row: CaptureSourceRow) {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    source: row.source as "slack" | "teams" | "webhook" | "mobile" | "native",
+    label: row.label,
+    installationState: row.installationState as "not_installed" | "installed" | "blocked" | "stale" | "error",
+    signingStatus: row.signingStatus as "unsigned" | "signed" | "invalid" | "missing" | "stale",
+    lastInboundEventAt: row.lastInboundEventAt ?? null,
+    lastInboundEventId: row.lastInboundEventId ?? null,
+    lastErrorCode: row.lastErrorCode ?? null,
+    blockedReason: row.blockedReason ?? null,
+    updatedAt: row.updatedAt ?? null,
+  };
+}
+
+function defaultCaptureSource(companyId: string, source: keyof typeof CAPTURE_SOURCE_LABELS) {
+  return {
+    id: null,
+    companyId,
+    source,
+    label: CAPTURE_SOURCE_LABELS[source],
+    installationState: "not_installed" as const,
+    signingStatus: "unsigned" as const,
+    lastInboundEventAt: null,
+    lastInboundEventId: null,
+    lastErrorCode: null,
+    blockedReason: null,
+    updatedAt: null,
+  };
 }
 
 function toChecklist(row: ChecklistRow) {
@@ -74,6 +153,28 @@ function toCaptureDraft(row: CaptureRow) {
     failureCode: row.failureCode ?? null,
     failureMessage: row.failureMessage ?? null,
     permissionStatus: row.permissionStatus as "allowed" | "missing_external_user" | "blocked",
+    sourceEvidence: (row.sourceEvidence as {
+      sourceInstallationId: string | null;
+      installationState: "not_installed" | "installed" | "blocked" | "stale" | "error";
+      signingStatus: "unsigned" | "signed" | "invalid" | "missing" | "stale";
+      eventId: string | null;
+      eventTimestamp: string | null;
+      reasonCode: string | null;
+    } | null) ?? null,
+    semanticContext: (row.semanticContext ?? []) as Array<{
+      id: string;
+      sourceType: string;
+      sourceId: string;
+      sourceKey: string;
+      title: string;
+      snippet: string;
+      score: number;
+      freshness: "fresh" | "stale" | "unknown";
+      confidence: string;
+      contradictionStatus: "none" | "unknown" | "unresolved" | "resolved";
+      citationTarget: string | null;
+    }>,
+    duplicateWarning: row.duplicateWarning ?? null,
     auditTrail: row.auditTrail ?? [],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -139,7 +240,90 @@ export function rt2WorkBoardService(db: Db) {
     return row;
   }
 
+  async function listCaptureSources(companyId: string) {
+    const rows = await db
+      .select()
+      .from(rt2CaptureSources)
+      .where(eq(rt2CaptureSources.companyId, companyId))
+      .orderBy(rt2CaptureSources.source);
+    const bySource = new Map(rows.map((row) => [row.source, toCaptureSource(row)]));
+    return (Object.keys(CAPTURE_SOURCE_LABELS) as Array<keyof typeof CAPTURE_SOURCE_LABELS>).map(
+      (source) => bySource.get(source) ?? defaultCaptureSource(companyId, source),
+    );
+  }
+
+  async function findCaptureSource(companyId: string, source: CreateOneLinerInboundDraft["source"], sourceInstallationId?: string | null) {
+    const predicates = [eq(rt2CaptureSources.companyId, companyId)];
+    if (sourceInstallationId) {
+      predicates.push(eq(rt2CaptureSources.id, sourceInstallationId));
+    } else {
+      predicates.push(eq(rt2CaptureSources.source, source ?? "webhook"));
+    }
+    return db
+      .select()
+      .from(rt2CaptureSources)
+      .where(and(...predicates))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function buildSemanticContext(companyId: string, text: string) {
+    try {
+      const response = await rt2HybridSearchService(db).search(companyId, text, { limit: 3 });
+      return response.results.slice(0, 3).map((result) => ({
+        id: result.id,
+        sourceType: result.sourceType,
+        sourceId: result.sourceId,
+        sourceKey: result.sourceKey,
+        title: result.title,
+        snippet: result.snippet,
+        score: result.score,
+        freshness: result.freshness,
+        confidence: result.confidence,
+        contradictionStatus: result.contradictionStatus,
+        citationTarget: citationTargetFor(result),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   return {
+    listCaptureSources,
+
+    upsertCaptureSource: async (companyId: string, actorUserId: string, input: UpsertRt2CaptureSource) => {
+      const now = new Date();
+      const secretHash = input.signingSecret ? hashSecret(input.signingSecret) : undefined;
+      const [row] = await db
+        .insert(rt2CaptureSources)
+        .values({
+          companyId,
+          source: input.source,
+          label: input.label ?? CAPTURE_SOURCE_LABELS[input.source],
+          installationState: input.installationState,
+          signingStatus: input.signingStatus,
+          signingSecretHash: secretHash ?? null,
+          lastErrorCode: input.lastErrorCode ?? null,
+          blockedReason: input.blockedReason ?? null,
+          createdByUserId: actorUserId,
+          updatedByUserId: actorUserId,
+        })
+        .onConflictDoUpdate({
+          target: [rt2CaptureSources.companyId, rt2CaptureSources.source],
+          set: {
+            label: input.label ?? CAPTURE_SOURCE_LABELS[input.source],
+            installationState: input.installationState,
+            signingStatus: input.signingStatus,
+            ...(secretHash ? { signingSecretHash: secretHash } : {}),
+            lastErrorCode: input.lastErrorCode ?? null,
+            blockedReason: input.blockedReason ?? null,
+            updatedByUserId: actorUserId,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      return toCaptureSource(row);
+    },
+
     getBoardOverview: async (companyId: string, issueIds: string[]) => {
       const uniqueIssueIds = [...new Set(issueIds)].filter(Boolean);
       if (uniqueIssueIds.length === 0) {
@@ -297,6 +481,23 @@ export function rt2WorkBoardService(db: Db) {
     createInboundDraft: async (companyId: string, actorUserId: string, input: CreateOneLinerInboundDraft) => {
       const parsed = parseOneLinerInput(input.text);
       const hash = normalizeHash(input.text);
+      const captureSource = await findCaptureSource(companyId, input.source, input.sourceInstallationId ?? null);
+      let signingStatus: "unsigned" | "signed" | "invalid" | "missing" | "stale" = captureSource?.signingSecretHash ? "missing" : "unsigned";
+      let sourceReasonCode: string | null = null;
+
+      if (captureSource?.signingSecretHash) {
+        const expected = captureSource.signingSecretHash ? signCapturePayload(captureSource.signingSecretHash, input) : null;
+        if (!input.signature) {
+          signingStatus = "missing";
+          sourceReasonCode = "signature_missing";
+        } else if (!expected || input.signature !== expected) {
+          signingStatus = "invalid";
+          sourceReasonCode = "signature_invalid";
+        } else {
+          signingStatus = "signed";
+        }
+      }
+
       const duplicate = await db
         .select({ id: rt2CaptureDrafts.id })
         .from(rt2CaptureDrafts)
@@ -306,10 +507,23 @@ export function rt2WorkBoardService(db: Db) {
           eq(rt2CaptureDrafts.normalizedHash, hash),
         ))
         .then((rows) => rows[0] ?? null);
-      const permissionStatus = (input.source === "mobile" || input.source === "native") && !input.externalUserId
+      const sourceBlocked = captureSource?.installationState === "blocked" || signingStatus === "invalid" || signingStatus === "missing";
+      const permissionStatus = sourceBlocked
+        ? "blocked"
+        : (input.source === "mobile" || input.source === "native") && !input.externalUserId
         ? "missing_external_user"
         : "allowed";
       const status = duplicate ? "duplicate" : permissionStatus === "allowed" ? "review_required" : "permission_blocked";
+      const duplicateWarning = duplicate ? `Potential duplicate of capture draft ${duplicate.id}` : null;
+      const semanticContext = await buildSemanticContext(companyId, input.text);
+      const sourceEvidence = {
+        sourceInstallationId: captureSource?.id ?? null,
+        installationState: (captureSource?.installationState ?? "not_installed") as "not_installed" | "installed" | "blocked" | "stale" | "error",
+        signingStatus,
+        eventId: input.eventId ?? null,
+        eventTimestamp: input.eventTimestamp ?? null,
+        reasonCode: sourceReasonCode,
+      };
       const [row] = await db
         .insert(rt2CaptureDrafts)
         .values({
@@ -323,28 +537,49 @@ export function rt2WorkBoardService(db: Db) {
           status,
           duplicateOfDraftId: duplicate?.id ?? null,
           permissionStatus,
+          sourceInstallationId: captureSource?.id ?? null,
+          sourceSigningStatus: signingStatus,
+          sourceEvidence,
+          semanticContext,
+          duplicateWarning,
           createdByUserId: actorUserId,
           auditTrail: [{
             action: "captured",
             actorUserId,
-            details: { source: input.source, duplicateOfDraftId: duplicate?.id ?? null, permissionStatus },
+            details: { source: input.source, duplicateOfDraftId: duplicate?.id ?? null, permissionStatus, sourceEvidence },
             at: new Date().toISOString(),
           }],
         })
         .returning();
+      if (captureSource) {
+        await db
+          .update(rt2CaptureSources)
+          .set({
+            lastInboundEventAt: input.eventTimestamp ? new Date(input.eventTimestamp) : new Date(),
+            lastInboundEventId: input.eventId ?? row.id,
+            signingStatus,
+            lastErrorCode: sourceReasonCode,
+            updatedAt: new Date(),
+          })
+          .where(eq(rt2CaptureSources.id, captureSource.id));
+      }
       return toCaptureDraft(row);
     },
 
     listCaptureQueue: async (companyId: string) => {
-      const rows = await db
+      const [sources, rows] = await Promise.all([
+        listCaptureSources(companyId),
+        db
         .select()
         .from(rt2CaptureDrafts)
         .where(eq(rt2CaptureDrafts.companyId, companyId))
         .orderBy(desc(rt2CaptureDrafts.createdAt))
-        .limit(80);
+          .limit(80),
+      ]);
       const drafts = rows.map(toCaptureDraft);
       return {
         companyId,
+        sources,
         summary: {
           reviewRequired: drafts.filter((draft) => draft.status === "review_required").length,
           duplicate: drafts.filter((draft) => draft.status === "duplicate").length,
@@ -422,7 +657,13 @@ export function rt2WorkBoardService(db: Db) {
           reviewedByUserId: actorUserId,
           reviewedAt: new Date(),
           updatedAt: new Date(),
-          auditTrail: appendAudit(row, "promoted", actorUserId, { target: input.target, promotedIssueId, promotedWorkProductId }),
+          auditTrail: appendAudit(row, "promoted", actorUserId, {
+            target: input.target,
+            promotedIssueId,
+            promotedWorkProductId,
+            sourceEvidence: row.sourceEvidence ?? null,
+            semanticCitationIds: ((row.semanticContext ?? []) as Array<{ id?: string }>).map((item) => item.id).filter(Boolean),
+          }),
         })
         .where(eq(rt2CaptureDrafts.id, row.id))
         .returning();

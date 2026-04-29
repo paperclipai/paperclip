@@ -12,6 +12,7 @@ import type {
   Rt2BoardOverview,
   Rt2CaptureDraftSummary,
   Rt2CaptureQueue,
+  Rt2CaptureSourceSummary,
   UpdateRt2TaskCapacity,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -132,6 +133,9 @@ export type Rt2InboundDraftResponse = {
     status: Rt2CaptureDraftSummary["status"];
     duplicateOfDraftId: string | null;
     permissionStatus: Rt2CaptureDraftSummary["permissionStatus"];
+    sourceEvidence: Rt2CaptureDraftSummary["sourceEvidence"];
+    semanticContext: Rt2CaptureDraftSummary["semanticContext"];
+    duplicateWarning: string | null;
     reviewRequired: true;
   };
 };
@@ -152,7 +156,22 @@ export const rt2TasksApi = {
     text: string;
     channel?: string | null;
     externalUserId?: string | null;
+    sourceInstallationId?: string | null;
+    eventId?: string | null;
+    eventTimestamp?: string | null;
+    signature?: string | null;
   }) => api.post<Rt2InboundDraftResponse>(`/companies/${companyId}/rt2/one-liner/inbound-draft`, data),
+  listCaptureSources: (companyId: string) =>
+    api.get<Rt2CaptureSourceSummary[]>(`/companies/${companyId}/rt2/capture-sources`),
+  upsertCaptureSource: (companyId: string, source: Rt2InboundDraftSource, data: {
+    source: Rt2InboundDraftSource;
+    label?: string;
+    installationState?: Rt2CaptureSourceSummary["installationState"];
+    signingStatus?: Rt2CaptureSourceSummary["signingStatus"];
+    signingSecret?: string;
+    blockedReason?: string | null;
+    lastErrorCode?: string | null;
+  }) => api.put<Rt2CaptureSourceSummary>(`/companies/${companyId}/rt2/capture-sources/${encodeURIComponent(source)}`, data),
   getBoardOverview: (companyId: string, issueIds: string[]) =>
     api.get<Rt2BoardOverview>(`/companies/${companyId}/rt2/work-board?issueIds=${encodeURIComponent(issueIds.join(","))}`),
   updateBoardCard: (companyId: string, issueId: string, data: {

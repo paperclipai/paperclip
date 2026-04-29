@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -342,6 +342,76 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         reviewRequired: true,
       }),
     });
+  });
+
+  it("records signed capture source evidence and blocks missing signatures", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const secret = "phase-41-secret";
+
+    const sourceResponse = await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/capture-sources/slack`)
+      .send({
+        source: "slack",
+        label: "Slack Ops",
+        installationState: "installed",
+        signingStatus: "signed",
+        signingSecret: secret,
+      })
+      .expect(200);
+
+    expect(sourceResponse.body).toEqual(expect.objectContaining({
+      source: "slack",
+      installationState: "installed",
+      signingStatus: "signed",
+    }));
+
+    const unsigned = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "slack",
+        channel: "daily-work",
+        externalUserId: "U123",
+        eventId: "evt-missing",
+        eventTimestamp: "2026-04-29T00:00:00.000Z",
+        text: "task: Missing signature; deliverable: Blocked note; price: 10",
+      })
+      .expect(201);
+
+    expect(unsigned.body.inbound).toEqual(expect.objectContaining({
+      status: "permission_blocked",
+      sourceEvidence: expect.objectContaining({ signingStatus: "missing", reasonCode: "signature_missing" }),
+    }));
+
+    const signedPayload = {
+      source: "slack" as const,
+      channel: "daily-work",
+      externalUserId: "U123",
+      eventId: "evt-signed",
+      eventTimestamp: "2026-04-29T00:01:00.000Z",
+      text: "task: Signed capture; todo: Review signal; deliverable: Signed note; price: 90000",
+    };
+    const secretHash = createHash("sha256").update(secret).digest("hex");
+    const canonical = JSON.stringify({
+      source: signedPayload.source,
+      text: signedPayload.text,
+      channel: signedPayload.channel,
+      externalUserId: signedPayload.externalUserId,
+      eventId: signedPayload.eventId,
+      eventTimestamp: signedPayload.eventTimestamp,
+    });
+    const signature = createHmac("sha256", secretHash).update(canonical).digest("hex");
+
+    const signed = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({ ...signedPayload, signature })
+      .expect(201);
+
+    expect(signed.body.inbound).toEqual(expect.objectContaining({
+      status: "review_required",
+      sourceEvidence: expect.objectContaining({ signingStatus: "signed", eventId: "evt-signed" }),
+      semanticContext: expect.any(Array),
+    }));
   });
 
   it("preserves artifact deliverable types when creating task definitions", async () => {

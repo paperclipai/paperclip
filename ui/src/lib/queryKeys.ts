@@ -65,6 +65,8 @@ export const queryKeys = {
       ["rt2-tasks", companyId, "project", projectId] as const,
     detail: (taskIssueId: string) => ["rt2-tasks", "detail", taskIssueId] as const,
     assignableUsers: (taskIssueId: string) => ["rt2-tasks", "assignable-users", taskIssueId] as const,
+    captureSources: (companyId: string) => ["rt2-tasks", companyId, "capture-sources"] as const,
+    captureQueue: (companyId: string) => ["rt2-tasks", companyId, "capture-queue"] as const,
   },
   rt2Daily: {
     board: (companyId: string, projectId: string, userId: string, reportDate: string) =>

@@ -37,12 +37,30 @@ export const createRt2TaskSchema = z.object({
 export type CreateRt2Task = z.infer<typeof createRt2TaskSchema>;
 
 export const oneLinerInboundDraftSourceSchema = z.enum(["slack", "teams", "webhook", "mobile", "native"]);
+export const rt2CaptureSourceInstallationStateSchema = z.enum(["not_installed", "installed", "blocked", "stale", "error"]);
+export const rt2CaptureSourceSigningStatusSchema = z.enum(["unsigned", "signed", "invalid", "missing", "stale"]);
+
+export const upsertRt2CaptureSourceSchema = z.object({
+  source: oneLinerInboundDraftSourceSchema,
+  label: z.string().trim().min(1).max(120).optional(),
+  installationState: rt2CaptureSourceInstallationStateSchema.default("installed"),
+  signingStatus: rt2CaptureSourceSigningStatusSchema.default("unsigned"),
+  signingSecret: z.string().trim().min(8).max(500).optional(),
+  blockedReason: z.string().trim().min(1).max(1000).nullable().optional(),
+  lastErrorCode: z.string().trim().min(1).max(120).nullable().optional(),
+});
+
+export type UpsertRt2CaptureSource = z.infer<typeof upsertRt2CaptureSourceSchema>;
 
 export const createOneLinerInboundDraftSchema = z.object({
   source: oneLinerInboundDraftSourceSchema.default("webhook"),
   text: z.string().trim().min(1),
   channel: z.string().trim().min(1).max(120).nullable().optional(),
   externalUserId: z.string().trim().min(1).max(200).nullable().optional(),
+  sourceInstallationId: z.string().uuid().nullable().optional(),
+  eventId: z.string().trim().min(1).max(200).nullable().optional(),
+  eventTimestamp: z.string().datetime().nullable().optional(),
+  signature: z.string().trim().min(1).max(500).nullable().optional(),
 });
 
 export type CreateOneLinerInboundDraft = z.infer<typeof createOneLinerInboundDraftSchema>;

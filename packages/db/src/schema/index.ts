@@ -106,6 +106,7 @@ export { rt2CollaborationRewards, rt2CollaborationEvents } from "./rt2_collabora
 export { rt2PersonalPnL, rt2CoinLedger } from "./rt2_personal_pnl.js";
 export { rt2AntiGamingSignals, rt2SettlementGovernance, rt2SettlementThresholds } from "./rt2_settlement_governance.js";
 export {
+  rt2CaptureSources,
   rt2CaptureDrafts,
   rt2WorkBoardAttachments,
   rt2WorkBoardCards,

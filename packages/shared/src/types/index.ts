@@ -153,6 +153,11 @@ export type {
   Rt2CaptureDraftSource,
   Rt2CaptureDraftStatus,
   Rt2CaptureDraftSummary,
+  Rt2CaptureSemanticContextItem,
+  Rt2CaptureSourceEvidence,
+  Rt2CaptureSourceInstallationState,
+  Rt2CaptureSourceSigningStatus,
+  Rt2CaptureSourceSummary,
   Rt2CaptureQueue,
 } from "./rt2-task.js";
 export type {

@@ -708,6 +708,13 @@
       "when": 1776758700000,
       "tag": "0100_rt2_trusted_local_knowledge_bridge",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1776759000000,
+      "tag": "0101_rt2_capture_source_hardening",
+      "breakpoints": true
     }
   ]
 }

@@ -54,6 +54,8 @@ const mocks = vi.hoisted(() => ({
   },
   workBoard: {
     createInboundDraft: vi.fn(),
+    listCaptureSources: vi.fn(),
+    upsertCaptureSource: vi.fn(),
     getBoardOverview: vi.fn(),
     updateCard: vi.fn(),
     addChecklistItem: vi.fn(),
@@ -521,9 +523,17 @@ describe("RT2 v2.3 fallback route contracts", () => {
       status: "review_required",
       duplicateOfDraftId: null,
       permissionStatus: "allowed",
+      sourceEvidence: { sourceInstallationId: "source-1", installationState: "installed", signingStatus: "signed", eventId: "evt-1", eventTimestamp: "2026-04-29T00:00:00.000Z", reasonCode: null },
+      semanticContext: [{ id: "task:task-1", sourceType: "task", sourceId: "task-1", sourceKey: "task-1", title: "제안서", snippet: "관련 업무", score: 12, freshness: "fresh", confidence: "EXTRACTED", contradictionStatus: "none", citationTarget: "/issues/task-1" }],
+      duplicateWarning: null,
     });
+    mocks.workBoard.listCaptureSources.mockResolvedValue([
+      { id: "source-1", companyId, source: "native", label: "Native", installationState: "installed", signingStatus: "signed", lastInboundEventAt: "2026-04-29T00:00:00.000Z", lastInboundEventId: "evt-1", lastErrorCode: null, blockedReason: null, updatedAt: "2026-04-29T00:00:00.000Z" },
+    ]);
+    mocks.workBoard.upsertCaptureSource.mockResolvedValue({ id: "source-1", companyId, source: "native", label: "Native", installationState: "installed", signingStatus: "signed", lastInboundEventAt: null, lastInboundEventId: null, lastErrorCode: null, blockedReason: null, updatedAt: "2026-04-29T00:00:00.000Z" });
     mocks.workBoard.listCaptureQueue.mockResolvedValue({
       companyId,
+      sources: [{ id: "source-1", companyId, source: "native", label: "Native", installationState: "installed", signingStatus: "signed", lastInboundEventAt: "2026-04-29T00:00:00.000Z", lastInboundEventId: "evt-1", lastErrorCode: null, blockedReason: null, updatedAt: "2026-04-29T00:00:00.000Z" }],
       summary: { reviewRequired: 1, duplicate: 1, permissionBlocked: 1, failed: 0, promoted: 0 },
       drafts: [{ id: "draft-1", source: "native", status: "review_required", duplicateOfDraftId: null, permissionStatus: "allowed" }],
     });
@@ -783,11 +793,20 @@ describe("RT2 v2.3 fallback route contracts", () => {
       .post(`/api/companies/${companyId}/rt2/one-liner/inbound-draft`)
       .send({ source: "native", text: "제안서 보완", channel: "ios-share", externalUserId: "mobile-user" });
     expect(inbound.status).toBe(201);
-    expect(inbound.body.inbound).toEqual(expect.objectContaining({ id: "draft-1", status: "review_required" }));
+    expect(inbound.body.inbound).toEqual(expect.objectContaining({
+      id: "draft-1",
+      status: "review_required",
+      sourceEvidence: expect.objectContaining({ signingStatus: "signed" }),
+    }));
+
+    const sources = await request(app).get(`/api/companies/${companyId}/rt2/capture-sources`);
+    expect(sources.status).toBe(200);
+    expect(sources.body[0]).toEqual(expect.objectContaining({ source: "native", installationState: "installed", signingStatus: "signed" }));
 
     const queue = await request(app).get(`/api/companies/${companyId}/rt2/capture-drafts`);
     expect(queue.status).toBe(200);
     expect(queue.body.summary).toEqual(expect.objectContaining({ duplicate: 1, permissionBlocked: 1 }));
+    expect(queue.body.sources[0]).toEqual(expect.objectContaining({ lastInboundEventId: "evt-1" }));
 
     const promote = await request(app)
       .post(`/api/companies/${companyId}/rt2/capture-drafts/draft-1/promote`)
