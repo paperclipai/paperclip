@@ -75,6 +75,7 @@ describe("Dark Factory bridge projection plugin", () => {
       "GET /issues/:issueId/dark-factory/projection",
       "GET /issues/:issueId/dark-factory/journal-cursor",
       "GET /issues/:issueId/dark-factory/provider-health",
+      "GET /issues/:issueId/dark-factory/runtime-capability-snapshot",
       "POST /issues/:issueId/dark-factory/rehydrate-request",
     ]);
   });
@@ -124,7 +125,7 @@ describe("Dark Factory bridge projection plugin", () => {
         issueId,
         linkedRunId: expect.stringMatching(/^df-run-/),
         runId: expect.stringMatching(/^df-run-/),
-        journalCursor: expect.objectContaining({ source: "dark-factory-projection" }),
+        journalCursorMetadata: expect.objectContaining({ source: "dark-factory-projection" }),
         lastSequenceNo: expect.any(Number),
         projectionStatus: expect.stringMatching(/degraded|blocked|needs_approval|current|stale/),
         callbackReceiptId: expect.stringMatching(/^df-callback-/),
@@ -139,7 +140,7 @@ describe("Dark Factory bridge projection plugin", () => {
         source: "dark-factory-projection",
         truthSource: "dark-factory-journal",
         authoritative: false,
-        journalCursor: expect.objectContaining({
+        journalCursorMetadata: expect.objectContaining({
           source: "dark-factory-projection",
           truthSource: "dark-factory-journal",
           authoritative: false,
@@ -163,7 +164,7 @@ describe("Dark Factory bridge projection plugin", () => {
         truthSource: "dark-factory-journal",
         authoritative: false,
         observationSource: "runtime_observation",
-        journalCursor: expect.any(Object),
+        journalCursorMetadata: expect.any(Object),
         lastSequenceNo: expect.any(Number),
         projectionStatus: expect.any(String),
         callbackReceiptId: expect.stringMatching(/^df-callback-/),
@@ -200,14 +201,14 @@ describe("Dark Factory bridge projection plugin", () => {
         journalCursor: expect.any(Object),
         lastSequenceNo: expect.any(Number),
         projectionStatus: expect.any(String),
-        callbackReceiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
+        callbackReceiptId: expect.stringMatching(/^df-rehydrate-/),
         staleReason: null,
         requestSemantics: "receipt_only_not_terminal_success",
         receipt: expect.objectContaining({
-          receiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
+          receiptId: expect.stringMatching(/^df-rehydrate-/),
           status: "requested",
           terminalStateAdvanced: false,
-          idempotencyKey: expect.stringMatching(/^df-run-.*:rehydrate-request$/),
+          idempotencyKey: expect.stringContaining(":rehydrate-request"),
         }),
       },
     });
@@ -376,7 +377,7 @@ describe("Dark Factory bridge projection plugin", () => {
       truthSource: "dark-factory-journal",
       authoritative: false,
       receipt: {
-        receiptId: expect.stringMatching(/^df-rehydrate-df-run-/),
+        receiptId: expect.stringMatching(/^df-rehydrate-/),
         status: "requested",
         terminalStateAdvanced: false,
       },

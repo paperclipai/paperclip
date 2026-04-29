@@ -53,6 +53,14 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "issue", param: "issueId" }
     },
     {
+      routeKey: "runtime-capability-snapshot",
+      method: "GET",
+      path: "/issues/:issueId/dark-factory/runtime-capability-snapshot",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "issue", param: "issueId" }
+    },
+    {
       routeKey: "rehydrate-request",
       method: "POST",
       path: "/issues/:issueId/dark-factory/rehydrate-request",

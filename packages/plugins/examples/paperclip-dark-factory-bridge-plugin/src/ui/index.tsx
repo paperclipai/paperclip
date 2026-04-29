@@ -29,6 +29,7 @@ type ProjectionSummary = {
     linkedRunId: string;
     projectionStatus: string;
     journalCursor: JournalCursor;
+    journalCursorMetadata: JournalCursor;
     lastSequenceNo: number;
     callbackReceiptId: string;
     staleReason: string | null;
@@ -55,6 +56,13 @@ type ProjectionSummary = {
       protocolMustSpecifyConcreteModel: boolean;
       configuredModelName: string | null;
     };
+    providerState: string;
+    degraded: boolean;
+    blocked: boolean;
+    fallbackTriggered: boolean;
+    degradedReason: string | null;
+    blockedReason: string | null;
+    fallbackReason: string | null;
     breakerState: string;
     lastUpdatedAt: string;
     lastSuccessAt: string | null;
@@ -141,8 +149,8 @@ function ProjectionRows({ data }: { data: ProjectionSummary }) {
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <div style={rowStyle}><span>Linked Run id</span><code>{projection.linkedRunId}</code></div>
-      <div style={rowStyle}><span>Journal cursor</span><code>{projection.journalCursor.journalCursor}</code></div>
-      <div style={rowStyle}><span>Source journal ref</span><code>{projection.journalCursor.sourceJournalRef}</code></div>
+      <div style={rowStyle}><span>Journal cursor</span><code>{projection.journalCursorMetadata.journalCursor}</code></div>
+      <div style={rowStyle}><span>Source journal ref</span><code>{projection.journalCursorMetadata.sourceJournalRef}</code></div>
       <div style={rowStyle}><span>Last sequence</span><strong>{projection.lastSequenceNo}</strong></div>
       <div style={rowStyle}><span>Projection status</span><strong>{projection.projectionStatus}</strong></div>
       <div style={rowStyle}><span>Callback receipt</span><code>{projection.callbackReceiptId}</code></div>
@@ -165,6 +173,12 @@ function ProviderHealthRows({ data }: { data: ProjectionSummary }) {
       <div style={rowStyle}><span>Model policy</span><code>{data.providerHealth.modelSelection.policy}</code></div>
       <div style={rowStyle}><span>Concrete model protocol MUST</span><strong>{data.providerHealth.modelSelection.protocolMustSpecifyConcreteModel ? "yes" : "no"}</strong></div>
       <div style={rowStyle}><span>Breaker state</span><strong>{data.providerHealth.breakerState}</strong></div>
+      <div style={rowStyle}><span>Provider state</span><strong>{data.providerHealth.providerState}</strong></div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <Badge label="provider degraded" active={data.providerHealth.degraded} reason={data.providerHealth.degradedReason} />
+        <Badge label="provider blocked" active={data.providerHealth.blocked} reason={data.providerHealth.blockedReason} />
+        <Badge label="fallback" active={data.providerHealth.fallbackTriggered} reason={data.providerHealth.fallbackReason} />
+      </div>
       <div style={rowStyle}><span>Last updated</span><code>{data.providerHealth.lastUpdatedAt}</code></div>
       <div style={rowStyle}><span>Last success</span><code>{data.providerHealth.lastSuccessAt ?? "none"}</code></div>
       <div style={rowStyle}><span>Last failure</span><code>{data.providerHealth.lastFailureAt ?? "none"}</code></div>
