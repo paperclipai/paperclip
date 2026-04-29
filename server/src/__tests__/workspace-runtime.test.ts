@@ -720,6 +720,52 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
   });
 
+  it("runs project workspace setup command when no provision command is configured", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "setup.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf 'setup-ran\\n' > .paperclip-setup-marker",
+      ].join("\n"),
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/setup.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add workspace setup script"]);
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      projectSetupCommand: "bash ./scripts/setup.sh",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1261",
+        title: "Run setup command",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(fs.readFile(path.join(workspace.cwd, ".paperclip-setup-marker"), "utf8")).resolves.toBe("setup-ran\n");
+  });
+
   it("uses the latest repo-managed provision script when reusing an existing worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
