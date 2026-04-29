@@ -10,7 +10,7 @@ import {
   Plus,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
@@ -158,7 +158,7 @@ export function SidebarAgents() {
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
-  const { openNewAgent } = useDialog();
+  const { openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { pushToast } = useToastActions();
   const location = useLocation();

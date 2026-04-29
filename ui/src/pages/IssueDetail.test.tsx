@@ -134,6 +134,9 @@ vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
     openNewIssue: vi.fn(),
   }),
+  useDialogActions: () => ({
+    openNewIssue: vi.fn(),
+  }),
 }));
 
 vi.mock("../context/PanelContext", () => ({
