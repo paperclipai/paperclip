@@ -153,6 +153,56 @@ export async function installKkrooLocalPlugins(ctx: BootstrapContext): Promise<v
     absPath: resolve(process.cwd(), "packages/plugins/paperclip-plugin-linear"),
     displayName: "linear",
   });
+
+  // Alertmanager: bundled in-image. Must run before
+  // autoConfigureAlertmanagerFromEnv so there's a plugin to configure.
+  await installLocalPluginIfAbsent(ctx, {
+    pluginKey: "paperclip-plugin-alertmanager",
+    absPath: resolve(process.cwd(), "packages/plugins/paperclip-plugin-alertmanager"),
+    displayName: "alertmanager",
+  });
+}
+
+/**
+ * Populate the Alertmanager plugin's webhookToken from
+ * `PAPERCLIP_ALERTMANAGER_WEBHOOK_TOKEN` so the helm chart can inject the
+ * shared bearer token (matching the cluster's `alertmanager-receivers`
+ * Secret) without an admin entering it in the UI on every redeploy.
+ *
+ * Mirrors the autoConfigureLinearFromEnv pattern.
+ */
+export async function autoConfigureAlertmanagerFromEnv(ctx: BootstrapContext): Promise<void> {
+  const webhookToken = process.env.PAPERCLIP_ALERTMANAGER_WEBHOOK_TOKEN;
+  if (!webhookToken) return;
+
+  try {
+    const allPlugins = await listInstalledPlugins(ctx);
+    const amPlugin = allPlugins.find(
+      (p) => p.pluginKey === "paperclip-plugin-alertmanager" && p.status === "ready",
+    );
+    if (!amPlugin) return;
+
+    const configRes = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${amPlugin.id}/config`);
+    if (!configRes.ok) return;
+
+    const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
+    const existing = config?.configJson ?? {};
+    if (existing.webhookToken === webhookToken) return;
+
+    await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${amPlugin.id}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        configJson: {
+          ...existing,
+          webhookToken,
+        },
+      }),
+    });
+    logger.info("Auto-configured Alertmanager plugin webhookToken from env");
+  } catch (err) {
+    logger.warn({ err }, "failed to auto-configure Alertmanager plugin from env");
+  }
 }
 
 /**

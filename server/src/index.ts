@@ -51,6 +51,7 @@ import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import {
+  autoConfigureAlertmanagerFromEnv,
   autoConfigureLinearFromEnv,
   installKkrooLocalPlugins,
 } from "./bootstrap/kkroo-bundled-plugins.js";
@@ -202,6 +203,7 @@ async function autoInstallBundledPlugins(
   // ──────────────────────────────────────────────────────────────────────────
   await installKkrooLocalPlugins({ baseUrl, fetchInternal });
   await autoConfigureLinearFromEnv({ baseUrl, fetchInternal });
+  await autoConfigureAlertmanagerFromEnv({ baseUrl, fetchInternal });
 }
 
 type BetterAuthSessionUser = {
