@@ -450,9 +450,13 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      // CMP-648: agents.org_level became NOT NULL in migration 0076. Callers that
+      // omit orgLevel (legacy company-portability imports, older API clients) get
+      // "executor" as a safe default. Phase 2 will tighten this to required input.
+      const orgLevel = data.orgLevel ?? "executor";
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+        .values({ ...data, name: uniqueName, companyId, role, orgLevel, permissions: normalizedPermissions, runtimeConfig })
         .returning()
         .then((rows) => rows[0]);
 

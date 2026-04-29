@@ -150,6 +150,7 @@ describeEmbeddedPostgres("disableAllRoutinesInConfig", () => {
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
+        orgLevel: "executor",
       },
       {
         id: otherAgentId,
@@ -159,6 +160,7 @@ describeEmbeddedPostgres("disableAllRoutinesInConfig", () => {
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
+        orgLevel: "executor",
       },
     ]);
 
