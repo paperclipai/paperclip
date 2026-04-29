@@ -501,13 +501,11 @@ describe("openclaw gateway adapter execute", () => {
         "Do not switch to another issue until you have handled this wake.",
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
+      expect(String(payload?.message ?? "")).toContain("## Paperclip Context");
+      expect(String(payload?.message ?? "")).toContain("\"runId\": \"run-123\"");
+      expect(String(payload?.message ?? "")).toContain("\"latestCommentId\": \"comment-2\"");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+      expect(payload).not.toHaveProperty("paperclip");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {
