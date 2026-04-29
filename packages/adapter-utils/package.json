@@ -39,6 +39,9 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@paperclipai/shared": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3"

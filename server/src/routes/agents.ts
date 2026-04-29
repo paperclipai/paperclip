@@ -464,7 +464,7 @@ export function agentRoutes(
     }
   }
 
-  function hasOwn(value: object, key: string): boolean {
+  function hasOwn(value: Record<string, unknown>, key: string): boolean {
     return Object.hasOwn(value, key);
   }
 
@@ -2084,7 +2084,7 @@ export function agentRoutes(
     }
     await assertCanUpdateAgent(req, existing);
 
-    if (hasOwn(req.body as object, "permissions")) {
+    if (hasOwn(req.body as Record<string, unknown>, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
       return;
     }

@@ -111,6 +111,21 @@ export interface AgentConfigRevision {
   createdAt: Date;
 }
 
+export interface AdapterModel {
+  id: string;
+  label: string;
+}
+
+export interface OrgNode {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  reports: OrgNode[];
+  /** Populated by collapseTree on the server: flattened list of hidden descendants for avatar grid rendering. Server-only, undefined on UI. */
+  collapsedReports?: OrgNode[];
+}
+
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
 export type AdapterEnvironmentTestStatus = "pass" | "warn" | "fail";
 

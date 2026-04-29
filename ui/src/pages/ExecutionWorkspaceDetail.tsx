@@ -467,12 +467,10 @@ export function ExecutionWorkspaceDetail() {
 
   if (workspaceId && activeTab === null) {
     let cachedTab: ExecutionWorkspaceTab = "configuration";
-    try {
-      const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
-      if (storedTab === "issues" || storedTab === "configuration" || storedTab === "runtime_logs") {
-        cachedTab = storedTab;
-      }
-    } catch {}
+    const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+    if (storedTab === "issues" || storedTab === "configuration" || storedTab === "runtime_logs") {
+      cachedTab = storedTab;
+    }
     return <Navigate to={executionWorkspaceTabPath(workspaceId, cachedTab)} replace />;
   }
 

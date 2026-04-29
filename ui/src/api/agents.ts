@@ -5,6 +5,7 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterModel,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -12,7 +13,9 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  OrgNode,
 } from "@paperclipai/shared";
+export type { AdapterModel, OrgNode };
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -21,11 +24,6 @@ export interface AgentKey {
   name: string;
   createdAt: Date;
   revokedAt: Date | null;
-}
-
-export interface AdapterModel {
-  id: string;
-  label: string;
 }
 
 export interface DetectedAdapterModel {
@@ -42,14 +40,6 @@ export interface ClaudeLoginResult {
   loginUrl: string | null;
   stdout: string;
   stderr: string;
-}
-
-export interface OrgNode {
-  id: string;
-  name: string;
-  role: string;
-  status: string;
-  reports: OrgNode[];
 }
 
 export interface AgentHireResponse {

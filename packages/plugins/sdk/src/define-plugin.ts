@@ -64,9 +64,7 @@ import type {
   PluginEnvironmentValidationResult,
 } from "./protocol.js";
 
-// ---------------------------------------------------------------------------
 // Health check result
-// ---------------------------------------------------------------------------
 
 /**
  * Optional plugin-reported diagnostics returned from the `health()` RPC method.
@@ -82,9 +80,7 @@ export interface PluginHealthDiagnostics {
   details?: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
 // Config validation result
-// ---------------------------------------------------------------------------
 
 /**
  * Result returned from the `validateConfig()` RPC method.
@@ -100,9 +96,7 @@ export interface PluginConfigValidationResult {
   errors?: string[];
 }
 
-// ---------------------------------------------------------------------------
 // Webhook handler input
-// ---------------------------------------------------------------------------
 
 /**
  * Input received by the plugin worker's `handleWebhook` handler.
@@ -148,7 +142,6 @@ export interface PluginApiResponse {
 
 // ---------------------------------------------------------------------------
 // Plugin definition
-// ---------------------------------------------------------------------------
 
 /**
  * The plugin definition shape passed to `definePlugin()`.
@@ -287,9 +280,7 @@ export interface PluginDefinition {
   ): Promise<PluginEnvironmentExecuteResult>;
 }
 
-// ---------------------------------------------------------------------------
 // PaperclipPlugin — the sealed object returned by definePlugin()
-// ---------------------------------------------------------------------------
 
 /**
  * The sealed plugin object returned by `definePlugin()`.
@@ -304,9 +295,7 @@ export interface PaperclipPlugin {
   readonly definition: PluginDefinition;
 }
 
-// ---------------------------------------------------------------------------
 // definePlugin — top-level factory
-// ---------------------------------------------------------------------------
 
 /**
  * Define a Paperclip plugin.

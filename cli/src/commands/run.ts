@@ -5,7 +5,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
-import { onboard } from "./onboard.js";
 import { doctor } from "./doctor.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { configExists, resolveConfigPath } from "../config/store.js";
@@ -59,6 +58,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     }
 
     p.log.step("No config found. Starting onboarding...");
+    const { onboard } = await import("./onboard.js");
     await onboard({ config: configPath, invokedByRun: true, bind: opts.bind });
   }
 
