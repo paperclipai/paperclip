@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
+  listProductivityReviews: vi.fn(),
   listAttachments: vi.fn(),
 }));
 
@@ -92,6 +93,9 @@ const mockWorkProductService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({}));
 
 vi.mock("../services/index.js", () => ({
+  companyService: () => ({
+    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+  }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => mockDocumentsService,
@@ -182,6 +186,7 @@ describe.sequential("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
+    mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
