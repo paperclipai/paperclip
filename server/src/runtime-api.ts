@@ -16,7 +16,10 @@ function isWildcardHost(host: string): boolean {
 
 function isLinkLocalHost(host: string): boolean {
   const normalized = normalizeHost(host).toLowerCase();
-  return normalized.startsWith("169.254.") || normalized.startsWith("fe80:");
+  if (normalized.startsWith("169.254.")) return true;
+  // IPv6 link-local block is fe80::/10 (fe80:: through febf::)
+  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
+  return false;
 }
 
 function formatOrigin(protocol: string, host: string, port: number): string {
