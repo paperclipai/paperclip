@@ -264,6 +264,10 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const EXTERNAL_LIFECYCLE_ADAPTERS = new Set([
+  "claude_k8s",
+  "opencode_k8s",
+]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -1850,6 +1854,10 @@ function isSameTaskScope(left: string | null, right: string | null) {
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
+}
+
+function hasExternalLifecycle(adapterType: string) {
+  return EXTERNAL_LIFECYCLE_ADAPTERS.has(adapterType);
 }
 
 function isHeartbeatRunTerminalStatus(
@@ -4519,6 +4527,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+
+      // External-lifecycle adapters (k8s Jobs etc.) manage their own run
+      // completion via cluster-side reconciliation. Skip the local-process
+      // reaper for them: it has no PID/PGID to check, never updates the run
+      // row's updatedAt, and would otherwise mis-mark in-flight Jobs as
+      // process_lost after the staleness window even though the Job is alive
+      // and producing output. Also covers the startup reap path (no stale
+      // gate), which would otherwise kill running Jobs on every controlplane
+      // restart.
+      if (hasExternalLifecycle(adapterType)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {

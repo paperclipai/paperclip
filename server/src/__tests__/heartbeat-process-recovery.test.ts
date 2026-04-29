@@ -837,6 +837,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("does not reap external-lifecycle adapter runs that have no local pid", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const startupResult = await heartbeat.reapOrphanedRuns();
+    expect(startupResult.reaped).toBe(0);
+
+    const periodicResult = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1 });
+    expect(periodicResult.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+  });
+
+  it("does not reap opencode_k8s runs with no local pid", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
