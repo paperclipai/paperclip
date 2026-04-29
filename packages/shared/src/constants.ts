@@ -71,6 +71,49 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
+export const AGENT_ORG_LEVELS = [
+  "executor",
+  "manager",
+  "executive",
+  "qa",
+  "policy",
+  "pm",
+] as const;
+export type AgentOrgLevel = (typeof AGENT_ORG_LEVELS)[number];
+
+export const AGENT_PRIMARY_WORKFLOW_ROLES = [
+  "execution",
+  "review",
+  "qa",
+  "approval",
+  "policy",
+] as const;
+export type AgentPrimaryWorkflowRole = (typeof AGENT_PRIMARY_WORKFLOW_ROLES)[number];
+
+export const ISSUE_WORKFLOW_ROLES = [
+  "execution",
+  "review",
+  "qa",
+  "approval",
+  "report",
+] as const;
+export type IssueWorkflowRole = (typeof ISSUE_WORKFLOW_ROLES)[number];
+
+/**
+ * Workflow roles that require a sourceIssueId to identify the original execution
+ * issue being verified or approved. Enforced by API validation, not a DB CHECK.
+ */
+export const ISSUE_WORKFLOW_ROLES_REQUIRING_SOURCE = ["review", "qa", "approval"] as const satisfies readonly IssueWorkflowRole[];
+
+export const ISSUE_COMPLETION_REQUIRES = [
+  "artifact",
+  "comment",
+  "metric",
+  "external_approval",
+  "hermes_verification",
+] as const;
+export type IssueCompletionRequires = (typeof ISSUE_COMPLETION_REQUIRES)[number];
+
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 5;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 export const AGENT_ICON_NAMES = [

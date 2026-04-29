@@ -27,6 +27,31 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    /**
+     * Workflow role this issue plays.
+     * Enum: execution | review | qa | approval | report.
+     * Orthogonal to parentId — parentId is the tree edge, this is the verification stage.
+     */
+    workflowRole: text("workflow_role"),
+    /**
+     * Reviewer agent assigned to this issue (if workflowRole indicates review-track work).
+     */
+    reviewAgentId: uuid("review_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    /**
+     * QA agent assigned to this issue.
+     */
+    qaAgentId: uuid("qa_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    /**
+     * The original execution issue this issue verifies/approves. Required at the API layer
+     * when workflowRole ∈ {review, qa, approval}; not a DB CHECK constraint so transient
+     * states (e.g. PATCH that flips role) remain expressible.
+     */
+    sourceIssueId: uuid("source_issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
+    /**
+     * Type of evidence required to mark this issue done.
+     * Enum: artifact | comment | metric | external_approval | hermes_verification.
+     */
+    completionRequires: text("completion_requires"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
