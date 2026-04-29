@@ -89,6 +89,65 @@ describe("buildGitHubPrGatePacket", () => {
     expect(packet.externalGate.requiredSignal).toBe("github_non_author_approval");
     expect(packet.externalGate.githubPr?.currentViewerCanSatisfyReview).toBe(true);
   });
+
+  it("ignores superseded approvals when the same reviewer later requests changes", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        viewerLogin: "InternalOpsReviewer",
+        prAuthorLogin: "MeghV",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T11:00:00.000Z",
+            commitOid: "1111111111111111111111111111111111111111",
+          },
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "CHANGES_REQUESTED",
+            submittedAt: "2026-04-29T12:00:00.000Z",
+            commitOid: "2222222222222222222222222222222222222222",
+          },
+        ],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "passed",
+      acceptedException: false,
+    });
+
+    expect(packet.blockedReasonCode).toBe("waiting_github_review");
+    expect(packet.externalGate.status).toBe("pending");
+    expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(false);
+  });
+
+  it("does not treat historical approvals as current when GitHub still requires review", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        viewerLogin: "InternalOpsReviewer",
+        prAuthorLogin: "MeghV",
+        reviewDecision: "REVIEW_REQUIRED",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T11:00:00.000Z",
+            commitOid: "1111111111111111111111111111111111111111",
+          },
+        ],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "passed",
+      acceptedException: false,
+    });
+
+    expect(packet.blockedReasonCode).toBe("waiting_github_review");
+    expect(packet.externalGate.status).toBe("pending");
+    expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(false);
+  });
 });
 
 describe("resolvePreviewProtectionStatus", () => {

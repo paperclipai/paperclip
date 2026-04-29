@@ -233,15 +233,41 @@ function computeCurrentViewerCanSatisfyReview(input: {
   return input.viewerLogin !== input.prAuthorLogin;
 }
 
+function selectLatestReviewsPerAuthor(reviews: PullRequestReviewNode[]): PullRequestReviewNode[] {
+  const latestByAuthor = new Map<string, { review: PullRequestReviewNode; submittedAtMs: number; index: number }>();
+  for (const [index, review] of reviews.entries()) {
+    const authorLogin = review.authorLogin?.trim().toLowerCase();
+    if (!authorLogin) continue;
+    const submittedAtMs = review.submittedAt ? Date.parse(review.submittedAt) : Number.NEGATIVE_INFINITY;
+    const existing = latestByAuthor.get(authorLogin);
+    if (!existing) {
+      latestByAuthor.set(authorLogin, { review, submittedAtMs, index });
+      continue;
+    }
+    if (submittedAtMs > existing.submittedAtMs || (submittedAtMs === existing.submittedAtMs && index > existing.index)) {
+      latestByAuthor.set(authorLogin, { review, submittedAtMs, index });
+    }
+  }
+  return [...latestByAuthor.values()].map(({ review }) => review);
+}
+
 function computeReviewSatisfied(input: {
   requiredReview: IssueGitHubPrRequiredReview;
   visibleReviews: PullRequestReviewNode[];
   prAuthorLogin: string | null;
+  reviewDecision: string | null;
 }): boolean {
-  const approvals = input.visibleReviews.filter((review) => review.state.toUpperCase() === "APPROVED");
   if (input.requiredReview === "none") return true;
+  const reviewDecision = input.reviewDecision?.trim().toUpperCase();
+  if (reviewDecision === "CHANGES_REQUESTED" || reviewDecision === "REVIEW_REQUIRED") return false;
+  const approvals = selectLatestReviewsPerAuthor(input.visibleReviews)
+    .filter((review) => review.state.trim().toUpperCase() === "APPROVED");
   if (input.requiredReview === "any") return approvals.length > 0;
-  return approvals.some((review) => review.authorLogin && review.authorLogin !== input.prAuthorLogin);
+  const prAuthorLogin = input.prAuthorLogin?.trim().toLowerCase() ?? null;
+  return approvals.some((review) => {
+    const authorLogin = review.authorLogin?.trim().toLowerCase();
+    return Boolean(authorLogin) && authorLogin !== prAuthorLogin;
+  });
 }
 
 export function buildGitHubPrGatePacket(input: {
@@ -262,6 +288,7 @@ export function buildGitHubPrGatePacket(input: {
     requiredReview: input.requiredReview,
     visibleReviews: input.pullRequest.visibleReviews,
     prAuthorLogin: input.pullRequest.prAuthorLogin,
+    reviewDecision: input.pullRequest.reviewDecision,
   });
   const checksStatus = computeChecksStatus({
     requiredChecks: input.pullRequest.requiredChecks,
