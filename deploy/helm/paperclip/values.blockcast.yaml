@@ -49,6 +49,16 @@ env:
         secretKeyRef:
           name: paperclip-database-url
           key: url
+    # Shared bearer token so paperclip-plugin-alertmanager auto-config matches
+    # the cluster's monitoring/alertmanager-receivers Secret. Same value, two
+    # namespaces. Bootstrap reads this at startup via
+    # autoConfigureAlertmanagerFromEnv. Rotate by updating both Secrets in
+    # lockstep + restarting paperclip-0 + restarting alertmanager-0.
+    - name: PAPERCLIP_ALERTMANAGER_WEBHOOK_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-alertmanager-webhook-token
+          key: bearer-token
     # PAPERCLIP_PUBLIC_URL pins the auth base so plugin UIs do not fall back
     # to window.location.origin (which would break behind cloudflared / when
     # iframed). PAPERCLIP_AUTH_BASE_URL_MODE=explicit makes the server treat
