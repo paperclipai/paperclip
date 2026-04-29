@@ -32,6 +32,10 @@ persistence:
   size: 20Gi
   # -- Mount path inside the container. Paperclip's `PAPERCLIP_HOME` defaults to `/paperclip`; keep these aligned.
   mountPath: /paperclip
+  # -- Use a pre-created PVC by name instead of `volumeClaimTemplates`. Required for ReadWriteMany migrations
+  # where the StatefulSet's immutable volumeClaimTemplates lock-in must be avoided. When set, `storageClassName`,
+  # `accessMode`, and `size` are ignored — the PVC must already exist in the release namespace.
+  existingClaim: ""
 
 # -- Kubernetes Service exposing the HTTP UI/API.
 service:
