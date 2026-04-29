@@ -527,11 +527,34 @@ const plugin = definePlugin({
       const priority = priorityMap[linearIssue.priority] ?? "medium";
       const status = statusMap[linearIssue.state.type] ?? "backlog";
 
+      // Dedup by (originKind, originId) — skip if Paperclip already has an
+      // issue tagged with this Linear issue id. Same (companyId, originKind,
+      // originId) tuple is the only stable identity across re-imports.
+      const existingByOrigin = await ctx.issues.list({
+        companyId,
+        originKind: "plugin:paperclip-plugin-linear",
+        originId: linearIssue.id,
+        limit: 1,
+      });
+      if (existingByOrigin.length > 0) {
+        const existing = existingByOrigin[0]!;
+        return {
+          ok: true,
+          imported: false,
+          paperclipIssueId: existing.id,
+          identifier: linearIssue.identifier,
+          url: linearIssue.url,
+          alreadyImported: true,
+        };
+      }
+
       const created = await ctx.issues.create({
         companyId,
         title: linearIssue.title,
         description: linearIssue.description ?? undefined,
         priority: priority as "critical" | "high" | "medium" | "low",
+        originKind: "plugin:paperclip-plugin-linear",
+        originId: linearIssue.id,
       });
 
       if (status !== "backlog") {
@@ -1095,11 +1118,26 @@ async function handleWebhookEvent(
       const priority = priorityMap[(data.priority as number) ?? 0] ?? "medium";
 
       try {
+        // Dedup against prior imports of the same Linear issue.
+        const existingByOrigin = await ctx.issues.list({
+          companyId,
+          originKind: "plugin:paperclip-plugin-linear",
+          originId: linearIssueId,
+          limit: 1,
+        });
+        if (existingByOrigin.length > 0) {
+          ctx.logger.info(`Skipped duplicate webhook create for Linear ${identifier ?? linearIssueId} (already imported)`);
+          inFlightCreates.delete(linearIssueId);
+          return;
+        }
+
         const created = await ctx.issues.create({
           companyId,
           title: (data.title as string) ?? "Untitled",
           description: (data.description as string | null) ?? undefined,
           priority: priority as "critical" | "high" | "medium" | "low",
+          originKind: "plugin:paperclip-plugin-linear",
+          originId: linearIssueId,
         });
 
         if (status !== "backlog") {
@@ -1669,11 +1707,26 @@ async function runImport(ctx: PluginContext): Promise<{
       const description = linearIssue.description ?? undefined;
 
       try {
+        // Idempotency: the bulk-import path can rerun against the same Linear
+        // workspace. Skip Paperclip rows that already point at this Linear id.
+        const existingByOrigin = await ctx.issues.list({
+          companyId,
+          originKind: "plugin:paperclip-plugin-linear",
+          originId: linearIssue.id,
+          limit: 1,
+        });
+        if (existingByOrigin.length > 0) {
+          skipped++;
+          continue;
+        }
+
         const created = await ctx.issues.create({
           companyId,
           title: linearIssue.title,
           description,
           priority: priority as "critical" | "high" | "medium" | "low",
+          originKind: "plugin:paperclip-plugin-linear",
+          originId: linearIssue.id,
           ...(projectId ? { projectId } : {}),
           ...(issueLabelIds.length > 0 ? { labelIds: issueLabelIds } : {}),
         } as any);
