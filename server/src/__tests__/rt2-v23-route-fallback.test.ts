@@ -524,6 +524,10 @@ describe("RT2 v2.3 fallback route contracts", () => {
     expect(validation.body.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "issuer", status: "pass" }),
     ]));
+    expect(validation.body.callbackStateChecks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "callback-state", status: "pass" }),
+    ]));
+    expect(validation.body.failureReasons).toEqual([]);
     expect(mocks.enterprise.validateSsoHandshake).toHaveBeenCalledWith(companyId, expect.objectContaining({
       provider: "microsoft",
       callbackUrl: "https://rt2.internal/auth/callback",
@@ -543,7 +547,13 @@ describe("RT2 v2.3 fallback route contracts", () => {
       });
     expect(scim.status).toBe(200);
     expect(scim.body.previewId).toBe("scim-preview-1");
+    expect(scim.body.previewFingerprint).toBe("fingerprint-1");
     expect(scim.body.summary).toEqual(expect.objectContaining({ deactivate: 1 }));
+    expect(scim.body.candidates[0]).toEqual(expect.objectContaining({
+      id: "user:deactivate:u-2",
+      action: "deactivate",
+      externalId: "u-2",
+    }));
     expect(mocks.logActivity).toHaveBeenCalledWith(null, expect.objectContaining({
       action: "rt2.rollout.scim_previewed",
       companyId,
@@ -564,6 +574,20 @@ describe("RT2 v2.3 fallback route contracts", () => {
       status: "partial",
       summary: expect.objectContaining({ rollbackCandidates: 1 }),
     }));
+    expect(apply.body.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ candidateId: "user:deactivate:u-2", status: "applied" }),
+      expect.objectContaining({
+        candidateId: "user:update:u-3",
+        status: "failed",
+        failureReason: expect.objectContaining({ code: "candidate_validation_failed" }),
+      }),
+    ]));
+    expect(apply.body.rollbackCandidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ candidateId: "user:deactivate:u-2", action: "deactivate" }),
+    ]));
+    expect(apply.body.failureReasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "candidate_validation_failed" }),
+    ]));
     expect(mocks.enterprise.applyScimPreview).toHaveBeenCalledWith(companyId, expect.objectContaining({
       previewId: "scim-preview-1",
       acknowledgeDeactivations: true,
@@ -577,6 +601,26 @@ describe("RT2 v2.3 fallback route contracts", () => {
         previewId: "scim-preview-1",
         rollbackCandidateCount: 1,
       }),
+    }));
+  });
+
+  it("checks enterprise company access before SCIM apply mutation", async () => {
+    const app = createApp();
+
+    const apply = await request(app)
+      .post("/api/companies/other-company/rt2/enterprise/scim/apply")
+      .send({
+        previewId: "scim-preview-1",
+        previewFingerprint: "fingerprint-1",
+        selectedCandidateIds: ["user:deactivate:u-2"],
+        acknowledgeDeactivations: true,
+      });
+
+    expect(apply.status).toBe(500);
+    expect(mocks.enterprise.applyScimPreview).not.toHaveBeenCalled();
+    expect(mocks.logActivity).not.toHaveBeenCalledWith(null, expect.objectContaining({
+      action: "rt2.rollout.scim_applied",
+      companyId: "other-company",
     }));
   });
 
