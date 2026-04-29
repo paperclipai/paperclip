@@ -37,6 +37,7 @@ export function KnowledgePage() {
   const [searchContradictionStatus, setSearchContradictionStatus] = useState("all");
   const [vaultRootPath, setVaultRootPath] = useState("C:/RealTycoon2/ObsidianVault");
   const [vaultSubdirectory, setVaultSubdirectory] = useState("rt2-export");
+  const [localBridgeToken, setLocalBridgeToken] = useState("");
   const [approvedCandidateIds, setApprovedCandidateIds] = useState<string[]>([]);
   const [conflictDecision, setConflictDecision] = useState<"rt2_wins" | "vault_wins" | "manual_merge">("rt2_wins");
   const [manualMergeMarkdown, setManualMergeMarkdown] = useState("");
@@ -150,6 +151,20 @@ export function KnowledgePage() {
     queryFn: () => rt2KnowledgeApi.getVaultWriter(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId && view === "bridge"),
   });
+  const localBridgeHealth = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.rt2Knowledge.localBridgeHealth(selectedCompanyId)
+      : (["rt2-knowledge", "local-bridge-health-disabled"] as const),
+    queryFn: () => rt2KnowledgeApi.getLocalBridgeHealth(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && view === "bridge"),
+  });
+  const localBridgeQueue = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.rt2Knowledge.localBridgeQueue(selectedCompanyId)
+      : (["rt2-knowledge", "local-bridge-queue-disabled"] as const),
+    queryFn: () => rt2KnowledgeApi.listLocalBridgeQueue(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && view === "bridge"),
+  });
   const contradictions = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.rt2Knowledge.contradictions(selectedCompanyId, "open", selectedProjectId)
@@ -259,6 +274,26 @@ export function KnowledgePage() {
     mutationFn: () => rt2KnowledgeApi.dryRunVaultWriter(selectedCompanyId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.vaultWriter(selectedCompanyId!) });
+    },
+  });
+  const pairLocalBridge = useMutation({
+    mutationFn: () => rt2KnowledgeApi.createLocalBridgePairing(selectedCompanyId!, {
+      bridgeName: "RT2 Local Knowledge Bridge",
+      vaultName: vaultExport.data?.vaultName ?? `rt2-company-${selectedCompanyId}`,
+    }),
+    onSuccess: (result) => {
+      setLocalBridgeToken(result.pairingToken);
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.localBridgeHealth(selectedCompanyId!) });
+    },
+  });
+  const enqueueLocalBridgeExport = useMutation({
+    mutationFn: () => rt2KnowledgeApi.enqueueLocalBridgeSync(selectedCompanyId!, {
+      operation: "export",
+      vaultPath: vaultWriter.data?.exportPath ?? vaultSubdirectory,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.localBridgeHealth(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.localBridgeQueue(selectedCompanyId!) });
     },
   });
   const applyImport = useMutation({
@@ -801,6 +836,81 @@ export function KnowledgePage() {
                           ? `${dryRun.fileCount} files · ${dryRun.conflictCount} conflicts · target ${dryRun.exportPath || "not configured"}`
                           : null;
                       })()}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="space-y-3 rounded-lg border border-border px-3 py-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <div className="text-xs font-medium uppercase text-muted-foreground">Trusted local bridge</div>
+                      <div className="mt-1 text-sm">
+                        {localBridgeHealth.data?.bridge
+                          ? `${localBridgeHealth.data.bridge.bridgeName} · ${localBridgeHealth.data.status}`
+                          : "No local bridge paired"}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => pairLocalBridge.mutate()} disabled={pairLocalBridge.isPending}>
+                        <Save className="h-4 w-4" />
+                        {pairLocalBridge.isPending ? "Pairing" : "Pair bridge"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => enqueueLocalBridgeExport.mutate()}
+                        disabled={enqueueLocalBridgeExport.isPending || !localBridgeHealth.data?.bridge}
+                      >
+                        <UploadCloud className="h-4 w-4" />
+                        {enqueueLocalBridgeExport.isPending ? "Queueing" : "Queue export"}
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2 text-xs sm:grid-cols-4">
+                    <div className="rounded-md border border-border px-3 py-2">
+                      <div className="text-muted-foreground">Queued</div>
+                      <div className="text-lg font-semibold">{localBridgeHealth.data?.queue.queued ?? 0}</div>
+                    </div>
+                    <div className="rounded-md border border-border px-3 py-2">
+                      <div className="text-muted-foreground">Applied</div>
+                      <div className="text-lg font-semibold">{localBridgeHealth.data?.queue.applied ?? 0}</div>
+                    </div>
+                    <div className="rounded-md border border-border px-3 py-2">
+                      <div className="text-muted-foreground">Conflicts</div>
+                      <div className="text-lg font-semibold">{localBridgeHealth.data?.conflictCount ?? 0}</div>
+                    </div>
+                    <div className="rounded-md border border-border px-3 py-2">
+                      <div className="text-muted-foreground">Last seen</div>
+                      <div className="truncate text-sm font-semibold">
+                        {localBridgeHealth.data?.bridge?.lastSeenAt
+                          ? new Date(localBridgeHealth.data.bridge.lastSeenAt).toLocaleString()
+                          : "never"}
+                      </div>
+                    </div>
+                  </div>
+                  {localBridgeHealth.data?.blockedReason ? (
+                    <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                      blocked: {localBridgeHealth.data.blockedReason}
+                    </div>
+                  ) : null}
+                  {localBridgeToken ? (
+                    <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                      pairing token issued for local daemon: {localBridgeToken}
+                    </div>
+                  ) : null}
+                  {localBridgeQueue.data?.items.length ? (
+                    <div className="max-h-40 space-y-2 overflow-auto">
+                      {localBridgeQueue.data.items.slice(0, 5).map((item) => (
+                        <div key={item.id} className="rounded-md border border-border px-3 py-2 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-medium">{item.operation}</span>
+                            <span className="text-muted-foreground">{item.status}</span>
+                          </div>
+                          <div className="mt-1 truncate text-muted-foreground">
+                            {item.vaultPath ?? item.pageKey ?? item.id}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ) : null}
                 </div>

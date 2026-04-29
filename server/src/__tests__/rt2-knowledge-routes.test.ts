@@ -8,6 +8,8 @@ import {
   createDb,
   projects,
   rt2V33DomainEvents,
+  rt2V33KnowledgeBridgePairings,
+  rt2V33KnowledgeBridgeQueue,
   rt2V33GraphEdges,
   rt2V33GraphNodes,
   rt2V33DailyWikiPages,
@@ -47,6 +49,8 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
     await db.delete(rt2V33GraphEdges);
     await db.delete(rt2V33GraphNodes);
     await db.delete(rt2V33DailyWikiPages);
+    await db.delete(rt2V33KnowledgeBridgeQueue);
+    await db.delete(rt2V33KnowledgeBridgePairings);
     await db.delete(rt2V33KnowledgeSyncDecisions);
     await db.delete(rt2V33KnowledgeVaultSettings);
     await db.delete(rt2V33WikiPages);
@@ -215,6 +219,105 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
       });
     expect(conflictResponse.status).toBe(200);
     expect(conflictResponse.body).toEqual(expect.objectContaining({ decision: "rt2_wins", applied: false }));
+  });
+
+  it("pairs a trusted local bridge and exposes sync health evidence", async () => {
+    await seed();
+    const app = await createApp(companyId);
+
+    const emptyHealth = await request(app).get(`/api/companies/${companyId}/rt2/knowledge/local-bridge/health`);
+    expect(emptyHealth.status).toBe(200);
+    expect(emptyHealth.body).toEqual(expect.objectContaining({
+      status: "unavailable",
+      bridge: null,
+      conflictCount: 0,
+    }));
+    expect(emptyHealth.body.reasons).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "bridge_unpaired" })]),
+    );
+
+    const pairing = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/pairing`)
+      .send({ bridgeName: "Operator MacBook Bridge", vaultName: "Ops Vault" });
+    expect(pairing.status).toBe(200);
+    expect(pairing.body.bridge).toEqual(expect.objectContaining({
+      companyId,
+      bridgeName: "Operator MacBook Bridge",
+      vaultName: "Ops Vault",
+      status: "paired",
+    }));
+    expect(pairing.body.pairingToken).toContain("rt2lb_");
+
+    const crossCompanyHeartbeat = await request(app)
+      .post(`/api/companies/${randomUUID()}/rt2/knowledge/local-bridge/heartbeat`)
+      .send({
+        bridgeId: pairing.body.bridge.id,
+        pairingToken: pairing.body.pairingToken,
+        status: "available",
+      });
+    expect(crossCompanyHeartbeat.status).toBe(403);
+
+    const badHeartbeat = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/heartbeat`)
+      .send({
+        bridgeId: pairing.body.bridge.id,
+        pairingToken: "rt2lb_wrong_token_000000000000",
+        status: "available",
+      });
+    expect(badHeartbeat.status).toBe(403);
+
+    const heartbeat = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/heartbeat`)
+      .send({
+        bridgeId: pairing.body.bridge.id,
+        pairingToken: pairing.body.pairingToken,
+        status: "blocked",
+        blockedReason: "Vault directory is locked by another process.",
+        conflictCount: 2,
+      });
+    expect(heartbeat.status).toBe(200);
+    expect(heartbeat.body).toEqual(expect.objectContaining({
+      status: "blocked",
+      blockedReason: "Vault directory is locked by another process.",
+      conflictCount: 2,
+    }));
+
+    const queued = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/sync-queue`)
+      .send({
+        operation: "export",
+        vaultPath: "C:/rt2-vault/rt2-export/index.md",
+        pageKey: "index.md",
+      });
+    expect(queued.status).toBe(200);
+    expect(queued.body).toEqual(expect.objectContaining({
+      operation: "export",
+      status: "queued",
+      pageKey: "index.md",
+    }));
+
+    const apply = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/sync-queue/apply`)
+      .send({
+        queueId: queued.body.id,
+        status: "applied",
+        result: { filesWritten: 1 },
+      });
+    expect(apply.status).toBe(200);
+    expect(apply.body).toEqual(expect.objectContaining({
+      status: "applied",
+      result: expect.objectContaining({ filesWritten: 1 }),
+    }));
+
+    const health = await request(app).get(`/api/companies/${companyId}/rt2/knowledge/local-bridge/health`);
+    expect(health.status).toBe(200);
+    expect(health.body).toEqual(expect.objectContaining({
+      status: "blocked",
+      conflictCount: 2,
+      blockedReason: "Vault directory is locked by another process.",
+      lastAppliedAt: expect.any(String),
+    }));
+    expect(health.body.queue).toEqual(expect.objectContaining({ applied: 1 }));
   });
 
   it("returns daily wiki pages through roadmap-compatible daily endpoints", async () => {

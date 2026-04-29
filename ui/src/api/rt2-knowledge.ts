@@ -11,6 +11,13 @@ import type {
   Rt2ObsidianVaultWriterSettingsInput,
   Rt2KnowledgeProjectionResult,
   Rt2KnowledgeOperationsHealth,
+  Rt2LocalBridgeHealth,
+  Rt2LocalBridgeHeartbeatInput,
+  Rt2LocalBridgePairingRequest,
+  Rt2LocalBridgePairingResult,
+  Rt2LocalBridgeQueueApplyInput,
+  Rt2LocalBridgeQueueInput,
+  Rt2LocalBridgeQueueItem,
   Rt2ContradictionCandidateList,
   Rt2ContradictionGenerateResult,
   Rt2ContradictionResolutionInput,
@@ -58,6 +65,20 @@ export const rt2KnowledgeApi = {
     api.post<Rt2ObsidianVaultWriterSettings>(`/companies/${companyId}/rt2/knowledge/vault-writer`, input),
   dryRunVaultWriter: (companyId: string) =>
     api.post<Rt2ObsidianVaultDryRunResult>(`/companies/${companyId}/rt2/knowledge/vault-writer/dry-run`, {}),
+  getLocalBridgeHealth: (companyId: string) =>
+    api.get<Rt2LocalBridgeHealth>(`/companies/${companyId}/rt2/knowledge/local-bridge/health`),
+  createLocalBridgePairing: (companyId: string, input: Rt2LocalBridgePairingRequest) =>
+    api.post<Rt2LocalBridgePairingResult>(`/companies/${companyId}/rt2/knowledge/local-bridge/pairing`, input),
+  recordLocalBridgeHeartbeat: (companyId: string, input: Rt2LocalBridgeHeartbeatInput) =>
+    api.post<Rt2LocalBridgePairingResult["bridge"]>(`/companies/${companyId}/rt2/knowledge/local-bridge/heartbeat`, input),
+  listLocalBridgeQueue: (companyId: string) =>
+    api.get<{ companyId: string; items: Rt2LocalBridgeQueueItem[] }>(
+      `/companies/${companyId}/rt2/knowledge/local-bridge/sync-queue`,
+    ),
+  enqueueLocalBridgeSync: (companyId: string, input: Rt2LocalBridgeQueueInput) =>
+    api.post<Rt2LocalBridgeQueueItem>(`/companies/${companyId}/rt2/knowledge/local-bridge/sync-queue`, input),
+  applyLocalBridgeQueue: (companyId: string, input: Rt2LocalBridgeQueueApplyInput) =>
+    api.post<Rt2LocalBridgeQueueItem>(`/companies/${companyId}/rt2/knowledge/local-bridge/sync-queue/apply`, input),
   previewVaultImport: (companyId: string, input: Rt2ObsidianVaultImportPreviewInput) =>
     api.post<Rt2ObsidianVaultImportPreview>(
       `/companies/${companyId}/rt2/knowledge/vault-import-preview`,

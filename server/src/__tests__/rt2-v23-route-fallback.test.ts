@@ -21,6 +21,12 @@ const mocks = vi.hoisted(() => ({
     previewObsidianVaultImport: vi.fn(),
     applyObsidianVaultImport: vi.fn(),
     resolveObsidianVaultConflict: vi.fn(),
+    createLocalBridgePairing: vi.fn(),
+    recordLocalBridgeHeartbeat: vi.fn(),
+    getLocalBridgeHealth: vi.fn(),
+    enqueueLocalBridgeSync: vi.fn(),
+    listLocalBridgeQueue: vi.fn(),
+    applyLocalBridgeQueue: vi.fn(),
   },
   pnl: {
     getCompanyPnLSummary: vi.fn(),
@@ -206,6 +212,107 @@ describe("RT2 v2.3 fallback route contracts", () => {
       applied: false,
       auditId: "audit-conflict-1",
       resolvedAt: "2026-04-25T00:00:00.000Z",
+    });
+    mocks.knowledge.createLocalBridgePairing.mockResolvedValue({
+      bridge: {
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId,
+        bridgeName: "RT2 Local Knowledge Bridge",
+        vaultName: "RT2 Knowledge Vault",
+        status: "paired",
+        blockedReason: null,
+        conflictCount: 0,
+        lastSeenAt: null,
+        lastAppliedAt: null,
+        createdAt: "2026-04-29T00:00:00.000Z",
+        updatedAt: "2026-04-29T00:00:00.000Z",
+      },
+      pairingToken: "rt2lb_test_token_0000000000000000",
+    });
+    mocks.knowledge.recordLocalBridgeHeartbeat.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId,
+      bridgeName: "RT2 Local Knowledge Bridge",
+      vaultName: "RT2 Knowledge Vault",
+      status: "available",
+      blockedReason: null,
+      conflictCount: 0,
+      lastSeenAt: "2026-04-29T00:00:00.000Z",
+      lastAppliedAt: null,
+      createdAt: "2026-04-29T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+    });
+    mocks.knowledge.enqueueLocalBridgeSync.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId,
+      bridgeId: "11111111-1111-4111-8111-111111111111",
+      operation: "export",
+      status: "queued",
+      pageKey: null,
+      vaultPath: "C:/vault/rt2-export",
+      candidateIds: [],
+      blockedReason: null,
+      result: null,
+      createdAt: "2026-04-29T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      appliedAt: null,
+    });
+    mocks.knowledge.listLocalBridgeQueue.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId,
+        bridgeId: "11111111-1111-4111-8111-111111111111",
+        operation: "export",
+        status: "queued",
+        pageKey: null,
+        vaultPath: "C:/vault/rt2-export",
+        candidateIds: [],
+        blockedReason: null,
+        result: null,
+        createdAt: "2026-04-29T00:00:00.000Z",
+        updatedAt: "2026-04-29T00:00:00.000Z",
+        appliedAt: null,
+      },
+    ]);
+    mocks.knowledge.applyLocalBridgeQueue.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId,
+      bridgeId: "11111111-1111-4111-8111-111111111111",
+      operation: "export",
+      status: "applied",
+      pageKey: null,
+      vaultPath: "C:/vault/rt2-export",
+      candidateIds: [],
+      blockedReason: null,
+      result: { filesWritten: 1 },
+      createdAt: "2026-04-29T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      appliedAt: "2026-04-29T00:00:00.000Z",
+    });
+    mocks.knowledge.getLocalBridgeHealth.mockResolvedValue({
+      companyId,
+      status: "available",
+      generatedAt: "2026-04-29T00:00:00.000Z",
+      bridge: {
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId,
+        bridgeName: "RT2 Local Knowledge Bridge",
+        vaultName: "RT2 Knowledge Vault",
+        status: "available",
+        blockedReason: null,
+        conflictCount: 0,
+        lastSeenAt: "2026-04-29T00:00:00.000Z",
+        lastAppliedAt: "2026-04-29T00:00:00.000Z",
+        createdAt: "2026-04-29T00:00:00.000Z",
+        updatedAt: "2026-04-29T00:00:00.000Z",
+      },
+      queue: { queued: 1, running: 0, applied: 0, blocked: 0, conflict: 0, failed: 0 },
+      lastAppliedAt: "2026-04-29T00:00:00.000Z",
+      conflictCount: 0,
+      blockedReason: null,
+      stale: false,
+      reasons: [],
+      recentQueue: [],
     });
 
     mocks.pnl.getCompanyPnLSummary.mockResolvedValue({
@@ -462,6 +569,33 @@ describe("RT2 v2.3 fallback route contracts", () => {
       .send({ file: vault.body.files[0], decision: "rt2_wins", reason: "keep RT2 truth" });
     expect(conflict.status).toBe(200);
     expect(conflict.body).toEqual(expect.objectContaining({ decision: "rt2_wins", auditId: "audit-conflict-1" }));
+
+    const pairing = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/pairing`)
+      .send({ bridgeName: "RT2 Local Knowledge Bridge", vaultName: "RT2 Knowledge Vault" });
+    expect(pairing.status).toBe(200);
+    expect(pairing.body.pairingToken).toContain("rt2lb_");
+
+    const heartbeat = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/heartbeat`)
+      .send({
+        bridgeId: pairing.body.bridge.id,
+        pairingToken: pairing.body.pairingToken,
+        status: "available",
+        conflictCount: 0,
+      });
+    expect(heartbeat.status).toBe(200);
+    expect(heartbeat.body.status).toBe("available");
+
+    const queued = await request(app)
+      .post(`/api/companies/${companyId}/rt2/knowledge/local-bridge/sync-queue`)
+      .send({ operation: "export", vaultPath: "C:/vault/rt2-export" });
+    expect(queued.status).toBe(200);
+    expect(queued.body).toEqual(expect.objectContaining({ operation: "export", status: "queued" }));
+
+    const health = await request(app).get(`/api/companies/${companyId}/rt2/knowledge/local-bridge/health`);
+    expect(health.status).toBe(200);
+    expect(health.body).toEqual(expect.objectContaining({ status: "available", conflictCount: 0 }));
   });
 
   it("validates economy, marketplace, and collaboration route contracts without embedded Postgres", async () => {

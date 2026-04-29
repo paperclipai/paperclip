@@ -89,6 +89,98 @@ export interface Rt2ObsidianVaultWriterSettings {
   updatedAt: string;
 }
 
+export type Rt2LocalBridgeStatus = "paired" | "available" | "unavailable" | "stale" | "blocked" | "conflict";
+export type Rt2LocalBridgeQueueOperation = "export" | "import" | "conflict_resolution";
+export type Rt2LocalBridgeQueueStatus = "queued" | "running" | "applied" | "blocked" | "conflict" | "failed";
+
+export interface Rt2LocalBridgePairingRequest {
+  bridgeName?: string;
+  vaultName?: string;
+}
+
+export interface Rt2LocalBridgePairing {
+  id: string;
+  companyId: string;
+  bridgeName: string;
+  vaultName: string;
+  status: Rt2LocalBridgeStatus;
+  blockedReason: string | null;
+  conflictCount: number;
+  lastSeenAt: string | null;
+  lastAppliedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Rt2LocalBridgePairingResult {
+  bridge: Rt2LocalBridgePairing;
+  pairingToken: string;
+}
+
+export interface Rt2LocalBridgeHeartbeatInput {
+  bridgeId: string;
+  pairingToken: string;
+  status?: Rt2LocalBridgeStatus;
+  blockedReason?: string | null;
+  conflictCount?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface Rt2LocalBridgeQueueInput {
+  operation: Rt2LocalBridgeQueueOperation;
+  pageKey?: string;
+  vaultPath?: string;
+  candidateIds?: string[];
+  blockedReason?: string | null;
+}
+
+export interface Rt2LocalBridgeQueueApplyInput {
+  queueId: string;
+  status?: Extract<Rt2LocalBridgeQueueStatus, "applied" | "blocked" | "conflict" | "failed">;
+  blockedReason?: string | null;
+  result?: Record<string, unknown>;
+}
+
+export interface Rt2LocalBridgeQueueItem {
+  id: string;
+  companyId: string;
+  bridgeId: string | null;
+  operation: Rt2LocalBridgeQueueOperation;
+  status: Rt2LocalBridgeQueueStatus;
+  pageKey: string | null;
+  vaultPath: string | null;
+  candidateIds: string[];
+  blockedReason: string | null;
+  result: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+}
+
+export interface Rt2LocalBridgeHealth {
+  companyId: string;
+  status: Rt2LocalBridgeStatus;
+  generatedAt: string;
+  bridge: Rt2LocalBridgePairing | null;
+  queue: {
+    queued: number;
+    running: number;
+    applied: number;
+    blocked: number;
+    conflict: number;
+    failed: number;
+  };
+  lastAppliedAt: string | null;
+  conflictCount: number;
+  blockedReason: string | null;
+  stale: boolean;
+  reasons: Array<{
+    code: "bridge_unpaired" | "bridge_unavailable" | "bridge_stale" | "bridge_blocked" | "bridge_conflicts";
+    message: string;
+  }>;
+  recentQueue: Rt2LocalBridgeQueueItem[];
+}
+
 export interface Rt2ObsidianVaultImportFileInput {
   path: string;
   content: string;

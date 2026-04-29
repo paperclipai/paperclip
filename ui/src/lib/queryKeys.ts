@@ -83,6 +83,8 @@ export const queryKeys = {
     vault: (companyId: string, pageType?: string, limit?: number) =>
       ["rt2-knowledge", companyId, "vault", pageType ?? "__all__", limit ?? "__default__"] as const,
     vaultWriter: (companyId: string) => ["rt2-knowledge", companyId, "vault-writer"] as const,
+    localBridgeHealth: (companyId: string) => ["rt2-knowledge", companyId, "local-bridge-health"] as const,
+    localBridgeQueue: (companyId: string) => ["rt2-knowledge", companyId, "local-bridge-queue"] as const,
     importPreview: (companyId: string) => ["rt2-knowledge", companyId, "import-preview"] as const,
     contradictions: (companyId: string, status?: string, projectId?: string) =>
       ["rt2-knowledge", companyId, "contradictions", status ?? "open", projectId ?? "__all__"] as const,

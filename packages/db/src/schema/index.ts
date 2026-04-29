@@ -42,6 +42,8 @@ export { rt2V33DailyReportCards } from "./rt2_v33_daily_report_cards.js";
 export { rt2V33DailyWikiPages } from "./rt2_v33_daily_wiki_pages.js";
 export { rt2V33WikiPages } from "./rt2_v33_wiki_pages.js";
 export {
+  rt2V33KnowledgeBridgePairings,
+  rt2V33KnowledgeBridgeQueue,
   rt2V33KnowledgeSyncDecisions,
   rt2V33KnowledgeVaultSettings,
 } from "./rt2_v33_knowledge_sync.js";

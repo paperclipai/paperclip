@@ -2,6 +2,9 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   applyRt2KnowledgeVaultImportSchema,
+  applyRt2LocalBridgeQueueSchema,
+  createRt2LocalBridgePairingSchema,
+  createRt2LocalBridgeQueueSchema,
   getRt2DailyWikiPageSchema,
   getRt2WikiPageSchema,
   listRt2DailyWikiPagesSchema,
@@ -10,6 +13,7 @@ import {
   projectRt2KnowledgeSchema,
   rebuildRt2DailyWikiSchema,
   resolveRt2KnowledgeVaultConflictSchema,
+  rt2LocalBridgeHeartbeatSchema,
   saveRt2KnowledgeVaultWriterSettingsSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
@@ -74,6 +78,102 @@ export function rt2KnowledgeRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     res.json(await svc.dryRunVaultWriter(companyId));
   });
+
+  router.get("/companies/:companyId/rt2/knowledge/local-bridge/health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.getLocalBridgeHealth(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/rt2/knowledge/local-bridge/pairing",
+    validate(createRt2LocalBridgePairingSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const body = createRt2LocalBridgePairingSchema.parse(req.body ?? {});
+      const result = await svc.createLocalBridgePairing(companyId, body);
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "rt2-local-knowledge-bridge",
+        action: "rt2.knowledge.local_bridge_paired",
+        entityType: "knowledge_vault_bridge",
+        entityId: result.bridge.id,
+        details: { bridgeName: result.bridge.bridgeName, vaultName: result.bridge.vaultName },
+      });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/rt2/knowledge/local-bridge/heartbeat",
+    validate(rt2LocalBridgeHeartbeatSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const body = rt2LocalBridgeHeartbeatSchema.parse(req.body ?? {});
+      const result = await svc.recordLocalBridgeHeartbeat(companyId, body);
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "rt2-local-knowledge-bridge",
+        action: "rt2.knowledge.local_bridge_heartbeat",
+        entityType: "knowledge_vault_bridge",
+        entityId: result.id,
+        details: { status: result.status, blockedReason: result.blockedReason, conflictCount: result.conflictCount },
+      });
+      res.json(result);
+    },
+  );
+
+  router.get("/companies/:companyId/rt2/knowledge/local-bridge/sync-queue", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json({ companyId, items: await svc.listLocalBridgeQueue(companyId) });
+  });
+
+  router.post(
+    "/companies/:companyId/rt2/knowledge/local-bridge/sync-queue",
+    validate(createRt2LocalBridgeQueueSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const body = createRt2LocalBridgeQueueSchema.parse(req.body ?? {});
+      const result = await svc.enqueueLocalBridgeSync(companyId, body);
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "rt2-local-knowledge-bridge",
+        action: "rt2.knowledge.local_bridge_sync_queued",
+        entityType: "knowledge_vault_bridge_queue",
+        entityId: result.id,
+        details: { operation: result.operation, status: result.status, pageKey: result.pageKey, vaultPath: result.vaultPath },
+      });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/rt2/knowledge/local-bridge/sync-queue/apply",
+    validate(applyRt2LocalBridgeQueueSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const body = applyRt2LocalBridgeQueueSchema.parse(req.body ?? {});
+      const result = await svc.applyLocalBridgeQueue(companyId, body);
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "rt2-local-knowledge-bridge",
+        action: "rt2.knowledge.local_bridge_sync_applied",
+        entityType: "knowledge_vault_bridge_queue",
+        entityId: result.id,
+        details: { operation: result.operation, status: result.status, blockedReason: result.blockedReason },
+      });
+      res.json(result);
+    },
+  );
 
   router.post(
     "/companies/:companyId/rt2/knowledge/vault-import-preview",

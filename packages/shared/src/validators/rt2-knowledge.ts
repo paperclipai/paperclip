@@ -38,6 +38,38 @@ export const saveRt2KnowledgeVaultWriterSettingsSchema = z.object({
   writerMode: z.enum(["dry_run", "local_path"]).optional(),
 });
 
+export const rt2LocalBridgeStatusSchema = z.enum(["paired", "available", "unavailable", "stale", "blocked", "conflict"]);
+export const rt2LocalBridgeQueueOperationSchema = z.enum(["export", "import", "conflict_resolution"]);
+
+export const createRt2LocalBridgePairingSchema = z.object({
+  bridgeName: z.string().min(1).max(120).optional(),
+  vaultName: z.string().min(1).max(120).optional(),
+});
+
+export const rt2LocalBridgeHeartbeatSchema = z.object({
+  bridgeId: z.string().uuid(),
+  pairingToken: z.string().min(16).max(240),
+  status: rt2LocalBridgeStatusSchema.optional(),
+  blockedReason: z.string().max(500).nullable().optional(),
+  conflictCount: z.number().int().min(0).max(100_000).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const createRt2LocalBridgeQueueSchema = z.object({
+  operation: rt2LocalBridgeQueueOperationSchema,
+  pageKey: z.string().min(1).max(240).optional(),
+  vaultPath: z.string().min(1).max(400).optional(),
+  candidateIds: z.array(z.string().min(1).max(240)).max(200).optional(),
+  blockedReason: z.string().max(500).nullable().optional(),
+});
+
+export const applyRt2LocalBridgeQueueSchema = z.object({
+  queueId: z.string().uuid(),
+  status: z.enum(["applied", "blocked", "conflict", "failed"]).optional(),
+  blockedReason: z.string().max(500).nullable().optional(),
+  result: z.record(z.string(), z.unknown()).optional(),
+});
+
 export const previewRt2KnowledgeVaultImportSchema = z.object({
   vaultName: z.string().min(1).max(120).optional(),
   projectId: z.string().uuid().optional(),
@@ -90,6 +122,10 @@ export type GetRt2DailyWikiPage = z.infer<typeof getRt2DailyWikiPageSchema>;
 export type RebuildRt2DailyWiki = z.infer<typeof rebuildRt2DailyWikiSchema>;
 export type ProjectRt2Knowledge = z.infer<typeof projectRt2KnowledgeSchema>;
 export type SaveRt2KnowledgeVaultWriterSettings = z.infer<typeof saveRt2KnowledgeVaultWriterSettingsSchema>;
+export type CreateRt2LocalBridgePairing = z.infer<typeof createRt2LocalBridgePairingSchema>;
+export type Rt2LocalBridgeHeartbeat = z.infer<typeof rt2LocalBridgeHeartbeatSchema>;
+export type CreateRt2LocalBridgeQueue = z.infer<typeof createRt2LocalBridgeQueueSchema>;
+export type ApplyRt2LocalBridgeQueue = z.infer<typeof applyRt2LocalBridgeQueueSchema>;
 export type PreviewRt2KnowledgeVaultImport = z.infer<typeof previewRt2KnowledgeVaultImportSchema>;
 export type ApplyRt2KnowledgeVaultImport = z.infer<typeof applyRt2KnowledgeVaultImportSchema>;
 export type ResolveRt2KnowledgeVaultConflict = z.infer<typeof resolveRt2KnowledgeVaultConflictSchema>;

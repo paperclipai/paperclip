@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -7,6 +8,8 @@ import {
   rt2V33GraphReports,
   rt2V33GraphCache,
   rt2V33GraphCommunities,
+  rt2V33KnowledgeBridgePairings,
+  rt2V33KnowledgeBridgeQueue,
   rt2V33KnowledgeSyncDecisions,
   rt2V33KnowledgeVaultSettings,
   rt2V33ProjectorEvents,
@@ -17,6 +20,15 @@ import type {
   Rt2DomainEvent,
   Rt2KnowledgeEvidenceStatus,
   Rt2KnowledgeImportCandidate,
+  Rt2LocalBridgeHealth,
+  Rt2LocalBridgeHeartbeatInput,
+  Rt2LocalBridgePairing,
+  Rt2LocalBridgePairingRequest,
+  Rt2LocalBridgePairingResult,
+  Rt2LocalBridgeQueueApplyInput,
+  Rt2LocalBridgeQueueInput,
+  Rt2LocalBridgeQueueItem,
+  Rt2LocalBridgeStatus,
   Rt2ObsidianVaultExport,
   Rt2ObsidianVaultConflictResolutionInput,
   Rt2ObsidianVaultConflictResolutionResult,
@@ -31,7 +43,7 @@ import type {
   Rt2WikiPage,
   Rt2WikiPageType,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { forbidden, notFound } from "../errors.js";
 import { rt2DomainEventService } from "./rt2-domain-events.js";
 import { detectCommunities } from "./rt2-task-mesh.js";
 
@@ -41,7 +53,11 @@ type DomainEventRow = typeof rt2V33DomainEvents.$inferSelect;
 type WikiPageRow = typeof rt2V33WikiPages.$inferSelect;
 type GraphNodeRow = typeof rt2V33GraphNodes.$inferSelect;
 type VaultSettingsRow = typeof rt2V33KnowledgeVaultSettings.$inferSelect;
+type LocalBridgeRow = typeof rt2V33KnowledgeBridgePairings.$inferSelect;
+type LocalBridgeQueueRow = typeof rt2V33KnowledgeBridgeQueue.$inferSelect;
 type DailyWikiPageRow = typeof rt2V33DailyWikiPages.$inferSelect;
+
+const LOCAL_BRIDGE_STALE_MS = 5 * 60 * 1000;
 
 function toIso(value: Date): string {
   return value.toISOString();
@@ -60,6 +76,44 @@ function toWikiPage(row: WikiPageRow): Rt2WikiPage {
     metadata: row.metadata,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
+  };
+}
+
+function hashPairingToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function toLocalBridge(row: LocalBridgeRow): Rt2LocalBridgePairing {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    bridgeName: row.bridgeName,
+    vaultName: row.vaultName,
+    status: row.status as Rt2LocalBridgeStatus,
+    blockedReason: row.blockedReason ?? null,
+    conflictCount: Number(row.conflictCount ?? 0),
+    lastSeenAt: row.lastSeenAt ? toIso(row.lastSeenAt) : null,
+    lastAppliedAt: row.lastAppliedAt ? toIso(row.lastAppliedAt) : null,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
+function toLocalBridgeQueueItem(row: LocalBridgeQueueRow): Rt2LocalBridgeQueueItem {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    bridgeId: row.bridgeId ?? null,
+    operation: row.operation as Rt2LocalBridgeQueueItem["operation"],
+    status: row.status as Rt2LocalBridgeQueueItem["status"],
+    pageKey: row.pageKey ?? null,
+    vaultPath: row.vaultPath ?? null,
+    candidateIds: row.candidateIds ?? [],
+    blockedReason: row.blockedReason ?? null,
+    result: row.result ?? null,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+    appliedAt: row.appliedAt ? toIso(row.appliedAt) : null,
   };
 }
 
@@ -1656,6 +1710,183 @@ export function rt2KnowledgeProjectorService(db: Db) {
     };
   }
 
+  async function getLocalBridgeRow(companyId: string) {
+    return db
+      .select()
+      .from(rt2V33KnowledgeBridgePairings)
+      .where(eq(rt2V33KnowledgeBridgePairings.companyId, companyId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function createLocalBridgePairing(
+    companyId: string,
+    input: Rt2LocalBridgePairingRequest = {},
+  ): Promise<Rt2LocalBridgePairingResult> {
+    const token = `rt2lb_${randomUUID()}_${randomUUID()}`;
+    const bridgeName = input.bridgeName ?? "RT2 Local Knowledge Bridge";
+    const vaultName = input.vaultName ?? `rt2-company-${companyId}`;
+    const [row] = await db
+      .insert(rt2V33KnowledgeBridgePairings)
+      .values({
+        companyId,
+        bridgeName,
+        vaultName,
+        tokenHash: hashPairingToken(token),
+        status: "paired",
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [rt2V33KnowledgeBridgePairings.companyId],
+        set: {
+          bridgeName,
+          vaultName,
+          tokenHash: hashPairingToken(token),
+          status: "paired",
+          blockedReason: null,
+          conflictCount: "0",
+          lastSeenAt: null,
+          metadata: {},
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return { bridge: toLocalBridge(row), pairingToken: token };
+  }
+
+  async function recordLocalBridgeHeartbeat(
+    companyId: string,
+    input: Rt2LocalBridgeHeartbeatInput,
+  ): Promise<Rt2LocalBridgePairing> {
+    const existing = await db
+      .select()
+      .from(rt2V33KnowledgeBridgePairings)
+      .where(and(eq(rt2V33KnowledgeBridgePairings.companyId, companyId), eq(rt2V33KnowledgeBridgePairings.id, input.bridgeId)))
+      .then((rows) => rows[0] ?? null);
+    if (!existing) throw notFound("RT2 local knowledge bridge pairing not found");
+    if (existing.tokenHash !== hashPairingToken(input.pairingToken)) {
+      throw forbidden("Invalid local knowledge bridge pairing token");
+    }
+    const [row] = await db
+      .update(rt2V33KnowledgeBridgePairings)
+      .set({
+        status: input.status ?? "available",
+        blockedReason: input.blockedReason ?? null,
+        conflictCount: String(input.conflictCount ?? 0),
+        lastSeenAt: new Date(),
+        metadata: input.metadata ?? {},
+        updatedAt: new Date(),
+      })
+      .where(and(eq(rt2V33KnowledgeBridgePairings.companyId, companyId), eq(rt2V33KnowledgeBridgePairings.id, input.bridgeId)))
+      .returning();
+    return toLocalBridge(row);
+  }
+
+  async function enqueueLocalBridgeSync(
+    companyId: string,
+    input: Rt2LocalBridgeQueueInput,
+  ): Promise<Rt2LocalBridgeQueueItem> {
+    const bridge = await getLocalBridgeRow(companyId);
+    const [row] = await db
+      .insert(rt2V33KnowledgeBridgeQueue)
+      .values({
+        companyId,
+        bridgeId: bridge?.id ?? null,
+        operation: input.operation,
+        status: input.blockedReason ? "blocked" : "queued",
+        pageKey: input.pageKey ?? null,
+        vaultPath: input.vaultPath ?? null,
+        candidateIds: input.candidateIds ?? [],
+        blockedReason: input.blockedReason ?? null,
+        updatedAt: new Date(),
+      })
+      .returning();
+    return toLocalBridgeQueueItem(row);
+  }
+
+  async function listLocalBridgeQueue(companyId: string, limit = 20): Promise<Rt2LocalBridgeQueueItem[]> {
+    const rows = await db
+      .select()
+      .from(rt2V33KnowledgeBridgeQueue)
+      .where(eq(rt2V33KnowledgeBridgeQueue.companyId, companyId))
+      .orderBy(desc(rt2V33KnowledgeBridgeQueue.createdAt))
+      .limit(limit);
+    return rows.map(toLocalBridgeQueueItem);
+  }
+
+  async function applyLocalBridgeQueue(
+    companyId: string,
+    input: Rt2LocalBridgeQueueApplyInput,
+  ): Promise<Rt2LocalBridgeQueueItem> {
+    const status = input.status ?? "applied";
+    const [row] = await db
+      .update(rt2V33KnowledgeBridgeQueue)
+      .set({
+        status,
+        blockedReason: input.blockedReason ?? null,
+        result: input.result ?? null,
+        appliedAt: status === "applied" ? new Date() : null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(rt2V33KnowledgeBridgeQueue.companyId, companyId), eq(rt2V33KnowledgeBridgeQueue.id, input.queueId)))
+      .returning();
+    if (!row) throw notFound("RT2 local knowledge bridge queue item not found");
+    if (status === "applied") {
+      await db
+        .update(rt2V33KnowledgeBridgePairings)
+        .set({ lastAppliedAt: new Date(), status: "available", blockedReason: null, updatedAt: new Date() })
+        .where(eq(rt2V33KnowledgeBridgePairings.companyId, companyId));
+    }
+    return toLocalBridgeQueueItem(row);
+  }
+
+  async function getLocalBridgeHealth(companyId: string): Promise<Rt2LocalBridgeHealth> {
+    const bridgeRow = await getLocalBridgeRow(companyId);
+    const queue = await listLocalBridgeQueue(companyId, 20);
+    const bridge = bridgeRow ? toLocalBridge(bridgeRow) : null;
+    const now = Date.now();
+    const stale = Boolean(bridgeRow?.lastSeenAt && now - bridgeRow.lastSeenAt.getTime() > LOCAL_BRIDGE_STALE_MS);
+    const blockedReason = bridge?.blockedReason ?? queue.find((item) => item.blockedReason)?.blockedReason ?? null;
+    const queueCounts = {
+      queued: queue.filter((item) => item.status === "queued").length,
+      running: queue.filter((item) => item.status === "running").length,
+      applied: queue.filter((item) => item.status === "applied").length,
+      blocked: queue.filter((item) => item.status === "blocked").length,
+      conflict: queue.filter((item) => item.status === "conflict").length,
+      failed: queue.filter((item) => item.status === "failed").length,
+    };
+    const reasons: Rt2LocalBridgeHealth["reasons"] = [];
+    let status: Rt2LocalBridgeStatus = bridge?.status ?? "unavailable";
+    if (!bridge) {
+      reasons.push({ code: "bridge_unpaired", message: "No trusted local knowledge bridge has been paired." });
+      status = "unavailable";
+    } else if (stale) {
+      reasons.push({ code: "bridge_stale", message: "Local bridge heartbeat is stale." });
+      status = "stale";
+    } else if (bridge.status === "blocked" || queueCounts.blocked > 0) {
+      reasons.push({ code: "bridge_blocked", message: blockedReason ?? "Local bridge reported a blocked sync operation." });
+      status = "blocked";
+    } else if (bridge.status === "conflict" || bridge.conflictCount > 0 || queueCounts.conflict > 0) {
+      reasons.push({ code: "bridge_conflicts", message: "Local bridge has unresolved vault conflicts." });
+      status = "conflict";
+    } else if (bridge.status === "unavailable") {
+      reasons.push({ code: "bridge_unavailable", message: "Local bridge is unavailable." });
+      status = "unavailable";
+    }
+    return {
+      companyId,
+      status,
+      generatedAt: new Date().toISOString(),
+      bridge,
+      queue: queueCounts,
+      lastAppliedAt: bridge?.lastAppliedAt ?? queue.find((item) => item.appliedAt)?.appliedAt ?? null,
+      conflictCount: bridge?.conflictCount ?? queueCounts.conflict,
+      blockedReason,
+      stale,
+      reasons,
+      recentQueue: queue,
+    };
+  }
+
   async function getDailyWikiPage(companyId: string, date: string, userId?: string) {
     const userKey = userId ?? "all";
     const row = await db
@@ -1701,11 +1932,16 @@ export function rt2KnowledgeProjectorService(db: Db) {
 
   return {
     applyObsidianVaultImport,
+    applyLocalBridgeQueue,
+    createLocalBridgePairing,
     dryRunVaultWriter,
+    enqueueLocalBridgeSync,
     exportObsidianVault,
     getDailyWikiPage,
+    getLocalBridgeHealth,
     getWikiPage,
     getVaultWriterSettings,
+    listLocalBridgeQueue,
     listDailyWikiPages,
     listWikiPages,
     previewObsidianVaultImport,
@@ -1714,6 +1950,7 @@ export function rt2KnowledgeProjectorService(db: Db) {
     projectEvent,
     projectGraphEvent,
     projectWikiForCompany,
+    recordLocalBridgeHeartbeat,
     resolveObsidianVaultConflict,
     saveVaultWriterSettings,
   };

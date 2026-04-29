@@ -701,6 +701,13 @@
       "when": 1776758400000,
       "tag": "0099_rt2_enterprise_connector_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1776758700000,
+      "tag": "0100_rt2_trusted_local_knowledge_bridge",
+      "breakpoints": true
     }
   ]
 }
