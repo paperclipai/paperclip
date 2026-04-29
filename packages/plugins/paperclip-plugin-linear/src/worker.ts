@@ -2038,26 +2038,65 @@ async function pushGoalToLinear(
     return "created";
   }
 
-  // Migrate issue-based link to initiative if workspace now supports them
+  // Migrate issue-based link to initiative if workspace now supports them.
+  // The previous mirror is a Linear issue inside the "Company Goals" project
+  // (created when initiatives weren't yet supported). Once an initiative
+  // exists for this goal, the old issue is orphaned and would otherwise sit
+  // in the team's backlog forever — archive it (cancelled state) after the
+  // link is repointed, but never roll the migration back if archive fails.
   if (existing.linearProjectId !== null && useInitiatives) {
+    const oldLinearIssueId = existing.linearIssueId;
     try {
       const initiative = await linear.createInitiative(fetch, token, {
         name: goal.title,
         description: goalDescription(goal),
         targetDate: goal.targetDate ?? undefined,
       });
+
+      // Suppress the inbound Initiative.create webhook for this initiative —
+      // the link is about to be repointed at it, but Linear may deliver the
+      // webhook before our updateGoalLink persists, which would otherwise
+      // race the inbound handler into creating a duplicate goal.
+      inFlightInitiativeCreates.add(initiative.id);
+
       await ctx.state.set(
         { scopeKind: "instance", stateKey: STATE_KEYS.initiativesSupported },
         true,
       );
+
       existing.linearIssueId = initiative.id;
       existing.linearIdentifier = initiative.id;
       existing.linearUrl = `https://linear.app/initiatives/${initiative.id}`;
       existing.linearProjectId = null;
       existing.lastTitle = goal.title;
+      existing.lastStatus = goal.status;
       existing.lastTargetDate = goal.targetDate ?? null;
       existing.lastLevel = goal.level;
       await sync.updateGoalLink(ctx, existing);
+
+      // Schedule clearing the in-flight guard. The 10s window matches the
+      // issue path's recentlyCreatedFromLinear guard.
+      setTimeout(() => inFlightInitiativeCreates.delete(initiative.id), 10_000);
+
+      // Archive the orphaned old Linear issue. Best-effort: a failure here
+      // leaves a stale ticket in Linear but does not undo the link migration.
+      try {
+        const teamId = await getTeamId(ctx);
+        const states = await linear.getWorkflowStates(fetch, token, teamId);
+        const cancelledStateId = states.find((s) => s.type === "cancelled")?.id;
+        if (cancelledStateId) {
+          await linear.updateIssue(fetch, token, oldLinearIssueId, {
+            stateId: cancelledStateId,
+            description: `[Migrated to Linear Initiative ${initiative.id}]\n\n${goalDescription(goal)}`,
+          });
+          ctx.logger.info(`Archived orphaned Linear issue ${oldLinearIssueId} after initiative migration`);
+        } else {
+          ctx.logger.warn(`No cancelled-type workflow state found; skipping archive of ${oldLinearIssueId}`);
+        }
+      } catch (archiveErr) {
+        ctx.logger.warn(`Failed to archive orphaned issue ${oldLinearIssueId}: ${archiveErr}`);
+      }
+
       ctx.logger.info(`Migrated goal to Linear Initiative: ${goal.title}`);
       return "updated";
     } catch (err) {
