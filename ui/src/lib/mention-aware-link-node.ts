@@ -4,7 +4,7 @@ import {
   type SerializedLinkNode,
 } from "@lexical/link";
 
-const CUSTOM_MENTION_URL_RE = /^(agent|project):\/\//;
+const CUSTOM_MENTION_URL_RE = /^(agent|project|skill):\/\//;
 
 export class MentionAwareLinkNode extends LinkNode {
   static getType(): string {

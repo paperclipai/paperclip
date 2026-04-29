@@ -133,17 +133,26 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
-function resolveSessionKey(input: {
+function prefixSessionKeyForAgent(sessionKey: string, agentId: string | null): string {
+  if (!agentId || sessionKey.startsWith("agent:")) return sessionKey;
+  return `agent:${agentId}:${sessionKey}`;
+}
+
+export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
-  agentId: string;
+  agentId: string | null;
   runId: string;
   issueId: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `agent:${input.agentId}:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `agent:${input.agentId}:issue:${input.issueId}`;
-  return fallback;
+  if (input.strategy === "run") {
+    return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId);
+  }
+  if (input.strategy === "issue" && input.issueId) {
+    return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
+  }
+  return prefixSessionKeyForAgent(fallback, input.agentId);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -321,6 +330,12 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
+const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+
+function resolveClaimedApiKeyPath(value: unknown): string {
+  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+}
+
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
@@ -340,10 +355,6 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
     paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
 
-  if (ctx.authToken) {
-    paperclipEnv.PAPERCLIP_API_KEY = ctx.authToken;
-  }
-
   return paperclipEnv;
 }
 
@@ -351,7 +362,6 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
-  hasCustomInstructions = false,
 ): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
@@ -359,7 +369,6 @@ function buildWakeText(
     "PAPERCLIP_AGENT_ID",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_API_URL",
-    "PAPERCLIP_API_KEY",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_REASON",
     "PAPERCLIP_WAKE_COMMENT_ID",
@@ -378,36 +387,16 @@ function buildWakeText(
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
 
-  const preamble = hasCustomInstructions
-    ? "Your agent instructions above are the primary authority. The values below are runtime context."
-    : "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.";
-
-  const endpointRule = hasCustomInstructions
-    ? "- Use /api endpoints documented in your instructions above, plus the fallback endpoints below."
-    : "- Use only /api endpoints listed below.";
-
-  const guessRule = hasCustomInstructions
-    ? "- Do NOT call fabricated endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat."
-    : "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.";
-
-  const workflowLabel = hasCustomInstructions
-    ? "Fallback workflow (use if no heartbeat procedure provided above):"
-    : "Workflow:";
-
   const lines = [
     "Paperclip wake event for a cloud adapter.",
     "",
-    preamble,
+    "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
     "",
     "Set these values in your run context:",
     ...envLines,
-    ...(paperclipEnv.PAPERCLIP_API_KEY
-      ? []
-      : [
-          `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
-          "",
-          `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
-        ]),
+    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+    "",
+    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -421,22 +410,26 @@ function buildWakeText(
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
     "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
-    endpointRule,
-    guessRule,
+    "- Use only /api endpoints listed below.",
+    "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
     "",
-    workflowLabel,
+    "Workflow:",
     "1) GET /api/agents/me",
     `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
     "3) If issueId exists:",
-    "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"blocked\"]}",
+    "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\",\"in_review\"]}",
     "   - GET /api/issues/{issueId}",
     "   - GET /api/issues/{issueId}/comments",
-    "   - Execute the issue instructions exactly.",
+    "   - Execute the issue instructions exactly. If the issue is actionable, take concrete action in this run; do not stop at a plan unless planning was requested.",
+    "   - Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.",
+    "   - Create child issues directly when you know what needs to be done; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
+    "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before creating implementation subtasks.",
+    "   - If blocked, PATCH /api/issues/{issueId} with {\"status\":\"blocked\",\"comment\":\"what is blocked, who owns the unblock, and the next action\"}.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
     "4) If issueId does not exist:",
-    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked",
-    "   - Pick in_progress first, then todo, then blocked, then execute step 3.",
+    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,in_review,blocked",
+    "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 3.",
     "",
     "Useful endpoints for issue work:",
     "- POST /api/issues/{issueId}/comments",
@@ -664,7 +657,7 @@ class GatewayWsClient {
       this.resolveChallenge = resolve;
       this.rejectChallenge = reject;
     });
-    this.challengePromise.catch(() => {}); // prevent crash on WS close 1006
+    this.challengePromise.catch(() => {});
   }
 
   async connect(
@@ -1114,14 +1107,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
-  const hasCustomInstructions = Boolean(nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text));
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
-    hasCustomInstructions,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1129,7 +1120,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
-    agentId: wakePayload.agentId,
+    agentId: nonEmpty(ctx.config.agentId),
     runId: ctx.runId,
     issueId: wakePayload.issueId,
   });
@@ -1394,24 +1385,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
-      // Fetch session usage from OpenClaw (token counts, model, cost).
-      // OpenClaw tracks per-session usage internally but does not include it
-      // in the agent.wait response.  The sessions.usage RPC returns totals and
-      // a per-model breakdown for the session identified by `sessionKey`.
-      let sessionUsageResult: Record<string, unknown> | null = null;
-      try {
-        sessionUsageResult = await client.request<Record<string, unknown>>(
-          "sessions.usage",
-          { key: sessionKey },
-          { timeoutMs: 10_000 },
-        );
-      } catch (usageErr) {
-        await ctx.onLog(
-          "stderr",
-          `[openclaw-gateway] sessions.usage failed (non-fatal): ${usageErr instanceof Error ? usageErr.message : String(usageErr)}\n`,
-        );
-      }
-
       const summaryFromEvents = assistantChunks.join("").trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
@@ -1433,42 +1406,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         asRecord(mergedMeta.agentMeta) ??
         asRecord(acceptedMeta?.agentMeta) ??
         asRecord(latestMeta?.agentMeta);
-      // Extract sessions.usage data (token counts, model, cost).
-      const sessionUsage = asRecord(sessionUsageResult);
-      const sessionTotals = asRecord(sessionUsage?.totals);
-      const sessionAggregates = asRecord(sessionUsage?.aggregates);
-      const sessionByModel = Array.isArray(sessionAggregates?.byModel)
-        ? sessionAggregates.byModel
-        : [];
-      // byModel is pre-sorted by cost desc by OpenClaw — first entry is the primary model.
-      const primaryModelEntry =
-        sessionByModel.length > 0 ? asRecord(sessionByModel[0]) : null;
-
-      // Prefer agentMeta (forward-compatible), fall back to sessions.usage.
-      const usage =
-        parseUsage(agentMeta?.usage ?? mergedMeta.usage) ??
-        parseUsage(sessionTotals);
+      const usage = parseUsage(agentMeta?.usage ?? mergedMeta.usage);
       const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
-      const provider =
-        nonEmpty(agentMeta?.provider) ??
-        nonEmpty(mergedMeta.provider) ??
-        nonEmpty(primaryModelEntry?.provider) ??
-        "openclaw";
-      const model =
-        nonEmpty(agentMeta?.model) ??
-        nonEmpty(mergedMeta.model) ??
-        nonEmpty(primaryModelEntry?.model) ??
-        null;
-      const costUsd =
-        asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0) ||
-        asNumber(sessionTotals?.totalCost, 0);
+      const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(mergedMeta.provider) ?? "openclaw";
+      const model = nonEmpty(agentMeta?.model) ?? nonEmpty(mergedMeta.model) ?? null;
+      const costUsd = asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0);
 
-      if (sessionUsageResult) {
-        await ctx.onLog(
-          "stdout",
-          `[openclaw-gateway] sessions.usage: input=${usage?.inputTokens ?? 0} output=${usage?.outputTokens ?? 0} cached=${usage?.cachedInputTokens ?? 0} model=${model ?? "unknown"} cost=$${costUsd.toFixed(4)}\n`,
-        );
-      }
       await ctx.onLog(
         "stdout",
         `[openclaw-gateway] run completed runId=${Array.from(trackedRunIds).join(",")} status=ok\n`,

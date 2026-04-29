@@ -44,6 +44,13 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   }
 });
 
+export const createAgentInstructionsBundleSchema = z.object({
+  entryFile: z.string().trim().min(1).optional(),
+  files: z.record(z.string()).refine((files) => Object.keys(files).length > 0, {
+    message: "instructionsBundle.files must contain at least one file",
+  }),
+});
+
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -54,7 +61,9 @@ export const createAgentSchema = z.object({
   desiredSkills: z.array(z.string().min(1)).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
+  instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: z.record(z.unknown()).optional().default({}),
+  defaultEnvironmentId: z.string().uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),

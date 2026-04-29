@@ -4,9 +4,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
+import { environmentsApi } from "../api/environments";
 import { goalsApi } from "../api/goals";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
@@ -19,6 +21,7 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
+import { EnvVarEditor } from "./EnvVarEditor";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -43,8 +46,10 @@ export type ProjectConfigFieldKey =
   | "description"
   | "status"
   | "goals"
+  | "env"
   | "execution_workspace_enabled"
   | "execution_workspace_default_mode"
+  | "execution_workspace_environment"
   | "execution_workspace_base_ref"
   | "execution_workspace_branch_template"
   | "execution_workspace_worktree_parent_dir"
@@ -106,9 +111,9 @@ function PropertyRow({
   valueClassName?: string;
 }) {
   return (
-    <div className={cn("flex gap-3 py-1.5", alignStart ? "items-start" : "items-center")}>
-      <div className="shrink-0 w-20">{label}</div>
-      <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5", valueClassName)}>
+    <div className={cn("flex gap-3 py-1.5 items-start")}>
+      <div className="shrink-0 w-20 mt-0.5">{label}</div>
+      <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5 flex-wrap", valueClassName)}>
         {children}
       </div>
     </div>
@@ -245,6 +250,27 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
+  const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
+  const { data: availableSecrets = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      return secretsApi.create(selectedCompanyId, input);
+    },
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
+  const { data: environments } = useQuery({
+    queryKey: queryKeys.environments.list(selectedCompanyId!),
+    queryFn: () => environmentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && environmentsEnabled,
+  });
 
   const linkedGoalIds = project.goalIds.length > 0
     ? project.goalIds
@@ -269,12 +295,19 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const executionWorkspaceDefaultMode =
     executionWorkspacePolicy?.defaultMode === "isolated_workspace" ? "isolated_workspace" : "shared_workspace";
+  const executionWorkspaceEnvironmentId = executionWorkspacePolicy?.environmentId ?? "";
   const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
     baseRef: "",
     branchTemplate: "",
     worktreeParentDir: "",
   };
+  const runSelectableEnvironments = (environments ?? []).filter((environment) => {
+    if (environment.driver === "local" || environment.driver === "ssh") return true;
+    if (environment.driver !== "sandbox") return false;
+    const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
+    return provider !== null && provider !== "fake";
+  });
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
@@ -494,6 +527,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <InlineEditor
               value={project.description ?? ""}
               onSave={(description) => commitField("description", { description })}
+              nullable
               as="p"
               className="text-sm text-muted-foreground"
               placeholder="Add a description..."
@@ -532,7 +566,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   key={goal.id}
                   className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
                 >
-                  <Link to={`/goals/${goal.id}`} className="hover:underline max-w-[220px] truncate">
+                  <Link to={`/goals/${goal.id}`} className="hover:underline break-words min-w-0">
                     {goal.title}
                   </Link>
                   {(onUpdate || onFieldUpdate) && (
@@ -582,6 +616,26 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </Popover>
           )}
         </PropertyRow>
+        <PropertyRow
+          label={<FieldLabel label="Env" state={fieldState("env")} />}
+          alignStart
+          valueClassName="space-y-2"
+        >
+          <div className="space-y-2">
+            <EnvVarEditor
+              value={project.env ?? {}}
+              secrets={availableSecrets}
+              onCreateSecret={async (name, value) => {
+                const created = await createSecret.mutateAsync({ name, value });
+                return created;
+              }}
+              onChange={(env) => commitField("env", { env: env ?? null })}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Applied to all runs for issues in this project. Project values override agent env on key conflicts.
+            </p>
+          </div>
+        </PropertyRow>
         <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
           <span className="text-sm">{formatDate(project.createdAt)}</span>
         </PropertyRow>
@@ -629,13 +683,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
                     >
                       <Github className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{formatRepoUrl(codebase.repoUrl)}</span>
+                      <span className="break-all min-w-0">{formatRepoUrl(codebase.repoUrl)}</span>
                       <ExternalLink className="h-3 w-3 shrink-0" />
                     </a>
                   ) : (
                     <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                       <Github className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{codebase.repoUrl}</span>
+                      <span className="break-all min-w-0">{codebase.repoUrl}</span>
                     </div>
                   )}
                   <div className="flex items-center gap-1">
@@ -684,7 +738,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Local folder</div>
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 space-y-1">
-                  <div className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+                  <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
                     {codebase.effectiveLocalFolder}
                   </div>
                   {codebase.origin === "managed_checkout" && (
@@ -946,6 +1000,34 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div className="text-xs text-muted-foreground">
                           Host-managed implementation: <span className="text-foreground">Git worktree</span>
                         </div>
+                        {environmentsEnabled ? (
+                          <div>
+                            <div className="mb-1 flex items-center gap-1.5">
+                              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <span>Environment</span>
+                                <SaveIndicator state={fieldState("execution_workspace_environment")} />
+                              </label>
+                            </div>
+                            <select
+                              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                              value={executionWorkspaceEnvironmentId}
+                              onChange={(e) =>
+                                commitField(
+                                  "execution_workspace_environment",
+                                  updateExecutionWorkspacePolicy({
+                                    environmentId: e.target.value || null,
+                                  })!,
+                                )}
+                            >
+                              <option value="">No environment</option>
+                              {runSelectableEnvironments.map((environment) => (
+                                <option key={environment.id} value={environment.id}>
+                                  {environment.name} · {environment.driver}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : null}
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">

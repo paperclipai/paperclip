@@ -17,31 +17,32 @@ import {
 } from "lucide-react";
 import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse } from "../api/routines";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
-import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
 import {
   RoutineRunVariablesDialog,
-  routineRunNeedsConfiguration,
   type RoutineRunDialogSubmitData,
 } from "../components/RoutineRunVariablesDialog";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -61,7 +62,7 @@ import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const triggerKinds = ["schedule", "webhook"];
-const signingModes = ["bearer", "hmac_sha256"];
+const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
 const routineTabs = ["triggers", "runs", "activity"] as const;
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
@@ -75,7 +76,10 @@ const catchUpPolicyDescriptions: Record<string, string> = {
 const signingModeDescriptions: Record<string, string> = {
   bearer: "Expect a shared bearer token in the Authorization header.",
   hmac_sha256: "Expect an HMAC SHA-256 signature over the request using the shared secret.",
+  github_hmac: "Accept GitHub-style X-Hub-Signature-256 header (HMAC over raw body, no timestamp).",
+  none: "No authentication — the webhook URL itself acts as a shared secret.",
 };
+const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
 type RoutineTab = (typeof routineTabs)[number];
 
@@ -118,6 +122,24 @@ function getLocalTimezone(): string {
   } catch {
     return "UTC";
   }
+}
+
+function buildRoutineMutationPayload(input: {
+  title: string;
+  description: string;
+  projectId: string;
+  assigneeAgentId: string;
+  priority: string;
+  concurrencyPolicy: string;
+  catchUpPolicy: string;
+  variables: RoutineVariable[];
+}) {
+  return {
+    ...input,
+    description: input.description.trim() || null,
+    projectId: input.projectId || null,
+    assigneeAgentId: input.assigneeAgentId || null,
+  };
 }
 
 function TriggerEditor({
@@ -198,13 +220,15 @@ function TriggerEditor({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Replay window (seconds)</Label>
-              <Input
-                value={draft.replayWindowSec}
-                onChange={(event) => setDraft((current) => ({ ...current, replayWindowSec: event.target.value }))}
-              />
-            </div>
+            {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(draft.signingMode) && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Replay window (seconds)</Label>
+                <Input
+                  value={draft.replayWindowSec}
+                  onChange={(event) => setDraft((current) => ({ ...current, replayWindowSec: event.target.value }))}
+                />
+              </div>
+            )}
           </>
         )}
       </div>
@@ -247,7 +271,7 @@ export function RoutineDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const hydratedRoutineIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -328,10 +352,10 @@ export function RoutineDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
 
   const routineDefaults = useMemo(
@@ -340,8 +364,8 @@ export function RoutineDetail() {
         ? {
             title: routine.title,
             description: routine.description ?? "",
-            projectId: routine.projectId,
-            assigneeAgentId: routine.assigneeAgentId,
+            projectId: routine.projectId ?? "",
+            assigneeAgentId: routine.assigneeAgentId ?? "",
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
@@ -413,10 +437,7 @@ export function RoutineDetail() {
 
   const saveRoutine = useMutation({
     mutationFn: () => {
-      return routinesApi.update(routineId!, {
-        ...editDraft,
-        description: editDraft.description.trim() || null,
-      });
+      return routinesApi.update(routineId!, buildRoutineMutationPayload(editDraft));
     },
     onSuccess: async () => {
       await Promise.all([
@@ -438,6 +459,8 @@ export function RoutineDetail() {
     mutationFn: (data?: RoutineRunDialogSubmitData) =>
       routinesApi.run(routineId!, {
         ...(data?.variables && Object.keys(data.variables).length > 0 ? { variables: data.variables } : {}),
+        ...(data?.assigneeAgentId !== undefined ? { assigneeAgentId: data.assigneeAgentId } : {}),
+        ...(data?.projectId !== undefined ? { projectId: data.projectId } : {}),
         ...(data?.executionWorkspaceId !== undefined ? { executionWorkspaceId: data.executionWorkspaceId } : {}),
         ...(data?.executionWorkspacePreference !== undefined
           ? { executionWorkspacePreference: data.executionWorkspacePreference }
@@ -611,6 +634,7 @@ export function RoutineDetail() {
     [projects],
   );
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -632,6 +656,13 @@ export function RoutineDetail() {
       })),
     [projects],
   );
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    return buildMarkdownMentionOptions({
+      agents,
+      projects,
+      members: companyMembers?.users,
+    });
+  }, [agents, companyMembers?.users, projects]);
   const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
   const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
 
@@ -652,14 +683,15 @@ export function RoutineDetail() {
   }
 
   const automationEnabled = routine.status === "active";
-  const selectedProject = projects?.find((project) => project.id === routine.projectId) ?? null;
-  const needsRunConfiguration = routineRunNeedsConfiguration({
-    variables: routine.variables ?? [],
-    project: selectedProject,
-    isolatedWorkspacesEnabled: experimentalSettings?.enableIsolatedWorkspaces === true,
-  });
+  const selectedProject = routine.projectId ? (projects?.find((project) => project.id === routine.projectId) ?? null) : null;
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
-  const automationLabel = routine.status === "archived" ? "Archived" : automationEnabled ? "Active" : "Paused";
+  const automationLabel = routine.status === "archived"
+    ? "Archived"
+    : !routine.assigneeAgentId
+      ? "Draft"
+      : automationEnabled
+        ? "Active"
+        : "Paused";
   const automationLabelClassName = routine.status === "archived"
     ? "text-muted-foreground"
     : automationEnabled
@@ -703,18 +735,24 @@ export function RoutineDetail() {
         <div className="flex shrink-0 items-center gap-3 pt-1">
           <RunButton
             onClick={() => {
-              if (needsRunConfiguration) {
-                setRunVariablesOpen(true);
-                return;
-              }
-              runRoutine.mutate({});
+              setRunVariablesOpen(true);
             }}
             disabled={runRoutine.isPending}
           />
           <ToggleSwitch
             size="lg"
             checked={automationEnabled}
-            onCheckedChange={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
+            onCheckedChange={() => {
+              if (!automationEnabled && !routine.assigneeAgentId) {
+                pushToast({
+                  title: "Default agent required",
+                  body: "Set a default agent before enabling routine automation.",
+                  tone: "warn",
+                });
+                return;
+              }
+              updateRoutineStatus.mutate(automationEnabled ? "paused" : "active");
+            }}
             disabled={automationToggleDisabled}
             aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
           />
@@ -750,6 +788,12 @@ export function RoutineDetail() {
         </div>
       )}
 
+      {!routine.assigneeAgentId ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
+          Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.
+        </div>
+      ) : null}
+
       {/* Assignment row */}
       <div className="overflow-x-auto overscroll-x-contain">
         <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
@@ -758,6 +802,7 @@ export function RoutineDetail() {
             ref={assigneeSelectorRef}
             value={editDraft.assigneeAgentId}
             options={assigneeOptions}
+            recentOptionIds={recentAssigneeIds}
             placeholder="Assignee"
             noneLabel="No assignee"
             searchPlaceholder="Search assignees..."
@@ -803,11 +848,15 @@ export function RoutineDetail() {
             ref={projectSelectorRef}
             value={editDraft.projectId}
             options={projectOptions}
+            recentOptionIds={recentProjectIds}
             placeholder="Project"
             noneLabel="No project"
             searchPlaceholder="Search projects..."
             emptyMessage="No projects found."
-            onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
+            onChange={(projectId) => {
+              if (projectId) trackRecentProject(projectId);
+              setEditDraft((current) => ({ ...current, projectId }));
+            }}
             onConfirm={() => descriptionEditorRef.current?.focus()}
             renderTriggerValue={(option) =>
               option && currentProject ? (
@@ -847,14 +896,16 @@ export function RoutineDetail() {
         placeholder="Add instructions..."
         bordered={false}
         contentClassName="min-h-[120px] text-[15px] leading-7"
+        mentions={mentionOptions}
         onSubmit={() => {
-          if (!saveRoutine.isPending && editDraft.title.trim() && editDraft.projectId && editDraft.assigneeAgentId) {
+          if (!saveRoutine.isPending && editDraft.title.trim()) {
             saveRoutine.mutate();
           }
         }}
       />
       <RoutineVariablesHint />
       <RoutineVariablesEditor
+        title={editDraft.title}
         description={editDraft.description}
         value={editDraft.variables}
         onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}
@@ -915,7 +966,7 @@ export function RoutineDetail() {
         )}
         <Button
           onClick={() => saveRoutine.mutate()}
-          disabled={saveRoutine.isPending || !editDraft.title.trim() || !editDraft.projectId || !editDraft.assigneeAgentId}
+          disabled={saveRoutine.isPending || !editDraft.title.trim()}
         >
           <Save className="mr-2 h-4 w-4" />
           Save routine
@@ -987,10 +1038,12 @@ export function RoutineDetail() {
                     </Select>
                     <p className="text-xs text-muted-foreground">{signingModeDescriptions[newTrigger.signingMode]}</p>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Replay window (seconds)</Label>
-                    <Input value={newTrigger.replayWindowSec} onChange={(event) => setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))} />
-                  </div>
+                  {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(newTrigger.signingMode) && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Replay window (seconds)</Label>
+                      <Input value={newTrigger.replayWindowSec} onChange={(event) => setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))} />
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -1083,7 +1136,11 @@ export function RoutineDetail() {
         open={runVariablesOpen}
         onOpenChange={setRunVariablesOpen}
         companyId={routine.companyId}
-        project={selectedProject}
+        routineName={routine.title}
+        agents={agents ?? []}
+        projects={projects ?? []}
+        defaultProjectId={routine.projectId}
+        defaultAssigneeAgentId={routine.assigneeAgentId}
         variables={routine.variables ?? []}
         isPending={runRoutine.isPending}
         onSubmit={(data) => runRoutine.mutate(data)}

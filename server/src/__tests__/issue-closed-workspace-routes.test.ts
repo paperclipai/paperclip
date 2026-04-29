@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const closedWorkspaceId = "33333333-3333-4333-8333-333333333333";
@@ -39,43 +37,100 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({
-    getDefaultCompanyGoal: vi.fn(async () => null),
-    getById: vi.fn(async () => null),
-  }),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
+function registerServiceMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
-function createApp() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
+
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/projects.js", () => ({
+    projectService: () => mockProjectService,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
+    accessService: () => mockAccessService,
+    agentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
+    documentService: () => ({}),
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    }),
+    goalService: () => ({
+      getDefaultCompanyGoal: vi.fn(async () => null),
+      getById: vi.fn(async () => null),
+    }),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueService: () => mockIssueService,
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({}),
+  }));
+}
+
+async function createApp() {
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -121,15 +176,29 @@ function makeClosedWorkspace() {
   };
 }
 
-describe("closed isolated workspace issue routes", () => {
+describe.sequential("closed isolated workspace issue routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/execution-workspaces.js");
+    vi.doUnmock("../services/heartbeat.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/projects.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerServiceMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });
 
   it("rejects new issue comments when the linked isolated workspace is closed", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "hello" });
 
@@ -139,7 +208,7 @@ describe("closed isolated workspace issue routes", () => {
   });
 
   it("rejects comment updates when the linked isolated workspace is closed", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
 
@@ -150,7 +219,7 @@ describe("closed isolated workspace issue routes", () => {
   });
 
   it("rejects checkout when the linked isolated workspace is closed", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -168,11 +237,11 @@ describe("closed isolated workspace issue routes", () => {
       executionWorkspaceId: nextWorkspaceId,
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ executionWorkspaceId: nextWorkspaceId });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { executionWorkspaceId: nextWorkspaceId });
+    expect(res.body.executionWorkspaceId).toBe(nextWorkspaceId);
   });
 });

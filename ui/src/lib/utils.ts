@@ -8,7 +8,11 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+export function formatNumber(n: number): string {
+  return n.toLocaleString("en-US");
 }
 
 export function formatDate(date: Date | string): string {
@@ -29,6 +33,13 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
+export function formatShortDate(date: Date | string): string {
+  return new Date(date).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function relativeTime(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
@@ -44,6 +55,7 @@ export function relativeTime(date: Date | string): string {
 }
 
 export function formatTokens(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
@@ -53,6 +65,7 @@ export function formatTokens(n: number): string {
 export function providerDisplayName(provider: string): string {
   const map: Record<string, string> = {
     anthropic: "Anthropic",
+    aws_bedrock: "AWS Bedrock",
     openai: "OpenAI",
     openrouter: "OpenRouter",
     chatgpt: "ChatGPT",
@@ -79,6 +92,7 @@ export function quotaSourceDisplayName(source: string): string {
   const map: Record<string, string> = {
     "anthropic-oauth": "Anthropic OAuth",
     "claude-cli": "Claude CLI",
+    "bedrock": "AWS Bedrock",
     "codex-rpc": "Codex app server",
     "codex-wham": "ChatGPT WHAM",
   };

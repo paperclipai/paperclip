@@ -1,5 +1,7 @@
 import type {
+  AskUserQuestionsAnswer,
   Approval,
+  CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
   FeedbackTrace,
@@ -9,7 +11,12 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueThreadInteraction,
+  IssueTreeControlPreview,
+  IssueTreeHold,
   IssueWorkProduct,
+  PreviewIssueTreeControl,
+  ReleaseIssueTreeHold,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -24,6 +31,7 @@ export const issuesApi = {
     filters?: {
       status?: string;
       projectId?: string;
+      parentId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
       assigneeUserId?: string;
@@ -31,16 +39,22 @@ export const issuesApi = {
       inboxArchivedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      workspaceId?: string;
       executionWorkspaceId?: string;
       originKind?: string;
       originId?: string;
+      descendantOf?: string;
       includeRoutineExecutions?: boolean;
+      includeBlockedBy?: boolean;
       q?: string;
+      limit?: number;
+      offset?: number;
     },
   ) => {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.parentId) params.set("parentId", filters.parentId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
@@ -48,11 +62,16 @@ export const issuesApi = {
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
     if (filters?.originId) params.set("originId", filters.originId);
+    if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.q) params.set("q", filters.q);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
@@ -71,14 +90,83 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
+    api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
+  createTreeHold: (id: string, data: CreateIssueTreeHold) =>
+    api.post<{ hold: IssueTreeHold; preview: IssueTreeControlPreview }>(`/issues/${id}/tree-holds`, data),
+  getTreeHold: (id: string, holdId: string) =>
+    api.get<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}`),
+  listTreeHolds: (
+    id: string,
+    filters?: {
+      status?: "active" | "released";
+      mode?: "pause" | "resume" | "cancel" | "restore";
+      includeMembers?: boolean;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.mode) params.set("mode", filters.mode);
+    if (filters?.includeMembers) params.set("includeMembers", "true");
+    const qs = params.toString();
+    return api.get<IssueTreeHold[]>(`/issues/${id}/tree-holds${qs ? `?${qs}` : ""}`);
+  },
+  getTreeControlState: (id: string) =>
+    api.get<{
+      activePauseHold: {
+        holdId: string;
+        rootIssueId: string;
+        issueId: string;
+        isRoot: boolean;
+        mode: "pause";
+        reason: string | null;
+        releasePolicy: { strategy: "manual" | "after_active_runs_finish"; note?: string | null } | null;
+      } | null;
+    }>(`/issues/${id}/tree-control/state`),
+  releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
+    api.post<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}/release`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
       agentId,
-      expectedStatuses: ["todo", "backlog", "blocked"],
+      expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
-  listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
+  listComments: (
+    id: string,
+    filters?: {
+      after?: string;
+      order?: "asc" | "desc";
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.after) params.set("after", filters.after);
+    if (filters?.order) params.set("order", filters.order);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const qs = params.toString();
+    return api.get<IssueComment[]>(`/issues/${id}/comments${qs ? `?${qs}` : ""}`);
+  },
+  listInteractions: (id: string) =>
+    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  createInteraction: (id: string, data: Record<string, unknown>) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
+  acceptInteraction: (
+    id: string,
+    interactionId: string,
+    data?: { selectedClientKeys?: string[] },
+  ) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
+  rejectInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+  respondToInteraction: (
+    id: string,
+    interactionId: string,
+    data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
+  ) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
+  getComment: (id: string, commentId: string) =>
+    api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
@@ -108,7 +196,12 @@ export const issuesApi = {
         ...(interrupt === undefined ? {} : { interrupt }),
       },
     ),
-  listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
+  cancelComment: (id: string, commentId: string) =>
+    api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
+    api.get<IssueDocument[]>(
+      `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
+    ),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),

@@ -35,9 +35,9 @@ function rangeConditions(companyId: string, range?: FinanceDateRange) {
 }
 
 export function financeService(db: Db) {
-  const debitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' then ${financeEvents.amountCents} else 0 end), 0)::int`;
-  const creditExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'credit' then ${financeEvents.amountCents} else 0 end), 0)::int`;
-  const estimatedDebitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' and ${financeEvents.estimated} = true then ${financeEvents.amountCents} else 0 end), 0)::int`;
+  const debitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
+  const creditExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'credit' then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
+  const estimatedDebitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' and ${financeEvents.estimated} = true then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
 
   return {
     createEvent: async (companyId: string, data: Omit<typeof financeEvents.$inferInsert, "companyId">) => {
@@ -95,12 +95,12 @@ export function financeService(db: Db) {
           estimatedDebitCents: estimatedDebitExpr,
           eventCount: sql<number>`count(*)::int`,
           kindCount: sql<number>`count(distinct ${financeEvents.eventKind})::int`,
-          netCents: sql<number>`(${debitExpr} - ${creditExpr})::int`,
+          netCents: sql<number>`(${debitExpr} - ${creditExpr})::double precision`,
         })
         .from(financeEvents)
         .where(and(...conditions))
         .groupBy(financeEvents.biller)
-        .orderBy(desc(sql`(${debitExpr} - ${creditExpr})::int`), financeEvents.biller);
+        .orderBy(desc(sql`(${debitExpr} - ${creditExpr})::double precision`), financeEvents.biller);
     },
 
     byKind: async (companyId: string, range?: FinanceDateRange) => {
@@ -113,12 +113,12 @@ export function financeService(db: Db) {
           estimatedDebitCents: estimatedDebitExpr,
           eventCount: sql<number>`count(*)::int`,
           billerCount: sql<number>`count(distinct ${financeEvents.biller})::int`,
-          netCents: sql<number>`(${debitExpr} - ${creditExpr})::int`,
+          netCents: sql<number>`(${debitExpr} - ${creditExpr})::double precision`,
         })
         .from(financeEvents)
         .where(and(...conditions))
         .groupBy(financeEvents.eventKind)
-        .orderBy(desc(sql`(${debitExpr} - ${creditExpr})::int`), financeEvents.eventKind);
+        .orderBy(desc(sql`(${debitExpr} - ${creditExpr})::double precision`), financeEvents.eventKind);
     },
 
     list: async (companyId: string, range?: FinanceDateRange, limit: number = 100) => {

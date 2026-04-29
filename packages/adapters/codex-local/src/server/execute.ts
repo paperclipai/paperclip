@@ -3,29 +3,45 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetPaperclipApiUrl,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  prepareAdapterExecutionTargetRuntime,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCommandForLogs,
+  runAdapterExecutionTargetProcess,
+} from "@paperclipai/adapter-utils/execution-target";
+import {
   asString,
   asNumber,
-  asBoolean,
-  asStringArray,
   parseObject,
+  applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
-  resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import {
+  parseCodexJsonl,
+  extractCodexRetryNotBefore,
+  isCodexTransientUpstreamError,
+  isCodexUnknownSessionError,
+} from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
+import { buildCodexExecArgs } from "./codex-args.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -149,6 +165,52 @@ type EnsureCodexSkillsInjectedOptions = {
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
 
+type CodexTransientFallbackMode =
+  | "same_session"
+  | "safer_invocation"
+  | "fresh_session"
+  | "fresh_session_safer_invocation";
+
+function readCodexTransientFallbackMode(context: Record<string, unknown>): CodexTransientFallbackMode | null {
+  const value = asString(context.codexTransientFallbackMode, "").trim();
+  switch (value) {
+    case "same_session":
+    case "safer_invocation":
+    case "fresh_session":
+    case "fresh_session_safer_invocation":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function fallbackModeUsesSaferInvocation(mode: CodexTransientFallbackMode | null): boolean {
+  return mode === "safer_invocation" || mode === "fresh_session_safer_invocation";
+}
+
+function fallbackModeUsesFreshSession(mode: CodexTransientFallbackMode | null): boolean {
+  return mode === "fresh_session" || mode === "fresh_session_safer_invocation";
+}
+
+function buildCodexTransientHandoffNote(input: {
+  previousSessionId: string | null;
+  fallbackMode: CodexTransientFallbackMode;
+  continuationSummaryBody: string | null;
+}): string {
+  return [
+    "Paperclip session handoff:",
+    input.previousSessionId ? `- Previous session: ${input.previousSessionId}` : "",
+    "- Rotation reason: repeated Codex transient remote-compaction failures",
+    `- Fallback mode: ${input.fallbackMode}`,
+    input.continuationSummaryBody
+      ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
+      : "",
+    "Continue from the current task state. Rebuild only the minimum context you need.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
@@ -219,19 +281,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
-  const modelReasoningEffort = asString(
-    config.modelReasoningEffort,
-    asString(config.reasoningEffort, ""),
-  );
-  const search = asBoolean(config.search, false);
-  const bypass = asBoolean(
-    config.dangerouslyBypassApprovalsAndSandbox,
-    asBoolean(config.dangerouslyBypassSandbox, false),
-  );
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -264,6 +317,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -287,10 +345,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       desiredSkillNames,
     },
   );
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const preparedExecutionTargetRuntime = executionTargetIsRemote
+    ? await (async () => {
+        await onLog(
+          "stdout",
+          `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+        );
+        return await prepareAdapterExecutionTargetRuntime({
+          target: executionTarget,
+          adapterKey: "codex",
+          workspaceLocalDir: cwd,
+          assets: [
+            {
+              key: "home",
+              localDir: effectiveCodexHome,
+              followSymlinks: true,
+            },
+          ],
+        });
+      })()
+    : null;
+  const restoreRemoteWorkspace = preparedExecutionTargetRuntime
+    ? () => preparedExecutionTargetRuntime.restoreWorkspace()
+    : null;
+  const remoteCodexHome = executionTargetIsRemote
+    ? preparedExecutionTargetRuntime?.assetDirs.home ??
+      path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
+    : null;
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  env.CODEX_HOME = effectiveCodexHome;
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -337,33 +422,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceStrategy) {
-    env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
-  }
-  if (workspaceId) {
-    env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
-  if (workspaceBranch) {
-    env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
-  }
-  if (workspaceWorktreePath) {
-    env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
-  }
-  if (agentHome) {
-    env.AGENT_HOME = agentHome;
-  }
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) {
     env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -376,9 +445,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
+  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
+  if (targetPaperclipApiUrl) {
+    env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
+  }
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
+  env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
@@ -389,8 +463,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveCodexBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
-  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+  const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
@@ -399,23 +473,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
-  const extraArgs = (() => {
-    const fromExtraArgs = asStringArray(config.extraArgs);
-    if (fromExtraArgs.length > 0) return fromExtraArgs;
-    return asStringArray(config.args);
-  })();
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
+  const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
+  const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
+  const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
+  const sessionId = canResumeSession && !forceFreshSession ? runtimeSessionId : null;
+  if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
-      `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Codex session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+    );
+  } else if (runtimeSessionId && !canResumeSession) {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -458,28 +537,66 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
+  const continuationSummary = parseObject(context.paperclipContinuationSummary);
+  const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
+  const codexFallbackHandoffNote =
+    forceFreshSession
+      ? buildCodexTransientHandoffNote({
+          previousSessionId: runtimeSessionId || runtime.sessionId || null,
+          fallbackMode: codexTransientFallbackMode ?? "fresh_session",
+          continuationSummaryBody,
+        })
+      : "";
   const commandNotes = (() => {
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      const notes = [repoAgentsNote];
+      if (forceSaferInvocation) {
+        notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+      }
+      if (forceFreshSession) {
+        notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+      }
+      return notes;
     }
     if (instructionsPrefix.length > 0) {
       if (shouldUseResumeDeltaPrompt) {
-        return [
+        const notes = [
           `Loaded agent instructions from ${instructionsFilePath}`,
           "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
           repoAgentsNote,
         ];
+        if (forceSaferInvocation) {
+          notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+        }
+        if (forceFreshSession) {
+          notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+        }
+        return notes;
       }
-      return [
+      const notes = [
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
       ];
+      if (forceSaferInvocation) {
+        notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+      }
+      if (forceFreshSession) {
+        notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+      }
+      return notes;
     }
-    return [
+    const notes = [
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
     ];
+    if (forceSaferInvocation) {
+      notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+    }
+    if (forceFreshSession) {
+      notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+    }
+    return notes;
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -487,6 +604,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    codexFallbackHandoffNote,
     sessionHandoffNote,
     renderedPrompt,
   ]);
@@ -499,26 +617,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
-  const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["exec", "--json"];
-    if (search) args.unshift("--search");
-    if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
-    if (model) args.push("--model", model);
-    if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
-    if (extraArgs.length > 0) args.push(...extraArgs);
-    if (resumeSessionId) args.push("resume", resumeSessionId, "-");
-    else args.push("-");
-    return args;
-  };
-
   const runAttempt = async (resumeSessionId: string | null) => {
-    const args = buildArgs(resumeSessionId);
+    const execArgs = buildCodexExecArgs(
+      forceSaferInvocation ? { ...config, fastMode: false } : config,
+      { resumeSessionId },
+    );
+    const args = execArgs.args;
+    const commandNotesWithFastMode =
+      execArgs.fastModeIgnoredReason == null
+        ? commandNotes
+        : [...commandNotes, execArgs.fastModeIgnoredReason];
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
         command: resolvedCommand,
-        cwd,
-        commandNotes,
+        cwd: effectiveExecutionCwd,
+        commandNotes: commandNotesWithFastMode,
         commandArgs: args.map((value, idx) => {
           if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
           return value;
@@ -530,7 +644,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
       stdin: prompt,
@@ -561,6 +675,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const toResult = (
     attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
+    isRetry = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
       return {
@@ -572,11 +687,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const resolvedSessionId = attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
+    const resolvedSessionId =
+      attempt.parsed.sessionId ??
+      (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: effectiveExecutionCwd,
+        ...(executionTargetIsRemote
+          ? {
+              remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget),
+            }
+          : {}),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
@@ -588,6 +711,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const transientRetryNotBefore =
+      (attempt.proc.exitCode ?? 0) !== 0
+        ? extractCodexRetryNotBefore({
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        : null;
+    const transientUpstream =
+      (attempt.proc.exitCode ?? 0) !== 0 &&
+      isCodexTransientUpstreamError({
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+        errorMessage: fallbackErrorMessage,
+      });
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -597,6 +735,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      errorCode:
+        transientUpstream
+          ? "codex_transient_upstream"
+          : null,
+      errorFamily: transientUpstream ? "transient_upstream" : null,
+      retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -609,26 +753,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+        ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       },
       summary: attempt.parsed.summary,
-      clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-  ) {
-    await onLog(
-      "stdout",
-      `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true);
-  }
+  try {
+    const initial = await runAttempt(sessionId);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial, false, false);
+  } finally {
+    if (restoreRemoteWorkspace) {
+      await onLog(
+        "stdout",
+        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+      );
+      await restoreRemoteWorkspace();
+    }
+  }
 }

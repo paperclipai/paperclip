@@ -3,6 +3,7 @@
   "files": [],
   "references": [
     { "path": "./packages/adapter-utils" },
+    { "path": "./packages/mcp-server" },
     { "path": "./packages/shared" },
     { "path": "./packages/db" },
     { "path": "./packages/adapters/claude-local" },

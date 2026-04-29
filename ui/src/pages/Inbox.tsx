@@ -16,26 +16,50 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
+import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  applyIssueFilters,
+  countActiveIssueFilters,
+  type IssueFilterState,
+} from "../lib/issue-filters";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { formatAssigneeUserLabel } from "../lib/assignees";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
   createIssueDetailPath,
+  rememberIssueDetailLocationState,
+  withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
-import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import { prefetchIssueDetail } from "../lib/issueDetailCache";
+import {
+  hasBlockingShortcutDialog,
+  isKeyboardShortcutTextInputTarget,
+  resolveInboxUndoArchiveKeyAction,
+  shouldBlurPageSearchOnEnter,
+  shouldBlurPageSearchOnEscape,
+} from "../lib/keyboardShortcuts";
 import { EmptyState } from "../components/EmptyState";
+import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
+import {
+  InboxIssueMetaLeading,
+  InboxIssueTrailingColumns,
+  IssueColumnPicker,
+  issueActivityText,
+  issueTrailingColumns,
+} from "../components/IssueColumns";
+import { IssueFiltersPopover } from "../components/IssueFiltersPopover";
 import { IssueRow } from "../components/IssueRow";
 import { SwipeToArchive } from "../components/SwipeToArchive";
 
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { Identity } from "../components/Identity";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
-import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { timeAgo } from "../lib/timeAgo";
-import { formatAssigneeUserLabel } from "../lib/assignees";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -48,68 +72,94 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Inbox as InboxIcon,
   AlertTriangle,
+  Check,
+  ChevronRight,
+  Layers,
   XCircle,
   X,
   RotateCcw,
   UserPlus,
-  Columns3,
   Search,
+  ListTree,
 } from "lucide-react";
+
+const INBOX_HEARTBEAT_RUN_LIMIT = 200;
+const INBOX_ISSUE_LIST_LIMIT = 500;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
+  buildGroupedInboxSections,
+  buildInboxKeyboardNavEntries,
   getAvailableInboxIssueColumns,
+  getInboxWorkItemKey,
   getApprovalsForTab,
-  getInboxWorkItems,
+  getArchivedInboxSearchIssues,
   getInboxKeyboardSelectionIndex,
+  getInboxWorkItems,
+  getInboxSearchSupplementIssues,
   getLatestFailedRunsByAgent,
+  matchesInboxIssueSearch,
   getRecentTouchedIssues,
+  isInboxEntityDismissed,
   isMineInboxTab,
+  loadCollapsedInboxGroupKeys,
+  loadInboxFilterPreferences,
   loadInboxIssueColumns,
+  loadInboxNesting,
+  loadInboxWorkItemGroupBy,
   normalizeInboxIssueColumns,
+  resolveInboxNestingEnabled,
+  shouldResetInboxWorkspaceGrouping,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
+  saveInboxFilterPreferences,
+  saveCollapsedInboxGroupKeys,
   saveInboxIssueColumns,
-  InboxApprovalFilter,
+  saveInboxNesting,
+  saveInboxWorkItemGroupBy,
+  type InboxWorkspaceGroupingOptions,
+  type InboxApprovalFilter,
+  type InboxCategoryFilter,
+  type InboxFilterPreferences,
   type InboxIssueColumn,
+  type InboxKeyboardNavEntry,
   saveLastInboxTab,
+  shouldShowCompanyAlerts,
   shouldShowInboxSection,
+  type InboxGroupedSection,
   type InboxTab,
   type InboxWorkItem,
+  type InboxWorkItemGroupBy,
 } from "../lib/inbox";
-import { useDismissedInboxItems, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 
-type InboxCategoryFilter =
-  | "everything"
-  | "issues_i_touched"
-  | "join_requests"
-  | "approvals"
-  | "failed_runs"
-  | "alerts";
+export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
+export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
 type SectionKey =
   | "work_items"
   | "alerts";
+
+/** A flat navigation entry for keyboard j/k traversal that includes expanded children. */
+type NavEntry = InboxKeyboardNavEntry;
+type CreatorOption = {
+  id: string;
+  label: string;
+  kind: "agent" | "user";
+  searchText?: string;
+};
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -138,224 +188,41 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
   return null;
 }
 
+function nonEmptyLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function formatJoinRequestInboxLabel(
+  joinRequest: Pick<
+    JoinRequest,
+    "requestType" | "agentName" | "requestEmailSnapshot" | "requestingUserId"
+  > & {
+    requesterUser?: {
+      name: string | null;
+      email: string | null;
+    } | null;
+  },
+) {
+  if (joinRequest.requestType !== "human") {
+    return `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`;
+  }
+
+  const requesterName = nonEmptyLabel(joinRequest.requesterUser?.name);
+  const requesterEmail =
+    nonEmptyLabel(joinRequest.requesterUser?.email) ??
+    nonEmptyLabel(joinRequest.requestEmailSnapshot);
+  const requesterId = nonEmptyLabel(joinRequest.requestingUserId);
+
+  if (requesterName && requesterEmail) return `${requesterName} (${requesterEmail})`;
+  if (requesterEmail) return requesterEmail;
+  if (requesterName) return requesterName;
+  if (requesterId) return requesterId;
+  return "Human join request";
+}
+
 
 type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
-const trailingIssueColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "labels", "updated"];
-const inboxIssueColumnLabels: Record<InboxIssueColumn, string> = {
-  status: "Status",
-  id: "ID",
-  assignee: "Assignee",
-  project: "Project",
-  workspace: "Workspace",
-  labels: "Tags",
-  updated: "Last updated",
-};
-const inboxIssueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
-  id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
-  project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  labels: "Issue labels and tags.",
-  updated: "Latest visible activity time.",
-};
-
-export function InboxIssueMetaLeading({
-  issue,
-  isLive,
-  showStatus = true,
-  showIdentifier = true,
-}: {
-  issue: Issue;
-  isLive: boolean;
-  showStatus?: boolean;
-  showIdentifier?: boolean;
-}) {
-  return (
-    <>
-      {showStatus ? (
-        <span className="hidden shrink-0 sm:inline-flex">
-          <StatusIcon status={issue.status} />
-        </span>
-      ) : null}
-      {showIdentifier ? (
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
-          {issue.identifier ?? issue.id.slice(0, 8)}
-        </span>
-      ) : null}
-      {isLive && (
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
-            "bg-blue-500/10",
-          )}
-        >
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
-            <span
-              className={cn(
-                "relative inline-flex h-2 w-2 rounded-full",
-                "bg-blue-500",
-              )}
-            />
-          </span>
-          <span
-            className={cn(
-              "hidden text-[11px] font-medium sm:inline",
-              "text-blue-600 dark:text-blue-400",
-            )}
-          >
-            Live
-          </span>
-        </span>
-      )}
-    </>
-  );
-}
-
-function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
-}
-
-function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
-  return columns
-    .map((column) => {
-      if (column === "assignee") return "minmax(7.5rem, 9.5rem)";
-      if (column === "project") return "minmax(6.5rem, 8.5rem)";
-      if (column === "workspace") return "minmax(9rem, 12rem)";
-      if (column === "labels") return "minmax(8rem, 10rem)";
-      return "minmax(6rem, 7rem)";
-    })
-    .join(" ");
-}
-
-export function InboxIssueTrailingColumns({
-  issue,
-  columns,
-  projectName,
-  projectColor,
-  workspaceName,
-  assigneeName,
-  currentUserId,
-}: {
-  issue: Issue;
-  columns: InboxIssueColumn[];
-  projectName: string | null;
-  projectColor: string | null;
-  workspaceName: string | null;
-  assigneeName: string | null;
-  currentUserId: string | null;
-}) {
-  const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
-
-  return (
-    <span
-      className="grid items-center gap-2"
-      style={{ gridTemplateColumns: issueTrailingGridTemplate(columns) }}
-    >
-      {columns.map((column) => {
-        if (column === "assignee") {
-          if (issue.assigneeAgentId) {
-            return (
-              <span key={column} className="min-w-0 text-xs text-foreground">
-                <Identity
-                  name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
-                  size="sm"
-                  className="min-w-0"
-                />
-              </span>
-            );
-          }
-
-          if (issue.assigneeUserId) {
-            return (
-              <span key={column} className="min-w-0 truncate text-xs font-medium text-muted-foreground">
-                {userLabel}
-              </span>
-            );
-          }
-
-          return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
-            </span>
-          );
-        }
-
-        if (column === "project") {
-          if (projectName) {
-            const accentColor = projectColor ?? "#64748b";
-            return (
-              <span
-                key={column}
-                className="inline-flex min-w-0 items-center gap-2 text-xs font-medium"
-                style={{ color: pickTextColorForPillBg(accentColor, 0.12) }}
-              >
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: accentColor }}
-                />
-                <span className="truncate">{projectName}</span>
-              </span>
-            );
-          }
-
-          return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
-            </span>
-          );
-        }
-
-        if (column === "labels") {
-          if ((issue.labels ?? []).length > 0) {
-            return (
-              <span key={column} className="flex min-w-0 items-center gap-1 overflow-hidden text-[11px]">
-                {(issue.labels ?? []).slice(0, 2).map((label) => (
-                  <span
-                    key={label.id}
-                    className="inline-flex min-w-0 max-w-full items-center font-medium"
-                    style={{
-                      color: pickTextColorForPillBg(label.color, 0.12),
-                    }}
-                  >
-                    <span className="truncate">{label.name}</span>
-                  </span>
-                ))}
-                {(issue.labels ?? []).length > 2 ? (
-                  <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
-                    +{(issue.labels ?? []).length - 2}
-                  </span>
-                ) : null}
-              </span>
-            );
-          }
-
-          return <span key={column} className="min-w-0" aria-hidden="true" />;
-        }
-
-        if (column === "workspace") {
-          if (!workspaceName) {
-            return <span key={column} className="min-w-0" aria-hidden="true" />;
-          }
-
-          return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              {workspaceName}
-            </span>
-          );
-        }
-
-        return (
-          <span key={column} className="min-w-0 truncate text-right text-[11px] font-medium text-muted-foreground">
-            {activityText}
-          </span>
-        );
-      })}
-    </span>
-  );
-}
 
 export function FailedRunInboxRow({
   run,
@@ -680,10 +547,7 @@ function JoinRequestInboxRow({
   selected?: boolean;
   className?: string;
 }) {
-  const label =
-    joinRequest.requestType === "human"
-      ? "Human join request"
-      : `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`;
+  const label = formatJoinRequestInboxLabel(joinRequest);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -788,6 +652,7 @@ function JoinRequestInboxRow({
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { isMobile } = useSidebar();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -798,12 +663,18 @@ export function Inbox() {
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
+  const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
-  const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
-  const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
+  const normalizedSearchQuery = searchQuery.trim();
+  const [filterPreferences, setFilterPreferences] = useState<InboxFilterPreferences>(
+    () => loadInboxFilterPreferences(selectedCompanyId),
+  );
+  const [groupBy, setGroupBy] = useState<InboxWorkItemGroupBy>(() => loadInboxWorkItemGroupBy());
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
-  const { dismissed, dismiss } = useDismissedInboxItems();
+  const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
+  const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
+  const { allCategoryFilter, allApprovalFilter, issueFilters } = filterPreferences;
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
@@ -837,12 +708,17 @@ export function Inbox() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: labels } = useQuery({
+    queryKey: queryKeys.issues.labels(selectedCompanyId!),
+    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.list(selectedCompanyId)
+      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.list(selectedCompanyId!),
+    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 
@@ -855,6 +731,15 @@ export function Inbox() {
     setSelectedIndex(-1);
     setSearchQuery("");
   }, [tab]);
+
+  const previousSelectedCompanyIdRef = useRef<string | null>(selectedCompanyId);
+  useEffect(() => {
+    if (previousSelectedCompanyIdRef.current !== selectedCompanyId) {
+      previousSelectedCompanyIdRef.current = selectedCompanyId;
+      setFilterPreferences(loadInboxFilterPreferences(selectedCompanyId));
+      setCollapsedGroupKeys(loadCollapsedInboxGroupKeys(selectedCompanyId));
+    }
+  }, [selectedCompanyId]);
 
   const {
     data: approvals,
@@ -892,20 +777,26 @@ export function Inbox() {
   });
 
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions"],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        includeRoutineExecutions: true,
+        limit: INBOX_ISSUE_LIST_LIMIT,
+      }),
     enabled: !!selectedCompanyId,
   });
   const {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
   } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        includeRoutineExecutions: true,
+        limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
   });
@@ -913,34 +804,127 @@ export function Inbox() {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
   } = useQuery({
-    queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        includeRoutineExecutions: true,
+        limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
   });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
+    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
     enabled: !!selectedCompanyId,
   });
 
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 5000,
+  });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+
+  const companyUserLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+  const companyUserProfileMap = useMemo(
+    () => buildCompanyUserProfileMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
-  const unreadTouchedIssues = useMemo(
-    () => touchedIssues.filter((issue) => issue.isUnreadForMe),
-    [touchedIssues],
+  const visibleMineIssues = useMemo(
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds],
   );
+  const visibleTouchedIssues = useMemo(
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds],
+  );
+  const unreadTouchedIssues = useMemo(
+    () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
+    [visibleTouchedIssues],
+  );
+  const creatorOptions = useMemo<CreatorOption[]>(() => {
+    const options = new Map<string, CreatorOption>();
+    const sourceIssues = [...mineIssues, ...touchedIssues];
+
+    if (currentUserId) {
+      options.set(`user:${currentUserId}`, {
+        id: `user:${currentUserId}`,
+        label: currentUserId === "local-board" ? "Board" : "Me",
+        kind: "user",
+        searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
+      });
+    }
+
+    for (const issue of sourceIssues) {
+      if (issue.createdByUserId) {
+        const id = `user:${issue.createdByUserId}`;
+        if (!options.has(id)) {
+          options.set(id, {
+            id,
+            label: formatAssigneeUserLabel(issue.createdByUserId, currentUserId) ?? issue.createdByUserId.slice(0, 5),
+            kind: "user",
+            searchText: `${issue.createdByUserId} board user human`,
+          });
+        }
+      }
+    }
+
+    const knownAgentIds = new Set<string>();
+    for (const agent of agents ?? []) {
+      knownAgentIds.add(agent.id);
+      const id = `agent:${agent.id}`;
+      if (!options.has(id)) {
+        options.set(id, {
+          id,
+          label: agent.name,
+          kind: "agent",
+          searchText: `${agent.name} ${agent.id} agent`,
+        });
+      }
+    }
+
+    for (const issue of sourceIssues) {
+      if (issue.createdByAgentId && !knownAgentIds.has(issue.createdByAgentId)) {
+        const id = `agent:${issue.createdByAgentId}`;
+        if (!options.has(id)) {
+          options.set(id, {
+            id,
+            label: issue.createdByAgentId.slice(0, 8),
+            kind: "agent",
+            searchText: `${issue.createdByAgentId} agent`,
+          });
+        }
+      }
+    }
+
+    return [...options.values()].sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [agents, currentUserId, mineIssues, touchedIssues]);
   const issuesToRender = useMemo(
     () => {
-      if (tab === "mine") return mineIssues;
+      if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
-      return touchedIssues;
+      return visibleTouchedIssues;
     },
-    [tab, mineIssues, touchedIssues, unreadTouchedIssues],
+    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {
@@ -996,6 +980,14 @@ export function Inbox() {
     }
     return map;
   }, [executionWorkspaces]);
+  const inboxWorkspaceGrouping = useMemo<InboxWorkspaceGroupingOptions>(
+    () => ({
+      executionWorkspaceById,
+      projectWorkspaceById,
+      defaultProjectWorkspaceIdByProjectId,
+    }),
+    [defaultProjectWorkspaceIdByProjectId, executionWorkspaceById, projectWorkspaceById],
+  );
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
     () => getAvailableInboxIssueColumns(isolatedWorkspacesEnabled),
@@ -1003,32 +995,26 @@ export function Inbox() {
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
   const visibleTrailingIssueColumns = useMemo(
-    () => trailingIssueColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
+    () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
     [availableIssueColumnSet, visibleIssueColumnSet],
   );
-  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
   const failedRuns = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
-    [heartbeatRuns, dismissed],
+    () =>
+      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
+        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
+      ),
+    [heartbeatRuns, dismissedAtByKey],
   );
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of heartbeatRuns ?? []) {
-      if (run.status !== "running" && run.status !== "queued") continue;
-      const issueId = readIssueIdFromRun(run);
-      if (issueId) ids.add(issueId);
-    }
-    return ids;
-  }, [heartbeatRuns]);
-
   const approvalsToRender = useMemo(() => {
-    let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter);
+    let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
     if (tab === "mine") {
-      filtered = filtered.filter((a) => !dismissed.has(`approval:${a.id}`));
+      filtered = filtered.filter(
+        (a) => !isInboxEntityDismissed(dismissedAtByKey, `approval:${a.id}`, a.updatedAt),
+      );
     }
     return filtered;
-  }, [approvals, tab, allApprovalFilter, dismissed]);
+  }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -1045,9 +1031,13 @@ export function Inbox() {
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
-    if (tab === "mine") return joinRequests.filter((jr) => !dismissed.has(`join:${jr.id}`));
+    if (tab === "mine") {
+      return joinRequests.filter(
+        (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
+      );
+    }
     return joinRequests;
-  }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
+  }, [joinRequests, tab, showJoinRequestsCategory, dismissedAtByKey]);
 
   const workItemsToRender = useMemo(
     () =>
@@ -1061,23 +1051,16 @@ export function Inbox() {
   );
 
   const filteredWorkItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = normalizedSearchQuery.toLowerCase();
     if (!q) return workItemsToRender;
     return workItemsToRender.filter((item) => {
       if (item.kind === "issue") {
-        const issue = item.issue;
-        if (issue.title.toLowerCase().includes(q)) return true;
-        if (issue.identifier?.toLowerCase().includes(q)) return true;
-        if (issue.description?.toLowerCase().includes(q)) return true;
-        if (isolatedWorkspacesEnabled) {
-          const workspaceName = resolveIssueWorkspaceName(issue, {
-            executionWorkspaceById,
-            projectWorkspaceById,
-            defaultProjectWorkspaceIdByProjectId,
-          });
-          if (workspaceName?.toLowerCase().includes(q)) return true;
-        }
-        return false;
+        return matchesInboxIssueSearch(item.issue, q, {
+          isolatedWorkspacesEnabled,
+          executionWorkspaceById,
+          projectWorkspaceById,
+          defaultProjectWorkspaceIdByProjectId,
+        });
       }
       if (item.kind === "approval") {
         const a = item.approval;
@@ -1110,14 +1093,182 @@ export function Inbox() {
     });
   }, [
     workItemsToRender,
-    searchQuery,
     agentById,
     defaultProjectWorkspaceIdByProjectId,
     executionWorkspaceById,
     issueById,
     isolatedWorkspacesEnabled,
+    normalizedSearchQuery,
     projectWorkspaceById,
   ]);
+
+  const archivedSearchIssues = useMemo(
+    () =>
+      tab === "mine"
+        ? getArchivedInboxSearchIssues({
+          visibleIssues: visibleMineIssues,
+          searchableIssues: visibleTouchedIssues,
+          query: normalizedSearchQuery,
+          isolatedWorkspacesEnabled,
+          executionWorkspaceById,
+          projectWorkspaceById,
+          defaultProjectWorkspaceIdByProjectId,
+        })
+        : [],
+    [
+      defaultProjectWorkspaceIdByProjectId,
+      executionWorkspaceById,
+      isolatedWorkspacesEnabled,
+      normalizedSearchQuery,
+      projectWorkspaceById,
+      tab,
+      visibleMineIssues,
+      visibleTouchedIssues,
+    ],
+  );
+  const shouldUseIssueSearchSupplement =
+    !!selectedCompanyId
+    && normalizedSearchQuery.length > 0;
+  const { data: remoteIssueSearchResults = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
+      "inbox-supplement",
+    ],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        q: normalizedSearchQuery,
+        limit: 25,
+        includeRoutineExecutions: true,
+      }),
+    enabled: shouldUseIssueSearchSupplement,
+    placeholderData: (previousData) => previousData,
+  });
+  const issueSearchSupplementResults = useMemo(
+    () =>
+      getInboxSearchSupplementIssues({
+        query: normalizedSearchQuery,
+        filteredWorkItems,
+        archivedSearchIssues,
+        remoteIssues: remoteIssueSearchResults,
+        issueFilters,
+        currentUserId,
+        enableRoutineVisibilityFilter: true,
+        liveIssueIds,
+      }),
+    [
+      archivedSearchIssues,
+      currentUserId,
+      filteredWorkItems,
+      issueFilters,
+      liveIssueIds,
+      normalizedSearchQuery,
+      remoteIssueSearchResults,
+    ],
+  );
+  const nonInboxSearchIssueIds = useMemo(
+    () => new Set([
+      ...archivedSearchIssues.map((issue) => issue.id),
+      ...issueSearchSupplementResults.map((issue) => issue.id),
+    ]),
+    [archivedSearchIssues, issueSearchSupplementResults],
+  );
+
+  // --- Parent-child nesting for inbox issues ---
+  const [nestingPreferenceEnabled, setNestingPreferenceEnabled] = useState(() => loadInboxNesting());
+  const nestingEnabled = resolveInboxNestingEnabled(nestingPreferenceEnabled, isMobile);
+  useEffect(() => {
+    if (!shouldResetInboxWorkspaceGrouping(groupBy, isolatedWorkspacesEnabled, experimentalSettingsLoaded)) return;
+    setGroupBy("none");
+    saveInboxWorkItemGroupBy("none");
+  }, [experimentalSettingsLoaded, groupBy, isolatedWorkspacesEnabled]);
+  const toggleNesting = useCallback(() => {
+    setNestingPreferenceEnabled((prev) => {
+      const next = !prev;
+      saveInboxNesting(next);
+      return next;
+    });
+  }, []);
+  const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => loadCollapsedInboxGroupKeys(selectedCompanyId));
+  const toggleGroupCollapse = useCallback((groupKey: string) => {
+    setCollapsedGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      saveCollapsedInboxGroupKeys(selectedCompanyId, next);
+      return next;
+    });
+  }, [selectedCompanyId]);
+  const setGroupCollapsed = useCallback((groupKey: string, collapsed: boolean) => {
+    setCollapsedGroupKeys((prev) => {
+      if (collapsed ? prev.has(groupKey) : !prev.has(groupKey)) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(groupKey);
+      else next.delete(groupKey);
+      saveCollapsedInboxGroupKeys(selectedCompanyId, next);
+      return next;
+    });
+  }, [selectedCompanyId]);
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => [
+    ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
+    ...buildGroupedInboxSections(
+      getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
+      groupBy,
+      inboxWorkspaceGrouping,
+      { keyPrefix: "archived-search:", searchSection: "archived", nestingEnabled },
+    ),
+    ...buildGroupedInboxSections(
+      getInboxWorkItems({ issues: issueSearchSupplementResults, approvals: [] }),
+      groupBy,
+      inboxWorkspaceGrouping,
+      { keyPrefix: "other-search:", searchSection: "other", nestingEnabled },
+    ),
+  ], [
+    archivedSearchIssues,
+    filteredWorkItems,
+    groupBy,
+    inboxWorkspaceGrouping,
+    issueSearchSupplementResults,
+    nestingEnabled,
+  ]);
+  const totalVisibleWorkItems = useMemo(
+    () => groupedSections.reduce((count, group) => count + group.displayItems.length, 0),
+    [groupedSections],
+  );
+  const toggleInboxParentCollapse = useCallback((parentId: string) => {
+    setCollapsedInboxParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }, []);
+
+  // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
+  const flatNavItems = useMemo((): NavEntry[] => {
+    return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
+  }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  const topFlatIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    flatNavItems.forEach((entry, index) => {
+      if (entry.type === "top") map.set(entry.itemKey, index);
+    });
+    return map;
+  }, [flatNavItems]);
+  const childFlatIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    flatNavItems.forEach((entry, index) => {
+      if (entry.type === "child") map.set(entry.issueId, index);
+    });
+    return map;
+  }, [flatNavItems]);
+  const groupFlatIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    flatNavItems.forEach((entry, index) => {
+      if (entry.type === "group") map.set(entry.groupKey, index);
+    });
+    return map;
+  }, [flatNavItems]);
 
   const agentName = (id: string | null) => {
     if (!id) return null;
@@ -1135,6 +1286,32 @@ export function Inbox() {
     }
     setIssueColumns(visibleIssueColumns.filter((value) => value !== column));
   }, [setIssueColumns, visibleIssueColumns]);
+  const updateFilterPreferences = useCallback(
+    (updater: (previous: InboxFilterPreferences) => InboxFilterPreferences) => {
+      setFilterPreferences((previous) => {
+        const next = updater(previous);
+        saveInboxFilterPreferences(selectedCompanyId, next);
+        return next;
+      });
+    },
+    [selectedCompanyId],
+  );
+  const updateIssueFilters = useCallback((patch: Partial<IssueFilterState>) => {
+    updateFilterPreferences((previous) => ({
+      ...previous,
+      issueFilters: { ...previous.issueFilters, ...patch },
+    }));
+  }, [updateFilterPreferences]);
+  const updateAllCategoryFilter = useCallback((value: InboxCategoryFilter) => {
+    updateFilterPreferences((previous) => ({ ...previous, allCategoryFilter: value }));
+  }, [updateFilterPreferences]);
+  const updateAllApprovalFilter = useCallback((value: InboxApprovalFilter) => {
+    updateFilterPreferences((previous) => ({ ...previous, allApprovalFilter: value }));
+  }, [updateFilterPreferences]);
+  const updateGroupBy = useCallback((nextGroupBy: InboxWorkItemGroupBy) => {
+    setGroupBy(nextGroupBy);
+    saveInboxWorkItemGroupBy(nextGroupBy);
+  }, []);
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.approve(id),
@@ -1230,6 +1407,8 @@ export function Inbox() {
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
+  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
+  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
   const [fadingNonIssueItems, setFadingNonIssueItems] = useState<Set<string>>(new Set());
   const [archivingNonIssueIds, setArchivingNonIssueIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
@@ -1245,30 +1424,81 @@ export function Inbox() {
 
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
-    onMutate: (id) => {
+    onMutate: async (id) => {
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
+
+      // Cancel in-flight refetches so they don't overwrite our optimistic update
+      const queryKeys_ = [
+        [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+        [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
+        queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
+      ];
+      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+
+      // Snapshot previous data for rollback
+      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+
+      // Optimistically remove the issue from all inbox query caches
+      for (const qk of queryKeys_) {
+        queryClient.setQueryData(qk, (old: unknown) => {
+          if (!Array.isArray(old)) return old;
+          return old.filter((issue: { id: string }) => issue.id !== id);
+        });
+      }
+
+      return { previousData };
     },
-    onSuccess: () => {
-      invalidateInboxIssueQueries();
-    },
-    onError: (err, id) => {
+    onError: (err, id, context) => {
       setActionError(err instanceof Error ? err.message : "Failed to archive issue");
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
+      // Restore previous query data on failure
+      if (context?.previousData) {
+        for (const [qk, data] of context.previousData) {
+          queryClient.setQueryData(qk, data);
+        }
+      }
     },
-    onSettled: (_data, error, id) => {
-      if (error) return;
-      window.setTimeout(() => {
-        setArchivingIssueIds((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-      }, 500);
+    onSettled: (_data, _error, id) => {
+      // Clean up archiving state and refetch to sync with server
+      setArchivingIssueIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      invalidateInboxIssueQueries();
+    },
+    onSuccess: (_data, id) => {
+      setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
+    },
+  });
+
+  const unarchiveIssueMutation = useMutation({
+    mutationFn: (id: string) => issuesApi.unarchiveFromInbox(id),
+    onMutate: (id) => {
+      setActionError(null);
+      setUnarchivingIssueIds((prev) => new Set(prev).add(id));
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+    },
+    onSuccess: (_data, id) => {
+      setUndoableArchiveIssueIds((prev) => {
+        const next = prev.filter((issueId) => issueId !== id);
+        return next;
+      });
+    },
+    onSettled: (_data, _error, id) => {
+      setUnarchivingIssueIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      invalidateInboxIssueQueries();
     },
   });
 
@@ -1338,14 +1568,18 @@ export function Inbox() {
   const handleArchiveNonIssue = useCallback((key: string) => {
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
-      dismiss(key);
+      if (key.startsWith("alert:")) {
+        dismissAlert(key);
+      } else {
+        dismissInboxItem(key);
+      }
       setArchivingNonIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(key);
         return next;
       });
     }, 200);
-  }, [dismiss]);
+  }, [dismissAlert, dismissInboxItem]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1356,33 +1590,39 @@ export function Inbox() {
     return "hidden";
   };
 
-  const getWorkItemKey = useCallback((item: InboxWorkItem): string => {
-    if (item.kind === "issue") return `issue:${item.issue.id}`;
-    if (item.kind === "approval") return `approval:${item.approval.id}`;
-    if (item.kind === "failed_run") return `run:${item.run.id}`;
-    return `join:${item.joinRequest.id}`;
-  }, []);
-
   // Keep selection valid when the list shape changes, but do not auto-select on initial load.
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, filteredWorkItems.length));
-  }, [filteredWorkItems.length]);
+    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
+  }, [flatNavItems.length]);
+
+  useEffect(() => {
+    setUndoableArchiveIssueIds([]);
+    setUnarchivingIssueIds(new Set());
+  }, [selectedCompanyId]);
 
   // Use refs for keyboard handler to avoid stale closures
   const kbStateRef = useRef({
-    workItems: filteredWorkItems,
+    workItems: groupedSections,
+    flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
+    nonInboxSearchIssueIds,
     archivingIssueIds,
+    undoableArchiveIssueIds,
+    unarchivingIssueIds,
     archivingNonIssueIds,
     fadingOutIssues,
     readItems,
   });
   kbStateRef.current = {
-    workItems: filteredWorkItems,
+    workItems: groupedSections,
+    flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
+    nonInboxSearchIssueIds,
     archivingIssueIds,
+    undoableArchiveIssueIds,
+    unarchivingIssueIds,
     archivingNonIssueIds,
     fadingOutIssues,
     readItems,
@@ -1390,20 +1630,24 @@ export function Inbox() {
 
   const kbActionsRef = useRef({
     archiveIssue: (id: string) => archiveIssueMutation.mutate(id),
+    undoArchiveIssue: (id: string) => unarchiveIssueMutation.mutate(id),
     archiveNonIssue: handleArchiveNonIssue,
     markRead: (id: string) => markReadMutation.mutate(id),
     markUnreadIssue: (id: string) => markUnreadMutation.mutate(id),
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
+    setGroupCollapsed,
     navigate,
   });
   kbActionsRef.current = {
     archiveIssue: (id: string) => archiveIssueMutation.mutate(id),
+    undoArchiveIssue: (id: string) => unarchiveIssueMutation.mutate(id),
     archiveNonIssue: handleArchiveNonIssue,
     markRead: (id: string) => markReadMutation.mutate(id),
     markUnreadIssue: (id: string) => markUnreadMutation.mutate(id),
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
+    setGroupCollapsed,
     navigate,
   };
 
@@ -1433,76 +1677,130 @@ export function Inbox() {
       // Keyboard shortcuts are only active on the "mine" tab
       if (!st.canArchive) return;
 
-      const itemCount = st.workItems.length;
-      if (itemCount === 0) return;
+      const undoArchiveAction = resolveInboxUndoArchiveKeyAction({
+        hasUndoableArchive: st.undoableArchiveIssueIds.length > 0,
+        defaultPrevented: e.defaultPrevented,
+        key: e.key,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        target,
+        hasOpenDialog: hasBlockingShortcutDialog(document),
+      });
+      if (undoArchiveAction === "undo_archive") {
+        const issueId = st.undoableArchiveIssueIds[st.undoableArchiveIssueIds.length - 1];
+        if (!issueId || st.unarchivingIssueIds.has(issueId)) return;
+        e.preventDefault();
+        act.undoArchiveIssue(issueId);
+        return;
+      }
+
+      const navItems = st.flatNavItems;
+      const navCount = navItems.length;
+      if (navCount === 0) return;
+
+      /** Resolve the nav entry at selectedIndex to an issue (for child entries) or work item. */
+      const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
+        const entry = navItems[idx];
+        if (!entry) return {};
+        if (entry.type === "child") return { issue: entry.issue };
+        if (entry.type === "top") return { item: entry.item };
+        return {};
+      };
 
       switch (e.key) {
-        case "j": {
+        case "j":
+        case "ArrowDown": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, itemCount, "next"));
+          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
           break;
         }
-        case "k": {
+        case "k":
+        case "ArrowUp": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, itemCount, "previous"));
+          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
+          break;
+        }
+        case "ArrowLeft":
+        case "ArrowRight": {
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          const entry = navItems[st.selectedIndex];
+          if (!entry || entry.type !== "group") return;
+          e.preventDefault();
+          act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
           break;
         }
         case "a":
         case "y": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            if (!st.archivingIssueIds.has(item.issue.id)) {
-              act.archiveIssue(item.issue.id);
-            }
-          } else {
-            const key = getWorkItemKey(item);
-            if (!st.archivingNonIssueIds.has(key)) {
-              act.archiveNonIssue(key);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            if (!st.nonInboxSearchIssueIds.has(issue.id) && !st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") {
+              if (!st.nonInboxSearchIssueIds.has(item.issue.id) && !st.archivingIssueIds.has(item.issue.id)) {
+                act.archiveIssue(item.issue.id);
+              }
+            } else {
+              const key = getInboxWorkItemKey(item);
+              if (!st.archivingNonIssueIds.has(key)) act.archiveNonIssue(key);
             }
           }
           break;
         }
         case "U": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            act.markUnreadIssue(item.issue.id);
-          } else {
-            act.markNonIssueUnread(getWorkItemKey(item));
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            act.markUnreadIssue(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") act.markUnreadIssue(item.issue.id);
+            else act.markNonIssueUnread(getInboxWorkItemKey(item));
           }
           break;
         }
         case "r": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            if (item.issue.isUnreadForMe && !st.fadingOutIssues.has(item.issue.id)) {
-              act.markRead(item.issue.id);
-            }
-          } else {
-            const key = getWorkItemKey(item);
-            if (!st.readItems.has(key)) {
-              act.markNonIssueRead(key);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            if (issue.isUnreadForMe && !st.fadingOutIssues.has(issue.id)) act.markRead(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") {
+              if (item.issue.isUnreadForMe && !st.fadingOutIssues.has(item.issue.id)) act.markRead(item.issue.id);
+            } else {
+              const key = getInboxWorkItemKey(item);
+              if (!st.readItems.has(key)) act.markNonIssueRead(key);
             }
           }
           break;
         }
         case "Enter": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            const pathId = item.issue.identifier ?? item.issue.id;
-            const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
-            act.navigate(createIssueDetailPath(pathId, detailState), { state: detailState });
-          } else if (item.kind === "approval") {
-            act.navigate(`/approvals/${item.approval.id}`);
-          } else if (item.kind === "failed_run") {
-            act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            const pathId = issue.identifier ?? issue.id;
+            const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
+            rememberIssueDetailLocationState(pathId, detailState);
+            void prefetchIssueDetail(queryClient, pathId, { issue });
+            act.navigate(createIssueDetailPath(pathId), { state: detailState });
+          } else if (item) {
+            if (item.kind === "issue") {
+              const pathId = item.issue.identifier ?? item.issue.id;
+              const detailState = armIssueDetailInboxQuickArchive(
+                withIssueDetailHeaderSeed(issueLinkState, item.issue),
+              );
+              rememberIssueDetailLocationState(pathId, detailState);
+              void prefetchIssueDetail(queryClient, pathId, { issue: item.issue });
+              act.navigate(createIssueDetailPath(pathId), { state: detailState });
+            } else if (item.kind === "approval") {
+              act.navigate(`/approvals/${item.approval.id}`);
+            } else if (item.kind === "failed_run") {
+              act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
+            }
           }
           break;
         }
@@ -1512,7 +1810,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [getWorkItemKey, issueLinkState, keyboardShortcutsEnabled]);
+  }, [issueLinkState, keyboardShortcutsEnabled]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -1527,21 +1825,28 @@ export function Inbox() {
   }
 
   const hasRunFailures = failedRuns.length > 0;
-  const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");
+  const showCompanyAlerts = shouldShowCompanyAlerts(tab) && showAlertsCategory;
+  const showAggregateAgentError =
+    showCompanyAlerts &&
+    !!dashboard &&
+    dashboard.agents.error > 0 &&
+    !hasRunFailures &&
+    !dismissedAlerts.has("alert:agent-errors");
   const showBudgetAlert =
+    showCompanyAlerts &&
     !!dashboard &&
     dashboard.costs.monthBudgetCents > 0 &&
     dashboard.costs.monthUtilizationPercent >= 80 &&
-    !dismissed.has("alert:budget");
+    !dismissedAlerts.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
-  const showWorkItemsSection = filteredWorkItems.length > 0;
+  const showWorkItemsSection = totalVisibleWorkItems > 0;
   const showAlertsSection = shouldShowInboxSection({
     tab,
     hasItems: hasAlerts,
-    showOnMine: hasAlerts,
-    showOnRecent: hasAlerts,
-    showOnUnread: hasAlerts,
-    showOnAll: showAlertsCategory && hasAlerts,
+    showOnMine: false,
+    showOnRecent: false,
+    showOnUnread: false,
+    showOnAll: hasAlerts,
   });
 
   const visibleSections = [
@@ -1559,14 +1864,45 @@ export function Inbox() {
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
-  const markAllReadIssues = (tab === "mine" ? mineIssues : unreadTouchedIssues)
+  const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
+  const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-2">
+      <div className="space-y-2">
+        {/* Search — full-width row on mobile, inline on desktop */}
+        <div className="relative sm:hidden">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Search inbox…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (shouldBlurPageSearchOnEnter({
+                key: e.key,
+                isComposing: e.nativeEvent.isComposing,
+              })) {
+                e.currentTarget.blur();
+                return;
+              }
+
+              if (shouldBlurPageSearchOnEscape({
+                key: e.key,
+                isComposing: e.nativeEvent.isComposing,
+                currentValue: e.currentTarget.value,
+              })) {
+                e.currentTarget.blur();
+              }
+            }}
+            className="h-8 w-full pl-8 text-xs"
+            data-page-search-target="true"
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
             items={[
@@ -1585,68 +1921,101 @@ export function Inbox() {
         </Tabs>
 
         <div className="flex items-center gap-2">
-          <div className="relative">
+          <div className="relative hidden sm:block">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
               placeholder="Search inbox…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-8 w-[180px] pl-8 text-xs sm:w-[220px]"
+              onKeyDown={(e) => {
+                if (shouldBlurPageSearchOnEnter({
+                  key: e.key,
+                  isComposing: e.nativeEvent.isComposing,
+                })) {
+                  e.currentTarget.blur();
+                  return;
+                }
+
+                if (shouldBlurPageSearchOnEscape({
+                  key: e.key,
+                  isComposing: e.nativeEvent.isComposing,
+                  currentValue: e.currentTarget.value,
+                })) {
+                  e.currentTarget.blur();
+                }
+              }}
+              className="h-8 w-[220px] pl-8 text-xs"
+              data-page-search-target="true"
             />
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+            onClick={toggleNesting}
+            title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+          >
+            <ListTree className="h-3.5 w-3.5" />
+          </Button>
+          <IssueFiltersPopover
+            state={issueFilters}
+            onChange={updateIssueFilters}
+            activeFilterCount={activeIssueFilterCount}
+            agents={agents}
+            creators={creatorOptions}
+            projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
+            labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+            currentUserId={currentUserId}
+            enableRoutineVisibilityFilter
+            buttonVariant="outline"
+            iconOnly
+            workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
+          />
+          <Popover>
+            <PopoverTrigger asChild>
               <Button
                 type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
+                title="Group"
               >
-                <Columns3 className="mr-1 h-3.5 w-3.5" />
-                Show / hide columns
+                <Layers className="h-3.5 w-3.5" />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
-              <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
-                <div className="space-y-1">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                    Desktop issue rows
-                  </div>
-                  <div className="text-sm font-medium text-foreground">
-                    Choose which inbox columns stay visible
-                  </div>
-                </div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {availableIssueColumns.map((column) => (
-                <DropdownMenuCheckboxItem
-                  key={column}
-                  checked={visibleIssueColumnSet.has(column)}
-                  onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={(checked) => toggleIssueColumn(column, checked === true)}
-                  className="items-start rounded-lg px-3 py-2.5 pl-8"
-                >
-                  <span className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium text-foreground">
-                      {inboxIssueColumnLabels[column]}
-                    </span>
-                    <span className="text-xs leading-relaxed text-muted-foreground">
-                      {inboxIssueColumnDescriptions[column]}
-                    </span>
-                  </span>
-                </DropdownMenuCheckboxItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                className="rounded-lg px-3 py-2 text-sm"
-              >
-                Reset defaults
-                <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-40 p-2">
+              <div className="space-y-0.5">
+                {([
+                  ["none", "None"],
+                  ["type", "Type"],
+                  ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
+                      groupBy === value ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50",
+                    )}
+                    onClick={() => updateGroupBy(value)}
+                  >
+                    <span>{label}</span>
+                    {groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+          <IssueColumnPicker
+            availableColumns={availableIssueColumns}
+            visibleColumnSet={visibleIssueColumnSet}
+            onToggleColumn={toggleIssueColumn}
+            onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
+            title="Choose which inbox columns stay visible"
+            iconOnly
+          />
           {canMarkAllRead && (
             <>
               <Button
@@ -1685,13 +2054,14 @@ export function Inbox() {
             </>
           )}
         </div>
+        </div>
       </div>
 
       {tab === "all" && (
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={allCategoryFilter}
-            onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
+            onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
             <SelectTrigger className="h-8 w-[170px] text-xs">
               <SelectValue placeholder="Category" />
@@ -1709,7 +2079,7 @@ export function Inbox() {
           {showApprovalsCategory && (
             <Select
               value={allApprovalFilter}
-              onValueChange={(value) => setAllApprovalFilter(value as InboxApprovalFilter)}
+              onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
               <SelectTrigger className="h-8 w-[170px] text-xs">
                 <SelectValue placeholder="Approval status" />
@@ -1752,213 +2122,379 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
-              {filteredWorkItems.flatMap((item, index) => {
-                const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
-                  <div
-                    key={`sel-${key}`}
-                    data-inbox-item
-                    className="relative"
-                    onClick={() => setSelectedIndex(index)}
-                  >
-                    {child}
-                  </div>
-                );
-                const todayCutoff = Date.now() - 24 * 60 * 60 * 1000;
-                const showTodayDivider =
-                  index > 0 &&
-                  item.timestamp > 0 &&
-                  item.timestamp < todayCutoff &&
-                  filteredWorkItems[index - 1].timestamp >= todayCutoff;
-                const elements: ReactNode[] = [];
-                if (showTodayDivider) {
-                  elements.push(
-                    <div key="today-divider" className="flex items-center gap-3 px-4 my-2">
-                      <div className="flex-1 border-t border-zinc-600" />
-                      <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-                        Earlier
-                      </span>
-                    </div>,
-                  );
-                }
-                const isSelected = selectedIndex === index;
-
-                if (item.kind === "approval") {
-                  const approvalKey = `approval:${item.approval.id}`;
-                  const isArchiving = archivingNonIssueIds.has(approvalKey);
-                  const row = (
-                    <ApprovalInboxRow
-                      key={approvalKey}
-                      approval={item.approval}
-                      selected={isSelected}
-                      requesterName={agentName(item.approval.requestedByAgentId)}
-                      onApprove={() => approveMutation.mutate(item.approval.id)}
-                      onReject={() => rejectMutation.mutate(item.approval.id)}
-                      isPending={approveMutation.isPending || rejectMutation.isPending}
-                      unreadState={nonIssueUnreadState(approvalKey)}
-                      onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
-                      onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(approvalKey) : undefined}
-                      archiveDisabled={isArchiving}
-                      className={
-                        isArchiving
-                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
-                          : "transition-all duration-200 ease-out"
-                      }
-                    />
-                  );
-                  elements.push(wrapItem(approvalKey, isSelected, canArchiveFromTab ? (
-                    <SwipeToArchive
-                      key={approvalKey}
-                      selected={isSelected}
-                      disabled={isArchiving}
-                      onArchive={() => handleArchiveNonIssue(approvalKey)}
-                    >
-                      {row}
-                    </SwipeToArchive>
-                  ) : row));
-                  return elements;
-                }
-
-                if (item.kind === "failed_run") {
-                  const runKey = `run:${item.run.id}`;
-                  const isArchiving = archivingNonIssueIds.has(runKey);
-                  const row = (
-                    <FailedRunInboxRow
-                      key={runKey}
-                      run={item.run}
-                      selected={isSelected}
-                      issueById={issueById}
-                      agentName={agentName(item.run.agentId)}
+            <div ref={listRef} className="overflow-hidden rounded-xl bg-card">
+              {(() => {
+                const renderInboxIssue = ({
+                  issue,
+                  depth,
+                  selected,
+                  hasChildren = false,
+                  isExpanded = false,
+                  childCount = 0,
+                  collapseParentId = null,
+                  allowArchive = canArchiveFromTab,
+                }: {
+                  issue: Issue;
+                  depth: number;
+                  selected: boolean;
+                  hasChildren?: boolean;
+                  isExpanded?: boolean;
+                  childCount?: number;
+                  collapseParentId?: string | null;
+                  allowArchive?: boolean;
+                }) => {
+                  const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
+                  const isFading = fadingOutIssues.has(issue.id);
+                  const isArchiving = archivingIssueIds.has(issue.id);
+                  const project = issue.projectId ? projectById.get(issue.projectId) ?? null : null;
+                  const assigneeUserProfile = issue.assigneeUserId
+                    ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
+                    : null;
+                  return (
+                    <IssueRow
+                      key={`issue:${issue.id}`}
+                      issue={issue}
                       issueLinkState={issueLinkState}
-                      onDismiss={() => dismiss(runKey)}
-                      onRetry={() => retryRunMutation.mutate(item.run)}
-                      isRetrying={retryingRunIds.has(item.run.id)}
-                      unreadState={nonIssueUnreadState(runKey)}
-                      onMarkRead={() => handleMarkNonIssueRead(runKey)}
-                      onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(runKey) : undefined}
-                      archiveDisabled={isArchiving}
+                      selected={selected}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
                           : "transition-all duration-200 ease-out"
                       }
-                    />
-                  );
-                  elements.push(wrapItem(runKey, isSelected, canArchiveFromTab ? (
-                    <SwipeToArchive
-                      key={runKey}
-                      selected={isSelected}
-                      disabled={isArchiving}
-                      onArchive={() => handleArchiveNonIssue(runKey)}
-                    >
-                      {row}
-                    </SwipeToArchive>
-                  ) : row));
-                  return elements;
-                }
-
-                if (item.kind === "join_request") {
-                  const joinKey = `join:${item.joinRequest.id}`;
-                  const isArchiving = archivingNonIssueIds.has(joinKey);
-                  const row = (
-                    <JoinRequestInboxRow
-                      key={joinKey}
-                      joinRequest={item.joinRequest}
-                      selected={isSelected}
-                      onApprove={() => approveJoinMutation.mutate(item.joinRequest)}
-                      onReject={() => rejectJoinMutation.mutate(item.joinRequest)}
-                      isPending={approveJoinMutation.isPending || rejectJoinMutation.isPending}
-                      unreadState={nonIssueUnreadState(joinKey)}
-                      onMarkRead={() => handleMarkNonIssueRead(joinKey)}
-                      onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(joinKey) : undefined}
-                      archiveDisabled={isArchiving}
-                      className={
-                        isArchiving
-                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
-                          : "transition-all duration-200 ease-out"
+                      desktopMetaLeading={
+                        <>
+                          {nestingEnabled ? (
+                            depth === 0 && hasChildren && collapseParentId ? (
+                              <button
+                                type="button"
+                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  toggleInboxParentCollapse(collapseParentId);
+                                }}
+                              >
+                                <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                              </button>
+                            ) : (
+                              <span className="hidden w-4 shrink-0 sm:block" />
+                            )
+                          ) : null}
+                          {depth > 0 ? <span className="hidden w-4 shrink-0 sm:block" /> : null}
+                          <InboxIssueMetaLeading
+                            issue={issue}
+                            isLive={liveIssueIds.has(issue.id)}
+                            showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
+                            showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                          />
+                        </>
+                      }
+                      titleSuffix={hasChildren && !isExpanded && depth === 0 ? (
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          ({childCount} sub-task{childCount !== 1 ? "s" : ""})
+                        </span>
+                      ) : undefined}
+                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileLeading={
+                        depth === 0 && hasChildren && collapseParentId ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              toggleInboxParentCollapse(collapseParentId);
+                            }}
+                          >
+                            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                          </button>
+                        ) : undefined
+                      }
+                      unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      onMarkRead={() => markReadMutation.mutate(issue.id)}
+                      onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
+                      archiveDisabled={isArchiving || archiveIssueMutation.isPending}
+                      desktopTrailing={
+                        visibleTrailingIssueColumns.length > 0 ? (
+                          <InboxIssueTrailingColumns
+                            issue={issue}
+                            columns={visibleTrailingIssueColumns}
+                            projectName={project?.name ?? null}
+                            projectColor={project?.color ?? null}
+                            workspaceName={resolveIssueWorkspaceName(issue, {
+                              executionWorkspaceById,
+                              projectWorkspaceById,
+                              defaultProjectWorkspaceIdByProjectId,
+                            })}
+                            assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeUserName={
+                              formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
+                              ?? assigneeUserProfile?.label
+                              ?? null
+                            }
+                            assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                            currentUserId={currentUserId}
+                            parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
+                            parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}
+                          />
+                        ) : undefined
                       }
                     />
                   );
-                  elements.push(wrapItem(joinKey, isSelected, canArchiveFromTab ? (
-                    <SwipeToArchive
-                      key={joinKey}
-                      selected={isSelected}
-                      disabled={isArchiving}
-                      onArchive={() => handleArchiveNonIssue(joinKey)}
-                    >
-                      {row}
-                    </SwipeToArchive>
-                  ) : row));
-                  return elements;
-                }
+                };
 
-                const issue = item.issue;
-                const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
-                const isFading = fadingOutIssues.has(issue.id);
-                const isArchiving = archivingIssueIds.has(issue.id);
-                const issueProject = issue.projectId ? projectById.get(issue.projectId) ?? null : null;
-                const row = (
-                  <IssueRow
-                    key={`issue:${issue.id}`}
-                    issue={issue}
-                    issueLinkState={issueLinkState}
-                    selected={isSelected}
-                    className={
-                      isArchiving
-                        ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
-                        : "transition-all duration-200 ease-out"
-                    }
-                    desktopMetaLeading={
-                      <InboxIssueMetaLeading
-                        issue={issue}
-                        isLive={liveIssueIds.has(issue.id)}
-                        showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
-                        showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
-                      />
-                    }
-                    mobileMeta={issueActivityText(issue).toLowerCase()}
-                    unreadState={
-                      isUnread ? "visible" : isFading ? "fading" : "hidden"
-                    }
-                    onMarkRead={() => markReadMutation.mutate(issue.id)}
-                    onArchive={
-                      canArchiveFromTab
-                        ? () => archiveIssueMutation.mutate(issue.id)
-                        : undefined
-                    }
-                    archiveDisabled={isArchiving || archiveIssueMutation.isPending}
-                    desktopTrailing={
-                      visibleTrailingIssueColumns.length > 0 ? (
-                        <InboxIssueTrailingColumns
-                          issue={issue}
-                          columns={visibleTrailingIssueColumns}
-                          projectName={issueProject?.name ?? null}
-                          projectColor={issueProject?.color ?? null}
-                          workspaceName={resolveIssueWorkspaceName(issue, {
-                            executionWorkspaceById,
-                            projectWorkspaceById,
-                            defaultProjectWorkspaceIdByProjectId,
-                          })}
-                          assigneeName={agentName(issue.assigneeAgentId)}
-                          currentUserId={currentUserId}
+                let previousTimestamp = Number.POSITIVE_INFINITY;
+                return groupedSections.flatMap((group, groupIndex) => {
+                  const elements: ReactNode[] = [];
+                  const isGroupCollapsed = collapsedGroupKeys.has(group.key);
+                  if (
+                    group.searchSection !== "none"
+                    && group.searchSection !== groupedSections[groupIndex - 1]?.searchSection
+                  ) {
+                    elements.push(
+                      <div
+                        key={`${group.searchSection}-search-divider`}
+                        className="flex items-center gap-3 border-y border-border/70 bg-muted/30 px-4 py-2"
+                      >
+                        <div className="h-px flex-1 bg-border/80" />
+                        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {group.searchSection === "archived" ? "Archived" : "Other results"}
+                        </span>
+                        <div className="h-px flex-1 bg-border/80" />
+                      </div>,
+                    );
+                  }
+                  if (group.label) {
+                    const groupNavIdx = groupFlatIndex.get(group.key) ?? -1;
+                    const isGroupSelected = groupNavIdx >= 0 && selectedIndex === groupNavIdx;
+                    elements.push(
+                      <div
+                        key={`group-${group.key}`}
+                        data-inbox-item
+                        className={cn(
+                          "px-3 sm:px-4",
+                          groupIndex > 0 && "pt-2",
+                          isGroupSelected && "bg-accent/50",
+                        )}
+                        onClick={() => {
+                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                        }}
+                      >
+                        <IssueGroupHeader
+                          label={group.label}
+                          collapsible
+                          collapsed={isGroupCollapsed}
+                          onToggle={() => toggleGroupCollapse(group.key)}
                         />
-                      ) : undefined
-                    }
-                  />
-                );
+                      </div>,
+                    );
+                  }
+                  if (isGroupCollapsed) return elements;
 
-                elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveFromTab ? (
-                  <SwipeToArchive
-                    key={`issue:${issue.id}`}
-                    selected={isSelected}
-                    disabled={isArchiving || archiveIssueMutation.isPending}
-                    onArchive={() => archiveIssueMutation.mutate(issue.id)}
-                  >
-                    {row}
-                  </SwipeToArchive>
-                ) : row));
-                return elements;
-              })}
+                  for (let index = 0; index < group.displayItems.length; index += 1) {
+                    const item = group.displayItems[index]!;
+                    const navIdx = topFlatIndex.get(`${group.key}:${getInboxWorkItemKey(item)}`) ?? 0;
+                    const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
+                      <div
+                        key={`sel-${key}`}
+                        data-inbox-item
+                        className="relative"
+                        onClick={() => setSelectedIndex(navIdx)}
+                      >
+                        {child}
+                      </div>
+                    );
+                    const todayCutoff = Date.now() - 24 * 60 * 60 * 1000;
+                    const showTodayDivider =
+                      groupBy === "none" &&
+                      item.timestamp > 0 &&
+                      item.timestamp < todayCutoff &&
+                      previousTimestamp >= todayCutoff;
+                    previousTimestamp = item.timestamp > 0 ? item.timestamp : previousTimestamp;
+                    if (showTodayDivider) {
+                      elements.push(
+                        <div key={`today-divider-${group.key}-${index}`} className="my-2 flex items-center gap-3 px-4">
+                          <div className="flex-1 border-t border-zinc-600" />
+                          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                            Earlier
+                          </span>
+                        </div>,
+                      );
+                    }
+                    const isSelected = selectedIndex === navIdx;
+
+                    if (item.kind === "approval") {
+                      const approvalKey = `approval:${item.approval.id}`;
+                      const isArchiving = archivingNonIssueIds.has(approvalKey);
+                      const row = (
+                        <ApprovalInboxRow
+                          key={approvalKey}
+                          approval={item.approval}
+                          selected={isSelected}
+                          requesterName={agentName(item.approval.requestedByAgentId)}
+                          onApprove={() => approveMutation.mutate(item.approval.id)}
+                          onReject={() => rejectMutation.mutate(item.approval.id)}
+                          isPending={approveMutation.isPending || rejectMutation.isPending}
+                          unreadState={nonIssueUnreadState(approvalKey)}
+                          onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
+                          onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(approvalKey) : undefined}
+                          archiveDisabled={isArchiving}
+                          className={
+                            isArchiving
+                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              : "transition-all duration-200 ease-out"
+                          }
+                        />
+                      );
+                      elements.push(wrapItem(approvalKey, isSelected, canArchiveFromTab ? (
+                        <SwipeToArchive
+                          key={approvalKey}
+                          selected={isSelected}
+                          disabled={isArchiving}
+                          onArchive={() => handleArchiveNonIssue(approvalKey)}
+                        >
+                          {row}
+                        </SwipeToArchive>
+                      ) : row));
+                      continue;
+                    }
+
+                    if (item.kind === "failed_run") {
+                      const runKey = `run:${item.run.id}`;
+                      const isArchiving = archivingNonIssueIds.has(runKey);
+                      const row = (
+                        <FailedRunInboxRow
+                          key={runKey}
+                          run={item.run}
+                          selected={isSelected}
+                          issueById={issueById}
+                          agentName={agentName(item.run.agentId)}
+                          issueLinkState={issueLinkState}
+                          onDismiss={() => dismissInboxItem(runKey)}
+                          onRetry={() => retryRunMutation.mutate(item.run)}
+                          isRetrying={retryingRunIds.has(item.run.id)}
+                          unreadState={nonIssueUnreadState(runKey)}
+                          onMarkRead={() => handleMarkNonIssueRead(runKey)}
+                          onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(runKey) : undefined}
+                          archiveDisabled={isArchiving}
+                          className={
+                            isArchiving
+                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              : "transition-all duration-200 ease-out"
+                          }
+                        />
+                      );
+                      elements.push(wrapItem(runKey, isSelected, canArchiveFromTab ? (
+                        <SwipeToArchive
+                          key={runKey}
+                          selected={isSelected}
+                          disabled={isArchiving}
+                          onArchive={() => handleArchiveNonIssue(runKey)}
+                        >
+                          {row}
+                        </SwipeToArchive>
+                      ) : row));
+                      continue;
+                    }
+
+                    if (item.kind === "join_request") {
+                      const joinKey = `join:${item.joinRequest.id}`;
+                      const isArchiving = archivingNonIssueIds.has(joinKey);
+                      const row = (
+                        <JoinRequestInboxRow
+                          key={joinKey}
+                          joinRequest={item.joinRequest}
+                          selected={isSelected}
+                          onApprove={() => approveJoinMutation.mutate(item.joinRequest)}
+                          onReject={() => rejectJoinMutation.mutate(item.joinRequest)}
+                          isPending={approveJoinMutation.isPending || rejectJoinMutation.isPending}
+                          unreadState={nonIssueUnreadState(joinKey)}
+                          onMarkRead={() => handleMarkNonIssueRead(joinKey)}
+                          onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(joinKey) : undefined}
+                          archiveDisabled={isArchiving}
+                          className={
+                            isArchiving
+                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              : "transition-all duration-200 ease-out"
+                          }
+                        />
+                      );
+                      elements.push(wrapItem(joinKey, isSelected, canArchiveFromTab ? (
+                        <SwipeToArchive
+                          key={joinKey}
+                          selected={isSelected}
+                          disabled={isArchiving}
+                          onArchive={() => handleArchiveNonIssue(joinKey)}
+                        >
+                          {row}
+                        </SwipeToArchive>
+                      ) : row));
+                      continue;
+                    }
+
+                    const issue = item.issue;
+                    const childIssues = group.childrenByIssueId.get(issue.id) ?? [];
+                    const hasChildren = childIssues.length > 0;
+                    const isExpanded = hasChildren && !collapsedInboxParents.has(issue.id);
+                    const canArchiveIssue = canArchiveFromTab && group.searchSection === "none";
+                    const parentRow = renderInboxIssue({
+                      issue,
+                      depth: 0,
+                      selected: isSelected,
+                      hasChildren,
+                      isExpanded,
+                      childCount: childIssues.length,
+                      collapseParentId: issue.id,
+                      allowArchive: canArchiveIssue,
+                    });
+
+                    elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveIssue ? (
+                      <SwipeToArchive
+                        key={`issue:${issue.id}`}
+                        selected={isSelected}
+                        disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
+                        onArchive={() => archiveIssueMutation.mutate(issue.id)}
+                      >
+                        {parentRow}
+                      </SwipeToArchive>
+                    ) : parentRow));
+
+                    if (isExpanded) {
+                      for (const child of childIssues) {
+                        const childNavIdx = childFlatIndex.get(child.id) ?? -1;
+                        const isChildSelected = selectedIndex === childNavIdx;
+                        const childRow = renderInboxIssue({
+                          issue: child,
+                          depth: 1,
+                          selected: isChildSelected,
+                          allowArchive: canArchiveIssue,
+                        });
+                        const isChildArchiving = archivingIssueIds.has(child.id);
+                        elements.push(
+                          <div
+                            key={`sel-issue:${child.id}`}
+                            data-inbox-item
+                            className="relative"
+                            onClick={() => setSelectedIndex(childNavIdx)}
+                          >
+                            {canArchiveIssue ? (
+                              <SwipeToArchive
+                                key={`issue:${child.id}`}
+                                selected={isChildSelected}
+                                disabled={isChildArchiving || archiveIssueMutation.isPending}
+                                onArchive={() => archiveIssueMutation.mutate(child.id)}
+                              >
+                                {childRow}
+                              </SwipeToArchive>
+                            ) : childRow}
+                          </div>,
+                        );
+                      }
+                    }
+                  }
+
+                  return elements;
+                });
+              })()}
             </div>
           </div>
         </>
@@ -1986,7 +2522,7 @@ export function Inbox() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => dismiss("alert:agent-errors")}
+                    onClick={() => dismissAlert("alert:agent-errors")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
@@ -2009,7 +2545,7 @@ export function Inbox() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => dismiss("alert:budget")}
+                    onClick={() => dismissAlert("alert:budget")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >

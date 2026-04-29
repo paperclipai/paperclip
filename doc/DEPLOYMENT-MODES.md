@@ -17,6 +17,11 @@ Paperclip supports two runtime modes:
 
 This keeps one authenticated auth stack while still separating low-friction private-network defaults from internet-facing hardening requirements.
 
+Paperclip now treats **bind** as a separate concern from auth:
+
+- auth model: `local_trusted` vs `authenticated`, plus `private/public`
+- reachability model: `server.bind = loopback | lan | tailnet | custom`
+
 ## 2. Canonical Model
 
 | Runtime Mode | Exposure | Human auth | Primary use |
@@ -24,6 +29,15 @@ This keeps one authenticated auth stack while still separating low-friction priv
 | `local_trusted` | n/a | No login required | Single-operator local machine workflow |
 | `authenticated` | `private` | Login required | Private-network access (for example Tailscale/VPN/LAN) |
 | `authenticated` | `public` | Login required | Internet-facing/cloud deployment |
+
+## Reachability Model
+
+| Bind | Meaning | Typical use |
+|---|---|---|
+| `loopback` | Listen on localhost only | default local usage, reverse-proxy deployments |
+| `lan` | Listen on all interfaces (`0.0.0.0`) | LAN/VPN/private-network access |
+| `tailnet` | Listen on a detected Tailscale IP | Tailscale-only access |
+| `custom` | Listen on an explicit host/IP | advanced interface-specific setups |
 
 ## 3. Security Policy
 
@@ -38,12 +52,14 @@ This keeps one authenticated auth stack while still separating low-friction priv
 - login required
 - low-friction URL handling (`auto` base URL mode)
 - private-host trust policy required
+- bind can be `loopback`, `lan`, `tailnet`, or `custom`
 
 ## `authenticated + public`
 
 - login required
 - explicit public URL required
 - stricter deployment checks and failures in doctor
+- recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
 
 ## 4. Onboarding UX Contract
 
@@ -55,14 +71,22 @@ pnpm paperclipai onboard
 
 Server prompt behavior:
 
-1. ask mode, default `local_trusted`
-2. option copy:
-- `local_trusted`: "Easiest for local setup (no login, localhost-only)"
-- `authenticated`: "Login required; use for private network or public hosting"
-3. if `authenticated`, ask exposure:
-- `private`: "Private network access (for example Tailscale), lower setup friction"
-- `public`: "Internet-facing deployment, stricter security requirements"
-4. ask explicit public URL only for `authenticated + public`
+1. quickstart `--yes` defaults to `server.bind=loopback` and therefore `local_trusted/private`
+2. advanced server setup asks reachability first:
+- `Trusted local` → `bind=loopback`, `local_trusted/private`
+- `Private network` → `bind=lan`, `authenticated/private`
+- `Tailnet` → `bind=tailnet`, `authenticated/private`
+- `Custom` → manual mode/exposure/host entry
+3. raw host entry is only required for the `Custom` path
+4. explicit public URL is only required for `authenticated + public`
+
+Examples:
+
+```sh
+pnpm paperclipai onboard --yes
+pnpm paperclipai onboard --yes --bind lan
+pnpm paperclipai run --bind tailnet
+```
 
 `configure --section server` follows the same interactive behavior.
 
@@ -118,3 +142,4 @@ This prevents lockout when a user migrates from long-running local trusted usage
 - implementation plan: `doc/plans/deployment-auth-mode-consolidation.md`
 - V1 contract: `doc/SPEC-implementation.md`
 - operator workflows: `doc/DEVELOPING.md` and `doc/CLI.md`
+- invite/join state map: `doc/spec/invite-flow.md`

@@ -51,6 +51,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "project.workspaces.get": ["project.workspaces.read"],
   "issues.list": ["issues.read"],
   "issues.get": ["issues.read"],
+  "issues.relations.get": ["issue.relations.read"],
   "issue.comments.list": ["issue.comments.read"],
   "issue.comments.get": ["issue.comments.read"],
   "agents.list": ["agents.read"],
@@ -61,14 +62,27 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "activity.get": ["activity.read"],
   "costs.list": ["costs.read"],
   "costs.get": ["costs.read"],
+  "issues.summaries.getOrchestration": ["issues.orchestration.read"],
+  "db.namespace": ["database.namespace.read"],
+  "db.query": ["database.namespace.read"],
 
   // Data write operations
   "issues.create": ["issues.create"],
   "issues.update": ["issues.update"],
+  "issues.relations.setBlockedBy": ["issue.relations.write"],
+  "issues.relations.addBlockers": ["issue.relations.write"],
+  "issues.relations.removeBlockers": ["issue.relations.write"],
+  "issues.assertCheckoutOwner": ["issues.checkout"],
+  "issues.getSubtree": ["issue.subtree.read"],
+  "issues.requestWakeup": ["issues.wakeup"],
+  "issues.requestWakeups": ["issues.wakeup"],
   "issue.comments.create": ["issue.comments.create"],
+  "issue.interactions.create": ["issue.interactions.create"],
   "activity.log": ["activity.log.write"],
   "metrics.write": ["metrics.write"],
   "telemetry.track": ["telemetry.track"],
+  "db.migrate": ["database.namespace.migrate"],
+  "db.execute": ["database.namespace.write"],
 
   // Plugin state operations
   "plugin.state.get": ["plugin.state.read"],
@@ -88,6 +102,16 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   // Agent tools
   "agent.tools.register": ["agent.tools.register"],
   "agent.tools.execute": ["agent.tools.register"],
+
+  // Environment runtime drivers
+  "environment.validateConfig": ["environment.drivers.register"],
+  "environment.probe": ["environment.drivers.register"],
+  "environment.acquireLease": ["environment.drivers.register"],
+  "environment.resumeLease": ["environment.drivers.register"],
+  "environment.releaseLease": ["environment.drivers.register"],
+  "environment.destroyLease": ["environment.drivers.register"],
+  "environment.realizeWorkspace": ["environment.drivers.register"],
+  "environment.execute": ["environment.drivers.register"],
 };
 
 /**
@@ -141,6 +165,8 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   tools: "agent.tools.register",
   jobs: "jobs.schedule",
   webhooks: "webhooks.receive",
+  database: "database.namespace.migrate",
+  environmentDrivers: "environment.drivers.register",
 };
 
 // ---------------------------------------------------------------------------

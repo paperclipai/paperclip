@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
 import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
@@ -15,6 +16,7 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),
@@ -36,6 +38,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
+  attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
   feedbackDataSharingEnabled: z.boolean().default(false),
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),

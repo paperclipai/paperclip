@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, Cpu, FlaskConical, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
+import { Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
+import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function InstanceSidebar() {
@@ -22,7 +23,9 @@ export function InstanceSidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
+          <SidebarNavItem to="/instance/settings/profile" label="Profile" icon={UserRoundPen} end />
           <SidebarNavItem to="/instance/settings/general" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/instance/settings/access" label="Access" icon={Shield} end />
           <SidebarNavItem to="/instance/settings/heartbeats" label="Heartbeats" icon={Clock3} end />
           <SidebarNavItem to="/instance/settings/experimental" label="Experimental" icon={FlaskConical} />
           <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Puzzle} />
@@ -33,6 +36,7 @@ export function InstanceSidebar() {
                 <NavLink
                   key={plugin.id}
                   to={`/instance/settings/plugins/${plugin.id}`}
+                  state={SIDEBAR_SCROLL_RESET_STATE}
                   className={({ isActive }) =>
                     [
                       "rounded-md px-2 py-1.5 text-xs transition-colors",

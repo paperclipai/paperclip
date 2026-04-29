@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { isBedrockModelId } from "./models.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -95,9 +96,31 @@ export async function testEnvironment(
     });
   }
 
+  const hasBedrock =
+    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL) ||
+    isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL);
+
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = process.env.ANTHROPIC_API_KEY;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
+  if (hasBedrock) {
+    const source =
+      env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+      env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+      isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL)
+        ? "adapter config env"
+        : "server environment";
+    checks.push({
+      code: "claude_bedrock_auth",
+      level: "info",
+      message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
+      detail: `Detected in ${source}.`,
+      hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
+    });
+  } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
@@ -141,7 +164,10 @@ export async function testEnvironment(
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
-      if (model) args.push("--model", model);
+      // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
+      if (model && (!hasBedrock || isBedrockModelId(model))) {
+        args.push("--model", model);
+      }
       if (effort) args.push("--effort", effort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);

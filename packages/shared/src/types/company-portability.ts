@@ -1,3 +1,6 @@
+import type { AgentEnvConfig } from "./secrets.js";
+import type { RoutineVariable } from "./routine.js";
+
 export interface CompanyPortabilityInclude {
   company: boolean;
   agents: boolean;
@@ -10,6 +13,7 @@ export interface CompanyPortabilityEnvInput {
   key: string;
   description: string | null;
   agentSlug: string | null;
+  projectSlug: string | null;
   kind: "secret" | "plain";
   requirement: "required" | "optional";
   defaultValue: string | null;
@@ -30,6 +34,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   brandColor: string | null;
   logoPath: string | null;
+  attachmentMaxBytes: number | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;
@@ -52,12 +57,11 @@ export interface CompanyPortabilityProjectManifestEntry {
   targetDate: string | null;
   color: string | null;
   status: string | null;
+  env: AgentEnvConfig | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
   workspaces: CompanyPortabilityProjectWorkspaceManifestEntry[];
   metadata: Record<string, unknown> | null;
 }
-
-import type { RoutineVariable } from "./routine.js";
 
 export interface CompanyPortabilityProjectWorkspaceManifestEntry {
   key: string;

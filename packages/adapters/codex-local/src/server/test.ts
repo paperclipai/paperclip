@@ -5,8 +5,6 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   asString,
-  asBoolean,
-  asStringArray,
   parseObject,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -16,6 +14,7 @@ import {
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
+import { buildCodexExecArgs } from "./codex-args.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -140,31 +139,16 @@ export async function testEnvironment(
         hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
       });
     } else {
-      const model = asString(config.model, "").trim();
-      const modelReasoningEffort = asString(
-        config.modelReasoningEffort,
-        asString(config.reasoningEffort, ""),
-      ).trim();
-      const search = asBoolean(config.search, false);
-      const bypass = asBoolean(
-        config.dangerouslyBypassApprovalsAndSandbox,
-        asBoolean(config.dangerouslyBypassSandbox, false),
-      );
-      const extraArgs = (() => {
-        const fromExtraArgs = asStringArray(config.extraArgs);
-        if (fromExtraArgs.length > 0) return fromExtraArgs;
-        return asStringArray(config.args);
-      })();
-
-      const args = ["exec", "--json"];
-      if (search) args.unshift("--search");
-      if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
-      if (model) args.push("--model", model);
-      if (modelReasoningEffort) {
-        args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+      const execArgs = buildCodexExecArgs({ ...config, fastMode: false });
+      const args = execArgs.args;
+      if (execArgs.fastModeIgnoredReason) {
+        checks.push({
+          code: "codex_fast_mode_unsupported_model",
+          level: "warn",
+          message: execArgs.fastModeIgnoredReason,
+          hint: "Switch the agent model to GPT-5.4 or enter a manual model ID to enable Codex Fast mode.",
+        });
       }
-      if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("-");
 
       const probe = await runChildProcess(
         `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,

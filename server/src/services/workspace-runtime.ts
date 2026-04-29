@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,6 +8,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  listWorkspaceServiceCommandDefinitions,
+  type WorkspaceRuntimeDesiredState,
+  type WorkspaceRuntimeServiceStateMap,
+} from "@paperclipai/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
@@ -25,7 +31,11 @@ import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
 export function resolveShell(): string {
-  return process.env.SHELL?.trim() || (process.platform === "win32" ? "sh" : "/bin/sh");
+  const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
+  const shell = process.env.SHELL?.trim();
+  if (!shell) return fallback;
+  if (path.isAbsolute(shell) && !existsSync(shell)) return fallback;
+  return shell;
 }
 
 export interface ExecutionWorkspaceInput {
@@ -101,6 +111,18 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
+const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
+
+type ProcessOutputCapture = {
+  text: string;
+  truncated: boolean;
+  totalBytes: number;
+};
+
+type ProcessOutputAccumulator = {
+  append(chunk: string): void;
+  finish(): ProcessOutputCapture;
+};
 
 export async function resetRuntimeServicesForTests() {
   for (const record of runtimeServicesById.values()) {
@@ -120,6 +142,139 @@ function stableStringify(value: unknown): string {
     return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+type WorkspaceLinkMismatch = {
+  packageName: string;
+  expectedPath: string;
+  actualPath: string | null;
+};
+
+function readJsonFile(filePath: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+}
+
+function findWorkspaceRoot(startCwd: string) {
+  let current = path.resolve(startCwd);
+  while (true) {
+    if (existsSync(path.join(current, "pnpm-workspace.yaml"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function isLinkedGitWorktreeCheckout(rootDir: string) {
+  const gitMetadataPath = path.join(rootDir, ".git");
+  if (!existsSync(gitMetadataPath)) return false;
+
+  const stat = lstatSync(gitMetadataPath);
+  if (!stat.isFile()) return false;
+
+  return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
+}
+
+function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
+  const packagePaths = new Map<string, string>();
+  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+
+  function visit(dirPath: string) {
+    if (!existsSync(dirPath)) return;
+
+    const packageJsonPath = path.join(dirPath, "package.json");
+    if (existsSync(packageJsonPath)) {
+      const packageJson = readJsonFile(packageJsonPath);
+      if (typeof packageJson.name === "string" && packageJson.name.length > 0) {
+        packagePaths.set(packageJson.name, dirPath);
+      }
+    }
+
+    for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (ignoredDirNames.has(entry.name)) continue;
+      visit(path.join(dirPath, entry.name));
+    }
+  }
+
+  visit(path.join(rootDir, "packages"));
+  visit(path.join(rootDir, "server"));
+  visit(path.join(rootDir, "ui"));
+  visit(path.join(rootDir, "cli"));
+
+  return packagePaths;
+}
+
+function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismatch[] {
+  const serverPackageJsonPath = path.join(rootDir, "server", "package.json");
+  if (!existsSync(serverPackageJsonPath)) return [];
+
+  const serverPackageJson = readJsonFile(serverPackageJsonPath);
+  const dependencies = {
+    ...(serverPackageJson.dependencies as Record<string, unknown> | undefined),
+    ...(serverPackageJson.devDependencies as Record<string, unknown> | undefined),
+  };
+  const workspacePackagePaths = discoverWorkspacePackagePaths(rootDir);
+  const mismatches: WorkspaceLinkMismatch[] = [];
+
+  for (const [packageName, version] of Object.entries(dependencies)) {
+    if (typeof version !== "string" || !version.startsWith("workspace:")) continue;
+
+    const expectedPath = workspacePackagePaths.get(packageName);
+    if (!expectedPath) continue;
+    const normalizedExpectedPath = existsSync(expectedPath) ? path.resolve(realpathSync(expectedPath)) : path.resolve(expectedPath);
+
+    const linkPath = path.join(rootDir, "server", "node_modules", ...packageName.split("/"));
+    const actualPath = existsSync(linkPath) ? path.resolve(realpathSync(linkPath)) : null;
+    if (actualPath === normalizedExpectedPath) continue;
+
+    mismatches.push({
+      packageName,
+      expectedPath: normalizedExpectedPath,
+      actualPath,
+    });
+  }
+
+  return mismatches;
+}
+
+export async function ensureServerWorkspaceLinksCurrent(
+  startCwd: string,
+  opts?: {
+    onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  },
+) {
+  const workspaceRoot = findWorkspaceRoot(startCwd);
+  if (!workspaceRoot) return;
+  if (!isLinkedGitWorktreeCheckout(workspaceRoot)) return;
+
+  const mismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
+  if (mismatches.length === 0) return;
+
+  if (opts?.onLog) {
+    await opts.onLog("stdout", "[runtime] detected stale workspace package links for server; relinking dependencies...\n");
+    for (const mismatch of mismatches) {
+      await opts.onLog(
+        "stdout",
+        `[runtime]   ${mismatch.packageName}: ${mismatch.actualPath ?? "missing"} -> ${mismatch.expectedPath}\n`,
+      );
+    }
+  }
+
+  for (const mismatch of mismatches) {
+    const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+    await fs.rm(linkPath, { recursive: true, force: true });
+    await fs.symlink(mismatch.expectedPath, linkPath);
+  }
+
+  const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
+  if (remainingMismatches.length === 0) return;
+
+  throw new Error(
+    `Workspace relink did not repair all server package links: ${remainingMismatches.map((item) => item.packageName).join(", ")}`,
+  );
 }
 
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -258,30 +413,97 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+function trimToLastBytes(value: string, limit: number) {
+  const byteLength = Buffer.byteLength(value, "utf8");
+  if (byteLength <= limit) return value;
+  return Buffer.from(value, "utf8").subarray(byteLength - limit).toString("utf8");
+}
+
+function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
+  const limit = Math.max(1, Math.trunc(maxBytes));
+  let text = "";
+  let truncated = false;
+  let totalBytes = 0;
+
+  return {
+    append(chunk: string) {
+      if (!chunk) return;
+      totalBytes += Buffer.byteLength(chunk, "utf8");
+
+      const combined = text + chunk;
+      if (Buffer.byteLength(combined, "utf8") <= limit) {
+        text = combined;
+        return;
+      }
+
+      text = trimToLastBytes(combined, limit);
+      truncated = true;
+    },
+    finish(): ProcessOutputCapture {
+      if (!truncated) {
+        return {
+          text,
+          truncated: false,
+          totalBytes,
+        };
+      }
+      return {
+        text: `[output truncated to last ${limit} bytes; total ${totalBytes} bytes]\n${text}`,
+        truncated: true,
+        totalBytes,
+      };
+    },
+  };
+}
+
 async function executeProcess(input: {
   command: string;
   args: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+  maxStdoutBytes?: number;
+  maxStderrBytes?: number;
+}): Promise<{
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  stdoutBytes: number;
+  stderrBytes: number;
+}> {
+  const proc = await new Promise<{
+    stdout: ProcessOutputAccumulator;
+    stderr: ProcessOutputAccumulator;
+    code: number | null;
+  }>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+    const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     child.stdout?.on("data", (chunk) => {
-      stdout += String(chunk);
+      stdout.append(String(chunk));
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk);
+      stderr.append(String(chunk));
     });
     child.on("error", reject);
     child.on("close", (code) => resolve({ stdout, stderr, code }));
   });
-  return proc;
+  const stdout = proc.stdout.finish();
+  const stderr = proc.stderr.finish();
+  return {
+    stdout: stdout.text,
+    stderr: stderr.text,
+    code: proc.code,
+    stdoutTruncated: stdout.truncated,
+    stderrTruncated: stderr.truncated,
+    stdoutBytes: stdout.totalBytes,
+    stderrBytes: stderr.totalBytes,
+  };
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -299,6 +521,67 @@ async function runGit(args: string[], cwd: string): Promise<string> {
 function gitErrorIncludes(error: unknown, needle: string) {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes(needle.toLowerCase());
+}
+
+type GitWorktreeListEntry = {
+  worktree: string;
+  branch: string | null;
+};
+
+function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
+  const entries: GitWorktreeListEntry[] = [];
+  let current: Partial<GitWorktreeListEntry> = {};
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      current = { worktree: line.slice("worktree ".length) };
+      continue;
+    }
+    if (line.startsWith("branch ")) {
+      current.branch = line.slice("branch ".length);
+      continue;
+    }
+    if (line === "" && current.worktree) {
+      entries.push({
+        worktree: current.worktree,
+        branch: current.branch ?? null,
+      });
+      current = {};
+    }
+  }
+
+  if (current.worktree) {
+    entries.push({
+      worktree: current.worktree,
+      branch: current.branch ?? null,
+    });
+  }
+
+  return entries;
+}
+
+async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
+  const checkoutRoot = path.resolve(await runGit(["rev-parse", "--show-toplevel"], cwd));
+  const commonDir = await runGit(["rev-parse", "--git-common-dir"], checkoutRoot).catch(() => null);
+  if (!commonDir) return checkoutRoot;
+  return path.dirname(path.resolve(checkoutRoot, commonDir));
+}
+
+async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  if (!raw) return null;
+
+  const expectedBranchRef = `refs/heads/${branchName}`;
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (entry.branch !== expectedBranchRef) continue;
+    return path.resolve(entry.worktree);
+  }
+
+  return null;
+}
+
+async function isGitCheckout(cwd: string): Promise<boolean> {
+  return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
 
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
@@ -329,6 +612,56 @@ async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
 
 async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
+}
+
+async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
+  const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
+  const paths = new Set<string>();
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const worktree = line.slice("worktree ".length).trim();
+    if (!worktree) continue;
+    paths.add(path.resolve(worktree));
+  }
+  return paths;
+}
+
+async function validateLinkedGitWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  expectedBranchName: string | null;
+}): Promise<{ valid: true } | { valid: false; reason: string }> {
+  const resolvedWorktreePath = path.resolve(input.worktreePath);
+  const listedWorktrees = await listLinkedGitWorktreePaths(input.repoRoot);
+  if (!listedWorktrees.has(resolvedWorktreePath)) {
+    return {
+      valid: false,
+      reason: "path is not registered in `git worktree list`",
+    };
+  }
+
+  const worktreeTopLevel = await runGit(["rev-parse", "--show-toplevel"], resolvedWorktreePath).catch(() => null);
+  if (!worktreeTopLevel || path.resolve(worktreeTopLevel) !== resolvedWorktreePath) {
+    return {
+      valid: false,
+      reason: "git resolves this path to a different repository root",
+    };
+  }
+
+  if (input.expectedBranchName) {
+    const currentBranch = await runGit(
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      resolvedWorktreePath,
+    ).catch(() => null);
+    if (currentBranch !== input.expectedBranchName) {
+      return {
+        valid: false,
+        reason: `worktree HEAD is on "${currentBranch ?? "<detached>"}" instead of "${input.expectedBranchName}"`,
+      };
+    }
+  }
+
+  return { valid: true };
 }
 
 function terminateChildProcess(child: ChildProcess) {
@@ -377,8 +710,35 @@ function buildWorkspaceCommandEnv(input: {
   return env;
 }
 
+function quoteShellArg(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+  const patterns = [
+    /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+    /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+  ];
+
+  for (const pattern of patterns) {
+    const match = command.match(pattern);
+    if (!match?.groups) continue;
+
+    const relativePath = match.groups.relative;
+    const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
+    if (!existsSync(repoManagedPath)) continue;
+
+    const prefix = match.groups.prefix ?? "";
+    const suffix = match.groups.suffix ?? "";
+    return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
+  }
+
+  return command;
+}
+
 async function runWorkspaceCommand(input: {
   command: string;
+  resolvedCommand?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
@@ -386,7 +746,7 @@ async function runWorkspaceCommand(input: {
   const shell = resolveShell();
   const proc = await executeProcess({
     command: shell,
-    args: ["-c", input.command],
+    args: ["-c", input.resolvedCommand ?? input.command],
     cwd: input.cwd,
     env: input.env,
   });
@@ -438,6 +798,15 @@ async function recordGitOperation(
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
+        metadata:
+          result.stdoutTruncated || result.stderrTruncated
+            ? {
+                stdoutTruncated: result.stdoutTruncated,
+                stderrTruncated: result.stderrTruncated,
+                stdoutBytes: result.stdoutBytes,
+                stderrBytes: result.stderrBytes,
+              }
+            : null,
       };
     },
   });
@@ -458,6 +827,7 @@ async function recordWorkspaceCommandOperation(
   input: {
     phase: "workspace_provision" | "workspace_teardown";
     command: string;
+    resolvedCommand?: string;
     cwd: string;
     env: NodeJS.ProcessEnv;
     label: string;
@@ -467,13 +837,13 @@ async function recordWorkspaceCommandOperation(
 ) {
   if (!recorder) {
     await runWorkspaceCommand(input);
-    return;
+    return null;
   }
 
   let stdout = "";
   let stderr = "";
   let code: number | null = null;
-  await recorder.recordOperation({
+  const operation = await recorder.recordOperation({
     phase: input.phase,
     command: input.command,
     cwd: input.cwd,
@@ -482,7 +852,7 @@ async function recordWorkspaceCommandOperation(
       const shell = resolveShell();
       const result = await executeProcess({
         command: shell,
-        args: ["-c", input.command],
+        args: ["-c", input.resolvedCommand ?? input.command],
         cwd: input.cwd,
         env: input.env,
       });
@@ -495,11 +865,20 @@ async function recordWorkspaceCommandOperation(
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
+        metadata:
+          result.stdoutTruncated || result.stderrTruncated
+            ? {
+                stdoutTruncated: result.stdoutTruncated,
+                stderrTruncated: result.stderrTruncated,
+                stdoutBytes: result.stdoutBytes,
+                stderrBytes: result.stderrBytes,
+              }
+            : null,
       };
     },
   });
 
-  if (code === 0) return;
+  if (code === 0) return operation;
 
   const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
   throw new Error(
@@ -522,10 +901,12 @@ async function provisionExecutionWorktree(input: {
 }) {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
+  const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
   await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
     command: provisionCommand,
+    resolvedCommand: resolvedProvisionCommand,
     cwd: input.worktreePath,
     env: buildWorkspaceCommandEnv({
       base: input.base,
@@ -542,6 +923,7 @@ async function provisionExecutionWorktree(input: {
       worktreePath: input.worktreePath,
       branchName: input.branchName,
       created: input.created,
+      resolvedCommand: resolvedProvisionCommand === provisionCommand ? null : resolvedProvisionCommand,
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
   });
@@ -617,7 +999,7 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
     issue: input.issue,
@@ -640,51 +1022,74 @@ export async function realizeExecutionWorkspace(input: {
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
+  async function reuseExistingWorktree(reusablePath: string) {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "worktree_prepare",
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath: reusablePath,
+          branchName,
+          baseRef,
+          created: false,
+          reused: true,
+        },
+        run: async () => ({
+          status: "succeeded",
+          exitCode: 0,
+          system: `Reused existing git worktree at ${reusablePath}\n`,
+        }),
+      });
+    }
+    await provisionExecutionWorktree({
+      strategy: rawStrategy,
+      base: input.base,
+      repoRoot,
+      worktreePath: reusablePath,
+      branchName,
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+      recorder: input.recorder ?? null,
+    });
+    return {
+      ...input.base,
+      strategy: "git_worktree" as const,
+      cwd: reusablePath,
+      branchName,
+      worktreePath: reusablePath,
+      warnings: [],
+      created: false,
+    };
+  }
+
+  async function validateReusableWorktree(reusablePath: string) {
+    return await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: reusablePath,
+      expectedBranchName: branchName,
+    }).catch(() => null);
+  }
+
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
-    const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
-    if (existingGitDir) {
-      if (input.recorder) {
-        await input.recorder.recordOperation({
-          phase: "worktree_prepare",
-          cwd: repoRoot,
-          metadata: {
-            repoRoot,
-            worktreePath,
-            branchName,
-            baseRef,
-            created: false,
-            reused: true,
-          },
-          run: async () => ({
-            status: "succeeded",
-            exitCode: 0,
-            system: `Reused existing git worktree at ${worktreePath}\n`,
-          }),
-        });
-      }
-      await provisionExecutionWorktree({
-        strategy: rawStrategy,
-        base: input.base,
-        repoRoot,
-        worktreePath,
-        branchName,
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-        recorder: input.recorder ?? null,
-      });
-      return {
-        ...input.base,
-        strategy: "git_worktree",
-        cwd: worktreePath,
-        branchName,
-        worktreePath,
-        warnings: [],
-        created: false,
-      };
+    const validation = await validateReusableWorktree(worktreePath);
+    if (validation?.valid) {
+      return await reuseExistingWorktree(worktreePath);
     }
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a git worktree.`);
+    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+  }
+
+  const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+  if (registeredBranchWorktree) {
+    const validation = await validateReusableWorktree(registeredBranchWorktree);
+    if (validation?.valid) {
+      return await reuseExistingWorktree(registeredBranchWorktree);
+    }
+    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+    throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
 
   try {
@@ -706,21 +1111,32 @@ export async function realizeExecutionWorkspace(input: {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
     }
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
-      cwd: repoRoot,
-      metadata: {
-        repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        created: false,
-        reusedExistingBranch: true,
-      },
-      successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
-    });
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", worktreePath, branchName],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: false,
+          reusedExistingBranch: true,
+        },
+        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } catch (attachError) {
+      if (!gitErrorIncludes(attachError, "already checked out")) {
+        throw attachError;
+      }
+      const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+      if (!reusablePath || !await isGitCheckout(reusablePath)) {
+        throw attachError;
+      }
+      return await reuseExistingWorktree(reusablePath);
+    }
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,
@@ -742,6 +1158,147 @@ export async function realizeExecutionWorkspace(input: {
     worktreePath,
     warnings: [],
     created: true,
+  };
+}
+
+export async function ensurePersistedExecutionWorkspaceAvailable(input: {
+  base: ExecutionWorkspaceInput;
+  workspace: {
+    mode: string | null | undefined;
+    strategyType: string | null | undefined;
+    cwd: string | null | undefined;
+    providerRef: string | null | undefined;
+    projectId: string | null | undefined;
+    projectWorkspaceId: string | null | undefined;
+    repoUrl: string | null | undefined;
+    baseRef: string | null | undefined;
+    branchName: string | null | undefined;
+    config?: {
+      provisionCommand?: string | null;
+    } | null;
+  };
+  issue: ExecutionWorkspaceIssueRef | null;
+  agent: ExecutionWorkspaceAgentRef;
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<RealizedExecutionWorkspace | null> {
+  const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
+  if (!cwd) return null;
+
+  const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
+  const realized: RealizedExecutionWorkspace = {
+    baseCwd: input.base.baseCwd,
+    source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
+    projectId: input.workspace.projectId ?? input.base.projectId,
+    workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
+    repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
+    repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    strategy,
+    cwd,
+    branchName: input.workspace.branchName ?? null,
+    worktreePath: strategy === "git_worktree" ? (input.workspace.providerRef ?? cwd) : null,
+    warnings: [],
+    created: false,
+  };
+  const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
+
+  if (strategy !== "git_worktree") {
+    return realized;
+  }
+  if (await directoryExists(cwd)) {
+    if (provisionCommand) {
+      const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+      await provisionExecutionWorktree({
+        strategy: {
+          type: "git_worktree",
+          provisionCommand,
+        },
+        base: input.base,
+        repoRoot,
+        worktreePath: realized.worktreePath ?? cwd,
+        branchName: realized.branchName ?? "",
+        issue: input.issue,
+        agent: input.agent,
+        created: false,
+        recorder: input.recorder ?? null,
+      });
+    }
+    return realized;
+  }
+
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  const worktreePath = realized.worktreePath ?? cwd;
+  const branchName = asString(input.workspace.branchName, "").trim();
+  if (!branchName) {
+    throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
+  }
+
+  await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+  await runGit(["worktree", "prune"], repoRoot).catch(() => {});
+
+  let created = false;
+  try {
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "add", worktreePath, branchName],
+      cwd: repoRoot,
+      metadata: {
+        repoRoot,
+        worktreePath,
+        branchName,
+        baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
+        created: false,
+        restored: true,
+      },
+      successMessage: `Reattached missing git worktree at ${worktreePath}\n`,
+      failureLabel: `git worktree add ${worktreePath}`,
+    });
+  } catch (error) {
+    if (
+      !gitErrorIncludes(error, "invalid reference")
+      && !gitErrorIncludes(error, "not a commit")
+      && !gitErrorIncludes(error, "unknown revision")
+    ) {
+      throw error;
+    }
+    const baseRef = input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+      cwd: repoRoot,
+      metadata: {
+        repoRoot,
+        worktreePath,
+        branchName,
+        baseRef,
+        created: true,
+        restored: true,
+      },
+      successMessage: `Recreated missing git worktree at ${worktreePath}\n`,
+      failureLabel: `git worktree add ${worktreePath}`,
+    });
+    created = true;
+  }
+
+  await provisionExecutionWorktree({
+    strategy: {
+      type: "git_worktree",
+      ...(provisionCommand ? { provisionCommand } : {}),
+    },
+    base: input.base,
+    repoRoot,
+    worktreePath,
+    branchName,
+    issue: input.issue,
+    agent: input.agent,
+    created,
+    recorder: input.recorder ?? null,
+  });
+
+  return {
+    ...realized,
+    cwd: worktreePath,
+    worktreePath,
+    created,
   };
 }
 
@@ -769,6 +1326,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
+  const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
+    ? await resolveGitRepoRootForWorkspaceCleanup(
+      workspacePath,
+      input.projectWorkspace?.cwd ?? null,
+    )
+    : null;
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
@@ -784,9 +1347,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   for (const command of cleanupCommands) {
     try {
+      const resolvedCommand = repoRoot
+        ? resolveRepoManagedWorkspaceCommand(command, repoRoot)
+        : command;
       await recordWorkspaceCommandOperation(input.recorder, {
         phase: "workspace_teardown",
         command,
+        resolvedCommand,
         cwd: workspacePath ?? input.projectWorkspace?.cwd ?? process.cwd(),
         env: cleanupEnv,
         label: `Execution workspace cleanup command "${command}"`,
@@ -795,6 +1362,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           workspacePath,
           branchName: input.workspace.branchName,
           providerType: input.workspace.providerType,
+          resolvedCommand: resolvedCommand === command ? null : resolvedCommand,
         },
         successMessage: `Completed cleanup command "${command}"\n`,
       });
@@ -804,10 +1372,6 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
-    const repoRoot = await resolveGitRepoRootForWorkspaceCleanup(
-      workspacePath,
-      input.projectWorkspace?.cwd ?? null,
-    );
     const worktreeExists = await directoryExists(workspacePath);
     if (worktreeExists) {
       if (!repoRoot) {
@@ -1031,6 +1595,83 @@ function resolveRuntimeServiceReuseIdentity(input: {
   };
 }
 
+function resolveWorkspaceCommandExecution(input: {
+  command: Record<string, unknown>;
+  workspace: RealizedExecutionWorkspace;
+  agent: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null;
+  adapterEnv: Record<string, string>;
+}) {
+  const name =
+    asString(input.command.name, "")
+    || asString(input.command.label, "")
+    || asString(input.command.title, "")
+    || "workspace command";
+  const command = asString(input.command.command, "");
+  const templateData = buildTemplateData({
+    workspace: input.workspace,
+    agent: input.agent,
+    issue: input.issue,
+    adapterEnv: input.adapterEnv,
+    port: null,
+  });
+  const cwd = resolveConfiguredPath(
+    renderTemplate(asString(input.command.cwd, "."), templateData),
+    input.workspace.cwd,
+  );
+  const env = {
+    ...sanitizeRuntimeServiceBaseEnv(process.env),
+    ...input.adapterEnv,
+    ...renderRuntimeServiceEnv({
+      envConfig: parseObject(input.command.env),
+      templateData,
+    }),
+  } as Record<string, string>;
+
+  return {
+    name,
+    command,
+    cwd,
+    env,
+  };
+}
+
+export async function runWorkspaceJobForControl(input: {
+  actor: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null;
+  workspace: RealizedExecutionWorkspace;
+  command: Record<string, unknown>;
+  adapterEnv?: Record<string, string>;
+  recorder?: WorkspaceOperationRecorder | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const resolved = resolveWorkspaceCommandExecution({
+    command: input.command,
+    workspace: input.workspace,
+    agent: input.actor,
+    issue: input.issue,
+    adapterEnv: input.adapterEnv ?? {},
+  });
+  if (!resolved.command) {
+    throw new Error(`Workspace job "${resolved.name}" is missing command`);
+  }
+
+  await ensureServerWorkspaceLinksCurrent(resolved.cwd);
+  return await recordWorkspaceCommandOperation(input.recorder, {
+    phase: "workspace_provision",
+    command: resolved.command,
+    cwd: resolved.cwd,
+    env: resolved.env,
+    label: `Workspace job "${resolved.name}"`,
+    metadata: {
+      workspaceCommandKind: "job",
+      workspaceCommandName: resolved.name,
+      ...(input.metadata ?? {}),
+    },
+    successMessage: `Completed workspace job "${resolved.name}"\n`,
+  });
+}
+
 function resolveServiceScopeId(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
@@ -1057,6 +1698,21 @@ function resolveServiceScopeId(input: {
   return { scopeType: "run" as const, scopeId: input.runId };
 }
 
+function looksLikeWorkspaceDevServerCommand(command: string) {
+  const normalized = command.trim().toLowerCase();
+  if (!normalized) return false;
+  return /(?:^|\s)(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?dev(?:\s|$)/.test(normalized);
+}
+
+export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<string, unknown>) {
+  const readiness = parseObject(service.readiness);
+  const explicitTimeoutSec = asNumber(readiness.timeoutSec, 0);
+  if (explicitTimeoutSec > 0) {
+    return Math.max(1, explicitTimeoutSec);
+  }
+  return looksLikeWorkspaceDevServerCommand(asString(service.command, "")) ? 90 : 30;
+}
+
 async function waitForReadiness(input: {
   service: Record<string, unknown>;
   url: string | null;
@@ -1064,7 +1720,7 @@ async function waitForReadiness(input: {
   const readiness = parseObject(input.service.readiness);
   const readinessType = asString(readiness.type, "");
   if (readinessType !== "http" || !input.url) return;
-  const timeoutSec = Math.max(1, asNumber(readiness.timeoutSec, 30));
+  const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
   const deadline = Date.now() + timeoutSec * 1000;
   let lastError = "service did not become ready";
@@ -1374,13 +2030,22 @@ async function startLocalRuntimeService(input: {
       );
     }
   }
-  
+
+  await ensureServerWorkspaceLinksCurrent(serviceCwd, {
+    onLog: input.onLog,
+  });
+
   const shell = resolveShell();
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
+  });
+  const spawnErrorPromise = new Promise<never>((_, reject) => {
+    child.once("error", (err) => {
+      reject(err);
+    });
   });
   let stderrExcerpt = "";
   let stdoutExcerpt = "";
@@ -1396,7 +2061,10 @@ async function startLocalRuntimeService(input: {
   });
 
   try {
-    await waitForReadiness({ service: input.service, url });
+    await Promise.race([
+      waitForReadiness({ service: input.service, url }),
+      spawnErrorPromise,
+    ]);
   } catch (err) {
     terminateChildProcess(child);
     throw new Error(
@@ -1560,10 +2228,93 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
 }
 
 function readRuntimeServiceEntries(config: Record<string, unknown>) {
-  const runtime = parseObject(config.workspaceRuntime);
-  return Array.isArray(runtime.services)
-    ? runtime.services.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
-    : [];
+  return listWorkspaceServiceCommandDefinitions(parseObject(config.workspaceRuntime))
+    .map((command) => command.rawConfig);
+}
+
+export function listConfiguredRuntimeServiceEntries(config: Record<string, unknown>) {
+  return readRuntimeServiceEntries(config);
+}
+
+function readConfiguredServiceStates(config: Record<string, unknown>) {
+  const raw = parseObject(config.serviceStates);
+  const states: WorkspaceRuntimeServiceStateMap = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === "running" || value === "stopped" || value === "manual") {
+      states[key] = value;
+    }
+  }
+  return states;
+}
+
+function readDesiredRuntimeState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
+}
+
+export function buildWorkspaceRuntimeDesiredStatePatch(input: {
+  config: Record<string, unknown>;
+  currentDesiredState: WorkspaceRuntimeDesiredState | null;
+  currentServiceStates: WorkspaceRuntimeServiceStateMap | null | undefined;
+  action: "start" | "stop" | "restart";
+  serviceIndex?: number | null;
+}): {
+  desiredState: WorkspaceRuntimeDesiredState;
+  serviceStates: WorkspaceRuntimeServiceStateMap | null;
+} {
+  const configuredServices = listConfiguredRuntimeServiceEntries(input.config);
+  const fallbackState: WorkspaceRuntimeDesiredState = readDesiredRuntimeState(input.currentDesiredState) ?? "stopped";
+  const nextServiceStates: WorkspaceRuntimeServiceStateMap = {};
+
+  for (let index = 0; index < configuredServices.length; index += 1) {
+    nextServiceStates[String(index)] = input.currentServiceStates?.[String(index)] ?? fallbackState;
+  }
+
+  const nextState: WorkspaceRuntimeDesiredState = input.action === "stop" ? "stopped" : "running";
+  const applyActionState = (index: number) => {
+    const key = String(index);
+    // Manual services are intentionally left under operator control even when
+    // an API action targets that individual service.
+    if (nextServiceStates[key] === "manual") return;
+    nextServiceStates[key] = nextState;
+  };
+  if (input.serviceIndex === undefined || input.serviceIndex === null) {
+    for (let index = 0; index < configuredServices.length; index += 1) {
+      applyActionState(index);
+    }
+  } else if (input.serviceIndex >= 0 && input.serviceIndex < configuredServices.length) {
+    applyActionState(input.serviceIndex);
+  }
+
+  const desiredState = Object.values(nextServiceStates).some((state) => state === "running")
+    ? "running"
+    : Object.values(nextServiceStates).some((state) => state === "manual")
+      ? "manual"
+      : "stopped";
+
+  return {
+    desiredState,
+    serviceStates: Object.keys(nextServiceStates).length > 0 ? nextServiceStates : null,
+  };
+}
+
+function selectRuntimeServiceEntries(input: {
+  config: Record<string, unknown>;
+  serviceIndex?: number | null;
+  respectDesiredStates?: boolean;
+  defaultDesiredState?: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
+}) {
+  const entries = listConfiguredRuntimeServiceEntries(input.config);
+  const states = input.serviceStates ?? readConfiguredServiceStates(input.config);
+  const fallbackState: WorkspaceRuntimeDesiredState = readDesiredRuntimeState(input.defaultDesiredState) ?? "stopped";
+
+  return entries.filter((_, index) => {
+    if (input.serviceIndex !== undefined && input.serviceIndex !== null) {
+      return index === input.serviceIndex;
+    }
+    if (!input.respectDesiredStates) return true;
+    return (states[String(index)] ?? fallbackState) === "running";
+  });
 }
 
 export async function ensureRuntimeServicesForRun(input: {
@@ -1577,7 +2328,12 @@ export async function ensureRuntimeServicesForRun(input: {
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<RuntimeServiceRef[]> {
-  const rawServices = readRuntimeServiceEntries(input.config);
+  const rawServices = selectRuntimeServiceEntries({
+    config: input.config,
+    respectDesiredStates: true,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "running",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
@@ -1658,8 +2414,16 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
   config: Record<string, unknown>;
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  serviceIndex?: number | null;
+  respectDesiredStates?: boolean;
 }): Promise<RuntimeServiceRef[]> {
-  const rawServices = readRuntimeServiceEntries(input.config);
+  const rawServices = selectRuntimeServiceEntries({
+    config: input.config,
+    serviceIndex: input.serviceIndex,
+    respectDesiredStates: input.respectDesiredStates,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
   const refs: RuntimeServiceRef[] = [];
   const invocationId = input.invocationId ?? randomUUID();
 
@@ -1749,10 +2513,12 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   db?: Db;
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
+  runtimeServiceId?: string | null;
 }) {
   const normalizedWorkspaceCwd = input.workspaceCwd ? path.resolve(input.workspaceCwd) : null;
   const matchingServiceIds = Array.from(runtimeServicesById.values())
     .filter((record) => {
+      if (input.runtimeServiceId) return record.id === input.runtimeServiceId;
       if (record.executionWorkspaceId === input.executionWorkspaceId) return true;
       if (!normalizedWorkspaceCwd || !record.cwd) return false;
       const resolvedCwd = path.resolve(record.cwd);
@@ -1768,19 +2534,37 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   }
 
   if (input.db) {
-    await markPersistedRuntimeServicesStoppedForExecutionWorkspace({
-      db: input.db,
-      executionWorkspaceId: input.executionWorkspaceId,
-    });
+    if (input.runtimeServiceId) {
+      const now = new Date();
+      await input.db
+        .update(workspaceRuntimeServices)
+        .set({
+          status: "stopped",
+          healthStatus: "unknown",
+          stoppedAt: now,
+          lastUsedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(workspaceRuntimeServices.id, input.runtimeServiceId));
+    } else {
+      await markPersistedRuntimeServicesStoppedForExecutionWorkspace({
+        db: input.db,
+        executionWorkspaceId: input.executionWorkspaceId,
+      });
+    }
   }
 }
 
 export async function stopRuntimeServicesForProjectWorkspace(input: {
   db?: Db;
   projectWorkspaceId: string;
+  runtimeServiceId?: string | null;
 }) {
   const matchingServiceIds = Array.from(runtimeServicesById.values())
-    .filter((record) => record.projectWorkspaceId === input.projectWorkspaceId && record.scopeType === "project_workspace")
+    .filter((record) => {
+      if (input.runtimeServiceId) return record.id === input.runtimeServiceId;
+      return record.projectWorkspaceId === input.projectWorkspaceId && record.scopeType === "project_workspace";
+    })
     .map((record) => record.id);
 
   for (const serviceId of matchingServiceIds) {
@@ -1799,11 +2583,13 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
         updatedAt: now,
       })
       .where(
-        and(
-          eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
-          eq(workspaceRuntimeServices.scopeType, "project_workspace"),
-          inArray(workspaceRuntimeServices.status, ["starting", "running"]),
-        ),
+        input.runtimeServiceId
+          ? eq(workspaceRuntimeServices.id, input.runtimeServiceId)
+          : and(
+              eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
+              eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+              inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+            ),
       );
   }
 }
@@ -1939,6 +2725,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
   const projectWorkspaceRows = await db
     .select()
     .from(projectWorkspaces);
+  const projectWorkspaceRowsById = new Map(projectWorkspaceRows.map((row) => [row.id, row] as const));
 
   for (const row of projectWorkspaceRows) {
     const runtimeConfig = readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null);
@@ -1963,8 +2750,13 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
           warnings: [],
           created: false,
         },
-        config: { workspaceRuntime: runtimeConfig.workspaceRuntime },
+        config: {
+          workspaceRuntime: runtimeConfig.workspaceRuntime,
+          desiredState: runtimeConfig.desiredState,
+          serviceStates: runtimeConfig.serviceStates ?? null,
+        },
         adapterEnv: {},
+        respectDesiredStates: true,
       });
       if (refs.length > 0) restarted += refs.filter((ref) => !ref.reused).length;
     } catch {
@@ -1979,7 +2771,13 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
 
   for (const row of executionWorkspaceRows) {
     const config = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
-    if (config?.desiredState !== "running" || !config.workspaceRuntime || !row.cwd) continue;
+    const inheritedRuntimeConfig = row.projectWorkspaceId
+      ? readProjectWorkspaceRuntimeConfig(
+          (projectWorkspaceRowsById.get(row.projectWorkspaceId)?.metadata as Record<string, unknown> | null) ?? null,
+        )?.workspaceRuntime ?? null
+      : null;
+    const effectiveRuntimeConfig = config?.workspaceRuntime ?? inheritedRuntimeConfig;
+    if (config?.desiredState !== "running" || !effectiveRuntimeConfig || !row.cwd) continue;
 
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
@@ -2007,8 +2805,13 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
           created: false,
         },
         executionWorkspaceId: row.id,
-        config: { workspaceRuntime: config.workspaceRuntime },
+        config: {
+          workspaceRuntime: effectiveRuntimeConfig,
+          desiredState: config.desiredState,
+          serviceStates: config.serviceStates ?? null,
+        },
         adapterEnv: {},
+        respectDesiredStates: true,
       });
       if (refs.length > 0) restarted += refs.filter((ref) => !ref.reused).length;
     } catch {
