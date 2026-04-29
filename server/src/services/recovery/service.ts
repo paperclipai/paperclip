@@ -72,7 +72,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
 > | null;
 
 type WatchdogDecisionActor =
@@ -188,6 +188,18 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   );
 }
 
+function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun) {
+  return latestRun?.status === "succeeded";
+}
+
+function isProductiveContinuationRun(latestRun: LatestIssueRun) {
+  return latestRun?.status === "succeeded" &&
+    (latestRun.livenessState === "advanced" ||
+      latestRun.livenessState === "completed" ||
+      latestRun.livenessState === "blocked" ||
+      latestRun.livenessState === "needs_followup");
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -299,6 +311,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
       })
       .from(heartbeatRuns)
       .where(
@@ -1572,6 +1585,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      productiveContinuationObserved: 0,
+      successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       escalated: 0,
       skipped: 0,
@@ -1687,6 +1702,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (isSuccessfulInProgressContinuationRun(latestRun)) {
+        if (isProductiveContinuationRun(latestRun)) {
+          result.productiveContinuationObserved += 1;
+        } else {
+          result.successfulContinuationObserved += 1;
+        }
         result.skipped += 1;
         continue;
       }

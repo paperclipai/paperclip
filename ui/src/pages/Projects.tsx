@@ -30,7 +30,7 @@ import {
 import { projectsApi } from "../api/projects";
 import { projectFoldersApi } from "../api/projectFolders";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
@@ -256,7 +256,7 @@ function FolderSection({
 
 export function Projects() {
   const { selectedCompanyId, selectedCompany } = useCompany();
-  const { openNewProject } = useDialog();
+  const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 

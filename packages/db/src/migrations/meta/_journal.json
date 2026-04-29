@@ -516,8 +516,22 @@
     {
       "idx": 73,
       "version": "7",
+      "when": 1777382021347,
+      "tag": "0073_shiny_salo",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1777384535070,
+      "tag": "0074_striped_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
       "when": 1776420000000,
-      "tag": "0073_project_folders",
+      "tag": "0075_project_folders",
       "breakpoints": true
     }
   ]
