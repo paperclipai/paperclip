@@ -143,6 +143,13 @@ This keeps the default install path unchanged while allowing explicit installs w
 npx paperclipai@canary onboard
 ```
 
+The release script now verifies two things after a canary publish:
+
+- the `canary` dist-tag resolves to the version that was just published
+- every published internal `@paperclipai/*` dependency referenced by that manifest exists on npm
+
+It also treats `latest -> canary` as a failure by default, because npm metadata can otherwise leave the default install path pointing at an unreleased canary dependency graph. Only pass `./scripts/release.sh canary --allow-canary-latest` when that `latest` behavior is explicitly intended.
+
 ### Stable
 
 Stable publishes use the npm dist-tag `latest`.
