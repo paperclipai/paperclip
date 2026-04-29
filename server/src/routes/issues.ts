@@ -673,7 +673,6 @@ export function issueRoutes(
         details: {
           issueId: issue.id,
           status: issue.status,
-          securityPrinciples: ["Complete Mediation", "Fail Securely"],
         },
       });
       return false;
@@ -696,7 +695,6 @@ export function issueRoutes(
           holdId: activePauseHold.holdId,
           rootIssueId: activePauseHold.rootIssueId,
           mode: activePauseHold.mode,
-          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
         },
       });
       return false;
@@ -930,7 +928,6 @@ export function issueRoutes(
     const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
       ? Number.parseInt(rawOffset, 10)
       : null;
-    const offset = parsedOffset ?? 0;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -956,6 +953,7 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
+    const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
