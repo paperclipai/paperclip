@@ -618,6 +618,7 @@ describe("company portability", () => {
     assetSvc.getById.mockResolvedValue({
       id: "logo-1",
       companyId: "company-1",
+      provider: "local_disk",
       objectKey: "assets/companies/logo-1",
       contentType: "image/png",
       originalFilename: "logo.png",
@@ -634,7 +635,7 @@ describe("company portability", () => {
       },
     });
 
-    expect(storage.getObject).toHaveBeenCalledWith("company-1", "assets/companies/logo-1");
+    expect(storage.getObject).toHaveBeenCalledWith("company-1", "assets/companies/logo-1", "local_disk");
     expect(exported.files["images/company-logo.png"]).toEqual({
       encoding: "base64",
       data: Buffer.from("png-bytes").toString("base64"),
