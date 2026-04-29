@@ -180,6 +180,17 @@ export function agentRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  /**
+   * Returns true if the agent has been granted explicit permission to PATCH
+   * other agents' adapterConfig within the same company.  Intended for
+   * elevated-but-not-full-creator roles such as CTO and Director of
+   * Infrastructure.
+   */
+  function canPatchAdapterConfig(agent: { permissions: Record<string, unknown> | null | undefined }) {
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean((agent.permissions as Record<string, unknown>).canPatchAdapterConfig);
+  }
+
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
     const membership = await access.getMembership(agent.companyId, "agent", agent.id);
     const grants = membership
@@ -398,6 +409,9 @@ export function agentRoutes(
 
     if (actorAgent.id === targetAgent.id) return;
     if (actorAgent.role === "ceo") return;
+    // CTO role has company-wide agent update privileges, equivalent to CEO for
+    // fleet configuration management purposes.
+    if (actorAgent.role === "cto") return;
     const allowedByGrant = await access.hasPermission(
       targetAgent.companyId,
       "agent",
@@ -405,7 +419,10 @@ export function agentRoutes(
       "agents:create",
     );
     if (allowedByGrant || canCreateAgents(actorAgent)) return;
-    throw forbidden("Only CEO or agent creators can modify other agents");
+    // Agents explicitly granted canPatchAdapterConfig (e.g. Director of
+    // Infrastructure) can update agent configurations within the same company.
+    if (canPatchAdapterConfig(actorAgent)) return;
+    throw forbidden("Only CEO, CTO, or agents with canCreateAgents/canPatchAdapterConfig permission can modify other agents");
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
