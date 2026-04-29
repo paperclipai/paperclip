@@ -1378,6 +1378,12 @@ const issueListSelect = {
       )
     END
   `,
+  descriptionTruncated: sql<boolean>`
+    CASE
+      WHEN ${issues.description} IS NULL THEN false
+      ELSE length(${issues.description}) > ${ISSUE_LIST_DESCRIPTION_MAX_CHARS}
+    END
+  `,
   status: issues.status,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
