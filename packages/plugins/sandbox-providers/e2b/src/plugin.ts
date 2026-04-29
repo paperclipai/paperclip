@@ -145,7 +145,10 @@ function buildCommandLine(command: string, args: string[] = []) {
 }
 
 function buildForegroundStdinPath() {
-  return path.posix.join("/tmp", `paperclip-stdin-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return path.posix.join("/tmp", `paperclip-stdin-${hex}.txt`);
 }
 
 async function killSandboxBestEffort(sandbox: Sandbox, reason: string): Promise<void> {
