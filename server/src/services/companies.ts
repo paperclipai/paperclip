@@ -1,33 +1,41 @@
 import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  companies,
-  companyLogos,
-  assets,
-  agents,
+  activityLog,
   agentApiKeys,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
-  issues,
-  issueComments,
-  projects,
-  goals,
-  heartbeatRuns,
-  heartbeatRunEvents,
-  costEvents,
-  financeEvents,
-  issueReadStates,
+  agents,
   approvalComments,
   approvals,
-  activityLog,
-  companySecrets,
-  joinRequests,
-  invites,
-  principalPermissionGrants,
+  assets,
+  budgetIncidents,
+  budgetPolicies,
+  companies,
+  companyLogos,
   companyMemberships,
+  companySecrets,
   companySkills,
+  costEvents,
   documents,
+  feedbackVotes,
+  financeEvents,
+  goals,
+  heartbeatRunEvents,
+  heartbeatRuns,
+  inboxDismissals,
+  invites,
+  issueComments,
+  issueInboxArchives,
+  issueReadStates,
+  issues,
+  issueThreadInteractions,
+  joinRequests,
+  principalPermissionGrants,
+  projects,
+  workspaceOperations,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
@@ -276,6 +284,9 @@ export function companyService(db: Db) {
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
+        // budget_incidents has FK to budgetPolicies and approvals (no cascade)
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
@@ -284,7 +295,17 @@ export function companyService(db: Db) {
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
+        // workspace_* tables have set-null FKs to projects/heartbeatRuns — delete before company
+        await tx.delete(workspaceOperations).where(eq(workspaceOperations.companyId, id));
+        await tx.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, id));
+        // inbox_dismissals has only a companyId FK (no cascade)
+        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
+        // feedback_votes, issue_thread_interactions, issue_inbox_archives all
+        // have non-cascade FKs to issues — must delete before issues
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, id));
+        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
