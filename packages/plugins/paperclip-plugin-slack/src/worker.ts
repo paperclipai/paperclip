@@ -1451,19 +1451,36 @@ const plugin = definePlugin({
       return resolveSlackUserId(ctx, token, paperclipUserId);
     });
 
-    // DM the human assignee when an issue is created with one already set.
-    // Linear-imported issues hit this path: the Linear plugin resolves
-    // assignee email → paperclip user id at create time, and the Slack
-    // plugin completes the chain by mapping that paperclip user id → slack
-    // user id. resolveSlackUserId caches per paperclip user, so the email
-    // → Slack lookup runs at most once per assignee per install.
+    // DM the human assignee when an issue is created OR reassigned to a
+    // user. Linear-imported issues hit issue.created; UI-driven assignment
+    // changes and Linear webhook reassignments hit issue.updated. The
+    // Linear plugin resolves assignee email → paperclip user id at create
+    // time; the Slack plugin completes the chain by mapping that paperclip
+    // user id → slack user id. resolveSlackUserId caches per paperclip
+    // user, so the email→Slack lookup runs at most once per assignee per
+    // install. Per-(issue, assignee) dedup state prevents double-DMs from
+    // racing webhook delivery (Linear can fire issue.create + issue.update
+    // close together) and from re-import passes.
+    //
+    // Backfill caveat: re-running a Linear import that finds existing
+    // unassigned Paperclip issues and sets assigneeUserId fires
+    // issue.updated with _previous.assigneeUserId === null. Those DM the
+    // assignee just like a real-time assignment. Disable
+    // notifyAssigneeOnAssignment temporarily before triggering a backfill
+    // if you don't want the historical-assignment DMs to go out.
     if (config.notifyAssigneeOnAssignment) {
-      ctx.events.on("issue.created", async (event) => {
-        const payload = event.payload as Record<string, unknown>;
-        const assigneeUserId = payload.assigneeUserId;
-        if (typeof assigneeUserId !== "string" || !assigneeUserId) return;
+      const dmAssignee = async (
+        event: PluginEvent,
+        paperclipUserId: string,
+        formatter: (event: PluginEvent) => SlackMessage,
+      ) => {
+        const dedupRef = {
+          scopeKind: "instance" as const,
+          stateKey: STATE_KEYS.assigneeDmSent(event.entityId ?? "", paperclipUserId),
+        };
+        if (await ctx.state.get(dedupRef)) return;
 
-        const resolved = await resolveSlackUserId(ctx, token, assigneeUserId);
+        const resolved = await resolveSlackUserId(ctx, token, paperclipUserId);
         if (!resolved.slackUserId) {
           if (resolved.source === "slack-error") {
             ctx.logger.warn(
@@ -1473,13 +1490,9 @@ const plugin = definePlugin({
           return;
         }
 
-        const result = await postMessage(
-          ctx,
-          token,
-          resolved.slackUserId,
-          formatAssigneeDmIssueCreated(event),
-        );
+        const result = await postMessage(ctx, token, resolved.slackUserId, formatter(event));
         if (result.ok) {
+          await ctx.state.set(dedupRef, true);
           await ctx.metrics.write("slack.assignee_dm.sent", 1, {
             event_type: event.eventType,
           });
@@ -1489,6 +1502,26 @@ const plugin = definePlugin({
             error_code: result.error ?? "unknown",
           });
         }
+      };
+
+      ctx.events.on("issue.created", async (event) => {
+        const payload = event.payload as Record<string, unknown>;
+        const assigneeUserId = payload.assigneeUserId;
+        if (typeof assigneeUserId !== "string" || !assigneeUserId) return;
+        await dmAssignee(event, assigneeUserId, formatAssigneeDmIssueCreated);
+      });
+
+      ctx.events.on("issue.updated", async (event) => {
+        const payload = event.payload as Record<string, unknown>;
+        const patch = (payload.patch as Record<string, unknown> | undefined) ?? {};
+        const previous = (payload._previous as Record<string, unknown> | undefined) ?? {};
+        // Only act if the patch actually carries a new assigneeUserId. Skip
+        // no-op updates and the unassign case (null/empty new value).
+        if (!("assigneeUserId" in patch)) return;
+        const newAssignee = patch.assigneeUserId;
+        if (typeof newAssignee !== "string" || !newAssignee) return;
+        if (newAssignee === previous.assigneeUserId) return;
+        await dmAssignee(event, newAssignee, formatAssigneeDmIssueCreated);
       });
     }
 

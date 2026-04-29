@@ -36,6 +36,8 @@ export const STATE_KEYS = {
   watchRegistry: (ch: string, ts: string) => `watches_${ch}_${ts}`,
   commandRegistry: "custom-commands",
   slackUser: (paperclipUserId: string) => `slack-user-${paperclipUserId}`,
+  assigneeDmSent: (issueId: string, paperclipUserId: string) =>
+    `assignee-dm-sent-${issueId}-${paperclipUserId}`,
 } as const;
 
 export const DEFAULT_CONFIG: SlackPluginConfig = {

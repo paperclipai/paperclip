@@ -1846,6 +1846,9 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        status: issue.status,
+        priority: issue.priority,
+        assigneeUserId: issue.assigneeUserId,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
