@@ -80,10 +80,41 @@ env:
 
 persistence:
   enabled: true
-  storageClassName: local-path
-  accessMode: ReadWriteOnce
-  size: 20Gi
+  # storageClassName / accessMode / size are ignored when existingClaim is set —
+  # paperclip-data is a 50Gi RWX cephfs PVC pre-created out of band. Kept here
+  # for documentation only.
+  storageClassName: cephfs
+  accessMode: ReadWriteMany
+  size: 50Gi
   mountPath: /paperclip
+  # The k8s-Job adapters (paperclip-adapter-claude-k8s + paperclip-adapter-opencode-k8s)
+  # require the paperclip pod and every spawned Job pod to mount the same PVC at
+  # /paperclip. StatefulSet volumeClaimTemplates can't be reused by Job pods, so we
+  # bind to a standalone PVC by name.
+  existingClaim: paperclip-data
+
+# Service account must mount its bearer token so the k8s-Job adapters can
+# create Jobs / read Pod logs / patch Secrets via the in-cluster kubeconfig.
+serviceAccount:
+  automountToken: true
+
+# Render Role + RoleBinding + ClusterRole + ClusterRoleBinding for the k8s-Job
+# adapters. Verbs derived from each adapter's SelfSubjectAccessReview self-test
+# plus runtime patch calls (see deploy/helm/paperclip/templates/role.yaml).
+rbac:
+  create: true
+
+# Pin paperclip-0 to the dedicated paperclip worker (k8s-paperclip-1).
+# Spawned k8s-Job agent pods inherit this scheduling via the adapters'
+# `nodeSelector` / `tolerations` config.
+nodeSelector:
+  workload: paperclip
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: paperclip
+    effect: NoSchedule
 
 secret:
   existingSecret: paperclip-credentials
