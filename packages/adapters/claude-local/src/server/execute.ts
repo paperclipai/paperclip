@@ -489,6 +489,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskContextChars: taskContextNote.length,
+    sessionPromptChars: sessionPrompt.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 

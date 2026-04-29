@@ -403,6 +403,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      sessionPromptChars: sessionPrompt.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
 
