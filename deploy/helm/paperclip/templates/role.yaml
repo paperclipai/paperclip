@@ -1,0 +1,59 @@
+{{- if .Values.rbac.create }}
+# Namespace-scoped Role for the paperclip pod's k8s-Job adapters
+# (paperclip-adapter-claude-k8s + paperclip-adapter-opencode-k8s).
+#
+# Verb set is the runtime-observed superset of:
+#   - claude-k8s v0.2.1: dist/server/test.js (SSAR self-test) + execute.js
+#     runtime calls (jobs:patch at execute.js:779, secrets:patch at :884).
+#   - opencode-k8s v0.1.38: dist/server/test.js + execute.js runtime calls
+#     (pods:get at :311 / :552 for log preflight, secrets:patch at :1052).
+#
+# The upstream adapters' SSAR test arrays are incomplete — they probe a
+# subset of what runtime actually exercises, so install-time looks green
+# while individual job runs would 403 mid-execution. Verbs added here
+# beyond the SSAR list are flagged inline.
+#
+# Cluster-scoped SSAR check is granted via the companion ClusterRoleBinding
+# (clusterrole.yaml + clusterrolebinding.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "paperclip.fullname" . }}-k8s-adapters
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "paperclip.labels" . | nindent 4 }}
+rules:
+  # K8s Jobs — adapter creates one Job per agent run, then deletes it.
+  # `patch` (NOT in SSAR self-test) is used at claude-k8s execute.js:779
+  # to update Job state mid-run.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  # Pods — adapter lists Pods owned by its Jobs to find the active one,
+  # and reads individual Pod state for log-streaming preflight
+  # (opencode-k8s execute.js:311 + :552). `get` is NOT in opencode-k8s's
+  # SSAR self-test.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # Pod logs — adapter streams stdout/stderr back to the paperclip UI.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Secrets — both adapters create a transient Secret per Job for prompts
+  # above LARGE_PROMPT_THRESHOLD_BYTES (256 KiB; below that, the prompt
+  # rides as an env var on the init container). Both also patch the Secret
+  # mid-run (claude-k8s execute.js:884, opencode-k8s execute.js:1052) —
+  # `patch` is NOT in either adapter's SSAR self-test.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete", "get", "patch"]
+  # PVCs — adapter looks up the shared PVC claim name (paperclip-data) to mount
+  # at /paperclip in agent Job pods. opencode-k8s additionally creates/deletes
+  # per-agent PVCs by default — `agentDbMode` defaults to `dedicated_pvc`
+  # (execute.js:766); set `adapter_config.agentDbMode: ephemeral` to opt out
+  # of per-agent PVC creation.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "delete", "get"]
+{{- end }}

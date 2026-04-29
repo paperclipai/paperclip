@@ -56,7 +56,13 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+# ccrotate is the per-account token rotator that the heartbeat ccrotate-tier-gate
+# (server/src/services/ccrotate-tier-gate.ts) shells out to. With HOME=/paperclip,
+# its profilesDir/claudeDir/configFile resolve into /paperclip/.ccrotate and
+# /paperclip/.claude on the shared RWX PVC, so a single `ccrotate refresh` from
+# inside this pod populates the gate's tier-cache in place. Pinned to a known
+# version to avoid surprise upgrades inside an image build.
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai ccrotate@1.0.13 \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
   && rm -rf /var/lib/apt/lists/* \

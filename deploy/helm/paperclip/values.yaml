@@ -192,3 +192,15 @@ serviceAccount:
   name: ""
   # -- Annotations on the ServiceAccount.
   annotations: {}
+  # -- Mount the SA token into the pod. Required when `rbac.create` is true so the k8s-Job adapters (paperclip-adapter-claude-k8s / -opencode-k8s) can authenticate to the K8s API. Default false to preserve the legacy posture.
+  automountToken: false
+
+# -- Namespace-scoped RBAC for the k8s-Job adapters.
+# When `rbac.create: true`, the chart renders a Role + RoleBinding granting
+# the SA permission to manage Jobs/Pods/Secrets/PVCs in this namespace, plus
+# a ClusterRole + ClusterRoleBinding for SelfSubjectAccessReview (used by
+# both adapters' install-time self-test). Only enable in tandem with
+# `serviceAccount.automountToken: true`.
+rbac:
+  # -- Render Role/RoleBinding/ClusterRole/ClusterRoleBinding for the k8s-Job adapters.
+  create: false
