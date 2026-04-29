@@ -942,7 +942,8 @@ async function listIssueProductivityReviewMap(
           isNull(issues.hiddenAt),
           notInArray(issues.status, PRODUCTIVITY_REVIEW_TERMINAL_STATUSES),
         ),
-      );
+      )
+      .orderBy(desc(issues.createdAt), desc(issues.id));
     reviewRows.push(...rows);
   }
 
@@ -985,6 +986,7 @@ async function listIssueProductivityReviewMap(
 
   for (const row of reviewRows) {
     if (!row.sourceIssueId) continue;
+    if (map.has(row.sourceIssueId)) continue;
     const detail = triggerByReviewIssueId.get(row.reviewIssueId);
     map.set(row.sourceIssueId, {
       reviewIssueId: row.reviewIssueId,
