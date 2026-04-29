@@ -9,7 +9,7 @@
 - [shipped] **v2.4 Knowledge+Economy 심화** - Phase 25-32 완료, 2026-04-28 ([archive](milestones/v2.4-ROADMAP.md), [requirements](milestones/v2.4-REQUIREMENTS.md), [audit](milestones/v2.4-MILESTONE-AUDIT.md), [re-audit](milestones/v2.4-MILESTONE-REAUDIT.md))
 - [shipped] **v2.5 Semantic Knowledge Intelligence** - Phase 33-38 완료, 2026-04-29 ([archive](milestones/v2.5-ROADMAP.md), [requirements](milestones/v2.5-REQUIREMENTS.md), [audit](milestones/v2.5-MILESTONE-AUDIT.md), [re-audit](milestones/v2.5-MILESTONE-REAUDIT.md))
 - [shipped] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 완료, 2026-04-29 ([archive](milestones/v2.6-ROADMAP.md), [requirements](milestones/v2.6-REQUIREMENTS.md), [audit](milestones/v2.6-MILESTONE-AUDIT.md))
-- [active] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 planned, 2026-04-29 시작 ([requirements](REQUIREMENTS.md))
+- [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 
 ## 완료됨
 
@@ -110,64 +110,19 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v2.7 릴리즈 호스트 검증 및 런타임 신뢰도가 시작되었다. 다음 단계는 Phase 44 계획 수립이다.
+v2.7 릴리즈 호스트 검증 및 런타임 신뢰도는 2026-04-30에 완료됐다. 다음 단계는 새 milestone 요구사항 정의다.
 
-## v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
+<details>
+<summary>v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 (Phase 44-47) - 2026-04-30 완료</summary>
 
-**상태:** Planning
-**시작:** 2026-04-29
-**Phases:** 4 planned
-**Requirements:** 11 planned
+- [x] Phase 44: Release Host Verification Harness - 1/1 plan complete
+- [x] Phase 45: Embedded Postgres Runtime Coverage - 1/1 plan complete
+- [x] Phase 46: Artifact and UAT Truth Alignment - 1/1 plan complete
+- [x] Phase 47: Runtime Confidence Operations Surface - 1/1 plan complete
 
-### 목표
+Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flows 4/4. Runtime confidence has blocker 0 and accepted debt 1 for Windows default embedded Postgres skip.
 
-v2.6에서 tech debt로 수용한 full-suite timeout, Windows embedded Postgres skip, stale validation metadata, legacy UAT closure inconsistency를 release-host 재현성, route/persistence coverage, artifact gate consistency, operator-facing confidence evidence로 닫는다.
-
-### 계획된 Phase
-
-| Phase | Name | Goal | Requirements | Success Criteria |
-|-------|------|------|--------------|------------------|
-| 44 | Release Host Verification Harness | Full-suite verification을 timeout/owner/retry evidence가 있는 release-host gate로 만든다 | REL-01, REL-02, REL-03 | 4 |
-| 45 | Embedded Postgres Runtime Coverage | Windows host에서 embedded Postgres persistence/route 검증이 skip으로 사라지지 않게 만든다 | PG-01, PG-02, PG-03 | 4 |
-| 46 | Artifact and UAT Truth Alignment | Validation metadata, legacy UAT status, traceability gate가 같은 완료 상태를 보고하게 만든다 | ART-01, ART-02, ART-03 | 4 |
-| 47 | Runtime Confidence Operations Surface | Release confidence, accepted debt, blocker/deferred 상태를 운영자가 한 곳에서 확인하게 만든다 | CONF-01, CONF-02 | 3 |
-
-### Phase Details
-
-**Phase 44: Release Host Verification Harness**
-Goal: Full `pnpm typecheck && pnpm test`가 release-host 기준에서 안정적으로 실행되고 timeout failure를 분석 가능한 evidence로 남긴다.
-Requirements: REL-01, REL-02, REL-03
-Success criteria:
-1. Release-host verification command가 문서화되고 repo script 또는 CLI path로 실행된다.
-2. Timeout/failure report가 suite, duration, owner, retry recommendation을 기록한다.
-3. Failed slice만 재실행해도 full-suite audit trail이 유지된다.
-4. `pnpm typecheck`와 targeted release verification path가 통과 또는 명시적 blocker를 남긴다.
-
-**Phase 45: Embedded Postgres Runtime Coverage**
-Goal: Embedded Postgres route/persistence suites가 Windows host에서 skip으로 묻히지 않고 opt-in 또는 host-ready path로 검증된다.
-Requirements: PG-01, PG-02, PG-03
-Success criteria:
-1. Embedded Postgres test skip reason이 env/host capability/fallback evidence와 함께 기록된다.
-2. Windows host-ready execution path가 문서화되고 focused suite로 검증된다.
-3. Route-level persistence flow가 embedded Postgres dependency를 명시적으로 검증한다.
-4. Default skip이 발생할 때 release confidence output이 accepted debt로 분류한다.
-
-**Phase 46: Artifact and UAT Truth Alignment**
-Goal: Phase validation frontmatter, legacy UAT closure, milestone artifact gate가 서로 다른 완료 상태를 보고하지 않도록 정렬한다.
-Requirements: ART-01, ART-02, ART-03
-Success criteria:
-1. Stale validation frontmatter를 milestone gate가 실패로 잡는다.
-2. Legacy UAT closure 상태가 audit-open tooling과 milestone audit 문서에서 동일하게 표현된다.
-3. v2.7 requirement traceability가 phase와 verification artifact에 1:1로 연결된다.
-4. Phase close 직후 summary/verification/validation metadata 갱신 절차가 문서화된다.
-
-**Phase 47: Runtime Confidence Operations Surface**
-Goal: 운영자가 현재 release confidence, accepted debt, blocker/deferred status를 앱 또는 generated report에서 한 번에 확인한다.
-Requirements: CONF-01, CONF-02
-Success criteria:
-1. Release confidence output이 blocker, accepted tech debt, deferred future scope를 구분한다.
-2. Operations surface 또는 generated report가 latest verification evidence를 보여준다.
-3. Milestone close 전 `rt2:milestone-gate`와 confidence report가 같은 debt taxonomy를 사용한다.
+</details>
 
 ## 진행상황
 
@@ -216,10 +171,10 @@ Success criteria:
 | 41. Native and Mobile Capture Hardening | v2.6 | 1/1 | Complete | 2026-04-29 |
 | 42. Jarvis Autonomy Eval Guardrails | v2.6 | 1/1 | Complete | 2026-04-29 |
 | 43. Validation Debt and Milestone Gate Closure | v2.6 | 1/1 | Complete | 2026-04-29 |
-| 44. Release Host Verification Harness | v2.7 | 0/0 | Planned | - |
-| 45. Embedded Postgres Runtime Coverage | v2.7 | 0/0 | Planned | - |
-| 46. Artifact and UAT Truth Alignment | v2.7 | 0/0 | Planned | - |
-| 47. Runtime Confidence Operations Surface | v2.7 | 0/0 | Planned | - |
+| 44. Release Host Verification Harness | v2.7 | 1/1 | Complete | 2026-04-29 |
+| 45. Embedded Postgres Runtime Coverage | v2.7 | 1/1 | Complete | 2026-04-29 |
+| 46. Artifact and UAT Truth Alignment | v2.7 | 1/1 | Complete | 2026-04-30 |
+| 47. Runtime Confidence Operations Surface | v2.7 | 1/1 | Complete | 2026-04-30 |
 
 ## Archive
 
@@ -245,6 +200,9 @@ Success criteria:
 - [v2.6 roadmap archive](milestones/v2.6-ROADMAP.md)
 - [v2.6 requirements archive](milestones/v2.6-REQUIREMENTS.md)
 - [v2.6 milestone audit](milestones/v2.6-MILESTONE-AUDIT.md)
+- [v2.7 roadmap archive](milestones/v2.7-ROADMAP.md)
+- [v2.7 requirements archive](milestones/v2.7-REQUIREMENTS.md)
+- [v2.7 milestone audit](milestones/v2.7-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-29, v2.7 milestone start*
+*마지막 업데이트: 2026-04-30, v2.7 milestone complete*

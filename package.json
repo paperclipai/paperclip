@@ -44,7 +44,13 @@
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "rt2:milestone-gate": "node scripts/rt2-milestone-artifact-gate.mjs",
-    "test:milestone-gate": "node scripts/rt2-milestone-artifact-gate.test.mjs"
+    "test:milestone-gate": "node scripts/rt2-milestone-artifact-gate.test.mjs",
+    "rt2:release-host-verify": "node scripts/rt2-release-host-verify.mjs",
+    "rt2:release-host-rerun": "node scripts/rt2-release-host-verify.mjs --rerun",
+    "rt2:embedded-postgres-host-ready": "node scripts/rt2-embedded-postgres-host-ready.mjs",
+    "test:release-host-verify": "node scripts/rt2-release-host-verify.test.mjs",
+    "rt2:runtime-confidence": "node scripts/rt2-runtime-confidence.mjs",
+    "test:runtime-confidence": "node scripts/rt2-runtime-confidence.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

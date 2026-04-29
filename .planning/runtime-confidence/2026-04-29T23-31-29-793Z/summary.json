@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "generatedAt": "2026-04-29T23:31:29.793Z",
+  "status": "accepted_debt",
+  "counts": {
+    "blockers": 0,
+    "acceptedDebt": 1,
+    "deferredScope": 4,
+    "pending": 0,
+    "passed": 1
+  },
+  "inputs": {
+    "releaseHostSummary": ".planning/release-host-runs/2026-04-29T23-14-48-030Z/summary.json",
+    "milestoneGatePassed": true
+  },
+  "blockers": [],
+  "acceptedDebt": [
+    {
+      "category": "accepted_debt",
+      "source": ".planning/release-host-runs/2026-04-29T23-14-48-030Z/summary.json",
+      "code": "windows_default_disabled",
+      "message": "embedded Postgres tests are disabled by default on Windows; run the focused host-ready command to verify runtime coverage",
+      "owner": "db",
+      "nextCommand": "run pnpm rt2:embedded-postgres-host-ready on a Windows release host",
+      "sliceId": "embedded-postgres-windows-default-skip"
+    }
+  ],
+  "deferredScope": [
+    {
+      "category": "deferred_scope",
+      "title": "Native/mobile distribution",
+      "source": ".planning/REQUIREMENTS.md",
+      "reason": "Requires the v2.7 release confidence foundation first."
+    },
+    {
+      "category": "deferred_scope",
+      "title": "Cross-company knowledge federation",
+      "source": ".planning/REQUIREMENTS.md",
+      "reason": "Outside trusted single-company confidence gate for this milestone."
+    },
+    {
+      "category": "deferred_scope",
+      "title": "Provider-backed eval mandate",
+      "source": ".planning/REQUIREMENTS.md",
+      "reason": "Deterministic local and CI fallback remains required."
+    },
+    {
+      "category": "deferred_scope",
+      "title": "New Jarvis autonomous apply behavior",
+      "source": ".planning/REQUIREMENTS.md",
+      "reason": "Direct apply remains approval-first future scope."
+    }
+  ],
+  "pending": [],
+  "passed": [
+    {
+      "category": "passed",
+      "source": "scripts/rt2-milestone-artifact-gate.mjs",
+      "code": "MILESTONE_GATE_PASSED",
+      "message": "Milestone artifact gate passed.",
+      "owner": "planning-tooling"
+    }
+  ],
+  "releaseHost": {
+    "status": "accepted_debt",
+    "runDir": ".planning/release-host-runs/2026-04-29T23-14-48-030Z",
+    "updatedAt": "2026-04-29T23:14:48.033Z",
+    "attempts": [
+      {
+        "attemptNumber": 1,
+        "sliceId": "embedded-postgres-windows-default-skip",
+        "suite": "embedded-postgres",
+        "phase": "release-host",
+        "owner": "db",
+        "command": "pnpm rt2:embedded-postgres-host-ready",
+        "startedAt": "2026-04-29T23:14:48.032Z",
+        "endedAt": "2026-04-29T23:14:48.032Z",
+        "durationMs": 0,
+        "status": "accepted_debt",
+        "exitCode": null,
+        "signal": null,
+        "timedOut": false,
+        "timeoutMs": 600000,
+        "retryRecommendation": "run pnpm rt2:embedded-postgres-host-ready on a Windows release host",
+        "stdout": null,
+        "stderr": null,
+        "error": null,
+        "debt": {
+          "type": "embedded_postgres_windows_default_skip",
+          "reasonCode": "windows_default_disabled",
+          "reason": "embedded Postgres tests are disabled by default on Windows; run the focused host-ready command to verify runtime coverage",
+          "platform": "win32",
+          "env": {
+            "PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS": null,
+            "PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS": null
+          }
+        }
+      }
+    ]
+  },
+  "milestoneGate": {
+    "passed": true,
+    "checkedPhases": [
+      "39",
+      "40",
+      "41",
+      "42",
+      "43"
+    ],
+    "activeMilestonePhases": [
+      "44",
+      "45",
+      "46",
+      "47"
+    ],
+    "historicalValidationPhases": [
+      "19",
+      "20",
+      "21",
+      "22",
+      "23",
+      "24"
+    ],
+    "issueCount": 0,
+    "issues": []
+  },
+  "requirements": [
+    {
+      "requirement": "REL-01",
+      "phase": "44",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/44-release-host-verification-harness/44-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/44-release-host-verification-harness/44-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/44-release-host-verification-harness/44-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "REL-02",
+      "phase": "44",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/44-release-host-verification-harness/44-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/44-release-host-verification-harness/44-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/44-release-host-verification-harness/44-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "REL-03",
+      "phase": "44",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/44-release-host-verification-harness/44-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/44-release-host-verification-harness/44-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/44-release-host-verification-harness/44-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "PG-01",
+      "phase": "45",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "PG-02",
+      "phase": "45",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "PG-03",
+      "phase": "45",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/45-embedded-postgres-runtime-coverage/45-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "ART-01",
+      "phase": "46",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "ART-02",
+      "phase": "46",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "ART-03",
+      "phase": "46",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/46-artifact-and-uat-truth-alignment/46-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "CONF-01",
+      "phase": "47",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/47-runtime-confidence-operations-surface/47-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/47-runtime-confidence-operations-surface/47-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/47-runtime-confidence-operations-surface/47-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    },
+    {
+      "requirement": "CONF-02",
+      "phase": "47",
+      "status": "passed",
+      "traceabilityStatus": "Complete",
+      "verificationArtifact": ".planning/phases/47-runtime-confidence-operations-surface/47-VERIFICATION.md",
+      "validationArtifact": ".planning/phases/47-runtime-confidence-operations-surface/47-VALIDATION.md",
+      "summaryArtifact": ".planning/phases/47-runtime-confidence-operations-surface/47-01-SUMMARY.md",
+      "verificationMentionsReq": true,
+      "validationStatus": "passed",
+      "validationMentionsReq": true
+    }
+  ],
+  "runDir": ".planning/runtime-confidence/2026-04-29T23-31-29-793Z"
+}

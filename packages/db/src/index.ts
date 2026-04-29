@@ -13,9 +13,13 @@ export {
 } from "./client.js";
 export {
   getEmbeddedPostgresTestSupport,
+  createEmbeddedPostgresHostEvidence,
+  getEmbeddedPostgresHostEvidence,
   startEmbeddedPostgresTestDatabase,
+  type EmbeddedPostgresHostEvidence,
   type EmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestSupport,
+  type EmbeddedPostgresSupportReasonCode,
 } from "./test-embedded-postgres.js";
 export {
   runDatabaseBackup,

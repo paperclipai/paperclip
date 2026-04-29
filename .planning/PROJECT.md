@@ -12,21 +12,21 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
 
-**현재 마일스톤:** v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
+**현재 마일스톤:** 다음 milestone 요구사항 정의 전
 
-**최근 완료:** v2.6은 enterprise connector apply, trusted local bridge, native/mobile capture hardening, Jarvis autonomy eval guardrails, validation debt closure를 완료했다. Audit은 requirements 12/12, phases 5/5, integration 5/5, flows 5/5이며 full-suite timeout과 Windows embedded Postgres skip을 `tech_debt`로 수용했다.
+**최근 완료:** v2.7은 release-host verification harness, embedded Postgres Windows host-ready coverage, artifact/UAT truth alignment, runtime confidence generated report를 완료했다. Audit은 requirements 11/11, phases 4/4, integration 4/4, flows 4/4이며 runtime confidence blocker 0, accepted debt 1 상태다.
 
-**현재 진행:** v2.7은 v2.6에서 tech debt로 수용한 full-suite timeout, Windows embedded Postgres skip, stale validation metadata, legacy UAT closure inconsistency를 release-host에서 재현 가능하고 audit 가능한 confidence gate로 닫는다.
+**현재 진행:** 새 product feature 확장보다 다음 milestone의 운영/배포 우선순위를 정해야 한다. Native distribution, cross-company federation, provider-backed eval mandate, approval-first autonomy observation은 v2.7 confidence gate 위에서 다시 평가한다.
 
-## 현재 마일스톤: v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
+## 최근 마일스톤: v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
 
 **Goal:** v2.6에서 남은 verification/runtime confidence 부채를 release-host 재현성, embedded Postgres coverage, artifact metadata consistency, operator-visible confidence evidence로 닫는다.
 
 **Target features:**
-- Full `pnpm typecheck && pnpm test`가 release-host 기준에서 timeout 원인과 owner를 남기며 재시도 가능한 gate로 동작한다.
-- Embedded Postgres persistence/route suites가 Windows 기본 실행에서 skip으로 사라지지 않고 opt-in 또는 host-ready path로 검증된다.
+- Full `pnpm typecheck && pnpm test`가 release-host 기준에서 timeout 원인과 owner를 남기며 재시도 가능한 gate로 동작한다. - Phase 44 완료
+- Embedded Postgres persistence/route suites가 Windows 기본 실행에서 skip으로 사라지지 않고 opt-in 또는 host-ready path로 검증된다. - Phase 45 완료
 - Phase validation metadata, legacy UAT closure, milestone artifact gate가 같은 truth를 보고하도록 정렬된다.
 - 운영자가 release confidence와 남은 validation debt를 앱/문서/CLI evidence에서 확인할 수 있다.
 
@@ -121,13 +121,14 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.6 native/mobile capture hardening 요구사항 3개. - Phase 41
 - [x] v2.6 autonomy/evals hardening 요구사항 3개. - Phase 42
 - [x] v2.6 validation closure 요구사항 3개. - Phase 43
+- [x] v2.7 release-host verification 요구사항 3개. - Phase 44
+- [x] v2.7 embedded Postgres runtime coverage 요구사항 3개. - Phase 45
+- [x] v2.7 artifact/UAT truth alignment 요구사항 3개. - Phase 46
+- [x] v2.7 runtime confidence operations surface 요구사항 2개. - Phase 47
 
 ### 진행 중
 
-- [ ] v2.7 release-host verification과 runtime confidence gate 요구사항 정의.
-- [ ] Full-suite timeout 원인을 분류하고 release-host 재실행 기준을 만든다.
-- [ ] Embedded Postgres persistence/route 검증을 Windows host에서 신뢰 가능한 경로로 올린다.
-- [ ] Validation metadata와 legacy UAT closure 상태를 milestone gate truth와 정렬한다.
+- [ ] 다음 milestone 요구사항 정의.
 
 ### 범위 밖
 
@@ -148,6 +149,7 @@ v2.0-v2.2에서 완료한 것:
 - v2.4는 daily wiki projector -> graphify -> ledger atomicity -> settlement hardening -> batch linting으로 knowledge/economy 깊이를 더했고, Phase 30-32에서 strict milestone traceability를 복구했다. 최종 re-audit은 `passed`다.
 - v2.5는 semantic index -> semantic search -> contradiction review -> Jarvis grounding -> operations health gate로 지식 루프를 닫았고, Phase 38에서 strict milestone traceability를 복구했다. 최종 re-audit은 `passed`다.
 - v2.6은 external connector apply, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure로 운영 경계를 hardening했다. Audit은 blocker 없이 `tech_debt`다.
+- v2.7은 release-host reproducibility, embedded Postgres accepted-debt evidence, artifact gate truth, runtime confidence generated report를 완료했다. Audit은 blocker 없이 `tech_debt`이며 Windows default embedded Postgres skip은 focused host-ready command로 닫는 accepted debt다.
 
 ## 제약
 
@@ -171,10 +173,11 @@ v2.0-v2.2에서 완료한 것:
 | v2.4는 knowledge projection과 economy governance 심화를 5개 기능 phase와 3개 closure phase로 완료 | initial audit gaps를 숨기지 않고 Phase 30-32에서 artifact coverage를 복구했다 | 좋음 - final re-audit `passed` |
 | v2.5는 semantic knowledge intelligence를 5개 기능 phase와 1개 closure phase로 완료 | semantic index/search/contradiction/Jarvis/operations 기능 구현 후 Phase 38에서 artifact coverage를 복구했다 | 좋음 - final re-audit `passed` |
 | v2.6은 운영 경계 hardening을 blocker 없이 닫고 full-suite timeout을 tech debt로 기록 | targeted checks와 artifact gate는 통과했지만 Windows full-suite completion은 재확인이 필요했다 | 좋음 - milestone close를 과장하지 않고 debt를 분리 기록 |
+| v2.7은 release-host와 runtime confidence를 generated evidence로 분리 | full-suite timeout/skip을 숨기지 않고 blocker, accepted debt, deferred scope로 구분해야 했다 | 좋음 - 운영자가 release confidence를 한 곳에서 확인 가능 |
 
 ## 다음 마일스톤 목표
 
-v2.7은 새 product feature 확장보다 release-host verification과 runtime confidence를 우선한다. native distribution, cross-company federation, provider-backed eval hardening, approval-first autonomy observation은 v2.7 confidence gate가 안정화된 뒤 다시 평가한다.
+다음 milestone은 v2.7 confidence gate를 기반으로 native distribution, cross-company federation, provider-backed eval hardening, approval-first autonomy observation 중 실제 운영 가치가 가장 큰 축을 선택한다. 시작 전 새 `.planning/REQUIREMENTS.md`를 정의해야 한다.
 
 ## Evolution
 
@@ -194,4 +197,4 @@ v2.7은 새 product feature 확장보다 release-host verification과 runtime co
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-29 after v2.7 milestone start*
+*마지막 업데이트: 2026-04-30 after v2.7 milestone completion*

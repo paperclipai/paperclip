@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "createdAt": "2026-04-29T23:14:48.032Z",
+  "attempts": [
+    {
+      "attemptNumber": 1,
+      "sliceId": "embedded-postgres-windows-default-skip",
+      "suite": "embedded-postgres",
+      "phase": "release-host",
+      "owner": "db",
+      "command": "pnpm rt2:embedded-postgres-host-ready",
+      "startedAt": "2026-04-29T23:14:48.032Z",
+      "endedAt": "2026-04-29T23:14:48.032Z",
+      "durationMs": 0,
+      "status": "accepted_debt",
+      "exitCode": null,
+      "signal": null,
+      "timedOut": false,
+      "timeoutMs": 600000,
+      "retryRecommendation": "run pnpm rt2:embedded-postgres-host-ready on a Windows release host",
+      "stdout": null,
+      "stderr": null,
+      "error": null,
+      "debt": {
+        "type": "embedded_postgres_windows_default_skip",
+        "reasonCode": "windows_default_disabled",
+        "reason": "embedded Postgres tests are disabled by default on Windows; run the focused host-ready command to verify runtime coverage",
+        "platform": "win32",
+        "env": {
+          "PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS": null,
+          "PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS": null
+        }
+      }
+    }
+  ],
+  "root": "C:\\Real-Tycoon 2",
+  "runDir": ".planning/release-host-runs/2026-04-29T23-14-48-030Z",
+  "runDirAbs": "C:\\Real-Tycoon 2\\.planning\\release-host-runs\\2026-04-29T23-14-48-030Z",
+  "timeoutMs": 600000,
+  "mode": "full",
+  "selectedSlices": [],
+  "updatedAt": "2026-04-29T23:14:48.033Z",
+  "status": "accepted_debt"
+}

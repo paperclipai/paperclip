@@ -281,6 +281,44 @@
 - Legacy UAT closure artifact가 있어도 audit-open tooling이 unknown으로 보는 파일은 close 시점에 명시적으로 acknowledged/deferred 기록이 필요하다.
 - Validation metadata는 phase completion 직후 업데이트해야 final audit에서 실제 evidence와 형식 상태가 어긋나지 않는다.
 
+## 마일스톤: v2.7 - 릴리즈 호스트 검증 및 런타임 신뢰도
+
+**완료:** 2026-04-30  
+**Phases:** 4  
+**Plans:** 4  
+**Audit:** `tech_debt`
+
+### 만든 것
+
+- Release-host verification harness: `pnpm typecheck`, stable Vitest slices, timeout/failure evidence, failed-slice rerun audit trail.
+- Embedded Postgres Windows host-ready coverage: structured skip evidence, focused persistence/route suite command, release-host accepted-debt classification.
+- Artifact/UAT truth alignment: active v2.7 phase definitions, validation frontmatter checks, legacy UAT truth checks, requirement traceability validation.
+- Runtime confidence generated report: release-host summary, milestone gate, accepted debt, deferred scope, blockers, pending items, and requirement evidence aggregation.
+
+### 잘 된 점
+
+- v2.6에서 흐릿했던 timeout/skip 문제를 pass/fail 하나로 뭉개지 않고 release-host evidence와 runtime confidence taxonomy로 분리했다.
+- Embedded Postgres default skip을 숨기지 않고 `accepted_debt`와 focused closure command로 연결했다.
+- Phase 46 gate 덕분에 Phase 47 completion 시점에는 requirements 11/11, verification, validation, summary traceability가 일치했다.
+
+### 비효율적이었던 점
+
+- 현재 설치된 `gsd-sdk`는 complete-milestone workflow가 기대하는 `query` 명령을 제공하지 않아 archive 자동화를 로컬 파일/스크립트 기준으로 대체해야 했다.
+- Phase 47과 milestone close verification에서 full `pnpm test`가 timeout되어 final audit은 `passed`가 아니라 `tech_debt`로 남았다.
+- Runtime confidence는 아직 generated report 중심이며, 장기 운영에는 in-app operations dashboard 후보를 다시 검토해야 한다.
+
+### 확립된 패턴
+
+- Release confidence는 blocker, accepted debt, deferred scope, pending, passed taxonomy로 표현한다.
+- Milestone gate는 artifact truth를 담당하고 runtime confidence는 최신 release-host/runtime evidence를 담당한다.
+- Windows embedded Postgres broad default skip은 release blocker가 아니라 명시적 accepted debt와 focused host-ready command로 관리한다.
+
+### 핵심 교훈
+
+- Full-suite timeout을 milestone blocker로 과장하지 않으려면 suite owner, duration, retry command, latest evidence path가 함께 필요하다.
+- Generated confidence report만으로도 close decision은 가능하지만, operator adoption에는 더 discoverable한 surface가 필요할 수 있다.
+- 다음 milestone을 시작하기 전에 v2.7의 accepted debt가 제품 기능 확장보다 먼저 닫아야 할 운영 blocker인지 다시 판단해야 한다.
+
 ## Cross-Milestone Trend
 
 | Trend | Observation |
@@ -288,4 +326,4 @@
 | Product identity | RT2가 우선순위다. Paperclip/Multica wording은 product-facing surface에서 숨기고 engine/internal compatibility layer로 제한한다. |
 | Verification | Windows sandbox `spawn EPERM`은 반복되는 local environment issue다. Vitest/build에는 승인된 escalated run이 필요할 수 있다. |
 | Planning | 사용자는 wave-by-wave prompting보다 긴 `--auto --chain` execution을 선호한다. |
-| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. v2.6은 운영 hardening을 완료하되 full-suite timeout을 `tech_debt`로 분리했다. |
+| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. v2.6은 운영 hardening을 완료하되 full-suite timeout을 `tech_debt`로 분리했다. v2.7은 release-host evidence와 runtime confidence taxonomy로 blocker 없는 accepted debt를 명시했다. |

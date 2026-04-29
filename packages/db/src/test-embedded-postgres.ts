@@ -24,11 +24,34 @@ type EmbeddedPostgresCtor = new (opts: {
 export type EmbeddedPostgresTestSupport = {
   supported: boolean;
   reason?: string;
+  reasonCode?: EmbeddedPostgresSupportReasonCode;
 };
 
 export type EmbeddedPostgresTestDatabase = {
   connectionString: string;
   cleanup(): Promise<void>;
+};
+
+export type EmbeddedPostgresSupportReasonCode =
+  | "supported"
+  | "explicit_opt_out"
+  | "windows_default_disabled"
+  | "startup_failed";
+
+export type EmbeddedPostgresHostEvidence = {
+  source: "embedded-postgres-test-support";
+  checkedAt: string;
+  status: "supported" | "skipped" | "failed";
+  supported: boolean;
+  reasonCode: EmbeddedPostgresSupportReasonCode;
+  reason: string | null;
+  platform: NodeJS.Platform;
+  arch: string;
+  env: {
+    PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS: string | null;
+    PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS: string | null;
+  };
+  suites: string[];
 };
 
 let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null = null;
@@ -88,6 +111,7 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
   if (process.env.PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS === "true") {
     return {
       supported: false,
+      reasonCode: "explicit_opt_out",
       reason: "PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS=true",
     };
   }
@@ -98,6 +122,7 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
   ) {
     return {
       supported: false,
+      reasonCode: "windows_default_disabled",
       reason:
         "embedded Postgres tests are disabled by default on Windows; set PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS=true to run them",
     };
@@ -120,10 +145,11 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
   try {
     await instance.initialise();
     await instance.start();
-    return { supported: true };
+    return { supported: true, reasonCode: "supported" };
   } catch (error) {
     return {
       supported: false,
+      reasonCode: "startup_failed",
       reason: formatEmbeddedPostgresError(error),
     };
   } finally {
@@ -137,6 +163,44 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
     embeddedPostgresSupportPromise = probeEmbeddedPostgresSupport();
   }
   return await embeddedPostgresSupportPromise;
+}
+
+export function createEmbeddedPostgresHostEvidence(
+  support: EmbeddedPostgresTestSupport,
+  suites: string[] = [],
+  checkedAt = new Date(),
+): EmbeddedPostgresHostEvidence {
+  const reasonCode =
+    support.reasonCode ?? (support.supported ? "supported" : "startup_failed");
+  const status = support.supported
+    ? "supported"
+    : reasonCode === "startup_failed"
+      ? "failed"
+      : "skipped";
+
+  return {
+    source: "embedded-postgres-test-support",
+    checkedAt: checkedAt.toISOString(),
+    status,
+    supported: support.supported,
+    reasonCode,
+    reason: support.reason ?? null,
+    platform: process.platform,
+    arch: process.arch,
+    env: {
+      PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS:
+        process.env.PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS ?? null,
+      PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS:
+        process.env.PAPERCLIP_SKIP_EMBEDDED_POSTGRES_TESTS ?? null,
+    },
+    suites,
+  };
+}
+
+export async function getEmbeddedPostgresHostEvidence(
+  suites: string[] = [],
+): Promise<EmbeddedPostgresHostEvidence> {
+  return createEmbeddedPostgresHostEvidence(await getEmbeddedPostgresTestSupport(), suites);
 }
 
 export async function startEmbeddedPostgresTestDatabase(
