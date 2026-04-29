@@ -9,6 +9,7 @@
 | v2.3 | 운영 검증 및 외부 연동 실체화 | Shipped | 2026-04-25 | 2026-04-27 | Phase 19-24 완료. 요구사항 17/17, integration 5/5, flows 5/5 충족. strict Nyquist validation debt는 tech debt로 이월 |
 | v2.4 | Knowledge+Economy 심화 | Shipped | 2026-04-27 | 2026-04-28 | Phase 25-32 완료. 요구사항 24/24, phases 5/5, integration 5/5, flows 5/5 충족. 초기 audit gaps는 Phase 30-32 closure로 닫고 re-audit `passed` |
 | v2.5 | Semantic Knowledge Intelligence | Shipped | 2026-04-28 | 2026-04-29 | Phase 33-38 완료. Semantic index, semantic search, contradiction review, Jarvis grounding, knowledge operations 요구사항 19/19 완료. 초기 audit gaps는 Phase 38 closure로 닫고 re-audit `passed` |
+| v2.6 | 운영 커넥터 및 자율성 하드닝 | Planned | 2026-04-29 | - | Phase 39-43 planned. External connector apply, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure 요구사항 12개 정의 |
 
 ## v2.0 RT2 Refoundation
 
@@ -305,5 +306,38 @@ Phase 38 closure 후 re-audit 결과:
 | provider | mandatory live provider dependency | deterministic fallback이 local/CI 기본이어야 함 |
 | mobile | native mobile semantic search UX | web operator loop가 먼저 검증되어야 함 |
 
+## v2.6 운영 커넥터 및 자율성 하드닝
+
+**상태:** Planned
+**시작:** 2026-04-29
+**Phases:** 5 planned
+**Requirements:** 12 planned
+**Artifacts:**
+
+- `.planning/ROADMAP.md`
+- `.planning/REQUIREMENTS.md`
+
+### 목표
+
+v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile/native capture, Jarvis autonomy guardrail, validation gate까지 확장해 운영 가능한 hardening layer로 만든다.
+
+### 계획된 Phase
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 39 | Enterprise Connector Apply Loop | EXT-01, EXT-02 | Planned |
+| 40 | Trusted Local Knowledge Bridge | EXT-03 | Planned |
+| 41 | Native and Mobile Capture Hardening | CAP-01, CAP-02, CAP-03 | Planned |
+| 42 | Jarvis Autonomy Eval Guardrails | AUTO-01, AUTO-02, AUTO-03 | Planned |
+| 43 | Validation Debt and Milestone Gate Closure | VAL-01, VAL-02, VAL-03 | Planned |
+
+### 범위
+
+- IdP handshake와 SCIM apply mutation을 audit 가능한 enterprise connector flow로 고도화한다.
+- Obsidian/local bridge를 trusted daemon pairing과 sync health 중심으로 운영 가능하게 만든다.
+- Slack/Teams/native/mobile capture source를 signed source, review queue, semantic context, mobile search UX까지 연결한다.
+- Jarvis knowledge rewrite는 direct apply 없이 eval-backed proposal과 approval route로 제한한다.
+- Phase 19-24 strict validation debt와 legacy UAT unknown 항목을 정리하고 milestone artifact gate를 강화한다.
+
 ---
-*마지막 업데이트: 2026-04-29, v2.5 milestone archived*
+*마지막 업데이트: 2026-04-29, v2.6 milestone started*

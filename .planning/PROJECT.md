@@ -14,22 +14,22 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence
 
-**현재 마일스톤:** 다음 milestone planning 대기
+**현재 마일스톤:** v2.6 운영 커넥터 및 자율성 하드닝
 
 **최근 완료:** v2.5는 semantic index, semantic knowledge search, contradiction review workflow, Jarvis grounded answers, knowledge operations health gate를 완료하고 Phase 38 closure로 milestone audit gaps를 닫았다. 최종 re-audit은 requirements 19/19, phases 6/6, integration 5/5, flows 5/5로 `passed`다.
 
-**현재 진행:** `$gsd-new-milestone`로 v2.6 scope, requirements, roadmap을 정의해야 한다. 후보는 external connector hardening, native/mobile capture hardening, autonomy/evals hardening, historical validation debt cleanup이다.
+**현재 진행:** v2.6 scope, requirements, roadmap이 정의되었다. 다음 단계는 Phase 39부터 external connector apply loop, trusted local bridge, native/mobile capture, Jarvis autonomy/eval guardrail, historical validation closure를 순서대로 구현하는 것이다.
 
-## 현재 마일스톤: v2.5 Semantic Knowledge Intelligence
+## 현재 마일스톤: v2.6 운영 커넥터 및 자율성 하드닝
 
-**Goal:** Daily wiki/graph knowledge를 embedding-backed semantic retrieval, contradiction review, Jarvis answer grounding, operator-facing knowledge health로 고도화한다.
+**Goal:** v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile/native capture, Jarvis autonomy guardrail, validation gate까지 확장해 운영 가능한 hardening layer로 만든다.
 
 **Target features:**
-- pgvector-ready embedding storage와 deterministic fallback을 갖춘 semantic index pipeline.
-- daily wiki, graph node, work artifact를 company-scoped semantic search로 찾는 운영자 경험.
-- provider-backed contradiction 후보 탐지와 approval-first resolution workflow.
-- Jarvis 답변이 retrieved evidence, contradiction warnings, source freshness를 노출하는 grounded assistance.
-- knowledge intelligence 운영 대시보드와 batch health gate.
+- 실제 IdP handshake 검증과 SCIM apply mutation을 audit 가능한 rollout connector flow로 고도화한다.
+- Obsidian/local knowledge bridge를 trusted daemon/pairing/health 기반 운영 흐름으로 만든다.
+- Slack/Teams/native/mobile capture source를 설치, 검수, promotion, semantic search UX까지 hardening한다.
+- Jarvis autonomous knowledge rewrite 제안을 provider-backed eval, deterministic fallback, approval evidence, production monitoring으로 제한한다.
+- Phase 19-24 strict validation debt와 legacy UAT unknown 항목을 닫고 milestone artifact gate를 강화한다.
 
 **v2.5 delivered:**
 - Company-scoped semantic index storage, deterministic fallback embedding, and incremental reindex inspection.
@@ -109,7 +109,10 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- [ ] v2.6 요구사항 정의 필요.
+- [ ] v2.6 external connector hardening 요구사항 3개.
+- [ ] v2.6 native/mobile capture hardening 요구사항 3개.
+- [ ] v2.6 autonomy/evals hardening 요구사항 3개.
+- [ ] v2.6 validation closure 요구사항 3개.
 
 ### 범위 밖
 
@@ -154,7 +157,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-다음 milestone은 v2.5에서 닫은 semantic knowledge loop 위에 더 깊은 운영 hardening을 얹어야 한다. 후보는 external connector hardening, native/mobile capture hardening, autonomy/evals hardening, historical validation debt cleanup이다.
+v2.6은 external connector, local knowledge bridge, native/mobile capture, Jarvis autonomy/evals, historical validation closure를 하나의 operational hardening milestone로 묶는다. 완료 기준은 사용자가 trusted external boundary에서 들어온 work/knowledge signal을 검수하고, Jarvis가 evidence-backed 제안만 만들며, milestone gate가 검증 산출물 누락을 조기에 막는 것이다.
 
 ## Evolution
 
@@ -174,4 +177,4 @@ v2.0-v2.2에서 완료한 것:
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-29, v2.5 milestone archived*
+*마지막 업데이트: 2026-04-29, v2.6 milestone started*

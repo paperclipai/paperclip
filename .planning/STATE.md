@@ -1,32 +1,32 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.5
-milestone_name: Semantic Knowledge Intelligence
-status: shipped
-last_updated: "2026-04-29T09:00:00+09:00"
+milestone: v2.6
+milestone_name: 운영 커넥터 및 자율성 하드닝
+status: planning
+last_updated: "2026-04-29T09:30:00+09:00"
 last_activity: 2026-04-29
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 5
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # RealTycoon2 Planning State
 
 ## Current Position
 
-Phase: 38 - Semantic Knowledge Artifact Closure
-Plan: 38-01 complete
-Status: v2.5 Semantic Knowledge Intelligence shipped and archived
-Last activity: 2026-04-29 - v2.5 milestone archive completed
+Phase: Not started (defining requirements)
+Plan: -
+Status: Defining requirements
+Last activity: 2026-04-29 - Milestone v2.6 started
 
 ## 현재 위치
 
-v2.5 Semantic Knowledge Intelligence Phase 33-38이 구현, 검증, artifact closure, archive까지 완료되었다. 이번 milestone은 v2.4에서 intentionally deferred한 vector embedding + semantic search와 provider-backed contradiction detection option을 RT2 knowledge loop에 연결하고, operator-facing health gate까지 닫았다.
+v2.6 운영 커넥터 및 자율성 하드닝 milestone이 시작되었다. 이번 milestone은 v2.5에서 닫은 semantic knowledge loop를 external connector, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure까지 확장한다.
 
-다음 위치는 `$gsd-new-milestone`으로 v2.6 scope와 requirements를 정의하는 것이다.
+다음 위치는 Phase 39 계획 수립이다.
 
 ## 최근 완료한 마일스톤
 
@@ -45,7 +45,7 @@ v2.5는 Semantic Knowledge Intelligence milestone이었다:
 
 **핵심 가치:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
 
-**현재 초점:** 다음 milestone planning. v2.5에서 닫힌 semantic knowledge loop를 바탕으로 external connector hardening, native/mobile capture, autonomy/evals, historical validation debt 중 하나를 v2.6 scope로 선택해야 한다.
+**현재 초점:** v2.6 planning. external connector hardening, trusted local knowledge bridge, native/mobile capture, Jarvis autonomy/evals, historical validation debt closure를 Phase 39-43으로 실행할 준비를 한다.
 
 ## 누적 맥락
 
@@ -80,11 +80,11 @@ v2.5 이후 후보:
 
 ## 다음 단계
 
-새 milestone을 시작한다:
+v2.6 첫 phase를 논의한다:
 
 ```sh
-$gsd-new-milestone
+$gsd-discuss-phase 39
 ```
 
 ---
-*상태 업데이트: 2026-04-29, v2.5 milestone archived*
+*상태 업데이트: 2026-04-29, v2.6 milestone started*
