@@ -35,12 +35,24 @@ import aiohttp
 
 # Public L2 order book endpoints. BTC-USDT swap/perp on each — well-supported
 # by every exchange and matches what the bot's get_orderbook code paths hit.
-ENDPOINTS: dict[str, str] = {
+LIVE_ENDPOINTS: dict[str, str] = {
     "OKX":    "https://www.okx.com/api/v5/market/books?instId=BTC-USDT-SWAP&sz=5",
     "Bybit":  "https://api.bybit.com/v5/market/orderbook?category=linear&symbol=BTCUSDT&limit=5",
     "MEXC":   "https://contract.mexc.com/api/v1/contract/depth/BTC_USDT",
     "BloFin": "https://openapi.blofin.com/api/v1/market/books?instId=BTC-USDT&size=5",
 }
+
+# Exchanges the paper trader uses but the live trader does not (yet). Useful
+# to know their latency before deciding whether to add them to the live
+# trader's executor set. Opted in via --include-candidates.
+CANDIDATE_ENDPOINTS: dict[str, str] = {
+    "Binance":  "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=5",
+    "Gate.io":  "https://api.gateio.ws/api/v4/futures/usdt/order_book?contract=BTC_USDT&limit=5",
+    "Bitget":   "https://api.bitget.com/api/v2/mix/market/merge-depth?symbol=BTCUSDT&productType=usdt-futures&limit=5",
+}
+
+# Backwards-compat alias used by tests that referenced the old name.
+ENDPOINTS = LIVE_ENDPOINTS
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +170,21 @@ async def measure_exchange(
 
 async def run(
     samples: int = 20, timeout_s: float = 10.0, sleep_s: float = 0.5,
+    *, include_candidates: bool = False,
 ) -> dict[str, dict]:
-    """Measure all exchanges sequentially. Returns the raw results dict."""
+    """Measure exchanges sequentially. Returns the raw results dict.
+
+    By default measures only LIVE_ENDPOINTS (the 4 exchanges the live
+    trader currently uses). Pass include_candidates=True to also measure
+    paper-trader / candidate exchanges (Binance, Gate.io, Bitget).
+    """
+    endpoints = dict(LIVE_ENDPOINTS)
+    if include_candidates:
+        endpoints.update(CANDIDATE_ENDPOINTS)
     headers = {"User-Agent": "paperclip-latency-test/1.0"}
     results: dict[str, dict] = {}
     async with aiohttp.ClientSession(headers=headers) as session:
-        for name, url in ENDPOINTS.items():
+        for name, url in endpoints.items():
             t0 = time.monotonic()
             results[name] = await measure_exchange(
                 session, name, url, samples, timeout_s, sleep_s
@@ -204,17 +225,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit machine-readable JSON instead of the human table.",
     )
+    p.add_argument(
+        "--include-candidates", action="store_true",
+        help=("Also test exchanges the paper trader uses but the live trader "
+              "does not (Binance, Gate.io, Bitget). Useful for evaluating "
+              "whether to add them to the live trader."),
+    )
     return p
 
 
 def main() -> int:
     args = _build_parser().parse_args()
+    n_exchanges = len(LIVE_ENDPOINTS) + (
+        len(CANDIDATE_ENDPOINTS) if args.include_candidates else 0
+    )
     print(
-        f"Latency test: {args.samples} samples × {len(ENDPOINTS)} exchanges, "
+        f"Latency test: {args.samples} samples × {n_exchanges} exchanges, "
         f"{args.timeout}s timeout, {args.sleep}s between"
     )
     results = asyncio.run(run(
-        samples=args.samples, timeout_s=args.timeout, sleep_s=args.sleep
+        samples=args.samples, timeout_s=args.timeout, sleep_s=args.sleep,
+        include_candidates=args.include_candidates,
     ))
     print()
     if args.json:
