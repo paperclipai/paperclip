@@ -48,6 +48,13 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import {
+  isClaudeLocalGitIdentityEnabled,
+  parseClaudeLocalGitConfig,
+  prepareGitIdentityRuntime,
+  type ClaudeLocalGitConfigParseError,
+  type TokenResolver,
+} from "./git-identity.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +65,18 @@ interface ClaudeExecutionInput {
   context: Record<string, unknown>;
   executionTarget?: ReturnType<typeof readAdapterExecutionTarget>;
   authToken?: string;
+  gitIdentity?: {
+    /**
+     * Override the host env-var feature flag check. When provided, this takes
+     * precedence over PAPERCLIP_ADAPTER_GIT_IDENTITY. Server-side callers can
+     * use this to plug a per-company feature flag.
+     */
+    enabledOverride?: boolean;
+    /** Override the default token resolver (used by tests). */
+    resolveToken?: TokenResolver;
+    /** Override the per-run gitconfig root directory (used by tests). */
+    runtimeRoot?: string;
+  };
 }
 
 interface ClaudeRuntimeConfig {
@@ -72,6 +91,13 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+  gitIdentity: {
+    applied: boolean;
+    gitConfigPath: string | null;
+    warnings: string[];
+    parseErrors: ClaudeLocalGitConfigParseError[];
+    cleanup: (() => Promise<void>) | null;
+  };
 }
 
 function buildLoginResult(input: {
@@ -107,7 +133,7 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
-  const { runId, agent, config, context, executionTarget, authToken } = input;
+  const { runId, agent, config, context, executionTarget, authToken, gitIdentity } = input;
 
   const command = asString(config.command, "claude");
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -230,6 +256,37 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  const gitIdentityRuntime: ClaudeRuntimeConfig["gitIdentity"] = {
+    applied: false,
+    gitConfigPath: null,
+    warnings: [],
+    parseErrors: [],
+    cleanup: null,
+  };
+  const gitIdentityEnabled =
+    gitIdentity?.enabledOverride ?? isClaudeLocalGitIdentityEnabled(process.env);
+  if (gitIdentityEnabled) {
+    const parsed = parseClaudeLocalGitConfig((config as Record<string, unknown>).git);
+    gitIdentityRuntime.parseErrors = parsed.errors;
+    if (parsed.config !== null) {
+      const prepared = await prepareGitIdentityRuntime({
+        runId,
+        agentId: agent.id,
+        cwd,
+        config: parsed.config,
+        resolveToken: gitIdentity?.resolveToken,
+        runtimeRoot: gitIdentity?.runtimeRoot,
+      });
+      for (const [key, value] of Object.entries(prepared.env)) {
+        env[key] = value;
+      }
+      gitIdentityRuntime.applied = true;
+      gitIdentityRuntime.gitConfigPath = prepared.gitConfigPath;
+      gitIdentityRuntime.warnings = prepared.warnings;
+      gitIdentityRuntime.cleanup = prepared.cleanup;
+    }
+  }
+
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
@@ -259,6 +316,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     timeoutSec,
     graceSec,
     extraArgs,
+    gitIdentity: gitIdentityRuntime,
   };
 }
 
@@ -325,6 +383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
     executionTarget,
     authToken,
+    gitIdentity: readGitIdentityOverridesFromContext(context),
   });
   const {
     command,
@@ -344,6 +403,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
   );
+  if (runtimeConfig.gitIdentity.applied) {
+    await onLog(
+      "stdout",
+      `[paperclip] claude_local git identity applied: GIT_CONFIG_GLOBAL=${runtimeConfig.gitIdentity.gitConfigPath} (run-scoped)\n`,
+    );
+  }
+  for (const warning of runtimeConfig.gitIdentity.warnings) {
+    await onLog("stderr", `[paperclip] ${warning}\n`);
+  }
+  for (const parseError of runtimeConfig.gitIdentity.parseErrors) {
+    await onLog(
+      "stderr",
+      `[paperclip] adapterConfig.git ignored: ${parseError.message}\n`,
+    );
+  }
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -773,5 +847,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       await restoreRemoteWorkspace();
     }
+    if (runtimeConfig.gitIdentity.cleanup) {
+      await runtimeConfig.gitIdentity.cleanup();
+    }
   }
+}
+
+function readGitIdentityOverridesFromContext(
+  context: Record<string, unknown> | undefined,
+): ClaudeExecutionInput["gitIdentity"] | undefined {
+  if (!context || typeof context !== "object") return undefined;
+  const raw = (context as Record<string, unknown>).paperclipAdapterGitIdentity;
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  const out: NonNullable<ClaudeExecutionInput["gitIdentity"]> = {};
+  if (typeof record.enabledOverride === "boolean") {
+    out.enabledOverride = record.enabledOverride;
+  }
+  if (typeof record.runtimeRoot === "string" && record.runtimeRoot.trim().length > 0) {
+    out.runtimeRoot = record.runtimeRoot;
+  }
+  if (typeof record.resolveToken === "function") {
+    out.resolveToken = record.resolveToken as TokenResolver;
+  }
+  if (Object.keys(out).length === 0) return undefined;
+  return out;
 }
