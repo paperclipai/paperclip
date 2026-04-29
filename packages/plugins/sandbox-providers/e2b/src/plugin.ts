@@ -63,6 +63,33 @@ function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function readTimeoutStream(error: TimeoutError, key: "stdout" | "stderr"): string {
+  const direct = (error as Record<string, unknown>)[key];
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const nested = (error as { result?: Record<string, unknown> }).result?.[key];
+  if (typeof nested === "string") return nested;
+  return typeof direct === "string" ? direct : "";
+}
+
+function buildTimeoutExecuteResult(error: TimeoutError): PluginEnvironmentExecuteResult {
+  const stdout = readTimeoutStream(error, "stdout");
+  const stderrOutput = readTimeoutStream(error, "stderr");
+  const message = error.message.trim();
+  const stderr = stderrOutput.length > 0
+    ? message.length > 0 && !stderrOutput.includes(message)
+      ? `${stderrOutput}${stderrOutput.endsWith("\n") ? "" : "\n"}${message}\n`
+      : stderrOutput
+    : message.length > 0
+      ? `${message}\n`
+      : "";
+  return {
+    exitCode: null,
+    timedOut: true,
+    stdout,
+    stderr,
+  };
+}
+
 async function ensureSandboxWorkspace(sandbox: Sandbox, remoteCwd: string): Promise<void> {
   await sandbox.commands.run(`mkdir -p ${shellQuote(remoteCwd)}`);
 }
@@ -115,6 +142,10 @@ function shellQuote(value: string) {
 
 function buildCommandLine(command: string, args: string[] = []) {
   return `exec ${[command, ...args].map(shellQuote).join(" ")}`;
+}
+
+function buildForegroundStdinPath() {
+  return path.posix.join("/tmp", `paperclip-stdin-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
 }
 
 async function killSandboxBestEffort(sandbox: Sandbox, reason: string): Promise<void> {
@@ -316,28 +347,54 @@ const plugin = definePlugin({
 
     const config = parseDriverConfig(params.config);
     const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
-    const started = await sandbox.commands.run(buildCommandLine(params.command, params.args), {
-      background: true,
-      stdin: params.stdin != null,
-      cwd: params.cwd,
-      envs: params.env,
-      timeoutMs: params.timeoutMs ?? config.timeoutMs,
-    }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
-      pid: number;
-      stdout: string;
-      stderr: string;
-      wait(): Promise<{ exitCode: number; stdout: string; stderr: string }>;
-    };
+    const command = buildCommandLine(params.command, params.args);
+    if (params.stdin == null) {
+      try {
+        const result = await sandbox.commands.run(command, {
+          cwd: params.cwd,
+          envs: params.env,
+          timeoutMs: params.timeoutMs ?? config.timeoutMs,
+        }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
+          exitCode: number;
+          stdout: string;
+          stderr: string;
+        };
+        return {
+          exitCode: result.exitCode,
+          timedOut: false,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        };
+      } catch (error) {
+        if (error instanceof CommandExitError) {
+          const commandError = error as CommandExitError;
+          return {
+            exitCode: commandError.exitCode,
+            timedOut: false,
+            stdout: commandError.stdout,
+            stderr: commandError.stderr,
+          };
+        }
+        if (error instanceof TimeoutError) {
+          return buildTimeoutExecuteResult(error);
+        }
+        throw error;
+      }
+    }
+
+    const stdinPath = buildForegroundStdinPath();
 
     try {
-      if (params.stdin != null) {
-        try {
-          await sandbox.commands.sendStdin(started.pid, params.stdin);
-        } finally {
-          await sandbox.commands.closeStdin(started.pid);
-        }
-      }
-      const result = await started.wait();
+      await sandbox.files.write(stdinPath, params.stdin);
+      const result = await sandbox.commands.run(`${command} < ${shellQuote(stdinPath)}`, {
+        cwd: params.cwd,
+        envs: params.env,
+        timeoutMs: params.timeoutMs ?? config.timeoutMs,
+      }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+      };
       return {
         exitCode: result.exitCode,
         timedOut: false,
@@ -355,15 +412,11 @@ const plugin = definePlugin({
         };
       }
       if (error instanceof TimeoutError) {
-        const timeoutError = error as TimeoutError;
-        return {
-          exitCode: null,
-          timedOut: true,
-          stdout: started.stdout,
-          stderr: started.stderr || `${timeoutError.message}\n`,
-        };
+        return buildTimeoutExecuteResult(error);
       }
       throw error;
+    } finally {
+      await sandbox.files.remove(stdinPath).catch(() => undefined);
     }
   },
 });
