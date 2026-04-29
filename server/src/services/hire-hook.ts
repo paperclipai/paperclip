@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
+import { agentWakeupRequests, agents } from "@paperclipai/db";
 import type { HireApprovedPayload } from "@paperclipai/adapter-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
@@ -14,6 +14,7 @@ const HIRE_APPROVED_MESSAGE =
 
 const HIRE_KICKOFF_ORIGIN_KIND = "hire_kickoff";
 const HIRE_KICKOFF_TITLE = "Onboarding: introduce yourself and share your first 30/60/90 plan";
+type HireKickoffIssue = { id: string; assigneeAgentId: string | null; status: string };
 
 function buildHireKickoffBody(agentName: string) {
   return [
@@ -76,12 +77,119 @@ async function ensureHireKickoffIssue(
   return { issue, created: true };
 }
 
+function isWakeableKickoffIssue(issue: HireKickoffIssue) {
+  return Boolean(issue.assigneeAgentId) && !["backlog", "done", "cancelled"].includes(issue.status);
+}
+
+async function hasHireKickoffWakeupRequest(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+  },
+) {
+  const existing = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.source, "assignment"),
+        eq(agentWakeupRequests.requestedByActorType, "system"),
+        eq(agentWakeupRequests.requestedByActorId, "hire_hook"),
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+      ),
+    )
+    .limit(1);
+  return existing.length > 0;
+}
+
+async function shouldQueueHireKickoffWakeup(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issue: HireKickoffIssue;
+    created: boolean;
+  },
+) {
+  if (!isWakeableKickoffIssue(input.issue)) return false;
+  if (input.created) return true;
+  try {
+    return !(await hasHireKickoffWakeupRequest(db, {
+      companyId: input.companyId,
+      agentId: input.agentId,
+      issueId: input.issue.id,
+    }));
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId, agentId: input.agentId, issueId: input.issue.id },
+      "hire hook: failed to check existing kickoff wakeup request",
+    );
+    return true;
+  }
+}
+
+async function queueHireKickoffWakeupSafely(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issue: HireKickoffIssue;
+    source: NotifyHireApprovedInput["source"];
+    sourceId: string;
+  },
+) {
+  try {
+    await queueIssueAssignmentWakeup({
+      heartbeat: heartbeatService(db),
+      issue: input.issue,
+      reason: "hire_kickoff",
+      mutation: "hire_approved",
+      contextSource: "hire_hook",
+      requestedByActorType: "system",
+      requestedByActorId: "hire_hook",
+      rethrowOnError: true,
+    });
+  } catch (err) {
+    logger.error(
+      {
+        err,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        issueId: input.issue.id,
+        source: input.source,
+        sourceId: input.sourceId,
+      },
+      "hire hook: failed to queue kickoff wakeup",
+    );
+    await logHireHookActivitySafely(db, {
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "hire_hook",
+      action: "hire_kickoff.wakeup_failed",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        source: input.source,
+        sourceId: input.sourceId,
+        agentId: input.agentId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+  }
+}
+
 export interface NotifyHireApprovedInput {
   companyId: string;
   agentId: string;
   source: "join_request" | "approval";
   sourceId: string;
   approvedAt?: Date;
+  /** When false, create/wake the kickoff issue before returning, then dispatch the adapter hook in the background. */
+  awaitAdapterHook?: boolean;
 }
 
 /**
@@ -128,8 +236,9 @@ export async function notifyHireApproved(
     return;
   }
 
+  let kickoff: { issue: HireKickoffIssue; created: boolean } | null = null;
   try {
-    const kickoff = await ensureHireKickoffIssue(db, {
+    kickoff = await ensureHireKickoffIssue(db, {
       companyId,
       agentId,
       agentName: row.name,
@@ -137,15 +246,6 @@ export async function notifyHireApproved(
       sourceId,
     });
     if (kickoff.created) {
-      await queueIssueAssignmentWakeup({
-        heartbeat: heartbeatService(db),
-        issue: kickoff.issue,
-        reason: "hire_kickoff",
-        mutation: "hire_approved",
-        contextSource: "hire_hook",
-        requestedByActorType: "system",
-        requestedByActorId: "hire_hook",
-      });
       await logHireHookActivitySafely(db, {
         companyId,
         actorType: "system",
@@ -176,6 +276,46 @@ export async function notifyHireApproved(
     });
   }
 
+  if (kickoff && await shouldQueueHireKickoffWakeup(db, {
+    companyId,
+    agentId,
+    issue: kickoff.issue,
+    created: kickoff.created,
+  })) {
+    await queueHireKickoffWakeupSafely(db, {
+      companyId,
+      agentId,
+      issue: kickoff.issue,
+      source,
+      sourceId,
+    });
+  }
+
+  const dispatchAdapterHook = async () => {
+    await dispatchHireApprovedAdapterHook(db, {
+      ...input,
+      approvedAt,
+    }, row);
+  };
+  if (input.awaitAdapterHook === false) {
+    void dispatchAdapterHook().catch((err) => {
+      logger.error(
+        { err, companyId, agentId, source, sourceId },
+        "hire hook: background adapter dispatch failed",
+      );
+    });
+    return;
+  }
+
+  await dispatchAdapterHook();
+}
+
+async function dispatchHireApprovedAdapterHook(
+  db: Db,
+  input: NotifyHireApprovedInput & { approvedAt: Date },
+  row: typeof agents.$inferSelect,
+) {
+  const { companyId, agentId, source, sourceId, approvedAt } = input;
   const adapterType = row.adapterType ?? "process";
   const adapter = findActiveServerAdapter(adapterType);
   const onHireApproved = adapter?.onHireApproved;

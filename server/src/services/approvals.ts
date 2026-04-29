@@ -161,6 +161,7 @@ export function approvalService(db: Db) {
             source: "approval",
             sourceId: id,
             approvedAt: now,
+            awaitAdapterHook: false,
           });
         }
       }

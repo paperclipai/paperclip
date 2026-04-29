@@ -3840,7 +3840,8 @@ export function accessRoutes(
           agentId: createdAgentId,
           source: "join_request",
           sourceId: requestId,
-          approvedAt: new Date()
+          approvedAt: new Date(),
+          awaitAdapterHook: false
         });
       }
 
