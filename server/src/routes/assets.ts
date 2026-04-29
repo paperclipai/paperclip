@@ -158,6 +158,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    // Browsers send the filename as raw UTF-8 bytes; Busboy reads them as latin1 by
+    // default, producing a garbled string. Re-decoding recovers the correct text.
+    // Non-browser clients that send a non-UTF-8 encoding may see replacement chars.
     const originalFilename = file.originalname
       ? Buffer.from(file.originalname, "latin1").toString("utf8")
       : null;
@@ -259,6 +262,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    // Browsers send the filename as raw UTF-8 bytes; Busboy reads them as latin1 by
+    // default, producing a garbled string. Re-decoding recovers the correct text.
+    // Non-browser clients that send a non-UTF-8 encoding may see replacement chars.
     const logoOriginalFilename = file.originalname
       ? Buffer.from(file.originalname, "latin1").toString("utf8")
       : null;

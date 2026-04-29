@@ -289,14 +289,37 @@ describe("issue attachment routes", () => {
     ]).toContain(res.headers["content-disposition"]);
   });
 
-  it("decodes non-ASCII upload filenames from latin1 to UTF-8", () => {
-    // Browsers send raw UTF-8 bytes in the multipart Content-Disposition filename
-    // parameter. Multer/Busboy defaults defParamCharset to latin1, so it misreads
-    // those bytes and produces a garbled originalname. The route re-decodes using
-    // Buffer.from(name, "latin1").toString("utf8") to recover the correct text.
-    const originalUTF8 = "한국어.zip";
-    const latin1Mangled = Buffer.from(originalUTF8, "utf8").toString("latin1");
-    const recovered = Buffer.from(latin1Mangled, "latin1").toString("utf8");
-    expect(recovered).toBe(originalUTF8);
+  it("stores non-ASCII upload filenames correctly after latin1 decode", { timeout: 15000 }, async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/zip", "한국어.zip"));
+
+    const app = await createApp(storage);
+
+    // Construct a raw multipart body where the filename is encoded as UTF-8 bytes,
+    // exactly as a browser would transmit it. Multer/Busboy will misread those bytes
+    // as latin1 (its default); the route then re-decodes to recover the correct text.
+    const boundary = "----TestBoundaryNonASCII";
+    const partHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="한국어.zip"\r\nContent-Type: application/zip\r\n\r\n`;
+    const partFooter = `\r\n--${boundary}--\r\n`;
+    const rawBody = Buffer.concat([
+      Buffer.from(partHeader, "utf8"),
+      Buffer.from("zip-content"),
+      Buffer.from(partFooter, "utf8"),
+    ]);
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+        .set("Content-Type", `multipart/form-data; boundary=${boundary}`)
+        .send(rawBody),
+    );
+
+    expect([200, 201]).toContain(res.status);
+    expect(storage.__calls.putFile?.originalFilename).toBe("한국어.zip");
   });
 });
