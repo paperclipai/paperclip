@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, MailPlus, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
@@ -54,6 +54,12 @@ export function CompanySettingsSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem
+            to="/company/settings/environments"
+            label="Environments"
+            icon={MonitorCog}
+            end
+          />
           <SidebarNavItem
             to="/company/settings/access"
             label="Access"

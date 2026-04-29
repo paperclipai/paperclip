@@ -7,11 +7,15 @@ import {
   asString,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
+  runAdapterExecutionTargetProcess,
+  describeAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,10 +99,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "agent");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = target?.kind === "remote";
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target) ?? "remote environment"
+    : null;
+  const runId = `cursor-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "cursor_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "cursor_cwd_valid",
       level: "info",
@@ -120,7 +142,7 @@ export async function testEnvironment(
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
       code: "cursor_command_resolvable",
       level: "info",
@@ -136,7 +158,7 @@ export async function testEnvironment(
   }
 
   const configCursorApiKey = env.CURSOR_API_KEY;
-  const hostCursorApiKey = process.env.CURSOR_API_KEY;
+  const hostCursorApiKey = targetIsRemote ? undefined : process.env.CURSOR_API_KEY;
   if (isNonEmpty(configCursorApiKey) || isNonEmpty(hostCursorApiKey)) {
     const source = isNonEmpty(configCursorApiKey) ? "adapter config env" : "server environment";
     checks.push({
@@ -145,7 +167,7 @@ export async function testEnvironment(
       message: "CURSOR_API_KEY is set for Cursor authentication.",
       detail: `Detected in ${source}.`,
     });
-  } else {
+  } else if (!targetIsRemote) {
     const cursorHome = isNonEmpty(env.CURSOR_HOME) ? env.CURSOR_HOME : undefined;
     const cursorAuth = await readCursorAuthInfo(cursorHome).catch(() => null);
     if (cursorAuth) {
@@ -192,8 +214,9 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("Respond with hello.");
 
-      const probe = await runChildProcess(
-        `cursor-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      const probe = await runAdapterExecutionTargetProcess(
+        runId,
+        target,
         command,
         args,
         {

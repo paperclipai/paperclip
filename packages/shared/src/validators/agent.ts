@@ -132,6 +132,13 @@ export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
   adapterConfig: adapterConfigSchema.optional().default({}),
+  /**
+   * Optional environment to run the adapter test inside. When omitted, the
+   * test runs against the local Paperclip host. When provided and the
+   * environment is non-local (SSH/sandbox), the test probes are executed
+   * inside that environment so the result reflects real agent execution.
+   */
+  environmentId: z.string().uuid().optional().nullable(),
 });
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;
