@@ -183,6 +183,27 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
 
+  // Skip discovery validation for known external gateway providers.
+  //
+  // Discovery runs `opencode models` without the agent's full env (no
+  // OPENROUTER_API_KEY, ZHIPU_API_KEY, MANIFEST_API_KEY, etc.), so these
+  // providers don't appear in the discovered list and would otherwise fail
+  // the "configured model is unavailable" check below. Actual execution
+  // passes the full env to `opencode run`, so the model resolves correctly.
+  //
+  // Recognised gateway prefixes:
+  // - openrouter/   OpenRouter
+  // - zai-coding-plan/, zai/   Z.AI Coding Plan + pay-as-you-go endpoints
+  // - manifest/   Manifest auto-routing gateway (app.manifest.build)
+  if (
+    model.startsWith("openrouter/") ||
+    model.startsWith("zai-coding-plan/") ||
+    model.startsWith("zai/") ||
+    model.startsWith("manifest/")
+  ) {
+    return [{ id: model, label: model }];
+  }
+
   const models = await discoverOpenCodeModelsCached({
     command: input.command,
     cwd: input.cwd,
