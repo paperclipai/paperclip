@@ -64,9 +64,10 @@ function formatErrorMessage(error: unknown): string {
 }
 
 function readTimeoutStream(error: TimeoutError, key: "stdout" | "stderr"): string {
-  const direct = (error as Record<string, unknown>)[key];
+  const record = error as unknown as Record<string, unknown>;
+  const direct = record[key];
   if (typeof direct === "string" && direct.length > 0) return direct;
-  const nested = (error as { result?: Record<string, unknown> }).result?.[key];
+  const nested = (record as { result?: Record<string, unknown> }).result?.[key];
   if (typeof nested === "string") return nested;
   return typeof direct === "string" ? direct : "";
 }
