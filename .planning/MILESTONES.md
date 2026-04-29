@@ -9,7 +9,7 @@
 | v2.3 | 운영 검증 및 외부 연동 실체화 | Shipped | 2026-04-25 | 2026-04-27 | Phase 19-24 완료. 요구사항 17/17, integration 5/5, flows 5/5 충족. strict Nyquist validation debt는 tech debt로 이월 |
 | v2.4 | Knowledge+Economy 심화 | Shipped | 2026-04-27 | 2026-04-28 | Phase 25-32 완료. 요구사항 24/24, phases 5/5, integration 5/5, flows 5/5 충족. 초기 audit gaps는 Phase 30-32 closure로 닫고 re-audit `passed` |
 | v2.5 | Semantic Knowledge Intelligence | Shipped | 2026-04-28 | 2026-04-29 | Phase 33-38 완료. Semantic index, semantic search, contradiction review, Jarvis grounding, knowledge operations 요구사항 19/19 완료. 초기 audit gaps는 Phase 38 closure로 닫고 re-audit `passed` |
-| v2.6 | 운영 커넥터 및 자율성 하드닝 | Planned | 2026-04-29 | - | Phase 39-43 planned. External connector apply, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure 요구사항 12개 정의 |
+| v2.6 | 운영 커넥터 및 자율성 하드닝 | Shipped | 2026-04-29 | 2026-04-29 | Phase 39-43 완료. 요구사항 12/12, integration 5/5, flows 5/5 충족. Full-suite timeout과 Windows embedded Postgres skip은 tech debt로 수용 |
 
 ## v2.0 RT2 Refoundation
 
@@ -308,28 +308,32 @@ Phase 38 closure 후 re-audit 결과:
 
 ## v2.6 운영 커넥터 및 자율성 하드닝
 
-**상태:** Planned
-**시작:** 2026-04-29
-**Phases:** 5 planned
-**Requirements:** 12 planned
+**상태:** 2026-04-29 완료  
+**시작:** 2026-04-29  
+**완료:** 2026-04-29  
+**Phases:** 5 planned, 5 complete  
+**Plans:** 6 complete  
+**Requirements:** 12 planned, 12 complete  
+**Audit:** `tech_debt` (`.planning/milestones/v2.6-MILESTONE-AUDIT.md`)  
 **Artifacts:**
 
-- `.planning/ROADMAP.md`
-- `.planning/REQUIREMENTS.md`
+- `.planning/milestones/v2.6-ROADMAP.md`
+- `.planning/milestones/v2.6-REQUIREMENTS.md`
+- `.planning/milestones/v2.6-MILESTONE-AUDIT.md`
 
 ### 목표
 
 v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile/native capture, Jarvis autonomy guardrail, validation gate까지 확장해 운영 가능한 hardening layer로 만든다.
 
-### 계획된 Phase
+### 완료한 Phase
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 39 | Enterprise Connector Apply Loop | EXT-01, EXT-02 | Planned |
-| 40 | Trusted Local Knowledge Bridge | EXT-03 | Planned |
-| 41 | Native and Mobile Capture Hardening | CAP-01, CAP-02, CAP-03 | Planned |
-| 42 | Jarvis Autonomy Eval Guardrails | AUTO-01, AUTO-02, AUTO-03 | Planned |
-| 43 | Validation Debt and Milestone Gate Closure | VAL-01, VAL-02, VAL-03 | Planned |
+| 39 | Enterprise Connector Apply Loop | EXT-01, EXT-02 | Complete |
+| 40 | Trusted Local Knowledge Bridge | EXT-03 | Complete |
+| 41 | Native and Mobile Capture Hardening | CAP-01, CAP-02, CAP-03 | Complete |
+| 42 | Jarvis Autonomy Eval Guardrails | AUTO-01, AUTO-02, AUTO-03 | Complete |
+| 43 | Validation Debt and Milestone Gate Closure | VAL-01, VAL-02, VAL-03 | Complete |
 
 ### 범위
 
@@ -339,5 +343,35 @@ v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile
 - Jarvis knowledge rewrite는 direct apply 없이 eval-backed proposal과 approval route로 제한한다.
 - Phase 19-24 strict validation debt와 legacy UAT unknown 항목을 정리하고 milestone artifact gate를 강화한다.
 
+### 완료한 것
+
+- Enterprise rollout connector가 SSO callback-state evidence, structured failure reason, SCIM preview/apply result, partial failure, rollback candidate를 audit 가능한 evidence로 남긴다.
+- Trusted local bridge pairing, heartbeat, sync queue, conflict count, blocked reason, last applied state가 API/UI에 노출된다.
+- Capture source installation/signing evidence와 inbound draft semantic context, duplicate warning, source evidence, promotion audit metadata가 연결된다.
+- Jarvis rewrite는 direct apply 없이 proposal, eval rubric, risk, approval route, monitoring evidence로만 운영된다.
+- Phase 19-24 validation debt와 legacy UAT unknown closure를 문서화하고 `rt2:milestone-gate`로 artifact 누락을 탐지한다.
+
+### 감사 결과
+
+| Gate | Score |
+|------|-------|
+| Requirements | 12/12 |
+| Phases | 5/5 |
+| Integration | 5/5 |
+| Flows | 5/5 |
+
+Audit status는 `tech_debt`다. Critical blocker는 없지만 다음 항목을 수용하고 close했다.
+
+### 알려진 Deferred Items
+
+| Category | Item | Status |
+|----------|------|--------|
+| test | Phase 40-43 full `pnpm test` | timeout on Windows host, targeted checks passed |
+| postgres | Embedded Postgres route/persistence suites | skipped by default on Windows host |
+| validation_metadata | Phase 39 `VALIDATION.md` frontmatter | stale draft/wave_0 metadata, execution evidence passed |
+| uat_gap | Phase 01 / 01-UAT.md | acknowledged at close, unknown, 0 pending scenarios |
+| uat_gap | Phase 43 / 43-LEGACY-UAT-CLOSURE.md | acknowledged at close, tool reports unknown, closure artifact says closed |
+| uat_gap | Phase m1-6-daily-report / m1-6-UAT.md | acknowledged at close, unknown, 0 pending scenarios |
+
 ---
-*마지막 업데이트: 2026-04-29, v2.6 milestone started*
+*마지막 업데이트: 2026-04-29, v2.6 milestone complete*

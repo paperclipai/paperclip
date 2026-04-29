@@ -12,24 +12,24 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝
 
-**현재 마일스톤:** v2.6 운영 커넥터 및 자율성 하드닝
+**현재 마일스톤:** 다음 milestone planning 전 상태
 
-**최근 완료:** v2.5는 semantic index, semantic knowledge search, contradiction review workflow, Jarvis grounded answers, knowledge operations health gate를 완료하고 Phase 38 closure로 milestone audit gaps를 닫았다. 최종 re-audit은 requirements 19/19, phases 6/6, integration 5/5, flows 5/5로 `passed`다.
+**최근 완료:** v2.6은 enterprise connector apply, trusted local bridge, native/mobile capture hardening, Jarvis autonomy eval guardrails, validation debt closure를 완료했다. Audit은 requirements 12/12, phases 5/5, integration 5/5, flows 5/5이며 full-suite timeout과 Windows embedded Postgres skip을 `tech_debt`로 수용했다.
 
-**현재 진행:** v2.6 Phase 39 Enterprise Connector Apply Loop가 완료되었다. 다음 단계는 Phase 40부터 trusted local bridge, native/mobile capture, Jarvis autonomy/eval guardrail, historical validation closure를 순서대로 구현하는 것이다.
+**현재 진행:** v2.6 archive/tag가 완료되면 새 milestone 요구사항 정의가 다음 단계다.
 
-## 현재 마일스톤: v2.6 운영 커넥터 및 자율성 하드닝
+## 최근 마일스톤: v2.6 운영 커넥터 및 자율성 하드닝
 
 **Goal:** v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile/native capture, Jarvis autonomy guardrail, validation gate까지 확장해 운영 가능한 hardening layer로 만든다.
 
-**Target features:**
-- 실제 IdP handshake 검증과 SCIM apply mutation을 audit 가능한 rollout connector flow로 고도화한다. (Phase 39 완료)
-- Obsidian/local knowledge bridge를 trusted daemon/pairing/health 기반 운영 흐름으로 만든다.
-- Slack/Teams/native/mobile capture source를 설치, 검수, promotion, semantic search UX까지 hardening한다.
-- Jarvis autonomous knowledge rewrite 제안을 provider-backed eval, deterministic fallback, approval evidence, production monitoring으로 제한한다.
-- Phase 19-24 strict validation debt와 legacy UAT unknown 항목을 닫고 milestone artifact gate를 강화한다.
+**Delivered:**
+- 실제 IdP handshake 검증과 SCIM apply mutation을 audit 가능한 rollout connector flow로 고도화했다.
+- Obsidian/local knowledge bridge를 trusted daemon/pairing/health 기반 운영 흐름으로 만들었다.
+- Slack/Teams/native/mobile capture source를 설치, 검수, promotion, semantic search UX까지 hardening했다.
+- Jarvis autonomous knowledge rewrite 제안을 provider-backed eval, deterministic fallback, approval evidence, production monitoring으로 제한했다.
+- Phase 19-24 strict validation debt와 legacy UAT unknown 항목을 닫고 milestone artifact gate를 강화했다.
 
 **v2.5 delivered:**
 - Company-scoped semantic index storage, deterministic fallback embedding, and incremental reindex inspection.
@@ -107,13 +107,14 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.5 Knowledge Operations 요구사항 3개.
 - [x] v2.5 Phase 38 artifact closure.
 - [x] v2.6 external connector apply loop 요구사항 2개. - Phase 39
+- [x] v2.6 trusted local bridge 요구사항 1개. - Phase 40
+- [x] v2.6 native/mobile capture hardening 요구사항 3개. - Phase 41
+- [x] v2.6 autonomy/evals hardening 요구사항 3개. - Phase 42
+- [x] v2.6 validation closure 요구사항 3개. - Phase 43
 
 ### 진행 중
 
-- [ ] v2.6 trusted local bridge 요구사항 1개.
-- [ ] v2.6 native/mobile capture hardening 요구사항 3개.
-- [ ] v2.6 autonomy/evals hardening 요구사항 3개.
-- [ ] v2.6 validation closure 요구사항 3개.
+- [ ] 다음 milestone requirements 정의.
 
 ### 범위 밖
 
@@ -133,6 +134,7 @@ v2.0-v2.2에서 완료한 것:
 - v2.3은 Phase 19-24에서 검증 부채와 개발기획서 remaining 6% gap을 실제 운영 기능과 감사 가능한 검증 산출물로 닫았다.
 - v2.4는 daily wiki projector -> graphify -> ledger atomicity -> settlement hardening -> batch linting으로 knowledge/economy 깊이를 더했고, Phase 30-32에서 strict milestone traceability를 복구했다. 최종 re-audit은 `passed`다.
 - v2.5는 semantic index -> semantic search -> contradiction review -> Jarvis grounding -> operations health gate로 지식 루프를 닫았고, Phase 38에서 strict milestone traceability를 복구했다. 최종 re-audit은 `passed`다.
+- v2.6은 external connector apply, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure로 운영 경계를 hardening했다. Audit은 blocker 없이 `tech_debt`다.
 
 ## 제약
 
@@ -155,10 +157,11 @@ v2.0-v2.2에서 완료한 것:
 | Paperclip/Multica 명칭은 product-facing이 아니라 engine/internal compatibility layer로만 유지 | 사용자가 RealTycoon2가 장식처럼 보이는 위험을 명확히 지적했다 | 좋음 - 제품 표면은 RT2/Trello형 업무 흐름으로 전환 |
 | v2.4는 knowledge projection과 economy governance 심화를 5개 기능 phase와 3개 closure phase로 완료 | initial audit gaps를 숨기지 않고 Phase 30-32에서 artifact coverage를 복구했다 | 좋음 - final re-audit `passed` |
 | v2.5는 semantic knowledge intelligence를 5개 기능 phase와 1개 closure phase로 완료 | semantic index/search/contradiction/Jarvis/operations 기능 구현 후 Phase 38에서 artifact coverage를 복구했다 | 좋음 - final re-audit `passed` |
+| v2.6은 운영 경계 hardening을 blocker 없이 닫고 full-suite timeout을 tech debt로 기록 | targeted checks와 artifact gate는 통과했지만 Windows full-suite completion은 재확인이 필요했다 | 좋음 - milestone close를 과장하지 않고 debt를 분리 기록 |
 
 ## 다음 마일스톤 목표
 
-v2.6은 external connector, local knowledge bridge, native/mobile capture, Jarvis autonomy/evals, historical validation closure를 하나의 operational hardening milestone로 묶는다. Phase 39에서 external connector apply loop는 완료되었다. 남은 완료 기준은 사용자가 trusted local/native boundary에서 들어온 work/knowledge signal을 검수하고, Jarvis가 evidence-backed 제안만 만들며, milestone gate가 검증 산출물 누락을 조기에 막는 것이다.
+다음 milestone은 fresh requirements부터 정의한다. 후보 축은 v2.6에서 deferred된 full-suite/runtime verification, embedded Postgres release-host validation, native distribution, cross-company federation, provider-backed eval hardening, 또는 approval-first autonomy observation이다.
 
 ## Evolution
 
@@ -178,4 +181,4 @@ v2.6은 external connector, local knowledge bridge, native/mobile capture, Jarvi
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-29, Phase 39 complete*
+*마지막 업데이트: 2026-04-29 after v2.6 milestone*

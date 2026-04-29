@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v2.6
 milestone_name: 운영 커넥터 및 자율성 하드닝
-status: executing
-last_updated: "2026-04-29T12:38:57+09:00"
+status: complete
+last_updated: "2026-04-29T16:55:00+09:00"
 last_activity: 2026-04-29
 progress:
   total_phases: 5
@@ -17,29 +17,26 @@ progress:
 
 ## Current Position
 
-Phase: 43 - Validation Debt and Milestone Gate Closure
+Phase: -
 Plan: -
-Status: Phase 43 complete; ready for milestone close
-Last activity: 2026-04-29 - Phase 43 complete
+Status: v2.6 milestone complete; ready for next milestone planning
+Last activity: 2026-04-29 - v2.6 milestone archived
 
 ## 현재 위치
 
-v2.6 운영 커넥터 및 자율성 하드닝 milestone이 시작되었다. 이번 milestone은 v2.5에서 닫은 semantic knowledge loop를 external connector, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure까지 확장한다.
+v2.6 운영 커넥터 및 자율성 하드닝 milestone이 완료되었다. IdP/SCIM apply loop, trusted local bridge, native/mobile capture hardening, Jarvis autonomy eval guardrails, validation debt closure, legacy UAT classification, and milestone artifact gate가 구현 또는 문서화되었다.
 
-Phase 39-43이 완료되었다. IdP/SCIM apply loop, trusted local bridge, native/mobile capture hardening, Jarvis autonomy eval guardrails, validation debt closure, legacy UAT classification, and milestone artifact gate가 구현 또는 문서화되었다.
-
-다음 위치는 v2.6 milestone close/audit이다.
+다음 위치는 새 milestone 요구사항 정의다.
 
 ## 최근 완료한 마일스톤
 
-v2.5는 Semantic Knowledge Intelligence milestone이었다:
+v2.6은 운영 커넥터 및 자율성 하드닝 milestone이었다:
 
-- **Phase 33**: Semantic Index Foundation - daily wiki/graph/work evidence를 company-scoped semantic index에 적재
-- **Phase 34**: Semantic Knowledge Search - semantic + lexical fallback search surface와 filters
-- **Phase 35**: Contradiction Review Workflow - contradiction candidate, resolution, audit/freshness loop
-- **Phase 36**: Jarvis Grounded Answers - citations, stale evidence warnings, unresolved contradiction warnings
-- **Phase 37**: Knowledge Intelligence Operations - semantic/contradiction/Jarvis health gate
-- **Phase 38**: Semantic Knowledge Artifact Closure - v2.5 audit gaps closure and re-audit pass
+- **Phase 39**: Enterprise Connector Apply Loop - SSO evidence와 SCIM preview/apply audit loop
+- **Phase 40**: Trusted Local Knowledge Bridge - pairing, heartbeat, queue, health evidence
+- **Phase 41**: Native and Mobile Capture Hardening - source evidence, semantic context, mobile-safe search
+- **Phase 42**: Jarvis Autonomy Eval Guardrails - proposal-only rewrite, eval rubric, monitoring evidence
+- **Phase 43**: Validation Debt and Milestone Gate Closure - historical validation artifacts, legacy UAT closure, milestone gate
 
 ## 프로젝트 기준
 
@@ -47,7 +44,7 @@ v2.5는 Semantic Knowledge Intelligence milestone이었다:
 
 **핵심 가치:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
 
-**현재 초점:** v2.6 execution. Phase 39 external connector hardening은 완료되었고, trusted local knowledge bridge, native/mobile capture, Jarvis autonomy/evals, historical validation debt closure를 Phase 40-43으로 이어 실행한다.
+**현재 초점:** Planning next milestone after v2.6 archive. Fresh requirements should be created before new execution.
 
 ## 누적 맥락
 
@@ -58,6 +55,7 @@ v2.5는 Semantic Knowledge Intelligence milestone이었다:
 - v2.3은 검증 부채 closure, SSO/SCIM rollout validation, Obsidian bidirectional sync, settlement governance, Trello advanced board, native capture queue, Phase 19 verification artifact closure를 완료했다.
 - v2.4는 daily wiki projector, graphify, ledger atomicity, settlement hardening, batch linting을 완료하고 Phase 30-32에서 strict traceability를 복구했다.
 - v2.5는 deterministic fallback을 유지하면서 semantic index/search, contradiction review, Jarvis grounding, operator health gate를 연결했다.
+- v2.6은 external connector apply, trusted local bridge, native/mobile capture, Jarvis autonomy/evals, validation closure를 완료했다.
 - Windows sandbox `spawn EPERM`은 계속 환경 제약이다. Vitest/build tooling은 승인된 unsandboxed run이 필요할 수 있다.
 
 ## Deferred Items
@@ -77,16 +75,27 @@ v2.5 이후 후보:
 | autonomy | automatic knowledge rewrites without approval | contradiction review가 먼저 안정화되어야 함 |
 | provider | mandatory live LLM/provider dependency | local dev와 CI는 deterministic fallback으로 검증 가능해야 함 |
 | mobile | native mobile semantic search UX | web operator loop가 먼저 안정화되어야 함 |
-| connectors | live IdP handshake, SCIM apply mutation, local Obsidian daemon | v2.6 hardening 후보 |
+| connectors | full production IdP/SCIM/live daemon rollout beyond audited apply contract | future production hardening |
 | validation | Phase 19-24 strict `*-VALIDATION.md`, legacy UAT unknown closure | Phase 43에서 closure 완료 |
+
+v2.6 close 시점 인정/defer:
+
+| Category | Item | Status |
+|----------|------|--------|
+| uat_gap | Phase 01 / 01-UAT.md | acknowledged at close; unknown, 0 pending scenarios |
+| uat_gap | Phase 43 / 43-LEGACY-UAT-CLOSURE.md | acknowledged at close; audit-open reports unknown, closure artifact says closed |
+| uat_gap | Phase m1-6-daily-report / m1-6-UAT.md | acknowledged at close; unknown, 0 pending scenarios |
+| test | Phase 40-43 full `pnpm test` | timeout on Windows host; targeted checks passed |
+| postgres | Embedded Postgres persistence suites | skipped by default on this Windows host |
+| validation_metadata | Phase 39 `VALIDATION.md` | stale draft/wave_0 metadata; execution evidence passed |
 
 ## 다음 단계
 
-v2.6 milestone close/audit을 진행한다:
+새 milestone을 시작한다:
 
 ```sh
-$gsd-complete-milestone v2.6
+$gsd-new-milestone
 ```
 
 ---
-*상태 업데이트: 2026-04-29, Phase 43 complete*
+*상태 업데이트: 2026-04-29, v2.6 milestone complete*

@@ -8,7 +8,7 @@
 - [shipped] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-24 완료, 2026-04-27 ([archive](milestones/v2.3-ROADMAP.md), [requirements](milestones/v2.3-REQUIREMENTS.md), [audit](milestones/v2.3-MILESTONE-AUDIT.md))
 - [shipped] **v2.4 Knowledge+Economy 심화** - Phase 25-32 완료, 2026-04-28 ([archive](milestones/v2.4-ROADMAP.md), [requirements](milestones/v2.4-REQUIREMENTS.md), [audit](milestones/v2.4-MILESTONE-AUDIT.md), [re-audit](milestones/v2.4-MILESTONE-REAUDIT.md))
 - [shipped] **v2.5 Semantic Knowledge Intelligence** - Phase 33-38 완료, 2026-04-29 ([archive](milestones/v2.5-ROADMAP.md), [requirements](milestones/v2.5-REQUIREMENTS.md), [audit](milestones/v2.5-MILESTONE-AUDIT.md), [re-audit](milestones/v2.5-MILESTONE-REAUDIT.md))
-- [active] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 complete, 12 requirements mapped
+- [shipped] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 완료, 2026-04-29 ([archive](milestones/v2.6-ROADMAP.md), [requirements](milestones/v2.6-REQUIREMENTS.md), [audit](milestones/v2.6-MILESTONE-AUDIT.md))
 
 ## 완료됨
 
@@ -94,94 +94,22 @@ Initial audit status: `gaps_found`. Phase 38 closure 후 requirements 19/19, pha
 
 </details>
 
-## v2.6 운영 커넥터 및 자율성 하드닝
+<details>
+<summary>v2.6 운영 커넥터 및 자율성 하드닝 (Phase 39-43) - 2026-04-29 완료</summary>
 
-**상태:** In progress
-**시작:** 2026-04-29
-**Phases:** 5 planned
-**Requirements:** 12 planned
+- [x] Phase 39: Enterprise Connector Apply Loop - 2/2 plans complete
+- [x] Phase 40: Trusted Local Knowledge Bridge - 1/1 plan complete
+- [x] Phase 41: Native and Mobile Capture Hardening - 1/1 plan complete
+- [x] Phase 42: Jarvis Autonomy Eval Guardrails - 1/1 plan complete
+- [x] Phase 43: Validation Debt and Milestone Gate Closure - 1/1 plan complete
 
-### 목표
+Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flows 5/5. Full `pnpm test` timeout and Windows embedded Postgres skip evidence are accepted tech debt.
 
-v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile/native capture, Jarvis autonomy guardrail, validation gate까지 확장해 운영 가능한 hardening layer로 만든다.
-
-### 계획된 Phase
-
-| Phase | Name | Goal | Requirements | Success Criteria |
-|-------|------|------|--------------|------------------|
-| 39 | Enterprise Connector Apply Loop | IdP handshake와 SCIM apply를 preview-only 상태에서 audit 가능한 운영 apply loop로 고도화한다 | EXT-01, EXT-02 | 4 |
-| 40 | Trusted Local Knowledge Bridge | Obsidian/local bridge를 trusted daemon pairing, sync health, conflict evidence 중심으로 운영 가능하게 만든다 | EXT-03 | 4 |
-| 41 | Native and Mobile Capture Hardening | Slack/Teams/native/mobile inbound source를 설치 검수, signed source, semantic promotion, mobile search UX로 닫는다 | CAP-01, CAP-02, CAP-03 | 5 |
-| 42 | Jarvis Autonomy Eval Guardrails | Jarvis rewrite proposal을 approval-first, eval-backed, monitored workflow로 제한한다 | AUTO-01, AUTO-02, AUTO-03 | 5 |
-| 43 | Validation Debt and Milestone Gate Closure | Phase 19-24 validation debt와 legacy UAT unknown을 닫고 milestone artifact gate를 강화한다 | VAL-01, VAL-02, VAL-03 | 4 |
-
-### Phase Details
-
-**Phase 39: Enterprise Connector Apply Loop**
-
-Goal: 운영자가 enterprise rollout connector를 실제 IdP/SCIM 경계에서 검증하고 apply evidence를 남길 수 있게 한다.
-
-Requirements: EXT-01, EXT-02
-
-Success criteria:
-1. OIDC/SAML metadata validation, callback state, failure reason, audit evidence가 route/service/test에서 확인된다.
-2. SCIM user/group preview가 apply mutation으로 승격되고 result, partial failure, rollback candidate가 저장된다.
-3. Connector apply 결과가 company-scoped activity log와 rollout readiness surface에 연결된다.
-4. Deterministic tests가 external network 없이 success/failure/rollback candidate paths를 검증한다.
-
-**Phase 40: Trusted Local Knowledge Bridge**
-
-Goal: Obsidian/local vault 연동을 trusted daemon/pairing 모델과 health evidence로 운영 가능하게 만든다.
-
-Requirements: EXT-03
-
-Success criteria:
-1. Local bridge pairing token 또는 trust handshake가 company boundary와 user audit trail을 보존한다.
-2. Vault sync queue, last applied, conflict count, blocked reason이 API와 UI에서 확인된다.
-3. Import/export apply는 기존 Knowledge Bridge provenance와 graph/wiki projection contract를 깨지 않는다.
-4. Bridge unavailable, stale, conflict scenarios가 deterministic tests로 검증된다.
-
-**Phase 41: Native and Mobile Capture Hardening**
-
-Goal: 외부 capture source에서 들어온 work signal을 trusted source evidence와 mobile UX로 검수하고 promotion한다.
-
-Requirements: CAP-01, CAP-02, CAP-03
-
-Success criteria:
-1. Slack/Teams/native capture source의 installation state, signing status, last inbound event가 운영자에게 노출된다.
-2. Inbound draft review queue가 semantic context, duplicate warning, source evidence를 함께 보여준다.
-3. Promotion된 draft는 RT2 work object, activity log, wiki/semantic indexing path로 이어진다.
-4. Mobile-sized knowledge search surface가 semantic result, lexical fallback, citation target을 작은 viewport에서 깨지지 않게 표시한다.
-5. Signed/unsigned, duplicate, stale semantic evidence paths가 route/service/UI tests로 검증된다.
-
-**Phase 42: Jarvis Autonomy Eval Guardrails**
-
-Goal: Jarvis가 knowledge rewrite를 자동 적용하지 않고 eval-backed proposal과 monitoring으로만 운영되게 한다.
-
-Requirements: AUTO-01, AUTO-02, AUTO-03
-
-Success criteria:
-1. Jarvis rewrite output은 proposed diff, evidence, risk, approval route를 포함하고 direct apply path는 없다.
-2. Provider-backed eval과 deterministic fallback eval이 같은 rubric schema로 저장된다.
-3. Evaluation comparison은 provider unavailable, disagreement, low-confidence cases를 표시한다.
-4. Production monitoring dashboard가 grounding, citation freshness, contradiction warning, rewrite proposal quality를 추적한다.
-5. Approval/rejection/audit events가 기존 contradiction review와 activity log contract에 연결된다.
-
-**Phase 43: Validation Debt and Milestone Gate Closure**
-
-Goal: historical validation debt를 정리하고 다음 milestone부터 artifact 누락이 늦게 발견되지 않도록 gate를 강화한다.
-
-Requirements: VAL-01, VAL-02, VAL-03
-
-Success criteria:
-1. Phase 19-24 strict validation artifacts가 현재 behavior/test evidence와 연결되어 archive에 남는다.
-2. Legacy UAT unknown 항목은 재검증 완료, 명시적 future scope, 또는 obsolete로 근거와 함께 정리된다.
-3. Milestone health gate가 summary, verification, validation, checkbox, traceability/frontmatter 누락을 release 전에 탐지한다.
-4. `pnpm typecheck`와 `pnpm test`가 통과하고 v2.6 requirements traceability가 12/12로 닫힌다.
+</details>
 
 ## 현재 위치
 
-Phase 43 Validation Debt and Milestone Gate Closure가 완료되었다. v2.6은 milestone artifact gate와 requirements traceability 12/12 closure까지 도달했으며, 다음 단계는 milestone close/audit이다.
+v2.6 운영 커넥터 및 자율성 하드닝이 완료되었다. 다음 단계는 새 milestone 요구사항 정의다.
 
 ## 진행상황
 
@@ -252,6 +180,9 @@ Phase 43 Validation Debt and Milestone Gate Closure가 완료되었다. v2.6은 
 - [v2.5 requirements archive](milestones/v2.5-REQUIREMENTS.md)
 - [v2.5 milestone audit](milestones/v2.5-MILESTONE-AUDIT.md)
 - [v2.5 milestone re-audit](milestones/v2.5-MILESTONE-REAUDIT.md)
+- [v2.6 roadmap archive](milestones/v2.6-ROADMAP.md)
+- [v2.6 requirements archive](milestones/v2.6-REQUIREMENTS.md)
+- [v2.6 milestone audit](milestones/v2.6-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-29, Phase 43 complete*
+*마지막 업데이트: 2026-04-29, v2.6 milestone complete*
