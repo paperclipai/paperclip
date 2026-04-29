@@ -50,6 +50,10 @@ import { plugins } from "@paperclipai/db";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import {
+  autoConfigureLinearFromEnv,
+  installKkrooLocalPlugins,
+} from "./bootstrap/kkroo-bundled-plugins.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import type {
@@ -191,129 +195,13 @@ async function autoInstallBundledPlugins(
     logger.warn({ err }, "auto-upgrade check failed (non-fatal)");
   }
 
-  // For dev: if npm install failed for chat plugin, try local path fallback
-  {
-    const listRes2 = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
-    const plugins2 = listRes2?.ok ? (await listRes2.json()) as Array<{ pluginKey: string; status: string }> : [];
-    const chatInstalled = plugins2.some((p) => p.pluginKey === "paperclip-chat" && p.status === "ready");
-    if (!chatInstalled) {
-      try {
-        const { resolve } = await import("path");
-        const absPath = resolve(process.cwd(), "../paperclip-plugin-chat");
-        logger.info({ path: absPath }, "chat plugin not found via npm, trying local path");
-        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
-        });
-        if (res.ok) {
-          const result = (await res.json()) as { pluginKey?: string; status?: string };
-          logger.info({ pluginKey: result.pluginKey, status: result.status }, "chat plugin installed from local path");
-        }
-      } catch (err) {
-        logger.warn({ err }, "local chat plugin install failed");
-      }
-    }
-  }
-
-  // ccrotate plugin is bundled in-image at packages/plugins/paperclip-plugin-ccrotate
-  // (no npm publish), so install it from the local path on every boot if absent.
-  {
-    const listRes = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
-    const installed = listRes?.ok ? (await listRes.json()) as Array<{ pluginKey: string; status: string }> : [];
-    const present = installed.some((p) => p.pluginKey === "kkroo.ccrotate" && p.status === "ready");
-    if (!present) {
-      try {
-        const { resolve } = await import("path");
-        const absPath = resolve(process.cwd(), "packages/plugins/paperclip-plugin-ccrotate");
-        logger.info({ path: absPath }, "installing bundled ccrotate plugin from local path");
-        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
-        });
-        if (res.ok) {
-          const result = (await res.json()) as { pluginKey?: string; status?: string };
-          logger.info({ pluginKey: result.pluginKey, status: result.status }, "ccrotate plugin installed from local path");
-        } else {
-          const err = (await res.json().catch(() => ({}))) as { error?: string };
-          logger.warn({ error: err.error }, "ccrotate plugin local install failed");
-        }
-      } catch (err) {
-        logger.warn({ err }, "ccrotate plugin local install threw");
-      }
-    }
-  }
-
-  // Linear plugin is bundled in-image at packages/plugins/paperclip-plugin-linear
-  // — same rationale as ccrotate above. Install from local path if absent so
-  // the auto-configure block below has something to configure.
-  {
-    const listRes = await fetchInternal(`${baseUrl}/api/plugins`).catch(() => null);
-    const installed = listRes?.ok ? (await listRes.json()) as Array<{ pluginKey: string; status: string }> : [];
-    const present = installed.some((p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready");
-    if (!present) {
-      try {
-        const { resolve } = await import("path");
-        const absPath = resolve(process.cwd(), "packages/plugins/paperclip-plugin-linear");
-        logger.info({ path: absPath }, "installing bundled linear plugin from local path");
-        const res = await fetchInternal(`${baseUrl}/api/plugins/install`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
-        });
-        if (res.ok) {
-          const result = (await res.json()) as { pluginKey?: string; status?: string };
-          logger.info({ pluginKey: result.pluginKey, status: result.status }, "linear plugin installed from local path");
-        } else {
-          const err = (await res.json().catch(() => ({}))) as { error?: string };
-          logger.warn({ error: err.error }, "linear plugin local install failed");
-        }
-      } catch (err) {
-        logger.warn({ err }, "linear plugin local install threw");
-      }
-    }
-  }
-
-  // Auto-configure Linear plugin from env vars if credentials are set
-  const linearClientId = process.env.PAPERCLIP_LINEAR_CLIENT_ID;
-  const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
-  if (linearClientId && linearClientSecret) {
-    try {
-      const listRes = await fetchInternal(`${baseUrl}/api/plugins`);
-      if (listRes.ok) {
-        const allPlugins = (await listRes.json()) as Array<{ id: string; pluginKey: string; status: string }>;
-        const linearPlugin = allPlugins.find((p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready");
-        if (linearPlugin) {
-          // Check if config already has credentials
-          const configRes = await fetchInternal(`${baseUrl}/api/plugins/${linearPlugin.id}/config`);
-          if (configRes.ok) {
-            const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
-            const existing = config?.configJson ?? {};
-            if (!existing.linearClientId || !existing.linearClientSecret) {
-              // Auto-populate from env
-              await fetchInternal(`${baseUrl}/api/plugins/${linearPlugin.id}/config`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  configJson: {
-                    ...existing,
-                    linearClientId,
-                    linearClientSecret,
-                    syncComments: existing.syncComments ?? true,
-                    syncDirection: existing.syncDirection ?? "bidirectional",
-                  },
-                }),
-              });
-              logger.info("Auto-configured Linear plugin from env vars");
-            }
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, "failed to auto-configure Linear plugin from env");
-    }
-  }
+  // ──────────────────────────────────────────────────────────────────────────
+  // Kkroo-specific bundled-plugin bootstrap. Lives in a separate file so
+  // future merges of paperclipai/master don't conflict on this function.
+  // See server/src/bootstrap/kkroo-bundled-plugins.ts.
+  // ──────────────────────────────────────────────────────────────────────────
+  await installKkrooLocalPlugins({ baseUrl, fetchInternal });
+  await autoConfigureLinearFromEnv({ baseUrl, fetchInternal });
 }
 
 type BetterAuthSessionUser = {

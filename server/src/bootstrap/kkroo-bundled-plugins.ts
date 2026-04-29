@@ -1,0 +1,157 @@
+/**
+ * Kkroo-specific bundled-plugin bootstrap.
+ *
+ * Pulls every kkroo-only side effect that runs after the upstream
+ * `autoInstallBundledPlugins` npm-install loop into a single file so future
+ * merges of `paperclipai/master` into kkroo's `master` don't conflict on
+ * `server/src/index.ts`. If upstream changes the install loop, the conflicts
+ * land here at most — and `index.ts` keeps a stable two-call surface.
+ *
+ * What lives here:
+ *   - Local-path install fallbacks for chat, ccrotate, and linear plugins
+ *     bundled in-image at `packages/plugins/*` (no npm publish).
+ *   - Auto-configuration of the Linear plugin from
+ *     `PAPERCLIP_LINEAR_CLIENT_ID`/`PAPERCLIP_LINEAR_CLIENT_SECRET` env vars.
+ *
+ * If you need to add a new bundled plugin or auto-config block, do it here.
+ * Treat `index.ts` as upstream-aligned territory.
+ */
+
+import { resolve } from "node:path";
+import { logger } from "../middleware/logger.js";
+
+type FetchInternal = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
+interface BootstrapContext {
+  baseUrl: string;
+  fetchInternal: FetchInternal;
+}
+
+interface PluginListEntry {
+  id: string;
+  pluginKey: string;
+  status: string;
+  packageName?: string;
+}
+
+async function listInstalledPlugins(ctx: BootstrapContext): Promise<PluginListEntry[]> {
+  const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins`).catch(() => null);
+  if (!res?.ok) return [];
+  return (await res.json()) as PluginListEntry[];
+}
+
+interface LocalPluginInstall {
+  /** Plugin key the host will register the plugin under (matches manifest). */
+  pluginKey: string;
+  /** Filesystem path passed to `/api/plugins/install` with `isLocalPath: true`. */
+  absPath: string;
+  /** Human-readable name used in log lines. */
+  displayName: string;
+}
+
+async function installLocalPluginIfAbsent(
+  ctx: BootstrapContext,
+  spec: LocalPluginInstall,
+): Promise<void> {
+  const installed = await listInstalledPlugins(ctx);
+  const present = installed.some((p) => p.pluginKey === spec.pluginKey && p.status === "ready");
+  if (present) return;
+
+  try {
+    logger.info({ path: spec.absPath }, `installing bundled ${spec.displayName} plugin from local path`);
+    const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/install`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ packageName: spec.absPath, isLocalPath: true }),
+    });
+    if (res.ok) {
+      const result = (await res.json()) as { pluginKey?: string; status?: string };
+      logger.info(
+        { pluginKey: result.pluginKey, status: result.status },
+        `${spec.displayName} plugin installed from local path`,
+      );
+    } else {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      logger.warn({ error: err.error }, `${spec.displayName} plugin local install failed`);
+    }
+  } catch (err) {
+    logger.warn({ err }, `${spec.displayName} plugin local install threw`);
+  }
+}
+
+/**
+ * Install kkroo-specific plugins from local paths bundled in the docker image.
+ *
+ * Runs after the upstream npm-based `autoInstallBundledPlugins` loop has had
+ * a chance to install npm-published plugins. The chat plugin gets a fallback
+ * install from a sibling repo path (used in dev where npm install may have
+ * failed); ccrotate and linear are vendored as workspace packages and always
+ * install from `packages/plugins/*`.
+ */
+export async function installKkrooLocalPlugins(ctx: BootstrapContext): Promise<void> {
+  // Chat plugin: dev fallback if the upstream npm install loop didn't pick it up.
+  await installLocalPluginIfAbsent(ctx, {
+    pluginKey: "paperclip-chat",
+    absPath: resolve(process.cwd(), "../paperclip-plugin-chat"),
+    displayName: "chat",
+  });
+
+  // ccrotate: bundled in-image (no npm publish), always install from local path.
+  await installLocalPluginIfAbsent(ctx, {
+    pluginKey: "kkroo.ccrotate",
+    absPath: resolve(process.cwd(), "packages/plugins/paperclip-plugin-ccrotate"),
+    displayName: "ccrotate",
+  });
+
+  // Linear: bundled in-image. Must run before autoConfigureLinearFromEnv so
+  // there's a plugin to configure.
+  await installLocalPluginIfAbsent(ctx, {
+    pluginKey: "paperclip-plugin-linear",
+    absPath: resolve(process.cwd(), "packages/plugins/paperclip-plugin-linear"),
+    displayName: "linear",
+  });
+}
+
+/**
+ * Populate Linear plugin OAuth credentials from environment variables when
+ * present and not already configured. Lets the helm chart inject
+ * `PAPERCLIP_LINEAR_CLIENT_ID`/`PAPERCLIP_LINEAR_CLIENT_SECRET` instead of
+ * requiring an admin to enter them through the settings UI on every redeploy.
+ */
+export async function autoConfigureLinearFromEnv(ctx: BootstrapContext): Promise<void> {
+  const linearClientId = process.env.PAPERCLIP_LINEAR_CLIENT_ID;
+  const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
+  if (!linearClientId || !linearClientSecret) return;
+
+  try {
+    const allPlugins = await listInstalledPlugins(ctx);
+    const linearPlugin = allPlugins.find(
+      (p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready",
+    );
+    if (!linearPlugin) return;
+
+    const configRes = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${linearPlugin.id}/config`);
+    if (!configRes.ok) return;
+
+    const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
+    const existing = config?.configJson ?? {};
+    if (existing.linearClientId && existing.linearClientSecret) return;
+
+    await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${linearPlugin.id}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        configJson: {
+          ...existing,
+          linearClientId,
+          linearClientSecret,
+          syncComments: existing.syncComments ?? true,
+          syncDirection: existing.syncDirection ?? "bidirectional",
+        },
+      }),
+    });
+    logger.info("Auto-configured Linear plugin from env vars");
+  } catch (err) {
+    logger.warn({ err }, "failed to auto-configure Linear plugin from env");
+  }
+}

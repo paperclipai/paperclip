@@ -10,6 +10,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { appendPublicUrl } from "./middleware/append-public-url.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -349,12 +350,12 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   api.use(boardMutationGuard());
   api.use(
     "/health",
+    appendPublicUrl(opts.authPublicBaseUrl ?? null),
     healthRoutes(db, {
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
-      publicUrl: opts.authPublicBaseUrl ?? null,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
