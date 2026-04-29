@@ -34,6 +34,9 @@ importers:
 
   cli:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.888.0
+        version: 3.994.0
       '@clack/prompts':
         specifier: ^0.10.0
         version: 0.10.1
@@ -85,6 +88,9 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.8
     devDependencies:
       '@types/node':
         specifier: ^22.12.0
