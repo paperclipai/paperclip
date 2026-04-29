@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PLACEHOLDER_PATTERNS, isPlaceholderCommentBody } from "./placeholder.js";
+import { DEFAULT_PLACEHOLDER_PATTERNS, isPlaceholderCommentBody } from "../placeholder.js";
 
 describe("placeholder comments", () => {
   it("ships the approved 9-pattern default set", () => {
@@ -33,7 +33,11 @@ describe("placeholder comments", () => {
 
   it.each([
     "",
+    "   ",
+    null,
+    undefined,
     "Done: implemented the placeholder detector.",
+    "Parked. Investigating M2 dashboard outage.",
     "Blocked by ELEAAA-457: waiting for CTO review.",
     "Working on the failing test now.",
     "Parking lot update: route guard still needs a child issue.",
