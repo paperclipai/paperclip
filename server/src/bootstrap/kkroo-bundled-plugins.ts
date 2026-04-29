@@ -17,6 +17,7 @@
  * Treat `index.ts` as upstream-aligned territory.
  */
 
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { logger } from "../middleware/logger.js";
 
@@ -40,6 +41,16 @@ async function listInstalledPlugins(ctx: BootstrapContext): Promise<PluginListEn
   return (await res.json()) as PluginListEntry[];
 }
 
+async function readBundlePackageName(absPath: string): Promise<string | null> {
+  try {
+    const raw = await readFile(resolve(absPath, "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { name?: unknown };
+    return typeof parsed.name === "string" ? parsed.name : null;
+  } catch {
+    return null;
+  }
+}
+
 interface LocalPluginInstall {
   /** Plugin key the host will register the plugin under (matches manifest). */
   pluginKey: string;
@@ -54,11 +65,37 @@ async function installLocalPluginIfAbsent(
   spec: LocalPluginInstall,
 ): Promise<void> {
   const installed = await listInstalledPlugins(ctx);
-  const present = installed.some((p) => p.pluginKey === spec.pluginKey && p.status === "ready");
-  if (present) return;
+  const existing = installed.find((p) => p.pluginKey === spec.pluginKey && p.status === "ready");
+
+  // Drift check: if a previous deploy installed this pluginKey from a different
+  // packageName (e.g. registry has @lucitra/X but the in-image bundle is now
+  // @kkroo/X), the dist on disk for the registered packageName is stale and
+  // never gets replaced because the pluginKey-only check below would short-
+  // circuit. Force a re-install from the bundle path so the host writes the
+  // current dist for the current packageName.
+  let driftDetected = false;
+  if (existing) {
+    const bundleName = await readBundlePackageName(spec.absPath);
+    if (bundleName && existing.packageName && bundleName !== existing.packageName) {
+      driftDetected = true;
+      logger.info(
+        {
+          pluginKey: spec.pluginKey,
+          registryPackageName: existing.packageName,
+          bundlePackageName: bundleName,
+          path: spec.absPath,
+        },
+        `${spec.displayName} plugin packageName drifted — force-reinstalling from bundle`,
+      );
+    } else {
+      return;
+    }
+  }
 
   try {
-    logger.info({ path: spec.absPath }, `installing bundled ${spec.displayName} plugin from local path`);
+    if (!driftDetected) {
+      logger.info({ path: spec.absPath }, `installing bundled ${spec.displayName} plugin from local path`);
+    }
     const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -67,7 +104,7 @@ async function installLocalPluginIfAbsent(
     if (res.ok) {
       const result = (await res.json()) as { pluginKey?: string; status?: string };
       logger.info(
-        { pluginKey: result.pluginKey, status: result.status },
+        { pluginKey: result.pluginKey, status: result.status, drift: driftDetected || undefined },
         `${spec.displayName} plugin installed from local path`,
       );
     } else {
