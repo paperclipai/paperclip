@@ -94,7 +94,9 @@ function applyStatusSideEffects(
 }
 
 function isResolvedExternalGateValue(value: unknown): boolean {
-  return isIssueExternalGateResolved(parseIssueExternalGate(value));
+  if (value == null) return true;
+  const parsed = parseIssueExternalGate(value);
+  return Boolean(parsed) && isIssueExternalGateResolved(parsed);
 }
 
 function isResolvedBlocker(status: string, externalGate: unknown): boolean {

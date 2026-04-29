@@ -243,6 +243,65 @@ describeEmbeddedPostgres("issueService external gates", () => {
     ]);
   });
 
+  it("fails closed when a persisted non-null external gate payload is malformed", async () => {
+    const companyId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Malformed review blocker",
+        status: "done",
+        priority: "medium",
+        externalGate: {
+          kind: "github_pr",
+          status: "pending",
+        } as unknown as IssueExternalGate,
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      issueId: blockedId,
+      blockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [blockerId],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([]);
+  });
+
   it("auto-classifies preview and credential gates into the blocked-reason taxonomy", async () => {
     const companyId = randomUUID();
     const previewIssueId = randomUUID();

@@ -270,6 +270,14 @@ function computeReviewSatisfied(input: {
   });
 }
 
+function isRequiredChecksSatisfied(requiredChecks: string[], checksStatus: IssueGitHubPrCheckStatus | null): boolean {
+  return dedupe(requiredChecks).length === 0 || checksStatus === "passing";
+}
+
+function isPreviewSmokeSatisfied(status: IssuePreviewSmokeStatus): boolean {
+  return status === "unknown" || status === "passed";
+}
+
 export function buildGitHubPrGatePacket(input: {
   pullRequest: PullRequestGateInput;
   requiredReview: IssueGitHubPrRequiredReview;
@@ -296,6 +304,8 @@ export function buildGitHubPrGatePacket(input: {
     failedChecks: input.pullRequest.failedChecks,
     pendingChecks: input.pullRequest.pendingChecks,
   });
+  const checksSatisfied = isRequiredChecksSatisfied(input.pullRequest.requiredChecks, checksStatus);
+  const previewSmokeSatisfied = isPreviewSmokeSatisfied(input.previewSmokeStatus);
   const requiredSignal =
     input.acceptedException
       ? "accepted_exception"
@@ -307,7 +317,7 @@ export function buildGitHubPrGatePacket(input: {
   const status =
     input.acceptedException
       ? "accepted_exception"
-      : nonAuthorApprovalSatisfied
+      : nonAuthorApprovalSatisfied && checksSatisfied && previewSmokeSatisfied
         ? "satisfied"
         : "pending";
 

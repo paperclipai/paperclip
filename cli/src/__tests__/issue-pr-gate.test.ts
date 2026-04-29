@@ -148,6 +148,139 @@ describe("buildGitHubPrGatePacket", () => {
     expect(packet.externalGate.status).toBe("pending");
     expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(false);
   });
+
+  it("keeps the gate pending when a required check is still pending", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        reviewDecision: "APPROVED",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T12:00:00.000Z",
+            commitOid: "9db7ebf32712ed71b316669c7339d8dbca4c0031",
+          },
+        ],
+        passedChecks: ["Vercel"],
+        pendingChecks: ["Vercel Preview Comments"],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "passed",
+      acceptedException: false,
+    });
+
+    expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(true);
+    expect(packet.externalGate.githubPr?.checksStatus).toBe("pending");
+    expect(packet.externalGate.status).toBe("pending");
+  });
+
+  it("keeps the gate pending when a required check is failing", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        reviewDecision: "APPROVED",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T12:00:00.000Z",
+            commitOid: "9db7ebf32712ed71b316669c7339d8dbca4c0031",
+          },
+        ],
+        passedChecks: ["Vercel"],
+        failedChecks: ["Vercel Preview Comments"],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "passed",
+      acceptedException: false,
+    });
+
+    expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(true);
+    expect(packet.externalGate.githubPr?.checksStatus).toBe("failing");
+    expect(packet.externalGate.status).toBe("pending");
+  });
+
+  it("keeps the gate pending when preview smoke has not run", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        reviewDecision: "APPROVED",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T12:00:00.000Z",
+            commitOid: "9db7ebf32712ed71b316669c7339d8dbca4c0031",
+          },
+        ],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "not_run",
+      acceptedException: false,
+    });
+
+    expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(true);
+    expect(packet.externalGate.status).toBe("pending");
+  });
+
+  it("keeps the gate pending when preview smoke failed", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        reviewDecision: "APPROVED",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T12:00:00.000Z",
+            commitOid: "9db7ebf32712ed71b316669c7339d8dbca4c0031",
+          },
+        ],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "failed",
+      acceptedException: false,
+    });
+
+    expect(packet.externalGate.githubPr?.nonAuthorApprovalSatisfied).toBe(true);
+    expect(packet.externalGate.status).toBe("pending");
+  });
+
+  it("lets an accepted exception override pending checks or smoke", () => {
+    const packet = buildGitHubPrGatePacket({
+      pullRequest: {
+        ...basePullRequest,
+        reviewDecision: "APPROVED",
+        visibleReviews: [
+          {
+            authorLogin: "InternalOpsReviewer",
+            state: "APPROVED",
+            submittedAt: "2026-04-29T12:00:00.000Z",
+            commitOid: "9db7ebf32712ed71b316669c7339d8dbca4c0031",
+          },
+        ],
+        passedChecks: ["Vercel"],
+        pendingChecks: ["Vercel Preview Comments"],
+      },
+      requiredReview: "non_author",
+      previewProtectionStatus: "open",
+      previewSmokeStatus: "not_run",
+      acceptedException: true,
+      capturedAt: "2026-04-29T17:00:00.000Z",
+      exceptionNote: "Operator accepted the remaining manual gate.",
+    });
+
+    expect(packet.externalGate.status).toBe("accepted_exception");
+    expect(packet.externalGate.resolution).toMatchObject({
+      signal: "accepted_exception",
+      note: "Operator accepted the remaining manual gate.",
+    });
+  });
 });
 
 describe("resolvePreviewProtectionStatus", () => {
