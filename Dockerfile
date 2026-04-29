@@ -2,23 +2,14 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-<<<<<<< HEAD
-  && apt-get install -y --no-install-recommends ca-certificates curl git awscli ffmpeg imagemagick graphicsmagick \
-  && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
-=======
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 awscli ffmpeg imagemagick graphicsmagick \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
-<<<<<<< HEAD
-=======
 
 # Modify the existing node user/group to have the specified UID/GID to match host user
 RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
->>>>>>> upstream/master
->>>>>>> upstream-sync
 
 FROM base AS deps
 WORKDIR /app
@@ -29,11 +20,8 @@ COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
-<<<<<<< HEAD
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
-=======
 COPY packages/mcp-server/package.json packages/mcp-server/
->>>>>>> upstream-sync
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
@@ -84,12 +72,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-<<<<<<< HEAD
-  OPENCODE_CONFIG=/paperclip/.config/opencode/opencode.json
-
-=======
+  OPENCODE_CONFIG=/paperclip/.config/opencode/opencode.json \
   OPENCODE_ALLOW_ALL_MODELS=true
->>>>>>> upstream-sync
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
