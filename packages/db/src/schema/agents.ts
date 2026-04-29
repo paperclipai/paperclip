@@ -25,7 +25,9 @@ export const agents = pgTable(
     /**
      * Organizational level of the agent within the company hierarchy.
      * Enum: executor | manager | executive | qa | policy | pm.
-     * Nullable until backfill completes; will be promoted to NOT NULL in a follow-up migration.
+     * Database NOT NULL is enforced via migration 0076; the drizzle column type is left
+     * nullable so existing test inserts and seed code don't all need to be updated at once.
+     * New production code paths set this field via the canonical backfill.
      */
     orgLevel: text("org_level"),
     /**

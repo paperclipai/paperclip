@@ -277,6 +277,53 @@ export function agentRoutes(
     };
   }
 
+  /**
+   * Validates the hierarchy/review-QA agent FK fields:
+   * - defaultReviewAgentId / defaultQaAgentId, when present, must reference an
+   *   existing agent in the same company.
+   * - On PATCH, neither may equal the agent's own id (self-FK forbidden).
+   * Pass `selfAgentId: null` for create flows where the new agent has no id yet.
+   */
+  async function assertAgentHierarchyReferences(opts: {
+    companyId: string;
+    defaultReviewAgentId?: unknown;
+    defaultQaAgentId?: unknown;
+    selfAgentId: string | null;
+  }) {
+    const { companyId, selfAgentId } = opts;
+    const drvDefined = opts.defaultReviewAgentId !== undefined;
+    const dqaDefined = opts.defaultQaAgentId !== undefined;
+    if (!drvDefined && !dqaDefined) return;
+
+    const drv = drvDefined && typeof opts.defaultReviewAgentId === "string" ? opts.defaultReviewAgentId : null;
+    const dqa = dqaDefined && typeof opts.defaultQaAgentId === "string" ? opts.defaultQaAgentId : null;
+
+    if (selfAgentId !== null) {
+      if (drv !== null && drv === selfAgentId) {
+        throw unprocessable("defaultReviewAgentId cannot reference the agent itself");
+      }
+      if (dqa !== null && dqa === selfAgentId) {
+        throw unprocessable("defaultQaAgentId cannot reference the agent itself");
+      }
+    }
+
+    const idsToCheck = [drv, dqa].filter((v): v is string => typeof v === "string");
+    if (idsToCheck.length === 0) return;
+    const rows = await db
+      .select({ id: agentsTable.id, companyId: agentsTable.companyId })
+      .from(agentsTable)
+      .where(inArray(agentsTable.id, idsToCheck));
+    for (const id of idsToCheck) {
+      const row = rows.find((r) => r.id === id);
+      if (!row) {
+        throw unprocessable(`Referenced agent ${id} not found`);
+      }
+      if (row.companyId !== companyId) {
+        throw unprocessable(`Referenced agent ${id} belongs to a different company`);
+      }
+    }
+  }
+
   async function getCurrentUserRedactionOptions() {
     return {
       enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -1851,6 +1898,12 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
+    await assertAgentHierarchyReferences({
+      companyId,
+      defaultReviewAgentId: createInput.defaultReviewAgentId,
+      defaultQaAgentId: createInput.defaultQaAgentId,
+      selfAgentId: null,
+    });
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
@@ -2318,6 +2371,21 @@ export function agentRoutes(
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(patchData, "defaultReviewAgentId")
+      || Object.prototype.hasOwnProperty.call(patchData, "defaultQaAgentId")
+    ) {
+      await assertAgentHierarchyReferences({
+        companyId: existing.companyId,
+        defaultReviewAgentId: Object.prototype.hasOwnProperty.call(patchData, "defaultReviewAgentId")
+          ? patchData.defaultReviewAgentId
+          : undefined,
+        defaultQaAgentId: Object.prototype.hasOwnProperty.call(patchData, "defaultQaAgentId")
+          ? patchData.defaultQaAgentId
+          : undefined,
+        selfAgentId: existing.id,
+      });
     }
 
     const actor = getActorInfo(req);
