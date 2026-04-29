@@ -277,6 +277,8 @@ export type {
   RoutineRevisionSnapshotV1,
   RoutineRevisionSnapshot,
   RoutineRevision,
+  RoutinePreGateSqlCount,
+  RoutinePreGate,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
