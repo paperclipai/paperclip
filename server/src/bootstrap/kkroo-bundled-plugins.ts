@@ -188,6 +188,11 @@ export async function autoConfigureAlertmanagerFromEnv(ctx: BootstrapContext): P
     const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
     const existing = config?.configJson ?? {};
     if (existing.webhookToken === webhookToken) return;
+    // Operator already wired the production secret-ref path; respect it instead
+    // of stamping the inline env value back on top every restart.
+    if (typeof existing.webhookTokenRef === "string" && existing.webhookTokenRef.length > 0) {
+      return;
+    }
 
     await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${amPlugin.id}/config`, {
       method: "POST",
