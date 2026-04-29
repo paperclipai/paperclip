@@ -103,7 +103,7 @@ export async function testEnvironment(
   const targetIsRemote = target?.kind === "remote";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target) ?? "remote environment"
     : null;
   const runId = `cursor-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
