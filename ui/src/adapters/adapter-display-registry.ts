@@ -79,6 +79,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Hermes CLI agent",
     icon: HermesIcon,
   },
+  hermes_gateway: {
+    label: "Hermes Gateway",
+    description: "Remote Hermes API agent",
+    icon: HermesIcon,
+  },
   pi_local: {
     label: "Pi",
     description: "Local Pi agent",

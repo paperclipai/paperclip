@@ -297,6 +297,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+  const showAdapterConfigSection =
+    isLocal || adapterType === "openclaw_gateway" || adapterType === "hermes_gateway";
   
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
@@ -812,83 +814,89 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       </div>
 
       {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
+      {showAdapterConfigSection && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <Field label="Command" hint={help.localCommand}>
-                <DraftInput
-                  value={
-                    isCreate
-                      ? val!.command
-                      : eff(
-                          "adapterConfig",
-                          adapterCommandField,
-                          String(
-                            (adapterType === "hermes_local"
-                              ? config.hermesCommand ?? config.command
-                              : config.command) ?? "",
-                          ),
-                        )
-                  }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ command: v })
-                      : mark("adapterConfig", adapterCommandField, v || null)
-                  }
-                  immediate
-                  className={inputClass}
-                  placeholder={
-                    ({
-                      claude_local: "claude",
-                      codex_local: "codex",
-                      gemini_local: "gemini",
-                      pi_local: "pi",
-                      cursor: "agent",
-                      opencode_local: "opencode",
-                    } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
-                  }
-                />
-              </Field>
-
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-                creatable
-                detectedModel={detectedModel}
-                detectedModelCandidates={[]}
-                onDetectModel={async () => {
-                  const result = await refetchDetectedModel();
-                  return result.data?.model ?? null;
-                }}
-                onRefreshModels={adapterType === "codex_local" ? handleRefreshModels : undefined}
-                refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
-                emptyDetectHint="No model detected. Select or enter one manually."
-              />
-              {(refreshModelsError || fetchedModelsError) && (
-                <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (fetchedModelsError instanceof Error
-                      ? fetchedModelsError.message
-                      : "Failed to load adapter models.")}
-                </p>
+              {isLocal && (
+                <Field label="Command" hint={help.localCommand}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.command
+                        : eff(
+                            "adapterConfig",
+                            adapterCommandField,
+                            String(
+                              (adapterType === "hermes_local"
+                                ? config.hermesCommand ?? config.command
+                                : config.command) ?? "",
+                            ),
+                          )
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ command: v })
+                        : mark("adapterConfig", adapterCommandField, v || null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder={
+                      ({
+                        claude_local: "claude",
+                        codex_local: "codex",
+                        gemini_local: "gemini",
+                        pi_local: "pi",
+                        cursor: "agent",
+                        opencode_local: "opencode",
+                      } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
+                    }
+                  />
+                </Field>
               )}
 
-              {showThinkingEffort && (
+              {isLocal && (
+                <>
+                  <ModelDropdown
+                    models={models}
+                    value={currentModelId}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ model: v })
+                        : mark("adapterConfig", "model", v || undefined)
+                    }
+                    open={modelOpen}
+                    onOpenChange={setModelOpen}
+                    allowDefault={adapterType !== "opencode_local"}
+                    required={adapterType === "opencode_local"}
+                    groupByProvider={adapterType === "opencode_local"}
+                    creatable
+                    detectedModel={detectedModel}
+                    detectedModelCandidates={[]}
+                    onDetectModel={async () => {
+                      const result = await refetchDetectedModel();
+                      return result.data?.model ?? null;
+                    }}
+                    onRefreshModels={adapterType === "codex_local" ? handleRefreshModels : undefined}
+                    refreshingModels={refreshingModels}
+                    detectModelLabel="Detect model"
+                    emptyDetectHint="No model detected. Select or enter one manually."
+                  />
+                  {(refreshModelsError || fetchedModelsError) && (
+                    <p className="text-xs text-destructive">
+                      {refreshModelsError
+                        ?? (fetchedModelsError instanceof Error
+                          ? fetchedModelsError.message
+                          : "Failed to load adapter models.")}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {isLocal && showThinkingEffort && (
                 <>
                   <ThinkingEffortDropdown
                     value={currentThinkingEffort}
@@ -910,7 +918,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
-              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+              {isLocal && !isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
                     <MarkdownEditor
@@ -941,47 +949,51 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
               <uiAdapter.ConfigFields {...adapterFieldProps} />
 
-              <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
-                <DraftInput
-                  value={
-                    isCreate
-                      ? val!.extraArgs
-                      : eff("adapterConfig", "extraArgs", formatArgList(config.extraArgs))
-                  }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ extraArgs: v })
-                      : mark("adapterConfig", "extraArgs", v?.trim() ? parseCommaArgs(v) : null)
-                  }
-                  immediate
-                  className={inputClass}
-                  placeholder="e.g. --verbose, --foo=bar"
-                />
-              </Field>
+              {isLocal && (
+                <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.extraArgs
+                        : eff("adapterConfig", "extraArgs", formatArgList(config.extraArgs))
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ extraArgs: v })
+                        : mark("adapterConfig", "extraArgs", v?.trim() ? parseCommaArgs(v) : null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder="e.g. --verbose, --foo=bar"
+                  />
+                </Field>
+              )}
 
-              <Field label="Environment variables" hint={help.envVars}>
-                <EnvVarEditor
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                      )
-                  }
-                  secrets={availableSecrets}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
-                  onChange={(env) =>
-                    isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
-                  }
-                />
-              </Field>
+              {isLocal && (
+                <Field label="Environment variables" hint={help.envVars}>
+                  <EnvVarEditor
+                    value={
+                      isCreate
+                        ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                        : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+                        )
+                    }
+                    secrets={availableSecrets}
+                    onCreateSecret={async (name, value) => {
+                      const created = await createSecret.mutateAsync({ name, value });
+                      return created;
+                    }}
+                    onChange={(env) =>
+                      isCreate
+                        ? set!({ envBindings: env ?? {}, envVars: "" })
+                        : mark("adapterConfig", "env", env)
+                    }
+                  />
+                </Field>
+              )}
 
               {/* Edit-only: timeout + grace period */}
-              {!isCreate && (
+              {isLocal && !isCreate && (
                 <>
                   <Field label="Timeout (sec)" hint={help.timeoutSec}>
                     <DraftNumberInput

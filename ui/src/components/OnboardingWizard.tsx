@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -10,8 +10,16 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Popover,
   PopoverContent,
@@ -113,6 +121,20 @@ export function OnboardingWizard() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [hermesApiKeyMode, setHermesApiKeyMode] = useState<"plain" | "secret">(
+    "plain"
+  );
+  const [hermesApiKey, setHermesApiKey] = useState("");
+  const [hermesApiKeySecretId, setHermesApiKeySecretId] = useState("");
+  const [hermesTimeoutSec, setHermesTimeoutSec] = useState("300");
+  const [hermesApiMode, setHermesApiMode] = useState<
+    "chat_completions" | "responses"
+  >("chat_completions");
+  const [hermesSessionKeyStrategy, setHermesSessionKeyStrategy] = useState<
+    "issue" | "run" | "fixed"
+  >("issue");
+  const [hermesSessionKey, setHermesSessionKey] = useState("");
+  const [hermesStoreResponses, setHermesStoreResponses] = useState(true);
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -200,6 +222,27 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+  const { data: companySecrets = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.secrets.list(createdCompanyId)
+      : ["secrets", "none"],
+    queryFn: () => secretsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!createdCompanyId) {
+        throw new Error("Create or select a company before creating secrets.");
+      }
+      return secretsApi.create(createdCompanyId, input);
+    },
+    onSuccess: () => {
+      if (!createdCompanyId) return;
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.secrets.list(createdCompanyId)
+      });
+    }
+  });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
@@ -233,7 +276,22 @@ export function OnboardingWizard() {
     if (step !== 2) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
+  }, [
+    step,
+    adapterType,
+    model,
+    command,
+    args,
+    url,
+    hermesApiKey,
+    hermesApiKeyMode,
+    hermesApiKeySecretId,
+    hermesTimeoutSec,
+    hermesApiMode,
+    hermesSessionKeyStrategy,
+    hermesSessionKey,
+    hermesStoreResponses,
+  ]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -281,6 +339,18 @@ export function OnboardingWizard() {
       }));
   }, [filteredModels, adapterType]);
 
+  function resetHermesGatewayFields() {
+    setUrl("");
+    setHermesApiKeyMode("plain");
+    setHermesApiKey("");
+    setHermesApiKeySecretId("");
+    setHermesTimeoutSec("300");
+    setHermesApiMode("chat_completions");
+    setHermesSessionKeyStrategy("issue");
+    setHermesSessionKey("");
+    setHermesStoreResponses(true);
+  }
+
   function reset() {
     setStep(1);
     setLoading(false);
@@ -292,7 +362,7 @@ export function OnboardingWizard() {
     setModel("");
     setCommand("");
     setArgs("");
-    setUrl("");
+    resetHermesGatewayFields();
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -313,8 +383,63 @@ export function OnboardingWizard() {
     closeOnboarding();
   }
 
+  function defaultSecretName(label: string) {
+    return label
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 64);
+  }
+
+  async function sealHermesApiKey() {
+    if (!hermesApiKey.trim()) return;
+    const suggested =
+      defaultSecretName(`${agentName || "hermes"}_api_key`) || "secret";
+    const name = window.prompt("Secret name", suggested)?.trim();
+    if (!name) return;
+    try {
+      setError(null);
+      const created = await createSecret.mutateAsync({
+        name,
+        value: hermesApiKey.trim(),
+      });
+      setHermesApiKey("");
+      setHermesApiKeyMode("secret");
+      setHermesApiKeySecretId(created.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create secret");
+    }
+  }
+
   function buildAdapterConfig(): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
+    const adapterSchemaValues: Record<string, unknown> = {};
+    if (adapterType === "hermes_gateway") {
+      if (url.trim()) adapterSchemaValues.url = url.trim();
+      if (model.trim()) adapterSchemaValues.model = model.trim();
+      const timeoutSec = Number(hermesTimeoutSec);
+      if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
+        adapterSchemaValues.timeoutSec = timeoutSec;
+      }
+      adapterSchemaValues.apiMode = hermesApiMode;
+      adapterSchemaValues.sessionKeyStrategy = hermesSessionKeyStrategy;
+      if (hermesSessionKeyStrategy === "fixed" && hermesSessionKey.trim()) {
+        adapterSchemaValues.sessionKey = hermesSessionKey.trim();
+      }
+      if (hermesApiMode === "responses") {
+        adapterSchemaValues.storeResponses = hermesStoreResponses;
+      }
+      if (hermesApiKeyMode === "secret" && hermesApiKeySecretId) {
+        adapterSchemaValues.apiKey = {
+          type: "secret_ref",
+          secretId: hermesApiKeySecretId,
+          version: "latest",
+        };
+      } else if (hermesApiKey.trim()) {
+        adapterSchemaValues.apiKey = hermesApiKey.trim();
+      }
+    }
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
@@ -329,6 +454,10 @@ export function OnboardingWizard() {
       command,
       args,
       url,
+      adapterSchemaValues:
+        Object.keys(adapterSchemaValues).length > 0
+          ? adapterSchemaValues
+          : undefined,
       dangerouslySkipPermissions:
         adapterType === "claude_local" || adapterType === "opencode_local",
       dangerouslyBypassSandbox:
@@ -772,6 +901,7 @@ export function OnboardingWizard() {
                           onClick={() => {
                             const nextType = opt.type;
                             setAdapterType(nextType);
+                            resetHermesGatewayFields();
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
                             }
@@ -825,6 +955,7 @@ export function OnboardingWizard() {
                                if (opt.comingSoon) return;
                                const nextType = opt.type;
                               setAdapterType(nextType);
+                              resetHermesGatewayFields();
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                 return;
@@ -856,105 +987,119 @@ export function OnboardingWizard() {
                   </div>
 
                   {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {(isLocalAdapter || adapterType === "hermes_gateway") && (
                     <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
-                        </label>
-                        <Popover
-                          open={modelOpen}
-                          onOpenChange={(next) => {
-                            setModelOpen(next);
-                            if (!next) setModelSearch("");
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-                              <span
-                                className={cn(
-                                  !model && "text-muted-foreground"
-                                )}
-                              >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
-                              </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-[var(--radix-popover-trigger-width)] p-1"
-                            align="start"
+                      {adapterType === "hermes_gateway" ? (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            Model override
+                          </label>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="Leave blank to use Hermes default"
+                            value={model}
+                            onChange={(e) => setModel(e.target.value)}
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            Model
+                          </label>
+                          <Popover
+                            open={modelOpen}
+                            onOpenChange={(next) => {
+                              setModelOpen(next);
+                              if (!next) setModelSearch("");
+                            }}
                           >
-                            <input
-                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
-                              value={modelSearch}
-                              onChange={(e) => setModelSearch(e.target.value)}
-                              autoFocus
-                            />
-                            {adapterType !== "opencode_local" && (
-                              <button
-                                className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  !model && "bg-accent"
-                                )}
-                                onClick={() => {
-                                  setModel("");
-                                  setModelOpen(false);
-                                }}
-                              >
-                                Default
-                              </button>
-                            )}
-                            <div className="max-h-[240px] overflow-y-auto">
-                              {groupedModels.map((group) => (
-                                <div
-                                  key={group.provider}
-                                  className="mb-1 last:mb-0"
-                                >
-                                  {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                                      {group.provider} ({group.entries.length})
-                                    </div>
+                            <PopoverTrigger asChild>
+                              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+                                <span
+                                  className={cn(
+                                    !model && "text-muted-foreground"
                                   )}
-                                  {group.entries.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                        m.id === model && "bg-accent"
-                                      )}
-                                      onClick={() => {
-                                        setModel(m.id);
-                                        setModelOpen(false);
-                                      }}
-                                    >
-                                      <span
-                                        className="block w-full text-left truncate"
-                                        title={m.id}
+                                >
+                                  {selectedModel
+                                    ? selectedModel.label
+                                    : model ||
+                                      (adapterType === "opencode_local"
+                                        ? "Select model (required)"
+                                        : "Default")}
+                                </span>
+                                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              className="w-[var(--radix-popover-trigger-width)] p-1"
+                              align="start"
+                            >
+                              <input
+                                className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                                placeholder="Search models..."
+                                value={modelSearch}
+                                onChange={(e) => setModelSearch(e.target.value)}
+                                autoFocus
+                              />
+                              {adapterType !== "opencode_local" && (
+                                <button
+                                  className={cn(
+                                    "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                    !model && "bg-accent"
+                                  )}
+                                  onClick={() => {
+                                    setModel("");
+                                    setModelOpen(false);
+                                  }}
+                                >
+                                  Default
+                                </button>
+                              )}
+                              <div className="max-h-[240px] overflow-y-auto">
+                                {groupedModels.map((group) => (
+                                  <div
+                                    key={group.provider}
+                                    className="mb-1 last:mb-0"
+                                  >
+                                    {adapterType === "opencode_local" && (
+                                      <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                        {group.provider} ({group.entries.length})
+                                      </div>
+                                    )}
+                                    {group.entries.map((m) => (
+                                      <button
+                                        key={m.id}
+                                        className={cn(
+                                          "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                          m.id === model && "bg-accent"
+                                        )}
+                                        onClick={() => {
+                                          setModel(m.id);
+                                          setModelOpen(false);
+                                        }}
                                       >
-                                        {adapterType === "opencode_local"
-                                          ? extractModelName(m.id)
-                                          : m.label}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                      </div>
+                                        <span
+                                          className="block w-full text-left truncate"
+                                          title={m.id}
+                                        >
+                                          {adapterType === "opencode_local"
+                                            ? extractModelName(m.id)
+                                            : m.label}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                              {filteredModels.length === 0 && (
+                                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                  No models discovered.
+                                </p>
+                              )}
+                            </PopoverContent>
+                          </Popover>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1077,11 +1222,14 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" ||
-                    adapterType === "openclaw_gateway") && (
+                    adapterType === "openclaw_gateway" ||
+                    adapterType === "hermes_gateway") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
+                          : adapterType === "hermes_gateway"
+                            ? "Hermes API Base URL"
                           : "Webhook URL"}
                       </label>
                       <input
@@ -1089,11 +1237,169 @@ export function OnboardingWizard() {
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
+                            : adapterType === "hermes_gateway"
+                              ? "https://hermes-gateway.example.internal/v1"
                             : "https://..."
                         }
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
                       />
+                    </div>
+                  )}
+                  {adapterType === "hermes_gateway" && (
+                    <div className="space-y-3 rounded-md border border-border p-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          API key
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={hermesApiKeyMode}
+                            onValueChange={(value) =>
+                              setHermesApiKeyMode(
+                                value === "secret" ? "secret" : "plain"
+                              )
+                            }
+                          >
+                            <SelectTrigger className="max-w-[120px] bg-background text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="plain">Plain</SelectItem>
+                              <SelectItem value="secret">Secret</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {hermesApiKeyMode === "secret" ? (
+                            <Select
+                              value={hermesApiKeySecretId || undefined}
+                              onValueChange={(value) => setHermesApiKeySecretId(value)}
+                            >
+                              <SelectTrigger className="w-full bg-background text-sm">
+                                <SelectValue placeholder="Select secret..." />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {companySecrets.map((secret) => (
+                                  <SelectItem key={secret.id} value={secret.id}>
+                                    {secret.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <>
+                              <input
+                                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                                placeholder="API token"
+                                value={hermesApiKey}
+                                onChange={(e) => setHermesApiKey(e.target.value)}
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="shrink-0"
+                                disabled={!hermesApiKey.trim() || createSecret.isPending}
+                                onClick={() => void sealHermesApiKey()}
+                              >
+                                Seal
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Timeout (seconds)
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={hermesTimeoutSec}
+                          onChange={(e) => setHermesTimeoutSec(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          API mode
+                        </label>
+                        <Select
+                          value={hermesApiMode}
+                          onValueChange={(value) =>
+                            setHermesApiMode(
+                              value === "chat_completions"
+                                ? "chat_completions"
+                                : "responses"
+                            )
+                          }
+                        >
+                          <SelectTrigger className="w-full bg-background text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="responses">
+                              Responses API (recommended)
+                            </SelectItem>
+                            <SelectItem value="chat_completions">
+                              Chat Completions
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Session strategy
+                        </label>
+                        <Select
+                          value={hermesSessionKeyStrategy}
+                          onValueChange={(value) =>
+                            setHermesSessionKeyStrategy(
+                              value === "run"
+                                ? "run"
+                                : value === "fixed"
+                                  ? "fixed"
+                                  : "issue"
+                            )
+                          }
+                        >
+                          <SelectTrigger className="w-full bg-background text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="issue">
+                              Issue scoped (recommended)
+                            </SelectItem>
+                            <SelectItem value="run">Run scoped</SelectItem>
+                            <SelectItem value="fixed">Fixed session key</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {hermesSessionKeyStrategy === "fixed" && (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            Fixed session key
+                          </label>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="paperclip:agent:ceo"
+                            value={hermesSessionKey}
+                            onChange={(e) => setHermesSessionKey(e.target.value)}
+                          />
+                        </div>
+                      )}
+                      {hermesApiMode === "responses" && (
+                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            checked={hermesStoreResponses}
+                            onChange={(e) =>
+                              setHermesStoreResponses(e.target.checked)
+                            }
+                          />
+                          Store responses on the Hermes side
+                        </label>
+                      )}
                     </div>
                   )}
                 </div>

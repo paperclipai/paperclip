@@ -20,6 +20,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function isSecretRefRecord(value: unknown): value is { type: "secret_ref"; secretId: string; version?: unknown } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "secret_ref" &&
+    typeof (value as { secretId?: unknown }).secretId === "string"
+  );
+}
+
 function isSensitiveEnvKey(key: string) {
   return SENSITIVE_ENV_KEY_RE.test(key);
 }
@@ -144,11 +154,39 @@ export function secretService(db: Db) {
     adapterConfig: Record<string, unknown>,
     opts?: { strictMode?: boolean },
   ) {
-    const normalized = { ...adapterConfig };
-    if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
-      return normalized;
+    async function normalizeSecretRefs(value: unknown): Promise<unknown> {
+      if (isSecretRefRecord(value)) {
+        await assertSecretInCompany(companyId, value.secretId);
+        return {
+          type: "secret_ref",
+          secretId: value.secretId,
+          version: value.version === "latest" || typeof value.version === "number" ? value.version : "latest",
+        };
+      }
+      if (Array.isArray(value)) {
+        const normalizedItems = [];
+        for (const item of value) {
+          normalizedItems.push(await normalizeSecretRefs(item));
+        }
+        return normalizedItems;
+      }
+      const record = asRecord(value);
+      if (!record) return value;
+      const normalizedRecord: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(record)) {
+        normalizedRecord[key] = await normalizeSecretRefs(entry);
+      }
+      return normalizedRecord;
     }
-    normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
+
+    const normalized = { ...adapterConfig };
+    for (const [key, value] of Object.entries(adapterConfig)) {
+      if (key === "env") continue;
+      normalized[key] = await normalizeSecretRefs(value);
+    }
+    if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
+      normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
+    }
     return normalized;
   }
 
@@ -346,34 +384,63 @@ export function secretService(db: Db) {
     },
 
     resolveAdapterConfigForRuntime: async (companyId: string, adapterConfig: Record<string, unknown>): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
+      async function resolveSecretRefs(value: unknown, path: string): Promise<unknown> {
+        if (isSecretRefRecord(value)) {
+          secretKeys.add(path);
+          return resolveSecretValue(
+            companyId,
+            value.secretId,
+            value.version === "latest" || typeof value.version === "number" ? value.version : "latest",
+          );
+        }
+        if (Array.isArray(value)) {
+          const resolvedItems = [];
+          for (let index = 0; index < value.length; index += 1) {
+            resolvedItems.push(await resolveSecretRefs(value[index], `${path}[${index}]`));
+          }
+          return resolvedItems;
+        }
+        const record = asRecord(value);
+        if (!record) return value;
+        const resolvedRecord: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(record)) {
+          resolvedRecord[key] = await resolveSecretRefs(entry, path ? `${path}.${key}` : key);
+        }
+        return resolvedRecord;
+      }
+
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
-      if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
-        return { config: resolved, secretKeys };
+      for (const [key, value] of Object.entries(adapterConfig)) {
+        if (key === "env") continue;
+        resolved[key] = await resolveSecretRefs(value, key);
       }
-      const record = asRecord(adapterConfig.env);
-      if (!record) {
-        resolved.env = {};
-        return { config: resolved, secretKeys };
+
+      if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
+        const record = asRecord(adapterConfig.env);
+        if (!record) {
+          resolved.env = {};
+          return { config: resolved, secretKeys };
+        }
+        const env: Record<string, string> = {};
+        for (const [key, rawBinding] of Object.entries(record)) {
+          if (!ENV_KEY_RE.test(key)) {
+            throw unprocessable(`Invalid environment variable name: ${key}`);
+          }
+          const parsed = envBindingSchema.safeParse(rawBinding);
+          if (!parsed.success) {
+            throw unprocessable(`Invalid environment binding for key: ${key}`);
+          }
+          const binding = canonicalizeBinding(parsed.data as EnvBinding);
+          if (binding.type === "plain") {
+            env[key] = binding.value;
+          } else {
+            env[key] = await resolveSecretValue(companyId, binding.secretId, binding.version);
+            secretKeys.add(key);
+          }
+        }
+        resolved.env = env;
       }
-      const env: Record<string, string> = {};
-      for (const [key, rawBinding] of Object.entries(record)) {
-        if (!ENV_KEY_RE.test(key)) {
-          throw unprocessable(`Invalid environment variable name: ${key}`);
-        }
-        const parsed = envBindingSchema.safeParse(rawBinding);
-        if (!parsed.success) {
-          throw unprocessable(`Invalid environment binding for key: ${key}`);
-        }
-        const binding = canonicalizeBinding(parsed.data as EnvBinding);
-        if (binding.type === "plain") {
-          env[key] = binding.value;
-        } else {
-          env[key] = await resolveSecretValue(companyId, binding.secretId, binding.version);
-          secretKeys.add(key);
-        }
-      }
-      resolved.env = env;
       return { config: resolved, secretKeys };
     },
   };
