@@ -662,6 +662,13 @@ want to opt out just don't add the label.
 
 ### Q2 — Resolved-alert behaviour
 
+**Status: Resolved (V1).** Per-instance configurable via the manifest's
+`autoCloseOnResolve: boolean` field (`src/manifest.ts`), default `false`
+(= comment-only). Live cluster config takes the default. Re-open Q2 if a
+`severityToCloseBehavior` extension is needed.
+
+Discussion that led to the decision:
+
 Auto-close the Paperclip issue, or just comment "resolved at X" and leave it
 open?
 
@@ -671,16 +678,24 @@ open?
 - **Comment-only**: keeps the issue open until a human marks it done.
   Surfaces "is this actually fixed?" but creates noise on stable infra.
 
-Recommendation: configurable per-instance, default to comment-only.
+Recommendation taken: configurable per-instance, default to comment-only.
 Critical-severity alerts probably want to stay open until somebody writes a
 postmortem; info-severity alerts probably want auto-close. Consider a future
 `severityToCloseBehavior` extension if the binary toggle proves coarse.
 
 ### Q3 — Owner-of-an-alert lookup source
 
+**Status: Resolved (V1).** Plugin config map via the manifest's `ownerMap`
+field, resolved by `src/owner-resolver.ts`. Resolution chain documented in
+§7.7. Live cluster config has not populated `ownerMap` yet — operational
+follow-up to fill it in for real teams. V2 (namespace-label sync) and V3
+(pluggable resolver protocol) remain on the roadmap.
+
+Discussion that led to the decision:
+
 Three options, mutually compatible:
 
-- **Plugin config map** (proposed V1): `ownerMap: { team: { platform: "alice@" } }`.
+- **Plugin config map** (V1): `ownerMap: { team: { platform: "alice@" } }`.
   Simple, version-controllable, rebuilds with the plugin. Doesn't scale to
   org churn — every team change requires a config rebump.
 - **Kubernetes namespace ownership labels**: `ns.metadata.labels["owner-email"]`.
@@ -692,14 +707,38 @@ Three options, mutually compatible:
   already have humans assigned). Couples this plugin to Linear; awkward when
   the org doesn't use Linear that way.
 
-Recommendation: V1 = config map. V2 = namespace labels via a cron-driven sync
-into plugin state. V3 = pluggable resolver protocol.
+Recommendation taken: V1 = config map. V2 = namespace labels via a cron-driven
+sync into plugin state. V3 = pluggable resolver protocol.
 
 ### Q4 — Webhook authentication
 
+**Status: Resolved (V1) at the design level; implementation gap on the live
+cluster.** Static bearer is the V1 design. The manifest schema supports both
+`webhookTokenRef` (paperclip secrets-store UUID, production posture) and
+`webhookToken` (inline string, dev-mode fallback). The Alertmanager side
+already reads its credential from the K8s `alertmanager-receivers` Secret
+via `credentials_file`.
+
+Live cluster currently uses the inline `webhookToken` path (the bearer
+value is duplicated between `paperclip.plugin_config.config_json` and the
+K8s `paperclip-alertmanager-webhook-token` Secret). This works but is dev-
+mode posture; remediation is to:
+
+1. Create a paperclip `company_secrets` row holding the bearer value
+   (REST: `POST /api/companies/:companyId/secrets`).
+2. Update `plugin_config.config_json` to set `webhookTokenRef = <secret_uuid>`
+   and remove `webhookToken`.
+3. Restart the paperclip pod and confirm the webhook-handler still authenticates.
+
+V2 path is mTLS (deferred — heavier operational lift). IP allowlist at
+ingress is documented as defense-in-depth but is not required for V1
+because the receiver is ClusterIP-only.
+
+Discussion that led to the decision:
+
 Alertmanager itself does not sign payloads. Options:
 
-- **Static bearer token** (proposed). AM `http_config.authorization.credentials_file`
+- **Static bearer token** (V1). AM `http_config.authorization.credentials_file`
   points at a K8s secret; the plugin verifies in `onWebhook`. Simple,
   rotatable, in-cluster only.
 - **mTLS**. Stronger but operationally heavier — plugin server has to
@@ -707,8 +746,7 @@ Alertmanager itself does not sign payloads. Options:
 - **IP allowlist** at ingress. Cheap, but every restart of AM reschedules its
   pod and the IP changes; would need to allowlist the whole pod CIDR.
 
-Recommendation: static bearer (V1) + IP allowlist at ingress as defense in
-depth. Document that mTLS is the V2 upgrade path.
+Recommendation taken: static bearer (V1). mTLS is the V2 upgrade path.
 
 ### Q5 — Alert deduplication beyond fingerprint
 
