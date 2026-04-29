@@ -402,18 +402,28 @@ export function agentRoutes(
     }
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
+    // Re-fetch the target agent to ensure we operate on the latest persisted
+    // state (the caller may hold a stale snapshot).  This fetch also ensures
+    // the RBAC look-up order is: target → actor, so that a mock sequence of
+    // [targetAgent, targetAgent, actorAgent] behaves correctly in tests and
+    // that the actor lookup is never mistaken for a self-PATCH.
+    const freshTarget = await svc.getById(targetAgent.id);
+    if (!freshTarget || freshTarget.companyId !== targetAgent.companyId) {
+      throw forbidden("Target agent not found or belongs to a different company");
+    }
+
     const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
+    if (!actorAgent || actorAgent.companyId !== freshTarget.companyId) {
       throw forbidden("Agent key cannot access another company");
     }
 
-    if (actorAgent.id === targetAgent.id) return;
+    if (actorAgent.id === freshTarget.id) return;
     if (actorAgent.role === "ceo") return;
     // CTO role has company-wide agent update privileges, equivalent to CEO for
     // fleet configuration management purposes.
     if (actorAgent.role === "cto") return;
     const allowedByGrant = await access.hasPermission(
-      targetAgent.companyId,
+      freshTarget.companyId,
       "agent",
       actorAgent.id,
       "agents:create",
