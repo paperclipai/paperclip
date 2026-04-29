@@ -22,6 +22,7 @@ import {
   normalizeFeedbackTraceExportFormat,
   serializeFeedbackTraces,
 } from "./feedback.js";
+import { registerIssuePrGateCommand } from "./issue-pr-gate.js";
 
 interface IssueBaseOptions extends BaseClientOptions {
   status?: string;
@@ -83,6 +84,7 @@ interface IssueFeedbackOptions extends BaseClientOptions {
 
 export function registerIssueCommands(program: Command): void {
   const issue = program.command("issue").description("Issue operations");
+  registerIssuePrGateCommand(issue);
 
   addCommonClientOptions(
     issue

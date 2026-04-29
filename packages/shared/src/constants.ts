@@ -141,6 +141,41 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_BLOCKED_REASON_CODES = [
+  "waiting_github_review",
+  "waiting_preview_bypass",
+  "waiting_test_credentials",
+  "waiting_human_exception",
+  "waiting_deploy",
+] as const;
+export type IssueBlockedReasonCode = (typeof ISSUE_BLOCKED_REASON_CODES)[number];
+export const ISSUE_EXTERNAL_GATE_KINDS = [
+  "github_pr",
+  "preview_access",
+  "test_credentials",
+  "deploy",
+] as const;
+export type IssueExternalGateKind = (typeof ISSUE_EXTERNAL_GATE_KINDS)[number];
+export const ISSUE_EXTERNAL_GATE_STATUSES = ["pending", "satisfied", "accepted_exception"] as const;
+export type IssueExternalGateStatus = (typeof ISSUE_EXTERNAL_GATE_STATUSES)[number];
+export const ISSUE_EXTERNAL_GATE_SIGNALS = [
+  "github_review_approved",
+  "github_non_author_approval",
+  "github_pr_merged",
+  "accepted_exception",
+  "preview_bypass_ready",
+  "test_credentials_received",
+  "deploy_live",
+] as const;
+export type IssueExternalGateSignal = (typeof ISSUE_EXTERNAL_GATE_SIGNALS)[number];
+export const ISSUE_GITHUB_PR_REQUIRED_REVIEWS = ["none", "any", "non_author"] as const;
+export type IssueGitHubPrRequiredReview = (typeof ISSUE_GITHUB_PR_REQUIRED_REVIEWS)[number];
+export const ISSUE_GITHUB_PR_CHECK_STATUSES = ["unknown", "pending", "passing", "failing"] as const;
+export type IssueGitHubPrCheckStatus = (typeof ISSUE_GITHUB_PR_CHECK_STATUSES)[number];
+export const ISSUE_PREVIEW_PROTECTION_STATUSES = ["unknown", "protected", "open", "error"] as const;
+export type IssuePreviewProtectionStatus = (typeof ISSUE_PREVIEW_PROTECTION_STATUSES)[number];
+export const ISSUE_PREVIEW_SMOKE_STATUSES = ["unknown", "not_run", "passed", "failed"] as const;
+export type IssuePreviewSmokeStatus = (typeof ISSUE_PREVIEW_SMOKE_STATUSES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
 export function clampIssueRequestDepth(value: number | null | undefined): number {

@@ -10,6 +10,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { IssueBlockedReasonCode, IssueExternalGate } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
@@ -31,6 +32,8 @@ export const issues = pgTable(
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     priority: text("priority").notNull().default("medium"),
+    blockedReasonCode: text("blocked_reason_code").$type<IssueBlockedReasonCode>(),
+    externalGate: jsonb("external_gate").$type<IssueExternalGate>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),

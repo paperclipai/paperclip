@@ -33,7 +33,15 @@ import type {
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
-import { clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  clampIssueRequestDepth,
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  inferIssueBlockedReasonCodeFromExternalGate,
+  isIssueExternalGateResolved,
+  isUuidLike,
+  parseIssueExternalGate,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -83,6 +91,14 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function isResolvedExternalGateValue(value: unknown): boolean {
+  return isIssueExternalGateResolved(parseIssueExternalGate(value));
+}
+
+function isResolvedBlocker(status: string, externalGate: unknown): boolean {
+  return status === "done" && isResolvedExternalGateValue(externalGate);
 }
 
 function readStringFromRecord(record: unknown, key: string) {
@@ -263,6 +279,7 @@ async function listIssueDependencyReadinessMap(
       issueId: issueRelations.relatedIssueId,
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
+      blockerExternalGate: issues.externalGate,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -277,9 +294,9 @@ async function listIssueDependencyReadinessMap(
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    // A blocker only resolves dependents when it is done and any declared
+    // external gate has been satisfied or explicitly excepted.
+    if (!isResolvedBlocker(row.blockerStatus, row.blockerExternalGate)) {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -299,17 +316,23 @@ async function listUnresolvedBlockerIssueIds(
   const uniqueBlockerIssueIds = [...new Set(blockerIssueIds.filter(Boolean))];
   if (uniqueBlockerIssueIds.length === 0) return [];
   return dbOrTx
-    .select({ id: issues.id })
+    .select({
+      id: issues.id,
+      status: issues.status,
+      externalGate: issues.externalGate,
+    })
     .from(issues)
     .where(
       and(
         eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
-        // Cancelled blockers intentionally remain unresolved until the relation changes.
-        ne(issues.status, "done"),
       ),
     )
-    .then((rows) => rows.map((row) => row.id));
+    .then((rows) =>
+      rows
+        .filter((row) => !isResolvedBlocker(row.status, row.externalGate))
+        .map((row) => row.id),
+    );
 }
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
@@ -695,6 +718,7 @@ type IssueBlockerAttentionNode = {
   identifier: string | null;
   title: string;
   status: string;
+  externalGate?: unknown;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -702,7 +726,15 @@ type IssueBlockerAttentionNode = {
 type IssueBlockerAttentionInputNode =
   Pick<
     IssueBlockerAttentionNode,
-    "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
+    | "id"
+    | "companyId"
+    | "parentId"
+    | "identifier"
+    | "title"
+    | "status"
+    | "externalGate"
+    | "assigneeAgentId"
+    | "assigneeUserId"
   >
   & { executionRunId?: string | null };
 
@@ -1037,6 +1069,7 @@ async function listIssueBlockerAttentionMap(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          externalGate: issues.externalGate,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -1049,7 +1082,6 @@ async function listIssueBlockerAttentionMap(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
           ),
         );
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
@@ -1062,6 +1094,7 @@ async function listIssueBlockerAttentionMap(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          externalGate: issues.externalGate,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -1071,24 +1104,29 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
         explicitBlockerRowsPromise,
         childRowsPromise,
       ]);
+      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
+        (row) => !isResolvedBlocker(row.status, row.externalGate),
+      );
+      const unresolvedChildRows = childRows.filter(
+        (row) => !isResolvedBlocker(row.status, row.externalGate),
+      );
 
       appendBlockerAttentionEdges(edgesByIssueId, [
-        ...explicitBlockerRows
+        ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
-        ...childRows
+        ...unresolvedChildRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
       ]);
 
-      for (const row of [...explicitBlockerRows, ...childRows]) {
+      for (const row of [...unresolvedExplicitBlockerRows, ...unresolvedChildRows]) {
         if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
         nodesById.set(row.blockerIssueId, {
           id: row.blockerIssueId,
@@ -1097,6 +1135,7 @@ async function listIssueBlockerAttentionMap(
           identifier: row.identifier,
           title: row.title,
           status: row.status,
+          externalGate: row.externalGate,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
@@ -1242,7 +1281,7 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeId, sampleStalledBlockerIdentifier: null };
     }
     const nodeSample = blockerSampleIdentifier(node);
-    if (node.status === "done") {
+    if (isResolvedBlocker(node.status, node.externalGate)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
@@ -1259,7 +1298,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return blocker ? !isResolvedBlocker(blocker.status, blocker.externalGate) : false;
+    });
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -1303,7 +1345,10 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return blocker ? !isResolvedBlocker(blocker.status, blocker.externalGate) : false;
+    });
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
@@ -1396,6 +1441,8 @@ const issueListSelect = {
   originFingerprint: issues.originFingerprint,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
+  blockedReasonCode: issues.blockedReasonCode,
+  externalGate: issues.externalGate,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
@@ -2474,6 +2521,7 @@ export function issueService(db: Db) {
           issueId: issueRelations.relatedIssueId,
           blockerIssueId: issueRelations.issueId,
           blockerStatus: issues.status,
+          blockerExternalGate: issues.externalGate,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2485,10 +2533,18 @@ export function issueService(db: Db) {
           ),
         );
 
-      const blockersByIssueId = new Map<string, Array<{ blockerIssueId: string; blockerStatus: string }>>();
+      const blockersByIssueId = new Map<string, Array<{
+        blockerIssueId: string;
+        blockerStatus: string;
+        blockerExternalGate: unknown;
+      }>>();
       for (const row of blockerRows) {
         const list = blockersByIssueId.get(row.issueId) ?? [];
-        list.push({ blockerIssueId: row.blockerIssueId, blockerStatus: row.blockerStatus });
+        list.push({
+          blockerIssueId: row.blockerIssueId,
+          blockerStatus: row.blockerStatus,
+          blockerExternalGate: row.blockerExternalGate,
+        });
         blockersByIssueId.set(row.issueId, list);
       }
 
@@ -2499,7 +2555,8 @@ export function issueService(db: Db) {
           return {
             ...candidate,
             blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
+            allBlockersDone: blockers.length > 0 && blockers.every((blocker) =>
+              isResolvedBlocker(blocker.blockerStatus, blocker.blockerExternalGate)),
           };
         })
         .filter((candidate) => candidate.allBlockersDone)
@@ -2663,6 +2720,21 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      const nextExternalGate = parseIssueExternalGate(issueData.externalGate);
+      const nextBlockedReasonCode = issueData.status === "blocked"
+        ? issueData.blockedReasonCode ?? inferIssueBlockedReasonCodeFromExternalGate(nextExternalGate)
+        : null;
+      if (issueData.status === "done" && nextExternalGate && !isIssueExternalGateResolved(nextExternalGate)) {
+        throw unprocessable(
+          "Issue cannot be marked done until its external gate is satisfied or explicitly excepted",
+          { externalGate: nextExternalGate },
+        );
+      }
+      if (issueData.status === "blocked" && nextExternalGate?.status === "pending" && !nextBlockedReasonCode) {
+        throw unprocessable("Blocked issues with an external gate require a blocked reason code", {
+          externalGate: nextExternalGate,
+        });
+      }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -2770,6 +2842,8 @@ export function issueService(db: Db) {
           ...issueData,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
+          blockedReasonCode: nextBlockedReasonCode,
+          externalGate: nextExternalGate,
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,
@@ -2854,8 +2928,40 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (issueData.externalGate !== undefined) {
+        patch.externalGate = parseIssueExternalGate(issueData.externalGate);
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      const nextExternalGate =
+        issueData.externalGate !== undefined
+          ? patch.externalGate ?? null
+          : parseIssueExternalGate(existing.externalGate);
+      const nextStatus = issueData.status ?? existing.status;
+      const nextBlockedReasonCode =
+        issueData.blockedReasonCode !== undefined
+          ? issueData.blockedReasonCode ?? null
+          : nextStatus === "blocked"
+            ? inferIssueBlockedReasonCodeFromExternalGate(nextExternalGate) ?? existing.blockedReasonCode ?? null
+            : null;
+      if (
+        issueData.status !== undefined ||
+        issueData.externalGate !== undefined ||
+        issueData.blockedReasonCode !== undefined
+      ) {
+        patch.blockedReasonCode = nextStatus === "blocked" ? nextBlockedReasonCode : null;
+      }
+      if (nextStatus === "done" && nextExternalGate && !isIssueExternalGateResolved(nextExternalGate)) {
+        throw unprocessable(
+          "Issue cannot be marked done until its external gate is satisfied or explicitly excepted",
+          { externalGate: nextExternalGate },
+        );
+      }
+      if (nextStatus === "blocked" && nextExternalGate?.status === "pending" && !nextBlockedReasonCode) {
+        throw unprocessable("Blocked issues with an external gate require a blocked reason code", {
+          externalGate: nextExternalGate,
+        });
       }
 
       const nextAssigneeAgentId =

@@ -1,10 +1,18 @@
 import { z } from "zod";
 import {
+  ISSUE_BLOCKED_REASON_CODES,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_EXTERNAL_GATE_KINDS,
+  ISSUE_EXTERNAL_GATE_SIGNALS,
+  ISSUE_EXTERNAL_GATE_STATUSES,
+  ISSUE_GITHUB_PR_CHECK_STATUSES,
+  ISSUE_GITHUB_PR_REQUIRED_REVIEWS,
   ISSUE_PRIORITIES,
+  ISSUE_PREVIEW_PROTECTION_STATUSES,
+  ISSUE_PREVIEW_SMOKE_STATUSES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
@@ -124,6 +132,122 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
+export const issueBlockedReasonCodeSchema = z.enum(ISSUE_BLOCKED_REASON_CODES);
+export const issueGitHubPrRequiredReviewSchema = z.enum(ISSUE_GITHUB_PR_REQUIRED_REVIEWS);
+export const issueGitHubPrCheckStatusSchema = z.enum(ISSUE_GITHUB_PR_CHECK_STATUSES);
+export const issuePreviewProtectionStatusSchema = z.enum(ISSUE_PREVIEW_PROTECTION_STATUSES);
+export const issuePreviewSmokeStatusSchema = z.enum(ISSUE_PREVIEW_SMOKE_STATUSES);
+
+export const issueGitHubVisibleReviewSchema = z.object({
+  authorLogin: z.string().trim().min(1).nullable(),
+  state: z.string().trim().min(1),
+  submittedAt: z.string().datetime().nullable(),
+  commitOid: z.string().trim().min(1).nullable(),
+}).strict();
+
+export const issueGitHubPrGateSnapshotSchema = z.object({
+  provider: z.literal("github"),
+  repoOwner: z.string().trim().min(1),
+  repoName: z.string().trim().min(1),
+  prNumber: z.number().int().positive(),
+  prUrl: z.string().url().nullable(),
+  headSha: z.string().trim().min(1).nullable(),
+  isDraft: z.boolean().nullable(),
+  mergeable: z.boolean().nullable(),
+  mergeStateStatus: z.string().trim().min(1).nullable(),
+  checksStatus: issueGitHubPrCheckStatusSchema.nullable(),
+  requiredChecks: z.array(z.string().trim().min(1)).default([]),
+  passedChecks: z.array(z.string().trim().min(1)).default([]),
+  failedChecks: z.array(z.string().trim().min(1)).default([]),
+  pendingChecks: z.array(z.string().trim().min(1)).default([]),
+  reviewDecision: z.string().trim().min(1).nullable(),
+  requiredReview: issueGitHubPrRequiredReviewSchema,
+  nonAuthorApprovalSatisfied: z.boolean().nullable(),
+  visibleReviews: z.array(issueGitHubVisibleReviewSchema).default([]),
+  unresolvedReviewThreads: z.number().int().nonnegative().nullable(),
+  previewProtectionStatus: issuePreviewProtectionStatusSchema.nullable(),
+  previewSmokeStatus: issuePreviewSmokeStatusSchema.nullable(),
+  currentViewerLogin: z.string().trim().min(1).nullable(),
+  prAuthorLogin: z.string().trim().min(1).nullable(),
+  currentViewerCanSatisfyReview: z.boolean().nullable(),
+}).strict();
+
+export const issueExternalGateResolutionSchema = z.object({
+  signal: z.enum(ISSUE_EXTERNAL_GATE_SIGNALS),
+  capturedAt: z.string().datetime().nullable(),
+  note: z.string().trim().max(2000).nullable(),
+}).strict();
+
+export const issueExternalGateSchema = z.object({
+  kind: z.enum(ISSUE_EXTERNAL_GATE_KINDS),
+  status: z.enum(ISSUE_EXTERNAL_GATE_STATUSES),
+  requiredSignal: z.enum(ISSUE_EXTERNAL_GATE_SIGNALS),
+  resolution: issueExternalGateResolutionSchema.nullable(),
+  githubPr: issueGitHubPrGateSnapshotSchema.nullable(),
+}).strict().superRefine((value, ctx) => {
+  if (value.kind === "github_pr" && !value.githubPr) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "github_pr gates require githubPr details",
+      path: ["githubPr"],
+    });
+  }
+  if (value.kind !== "github_pr" && value.githubPr) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Only github_pr gates may include githubPr details",
+      path: ["githubPr"],
+    });
+  }
+  if (value.status === "pending" && value.resolution) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Pending gates cannot include a resolution record",
+      path: ["resolution"],
+    });
+  }
+  if (value.status !== "pending" && !value.resolution) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Resolved gates require a resolution record",
+      path: ["resolution"],
+    });
+  }
+  if (
+    value.status === "accepted_exception" &&
+    value.resolution &&
+    value.resolution.signal !== "accepted_exception"
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "accepted_exception gates require an accepted_exception resolution signal",
+      path: ["resolution", "signal"],
+    });
+  }
+});
+
+export type IssueExternalGate = z.infer<typeof issueExternalGateSchema>;
+
+export function parseIssueExternalGate(value: unknown): IssueExternalGate | null {
+  if (value == null) return null;
+  const parsed = issueExternalGateSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export function isIssueExternalGateResolved(value: Pick<IssueExternalGate, "status"> | null | undefined): boolean {
+  return !value || value.status === "satisfied" || value.status === "accepted_exception";
+}
+
+export function inferIssueBlockedReasonCodeFromExternalGate(value: IssueExternalGate | null | undefined) {
+  if (!value || value.status !== "pending") return null;
+  if (value.kind === "preview_access") return "waiting_preview_bypass" as const;
+  if (value.kind === "test_credentials") return "waiting_test_credentials" as const;
+  if (value.kind === "deploy") return "waiting_deploy" as const;
+  return value.requiredSignal === "accepted_exception"
+    ? "waiting_human_exception" as const
+    : "waiting_github_review" as const;
+}
+
 const issueRequestDepthInputSchema = z
   .number()
   .int()
@@ -141,6 +265,8 @@ export const createIssueSchema = z.object({
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  blockedReasonCode: issueBlockedReasonCodeSchema.optional().nullable(),
+  externalGate: issueExternalGateSchema.optional().nullable(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),

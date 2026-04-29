@@ -14,6 +14,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { IssueExternalGate } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -74,6 +75,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     identifier: string;
     title: string;
     status: string;
+    externalGate?: IssueExternalGate | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
   }) {
@@ -85,6 +87,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       title: input.title,
       status: input.status,
       priority: "medium",
+      externalGate: input.externalGate ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
     });
@@ -225,6 +228,61 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 0,
       attentionBlockerCount: 1,
       sampleBlockerIdentifier: "PBS-2",
+    });
+  });
+
+  it("keeps a done blocker attention-visible while its external gate is still pending", async () => {
+    const { companyId } = await createCompany("PBG");
+    const parentId = await insertIssue({ companyId, identifier: "PBG-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBG-2",
+      title: "Merged without reviewer gate",
+      status: "done",
+      externalGate: {
+        kind: "github_pr",
+        status: "pending",
+        requiredSignal: "accepted_exception",
+        resolution: null,
+        githubPr: {
+          provider: "github",
+          repoOwner: "paperclipai",
+          repoName: "paperclip",
+          prNumber: 4776,
+          prUrl: "https://github.com/paperclipai/paperclip/pull/4776",
+          headSha: "9db7ebf32712ed71b316669c7339d8dbca4c0031",
+          isDraft: false,
+          mergeable: true,
+          mergeStateStatus: "CLEAN",
+          checksStatus: "passing",
+          requiredChecks: ["build"],
+          passedChecks: ["build"],
+          failedChecks: [],
+          pendingChecks: [],
+          reviewDecision: null,
+          requiredReview: "non_author",
+          nonAuthorApprovalSatisfied: false,
+          visibleReviews: [],
+          unresolvedReviewThreads: 0,
+          previewProtectionStatus: "protected",
+          previewSmokeStatus: "unknown",
+          currentViewerLogin: "MeghV",
+          prAuthorLogin: "MeghV",
+          currentViewerCanSatisfyReview: false,
+        },
+      },
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBG-2",
     });
   });
 
