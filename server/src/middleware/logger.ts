@@ -27,9 +27,77 @@ const sharedOpts = {
   singleLine: true,
 };
 
+// Field-level redaction. Applied by pino at serialization time so any structured
+// log entry that surfaces these keys (req body, custom props, error contexts)
+// gets scrubbed regardless of which middleware attached them.
+//
+// `*` is a single-segment wildcard in pino redact paths, so for nested objects
+// we have to enumerate the parent keys we actually emit (`reqBody`,
+// `errorContext`, `req.body`).
+const SENSITIVE_KEYS = [
+  "password",
+  "newPassword",
+  "currentPassword",
+  "passwordConfirmation",
+  "token",
+  "accessToken",
+  "refreshToken",
+  "idToken",
+  "apiKey",
+  "secret",
+  "clientSecret",
+  "privateKey",
+];
+
+const REDACT_PATHS = [
+  "req.headers.authorization",
+  "req.headers.cookie",
+  'req.headers["x-api-key"]',
+  'req.headers["proxy-authorization"]',
+  ...SENSITIVE_KEYS.flatMap((key) => [
+    `req.body.${key}`,
+    `reqBody.${key}`,
+    `errorContext.${key}`,
+    `*.${key}`,
+  ]),
+];
+
+const REDACTED = "[REDACTED]";
+
+// Defensive sanitizer applied before we hand a body to pino. Pino's redact paths
+// already cover the structured log path, but we shallow-clone here too so we
+// never mutate the live `req.body` and so deeply-nested or untyped shapes still
+// get scrubbed.
+function sanitizeForLog<T>(value: T, depth = 0): T {
+  if (depth > 4 || value == null) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForLog(item, depth + 1)) as unknown as T;
+  }
+  if (typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_KEYS.includes(key)) {
+      out[key] = REDACTED;
+      continue;
+    }
+    out[key] = sanitizeForLog(val, depth + 1);
+  }
+  return out as unknown as T;
+}
+
+// Auth endpoints accept credentials in the body. Even with field-level redaction
+// we don't want to log the body shape at all - log only the route + status.
+function isAuthPath(url: string | undefined): boolean {
+  if (!url) return false;
+  return url.startsWith("/api/auth/") || url.startsWith("/auth/");
+}
+
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: {
+    paths: REDACT_PATHS,
+    censor: REDACTED,
+  },
 }, pino.transport({
   targets: [
     {
@@ -65,19 +133,25 @@ export const httpLogger = pinoHttp({
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {
+      const onAuthPath = isAuthPath((req as any).url);
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
-          errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          errorContext: sanitizeForLog(ctx.error),
+          reqBody: onAuthPath ? undefined : sanitizeForLog(ctx.reqBody),
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
-      if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+      if (
+        !onAuthPath &&
+        body &&
+        typeof body === "object" &&
+        Object.keys(body).length > 0
+      ) {
+        props.reqBody = sanitizeForLog(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;
