@@ -238,7 +238,7 @@ export function agentRoutes(
     };
   }
 
-  function withSafeAdapterConfig<T extends { adapterConfig: unknown }>(agent: T): T {
+  function withSafeAdapterConfig<T extends { adapterConfig?: unknown }>(agent: T): T {
     return {
       ...agent,
       adapterConfig: omitAdapterConfigSecrets(agent.adapterConfig),
