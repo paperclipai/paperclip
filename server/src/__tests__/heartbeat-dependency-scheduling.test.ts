@@ -672,7 +672,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const companyId = randomUUID();
     const agentId = randomUUID();
     const rootIssueId = randomUUID();
-    const childIssueId = randomUUID();
+    const issueChain = Array.from({ length: 17 }, () => randomUUID());
+    const deepDescendantIssueId = issueChain.at(-1)!;
 
     await db.insert(companies).values({
       id: companyId,
@@ -705,15 +706,15 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         priority: "medium",
         assigneeAgentId: agentId,
       },
-      {
-        id: childIssueId,
+      ...issueChain.map((issueId, index) => ({
+        id: issueId,
         companyId,
-        parentId: rootIssueId,
-        title: "Paused child",
+        parentId: index === 0 ? rootIssueId : issueChain[index - 1],
+        title: `Paused desc ${index + 1}`,
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
-      },
+      })),
     ]);
     const [hold] = await db
       .insert(issueTreeHolds)
@@ -731,8 +732,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
-      payload: { issueId: childIssueId },
-      contextSnapshot: { issueId: childIssueId, wakeReason: "issue_blockers_resolved" },
+      payload: { issueId: deepDescendantIssueId },
+      contextSnapshot: { issueId: deepDescendantIssueId, wakeReason: "issue_blockers_resolved" },
     });
 
     expect(blockedWake).toBeNull();
@@ -742,7 +743,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         reason: agentWakeupRequests.reason,
       })
       .from(agentWakeupRequests)
-      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${childIssueId}`)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${deepDescendantIssueId}`)
       .then((rows) => rows[0] ?? null);
     expect(skippedWake).toMatchObject({ status: "skipped", reason: "issue_tree_hold_active" });
 
@@ -750,7 +751,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.insert(issueComments).values({
       id: childCommentId,
       companyId,
-      issueId: childIssueId,
+      issueId: deepDescendantIssueId,
       authorUserId: "board-user",
       body: "Please respond while this hold is active.",
     });
@@ -759,7 +760,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "on_demand",
       triggerDetail: "manual",
       reason: "issue_commented",
-      payload: { issueId: childIssueId, commentId: childCommentId },
+      payload: { issueId: deepDescendantIssueId, commentId: childCommentId },
       requestedByActorType: "agent",
       requestedByActorId: agentId,
     });
@@ -769,11 +770,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
-      payload: { issueId: childIssueId, commentId: childCommentId },
+      payload: { issueId: deepDescendantIssueId, commentId: childCommentId },
       requestedByActorType: "user",
       requestedByActorId: "board-user",
       contextSnapshot: {
-        issueId: childIssueId,
+        issueId: deepDescendantIssueId,
         commentId: childCommentId,
         wakeCommentId: childCommentId,
         wakeReason: "issue_commented",

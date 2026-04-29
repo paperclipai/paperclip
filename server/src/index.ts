@@ -60,9 +60,14 @@ import type {
 /**
  * Bundled plugins that should be auto-installed on startup.
  * These are npm packages that get installed if not already present.
+ *
+ * Note: `@lucitra/paperclip-plugin-linear` was previously listed here but is
+ * now vendored as a workspace package at `packages/plugins/paperclip-plugin-linear`
+ * and installed from that local path further below. Listing it here would
+ * race the npm install ahead of the local install, ending up with whatever
+ * version is on npm rather than the in-image version with kkroo fixes.
  */
 const BUNDLED_PLUGINS = [
-  "@lucitra/paperclip-plugin-linear",
   "@lucitra/paperclip-plugin-chat",
   "@lucitra/paperclip-plugin-updater",
   "@lucitra/paperclip-plugin-secrets",
@@ -1024,6 +1029,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
         }
       })
+      .then(async () => {
+        const reviewed = await heartbeat.reconcileProductivityReviews();
+        if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+          logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -1081,6 +1092,12 @@ export async function startServer(): Promise<StartedServer> {
           const scanned = await heartbeat.scanSilentActiveRuns();
           if (scanned.created > 0 || scanned.escalated > 0) {
             logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+          }
+        })
+        .then(async () => {
+          const reviewed = await heartbeat.reconcileProductivityReviews();
+          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
         })
         .catch((err) => {

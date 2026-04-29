@@ -12,6 +12,7 @@ let currentSearch = "";
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
 const issuesListMock = vi.fn<(companyId: string, filters?: Record<string, unknown>) => Promise<Issue[]>>();
+const markdownEditorRenderMock = vi.fn((props: { mentions?: Array<{ id: string; name: string }> }) => props);
 const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
   <div data-testid="issues-list">{issues.map((issue) => issue.title).join(", ")}</div>
 ));
@@ -158,6 +159,24 @@ vi.mock("../api/projects", () => ({
   },
 }));
 
+vi.mock("../api/access", () => ({
+  accessApi: {
+    listUserDirectory: vi.fn(async () => ({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: {
+            name: "Taylor",
+            email: "taylor@example.com",
+            image: null,
+          },
+        },
+      ],
+    })),
+  },
+}));
+
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: {
     getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: false })),
@@ -186,7 +205,10 @@ vi.mock("@/components/ui/tabs", () => ({
 }));
 
 vi.mock("../components/MarkdownEditor", () => ({
-  MarkdownEditor: () => <div />,
+  MarkdownEditor: (props: { mentions?: Array<{ id: string; name: string }> }) => {
+    markdownEditorRenderMock(props);
+    return <div data-testid="markdown-editor" />;
+  },
 }));
 
 vi.mock("../components/InlineEntitySelector", () => ({
@@ -303,6 +325,7 @@ describe("Routines page", () => {
     navigateMock.mockReset();
     routinesListMock.mockReset();
     issuesListMock.mockReset();
+    markdownEditorRenderMock.mockClear();
     issuesListRenderMock.mockClear();
     localStorage.clear();
   });
@@ -332,6 +355,70 @@ describe("Routines page", () => {
     expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Project Beta"]);
     expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
     expect(groups[1]?.items.map((item) => item.title)).toEqual(["Weekly digest"]);
+  });
+
+  it("passes company mention options to the routine description editor", async () => {
+    routinesListMock.mockResolvedValue([]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    let createButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Create routine"),
+    );
+    for (let attempts = 0; attempts < 5 && !createButton; attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+      createButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Create routine"),
+      );
+    }
+
+    expect(createButton).toBeTruthy();
+
+    await act(async () => {
+      createButton?.click();
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5; attempts += 1) {
+      const hasMentionOptions = markdownEditorRenderMock.mock.calls.some(([props]) => (props.mentions ?? []).length > 0);
+      if (hasMentionOptions) break;
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const callsWithMentions = markdownEditorRenderMock.mock.calls
+      .map(([props]) => props.mentions ?? [])
+      .filter((mentions) => mentions.length > 0);
+
+    expect(callsWithMentions.at(-1)?.map((mention) => mention.id)).toEqual([
+      "user:user-1",
+      "agent:agent-1",
+      "agent:agent-2",
+      "project:project-1",
+      "project:project-2",
+    ]);
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("shows recent runs through the issues list scoped to routine execution issues", async () => {

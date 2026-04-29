@@ -8,17 +8,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
   IssueChatThread,
+  VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
+  findLatestCommentMessageIndex,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
+import { ToastProvider } from "../context/ToastContext";
+import { ToastViewport } from "./ToastViewport";
 import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
+import {
+  issueChatLongThreadAgentMap,
+  issueChatLongThreadComments,
+  issueChatLongThreadEvents,
+  issueChatLongThreadLinkedRuns,
+  issueChatLongThreadTranscriptsByRunId,
+} from "../fixtures/issueChatLongThreadFixture";
+import type {
+  IssueChatLinkedRun,
+  IssueChatTranscriptEntry,
+} from "../lib/issue-chat-messages";
 
-const { markdownEditorFocusMock } = vi.hoisted(() => ({
+function hasSmoothScrollBehavior(arg: unknown) {
+  return typeof arg === "object"
+    && arg !== null
+    && "behavior" in arg
+    && (arg as ScrollToOptions).behavior === "smooth";
+}
+
+const { markdownBodyRenderMock, markdownEditorFocusMock } = vi.hoisted(() => ({
+  markdownBodyRenderMock: vi.fn(),
   markdownEditorFocusMock: vi.fn(),
 }));
 
@@ -59,7 +82,10 @@ vi.mock("../lib/issue-chat-scroll", async (importOriginal) => {
 });
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  MarkdownBody: ({ children }: { children: ReactNode }) => {
+    markdownBodyRenderMock(children);
+    return <div>{children}</div>;
+  },
 }));
 
 vi.mock("./MarkdownEditor", () => ({
@@ -273,6 +299,7 @@ describe("IssueChatThread", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    window.scrollTo = vi.fn();
     localStorage.clear();
   });
 
@@ -284,6 +311,7 @@ describe("IssueChatThread", () => {
     captureComposerViewportSnapshotMock.mockClear();
     restoreComposerViewportSnapshotMock.mockClear();
     shouldPreserveComposerViewportMock.mockClear();
+    markdownBodyRenderMock.mockClear();
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -312,6 +340,644 @@ describe("IssueChatThread", () => {
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
     expect(viewport?.className).not.toContain("max-h-[70vh]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("virtualizes long merged threads so only a windowed slice mounts", () => {
+    const root = createRoot(container);
+    const totalMergedRows =
+      issueChatLongThreadComments.length
+      + issueChatLongThreadEvents.length
+      + issueChatLongThreadLinkedRuns.length;
+    expect(totalMergedRows).toBeGreaterThanOrEqual(VIRTUALIZED_THREAD_ROW_THRESHOLD);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const virtualizer = container.querySelector(
+      '[data-testid="issue-chat-thread-virtualizer"]',
+    ) as HTMLDivElement | null;
+    expect(virtualizer).not.toBeNull();
+    expect(virtualizer?.dataset.virtualCount).toBe(String(totalMergedRows));
+
+    const rows = container.querySelectorAll('[data-testid="issue-chat-message-row"]');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(totalMergedRows);
+
+    const virtualRows = container.querySelectorAll(
+      '[data-testid="issue-chat-thread-virtual-row"]',
+    );
+    expect(virtualRows.length).toBe(rows.length);
+    for (const row of Array.from(virtualRows)) {
+      const transform = (row as HTMLDivElement).style.transform;
+      expect(transform).toMatch(/translateY\(/);
+    }
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("measures tall virtual rows before positioning following rows", async () => {
+    const root = createRoot(container);
+    const requestAnimationFrameMock = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        callback(0);
+        return 0;
+      });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const virtualRows = container.querySelectorAll<HTMLDivElement>(
+      '[data-testid="issue-chat-thread-virtual-row"]',
+    );
+    expect(virtualRows.length).toBeGreaterThan(1);
+
+    Object.defineProperty(virtualRows[0], "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        width: 700,
+        height: 800,
+        top: 0,
+        right: 700,
+        bottom: 800,
+        left: 0,
+        toJSON: () => ({}),
+      }),
+    });
+
+    await act(async () => {
+      virtualRows[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const nextTransform = virtualRows[1].style.transform;
+    const translateY = Number(nextTransform.match(/translateY\(([-\d.]+)px\)/)?.[1] ?? "0");
+    expect(translateY).toBeGreaterThanOrEqual(800);
+
+    act(() => {
+      root.unmount();
+    });
+    requestAnimationFrameMock.mockRestore();
+  });
+
+  it("scrolls loaded hash targets through the virtualized message index", () => {
+    const root = createRoot(container);
+    const targetComment = issueChatLongThreadComments.at(-1);
+    expect(targetComment).toBeDefined();
+    const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[`/issues/PAP-1#comment-${targetComment!.id}`]}>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(scrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(true);
+
+    scrollToMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses the virtualizer when jumping to the latest long-thread row", () => {
+    const root = createRoot(container);
+    const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    expect(scrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(true);
+
+    scrollToMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  // Regression for PAP-2660: on the real issue page the chat thread is wrapped
+  // in `<main id="main-content" overflow-auto>`, so the virtualizer must bind
+  // to that ancestor's scroll instead of `window` (which never moves on
+  // desktop). When mounted inside an overflow-auto ancestor the jump-to-latest
+  // action must drive that element's scrollTo, not window.scrollTo.
+  it("targets an overflow-auto ancestor instead of window scroll on jump-to-latest", () => {
+    container.remove();
+    const scrollHost = document.createElement("main");
+    scrollHost.id = "main-content";
+    scrollHost.style.overflowY = "auto";
+    scrollHost.style.overflow = "auto";
+    scrollHost.style.height = "640px";
+    document.body.appendChild(scrollHost);
+    container = document.createElement("div");
+    scrollHost.appendChild(container);
+
+    const root = createRoot(container);
+    const windowScrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const elementScrollToMock = vi.fn();
+    scrollHost.scrollTo = elementScrollToMock as unknown as typeof scrollHost.scrollTo;
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    windowScrollToMock.mockClear();
+    elementScrollToMock.mockClear();
+
+    act(() => {
+      jump?.click();
+    });
+
+    expect(elementScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(true);
+    expect(windowScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(false);
+
+    windowScrollToMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+    scrollHost.remove();
+  });
+
+  // Regression for PAP-2672: when the merged feed ends with a non-comment row
+  // (run/timeline/embedded output) we still want Jump to latest to land on the
+  // last comment, not whichever activity row sorts last.
+  it("targets the latest comment row when trailing rows are non-comments (PAP-2672)", () => {
+    const lastComment = issueChatLongThreadComments.at(-1);
+    expect(lastComment).toBeDefined();
+    const trailingRunStart = new Date(new Date(lastComment!.createdAt).getTime() + 60_000);
+    const trailingRun: IssueChatLinkedRun = {
+      runId: "trailing-run-pap-2672",
+      status: "failed",
+      agentId: "agent-perf-codex",
+      agentName: "TrailingRunner",
+      adapterType: "codex_local",
+      createdAt: trailingRunStart,
+      startedAt: trailingRunStart,
+      finishedAt: trailingRunStart,
+      hasStoredOutput: true,
+    };
+    const trailingTranscriptEntries: readonly IssueChatTranscriptEntry[] = [
+      {
+        kind: "assistant",
+        ts: trailingRunStart.toISOString(),
+        text: "Trailing run posted after the latest comment.",
+      },
+    ];
+    const transcriptsByRunId = new Map(issueChatLongThreadTranscriptsByRunId);
+    transcriptsByRunId.set(trailingRun.runId, trailingTranscriptEntries);
+    const linkedRuns: IssueChatLinkedRun[] = [
+      ...issueChatLongThreadLinkedRuns,
+      trailingRun,
+    ];
+
+    container.remove();
+    const scrollHost = document.createElement("main");
+    scrollHost.id = "main-content";
+    scrollHost.style.overflowY = "auto";
+    scrollHost.style.overflow = "auto";
+    scrollHost.style.height = "800px";
+    Object.defineProperty(scrollHost, "scrollHeight", {
+      configurable: true,
+      get: () => 200_000,
+    });
+    Object.defineProperty(scrollHost, "clientHeight", {
+      configurable: true,
+      get: () => 800,
+    });
+    document.body.appendChild(scrollHost);
+    container = document.createElement("div");
+    scrollHost.appendChild(container);
+
+    const elementScrollToMock = vi.fn();
+    scrollHost.scrollTo = elementScrollToMock as unknown as typeof scrollHost.scrollTo;
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={linkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={transcriptsByRunId}
+            hasOutputForRun={(runId) => transcriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const virtualizerEl = container.querySelector<HTMLDivElement>(
+      '[data-testid="issue-chat-thread-virtualizer"]',
+    );
+    expect(virtualizerEl).not.toBeNull();
+    const totalMergedRows = Number(virtualizerEl?.dataset.virtualCount ?? "0");
+    expect(totalMergedRows).toBeGreaterThan(VIRTUALIZED_THREAD_ROW_THRESHOLD);
+
+    elementScrollToMock.mockClear();
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    const smoothCalls = elementScrollToMock.mock.calls
+      .map((call) => call[0] as ScrollToOptions)
+      .filter(hasSmoothScrollBehavior);
+    expect(smoothCalls.length).toBeGreaterThan(0);
+
+    // For align="end" with the very last index, tanstack-virtual short-circuits
+    // to getMaxScrollOffset() (= scrollHeight - clientHeight = 199_200 here).
+    // A jump to the latest comment row (one slot earlier) lands at item.end -
+    // clientHeight, which is strictly less. Asserting top < maxScrollOffset
+    // proves the button isn't routing to the trailing run row.
+    const maxScrollOffset = 200_000 - 800;
+    const lastTop = smoothCalls[smoothCalls.length - 1]?.top;
+    expect(typeof lastTop).toBe("number");
+    expect(lastTop as number).toBeLessThan(maxScrollOffset);
+    expect(lastTop as number).toBeGreaterThan(0);
+
+    act(() => {
+      root.unmount();
+    });
+    scrollHost.remove();
+  });
+
+  // Regression for PAP-2672 follow-up: clicking Jump to latest must refresh
+  // the comments page so a comment that arrived after the initial load is
+  // present before we scroll. Otherwise the user lands on the latest *loaded*
+  // comment but not the absolute newest.
+  it("invokes onRefreshLatestComments before scrolling on Jump to latest", async () => {
+    const refreshMock = vi.fn(async () => undefined);
+    const directComments = issueChatLongThreadComments.slice(0, 8);
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={directComments}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            onRefreshLatestComments={refreshMock}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    expect(refreshMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("findLatestCommentMessageIndex prefers the last comment-anchored row (PAP-2672)", () => {
+    const messages = [
+      { metadata: { custom: { anchorId: "comment-a" } } },
+      { metadata: { custom: { anchorId: "run-1" } } },
+      { metadata: { custom: { anchorId: "comment-b" } } },
+      { metadata: { custom: { anchorId: "run-2" } } },
+      { metadata: { custom: { anchorId: "activity-3" } } },
+    ];
+    expect(findLatestCommentMessageIndex(messages as never)).toBe(2);
+    expect(
+      findLatestCommentMessageIndex([
+        { metadata: { custom: { anchorId: "run-only" } } },
+      ] as never),
+    ).toBe(-1);
+    expect(findLatestCommentMessageIndex([] as never)).toBe(-1);
+  });
+
+  it("keeps the direct render path for short threads under the virtualization threshold", () => {
+    const root = createRoot(container);
+    const directComments = issueChatLongThreadComments.slice(0, 12);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={directComments}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="issue-chat-thread-virtualizer"]'),
+    ).toBeNull();
+    const rows = container.querySelectorAll('[data-testid="issue-chat-message-row"]');
+    expect(rows.length).toBe(directComments.length);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders virtualized rows with the same role/kind metadata as the direct path", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const rows = container.querySelectorAll('[data-testid="issue-chat-message-row"]');
+    expect(rows.length).toBeGreaterThan(0);
+    const roles = new Set<string>();
+    const kinds = new Set<string>();
+    for (const row of Array.from(rows)) {
+      const element = row as HTMLDivElement;
+      const role = element.dataset.messageRole;
+      const kind = element.dataset.messageKind;
+      if (role) roles.add(role);
+      if (kind) kinds.add(kind);
+    }
+    expect(roles.size).toBeGreaterThan(0);
+    expect(kinds.size).toBeGreaterThan(0);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not re-render long-thread markdown rows for unrelated layout updates", () => {
+    const root = createRoot(container);
+    const onAdd = async () => {};
+    const hasOutputForRun = (runId: string) => issueChatLongThreadTranscriptsByRunId.has(runId);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={onAdd}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={hasOutputForRun}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(markdownBodyRenderMock).toHaveBeenCalled();
+    markdownBodyRenderMock.mockClear();
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={onAdd}
+            showComposer={false}
+            showJumpToLatest
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={hasOutputForRun}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(markdownBodyRenderMock).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not re-render unchanged markdown when feedback votes change", () => {
+    const root = createRoot(container);
+    const onAdd = async () => {};
+    const onVote = async () => {};
+    const comments = [{
+      id: "comment-agent-feedback",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: "agent-1",
+      authorUserId: null,
+      body: "Agent summary with **markdown**",
+      createdAt: new Date("2026-04-06T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    }];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={onAdd}
+            onVote={onVote}
+            feedbackVotes={[]}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(markdownBodyRenderMock).toHaveBeenCalled();
+    markdownBodyRenderMock.mockClear();
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={onAdd}
+            onVote={onVote}
+            feedbackVotes={[{
+              id: "feedback-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              targetType: "issue_comment",
+              targetId: "comment-agent-feedback",
+              authorUserId: "user-1",
+              vote: "up",
+              reason: null,
+              sharedWithLabs: false,
+              sharedAt: null,
+              consentVersion: null,
+              redactionSummary: null,
+              createdAt: new Date("2026-04-06T12:01:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+            }]}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(markdownBodyRenderMock).not.toHaveBeenCalled();
 
     act(() => {
       root.unmount();
@@ -1252,6 +1918,127 @@ describe("IssueChatThread", () => {
         },
       }),
     );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("warns once before sending a reply with no assignee selected", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ToastProvider>
+          <ToastViewport />
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              enableReassign
+              reassignOptions={[
+                { id: "", label: "No assignee" },
+                { id: "agent:agent-1", label: "Agent 1" },
+              ]}
+              currentAssigneeValue=""
+              suggestedAssigneeValue=""
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </ToastProvider>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Send",
+    ) as HTMLButtonElement | undefined;
+    expect(editor).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Reply without assignee");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(appendMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("No assignee selected");
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(appendMock).toHaveBeenCalledTimes(1);
+    expect(appendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [{ type: "text", text: "Reply without assignee" }],
+      }),
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not warn when sending a reply with an assignee selected", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ToastProvider>
+          <ToastViewport />
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              enableReassign
+              reassignOptions={[
+                { id: "", label: "No assignee" },
+                { id: "agent:agent-1", label: "Agent 1" },
+              ]}
+              currentAssigneeValue="agent:agent-1"
+              suggestedAssigneeValue="agent:agent-1"
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </ToastProvider>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Send",
+    ) as HTMLButtonElement | undefined;
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Reply with assignee");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(appendMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain("No assignee selected");
 
     act(() => {
       root.unmount();

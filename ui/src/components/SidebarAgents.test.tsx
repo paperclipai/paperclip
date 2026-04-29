@@ -61,6 +61,9 @@ vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
     openNewAgent: mockOpenNewAgent,
   }),
+  useDialogActions: () => ({
+    openNewAgent: mockOpenNewAgent,
+  }),
 }));
 
 vi.mock("../context/SidebarContext", () => ({
