@@ -94,7 +94,13 @@ const manifest: PaperclipPluginManifestV1 = {
           "Per-instance config. e.g. { team: { 'platform': 'alice@blockcast.net' } }. Resolution chain documented in the plugin spec §7.7.",
       },
     },
-    required: ["defaultCompanyId"],
+    // No fields are schema-required: the bootstrap auto-config endpoint
+    // posts a partial config (e.g. only webhookTokenRef) and the worker
+    // tolerates a missing defaultCompanyId — it warns at setup() and
+    // rejects per-alert in webhook-handler.ts. Forcing defaultCompanyId
+    // here previously broke fresh deploys until an operator wrote it
+    // by hand.
+    required: [],
   },
   webhooks: [
     {
