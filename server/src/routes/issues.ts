@@ -30,6 +30,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isPlaceholderCommentBody,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -83,11 +84,32 @@ import {
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { placeholderCapHits, placeholderCapOverrides } from "../observability/prom.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function placeholderCommentCapResponse(input: {
+  priorPlaceholderCount: number;
+  windowSeconds: number;
+  windowComments: number;
+}) {
+  return {
+    error: "placeholder_comment_cap",
+    message:
+      "Comment blocked: prior placeholder comment(s) already posted in window. Flip status (blocked / done / in_review with a real comment) or exit silent instead.",
+    windowSeconds: input.windowSeconds,
+    windowComments: input.windowComments,
+    priorPlaceholderCount: input.priorPlaceholderCount,
+    alternatives: [
+      'PATCH /api/issues/{id} {"status":"blocked","unblockOwner":"..."}',
+      'PATCH /api/issues/{id} {"status":"in_review","assigneeUserId":"local-board"}',
+      "exit run silently -- no post",
+    ],
+  };
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -3414,6 +3436,61 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const commentIsPlaceholder = isPlaceholderCommentBody(req.body.body);
+    const forceCommentAllow = req.actor.type === "board" ? req.body.forceCommentAllow === true : undefined;
+    if (actor.actorType === "agent" && actor.agentId && commentIsPlaceholder) {
+      const placeholderWindow = await svc.countOwnRecentPlaceholderComments(id, actor.agentId);
+
+      // Best-effort request-time guard: concurrent POSTs can both pass before either insert commits,
+      // so worst case is bounded to two placeholders before the next attempt observes the prior insert.
+      if (placeholderWindow.count >= 1) {
+        placeholderCapHits.labels(actor.agentId).inc();
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.placeholder_cap_hit",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            issueTitle: issue.title,
+            priorPlaceholderCount: placeholderWindow.count,
+            windowSeconds: placeholderWindow.windowSeconds,
+            windowComments: placeholderWindow.windowComments,
+          },
+        });
+        res.status(409).json(
+          placeholderCommentCapResponse({
+            priorPlaceholderCount: placeholderWindow.count,
+            windowSeconds: placeholderWindow.windowSeconds,
+            windowComments: placeholderWindow.windowComments,
+          }),
+        );
+        return;
+      }
+    } else if (forceCommentAllow === true && commentIsPlaceholder) {
+      const overriddenAgentId = issue.assigneeAgentId ?? "unassigned";
+      placeholderCapOverrides.labels(overriddenAgentId).inc();
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.placeholder_cap_overridden",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          issueTitle: issue.title,
+          forceCommentAllow: true,
+          overriddenAgentId,
+        },
+      });
+    }
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;

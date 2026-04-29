@@ -33,7 +33,13 @@ import type {
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
-import { clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  clampIssueRequestDepth,
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isPlaceholderCommentBody,
+  isUuidLike,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -56,6 +62,8 @@ import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const PLACEHOLDER_COMMENT_WINDOW_SECONDS = 30 * 60;
+const PLACEHOLDER_COMMENT_WINDOW_COMMENTS = 5;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
@@ -1655,6 +1663,60 @@ export function issueService(db: Db) {
       ...comment,
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
     };
+  }
+
+  async function listComments(
+    issueId: string,
+    opts?: {
+      afterCommentId?: string | null;
+      order?: "asc" | "desc";
+      limit?: number | null;
+    },
+  ) {
+    const order = opts?.order === "asc" ? "asc" : "desc";
+    const afterCommentId = opts?.afterCommentId?.trim() || null;
+    const limit =
+      opts?.limit && opts.limit > 0
+        ? Math.min(Math.floor(opts.limit), MAX_ISSUE_COMMENT_PAGE_LIMIT)
+        : null;
+
+    const conditions = [eq(issueComments.issueId, issueId)];
+    if (afterCommentId) {
+      const anchor = await db
+        .select({
+          id: issueComments.id,
+          createdAt: issueComments.createdAt,
+        })
+        .from(issueComments)
+        .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!anchor) return [];
+      conditions.push(
+        order === "asc"
+          ? or(
+              gt(issueComments.createdAt, anchor.createdAt),
+              and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+            )!
+          : or(
+              lt(issueComments.createdAt, anchor.createdAt),
+              and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+            )!,
+      );
+    }
+
+    const query = db
+      .select()
+      .from(issueComments)
+      .where(and(...conditions))
+      .orderBy(
+        order === "asc" ? asc(issueComments.createdAt) : desc(issueComments.createdAt),
+        order === "asc" ? asc(issueComments.id) : desc(issueComments.id),
+      );
+
+    const comments = limit ? await query.limit(limit) : await query;
+    const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+    return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
   }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
@@ -3448,58 +3510,26 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
-    listComments: async (
+    listComments,
+
+    countOwnRecentPlaceholderComments: async (
       issueId: string,
-      opts?: {
-        afterCommentId?: string | null;
-        order?: "asc" | "desc";
-        limit?: number | null;
-      },
+      agentId: string,
+      opts?: { windowSeconds?: number; windowComments?: number; patterns?: readonly RegExp[] },
     ) => {
-      const order = opts?.order === "asc" ? "asc" : "desc";
-      const afterCommentId = opts?.afterCommentId?.trim() || null;
-      const limit =
-        opts?.limit && opts.limit > 0
-          ? Math.min(Math.floor(opts.limit), MAX_ISSUE_COMMENT_PAGE_LIMIT)
-          : null;
+      const windowSeconds = opts?.windowSeconds ?? PLACEHOLDER_COMMENT_WINDOW_SECONDS;
+      const windowComments = opts?.windowComments ?? PLACEHOLDER_COMMENT_WINDOW_COMMENTS;
+      const cutoffMs = Date.now() - windowSeconds * 1000;
+      const comments = await listComments(issueId, { order: "desc", limit: MAX_ISSUE_COMMENT_PAGE_LIMIT });
+      const recentOwnComments = comments
+        .filter((comment) => comment.authorAgentId === agentId && new Date(comment.createdAt).getTime() > cutoffMs)
+        .slice(0, windowComments);
 
-      const conditions = [eq(issueComments.issueId, issueId)];
-      if (afterCommentId) {
-        const anchor = await db
-          .select({
-            id: issueComments.id,
-            createdAt: issueComments.createdAt,
-          })
-          .from(issueComments)
-          .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
-          .then((rows) => rows[0] ?? null);
-
-        if (!anchor) return [];
-        conditions.push(
-          order === "asc"
-            ? or(
-                gt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
-              )!
-            : or(
-                lt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
-              )!,
-        );
-      }
-
-      const query = db
-        .select()
-        .from(issueComments)
-        .where(and(...conditions))
-        .orderBy(
-          order === "asc" ? asc(issueComments.createdAt) : desc(issueComments.createdAt),
-          order === "asc" ? asc(issueComments.id) : desc(issueComments.id),
-        );
-
-      const comments = limit ? await query.limit(limit) : await query;
-      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
-      return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      return {
+        count: recentOwnComments.filter((comment) => isPlaceholderCommentBody(comment.body, opts?.patterns)).length,
+        windowSeconds,
+        windowComments,
+      };
     },
 
     getCommentCursor: async (issueId: string) => {
