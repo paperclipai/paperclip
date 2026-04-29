@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { redactEventPayload } from "../redaction.js";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agentRuntimeState, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -2254,6 +2254,26 @@ export function agentRoutes(
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    // Clear the runtime session_id when the adapter type changes.  Sessions
+    // are not portable across adapters (e.g. a claude_local devbox session
+    // id has no corresponding ~/.claude/projects/ JSONL on the cluster
+    // PVC, so claude_k8s passing it as `--resume <id>` fails with
+    // `error_during_execution: "No conversation found with session ID"`).
+    // The adapter should start fresh on the new substrate.
+    if (existing.adapterType !== agent.adapterType) {
+      await db
+        .update(agentRuntimeState)
+        .set({
+          sessionId: null,
+          stateJson: {},
+          lastRunStatus: null,
+          lastError: null,
+          adapterType: agent.adapterType,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentRuntimeState.agentId, agent.id));
     }
 
     await logActivity(db, {
