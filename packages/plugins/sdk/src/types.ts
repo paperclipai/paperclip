@@ -21,6 +21,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueExecutionProvenanceInput,
   IssueRelationIssueSummary,
   IssueThreadInteraction,
   SuggestTasksInteraction,
@@ -103,6 +104,7 @@ export type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueExecutionProvenanceInput,
   IssueRelationIssueSummary,
   IssueThreadInteraction,
   SuggestTasksInteraction,
@@ -1268,6 +1270,7 @@ export interface PluginIssuesClient {
     originRunId?: string | null;
     blockedByIssueIds?: string[];
     labelIds?: string[];
+    executionProvenance?: IssueExecutionProvenanceInput | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
@@ -1288,9 +1291,11 @@ export interface PluginIssuesClient {
       | "originId"
       | "originRunId"
       | "requestDepth"
-      | "executionWorkspaceId"
-      | "executionWorkspacePreference"
     >> & {
+      inheritExecutionWorkspaceFromIssueId?: string | null;
+      executionProvenance?: IssueExecutionProvenanceInput | null;
+      executionWorkspaceId?: string | null;
+      executionWorkspacePreference?: string | null;
       blockedByIssueIds?: string[];
       labelIds?: string[];
       executionWorkspaceSettings?: Record<string, unknown> | null;

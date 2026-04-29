@@ -1107,6 +1107,7 @@ export function issueRoutes(
     const currentExecutionWorkspacePromise = issue.executionWorkspaceId
       ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : Promise.resolve(null);
+    const executionProvenanceReadinessPromise = svc.getExecutionProvenanceReadiness(issue.id);
     const [
       { project, goal },
       ancestors,
@@ -1118,6 +1119,7 @@ export function issueRoutes(
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
+      executionProvenanceReadiness,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -1130,6 +1132,7 @@ export function issueRoutes(
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
+        executionProvenanceReadinessPromise,
       ]);
 
     res.json({
@@ -1149,6 +1152,8 @@ export function issueRoutes(
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        executionProvenance: issue.executionProvenance ?? null,
+        executionProvenanceReadiness,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -1221,6 +1226,7 @@ export function issueRoutes(
       blockerAttention,
       productivityReview,
       referenceSummary,
+      executionProvenanceReadiness,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -1230,6 +1236,7 @@ export function issueRoutes(
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      svc.getExecutionProvenanceReadiness(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1248,6 +1255,7 @@ export function issueRoutes(
       blocks: relations.blocks,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      executionProvenanceReadiness,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,

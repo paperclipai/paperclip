@@ -85,6 +85,8 @@ interface IssueDraft {
   assigneeChrome: boolean;
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
+  sameCodeChangeSourceIssueId?: string;
+  sameCodeChangeHandoffRole?: string;
   useIsolatedExecutionWorkspace?: boolean;
 }
 
@@ -220,6 +222,13 @@ const EXECUTION_WORKSPACE_MODES = [
   { value: "shared_workspace", label: "Project default" },
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
+] as const;
+
+const EXECUTION_PROVENANCE_HANDOFF_ROLES = [
+  { value: "follow_up", label: "Follow-up" },
+  { value: "review", label: "Review" },
+  { value: "qa", label: "QA" },
+  { value: "release", label: "Release" },
 ] as const;
 
 function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
@@ -385,6 +394,8 @@ export function NewIssueDialog() {
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [sameCodeChangeSourceIssueId, setSameCodeChangeSourceIssueId] = useState("");
+  const [sameCodeChangeHandoffRole, setSameCodeChangeHandoffRole] = useState("follow_up");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -400,6 +411,8 @@ export function NewIssueDialog() {
     ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
   const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
   const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
+  const defaultSameCodeChangeSourceIssueLabel = newIssueDefaults.sameCodeChangeSourceIssueIdentifier
+    ?? (newIssueDefaults.sameCodeChangeSourceIssueId ? newIssueDefaults.sameCodeChangeSourceIssueId.slice(0, 8) : "");
 
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
@@ -435,6 +448,18 @@ export function NewIssueDialog() {
         reuseEligible: true,
       }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && Boolean(projectId),
+  });
+  const issuesQueryKey = projectId
+    ? queryKeys.issues.listByProject(effectiveCompanyId!, projectId)
+    : queryKeys.issues.list(effectiveCompanyId!);
+  const { data: sameCodeChangeIssues } = useQuery({
+    queryKey: issuesQueryKey,
+    queryFn: () =>
+      issuesApi.list(effectiveCompanyId!, {
+        ...(projectId ? { projectId } : {}),
+        limit: 200,
+      }),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen,
   });
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -611,6 +636,8 @@ export function NewIssueDialog() {
       assigneeChrome,
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
+      sameCodeChangeSourceIssueId,
+      sameCodeChangeHandoffRole,
     });
   }, [
     newIssueOpen,
@@ -627,6 +654,8 @@ export function NewIssueDialog() {
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
+    sameCodeChangeSourceIssueId,
+    sameCodeChangeHandoffRole,
   ]);
 
   const handleTitleChange = useCallback((nextTitle: string) => {
@@ -663,6 +692,8 @@ export function NewIssueDialog() {
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
+    sameCodeChangeSourceIssueId,
+    sameCodeChangeHandoffRole,
     newIssueOpen,
     queueDraftSave,
   ]);
@@ -696,11 +727,17 @@ export function NewIssueDialog() {
       setProjectWorkspaceId(defaultProjectWorkspaceId);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelLane("primary");
+      setReviewerValue("");
+      setApproverValue("");
+      setShowReviewerRow(false);
+      setShowApproverRow(false);
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      setSameCodeChangeSourceIssueId(newIssueDefaults.sameCodeChangeSourceIssueId ?? newIssueDefaults.parentId);
+      setSameCodeChangeHandoffRole(newIssueDefaults.executionProvenanceHandoffRole ?? "follow_up");
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
@@ -722,6 +759,8 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
+      setSameCodeChangeSourceIssueId(newIssueDefaults.sameCodeChangeSourceIssueId ?? "");
+      setSameCodeChangeHandoffRole(newIssueDefaults.executionProvenanceHandoffRole ?? "follow_up");
       executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
@@ -749,6 +788,16 @@ export function NewIssueDialog() {
           ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
+      setSameCodeChangeSourceIssueId(
+        newIssueDefaults.sameCodeChangeSourceIssueId
+          ?? draft.sameCodeChangeSourceIssueId
+          ?? "",
+      );
+      setSameCodeChangeHandoffRole(
+        newIssueDefaults.executionProvenanceHandoffRole
+          ?? draft.sameCodeChangeHandoffRole
+          ?? "follow_up",
+      );
       executionWorkspaceDefaultProjectId.current = draft.projectWorkspaceId || restoredProject
         ? restoredProjectId || null
         : null;
@@ -770,6 +819,8 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
+      setSameCodeChangeSourceIssueId(newIssueDefaults.sameCodeChangeSourceIssueId ?? "");
+      setSameCodeChangeHandoffRole(newIssueDefaults.executionProvenanceHandoffRole ?? "follow_up");
       executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects, selectedCompanyId, setIssueText]);
@@ -829,6 +880,8 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setSameCodeChangeSourceIssueId("");
+    setSameCodeChangeHandoffRole("follow_up");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -855,6 +908,8 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setSameCodeChangeSourceIssueId("");
+    setSameCodeChangeHandoffRole("follow_up");
   }
 
   function discardDraft() {
@@ -884,13 +939,20 @@ export function NewIssueDialog() {
       experimentalSettings?.enableIsolatedWorkspaces === true
         ? selectedProject?.executionWorkspacePolicy ?? null
         : null;
-    const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
-      (workspace) => workspace.id === selectedExecutionWorkspaceId,
-    );
+    const effectiveExecutionWorkspaceId =
+      sameCodeChangeSourceIssueId
+        ? (selectedSameCodeChangeSourceIssue?.executionWorkspaceId ?? selectedExecutionWorkspaceId)
+        : selectedExecutionWorkspaceId;
+    const effectiveExecutionWorkspacePreference = sameCodeChangeSourceIssueId
+      ? "reuse_existing"
+      : executionWorkspaceMode;
+    const effectiveReusableExecutionWorkspace = sameCodeChangeSourceIssueId
+      ? selectedSameCodeChangeWorkspace
+      : deduplicatedReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
     const requestedExecutionWorkspaceMode =
-      executionWorkspaceMode === "reuse_existing"
-        ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
-        : executionWorkspaceMode;
+      effectiveExecutionWorkspacePreference === "reuse_existing"
+        ? issueExecutionWorkspaceModeForExistingWorkspace(effectiveReusableExecutionWorkspace?.mode)
+        : effectiveExecutionWorkspacePreference;
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
@@ -912,9 +974,13 @@ export function NewIssueDialog() {
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
-      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
-      ...(executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId
-        ? { executionWorkspaceId: selectedExecutionWorkspaceId }
+      ...(sameCodeChangeSourceIssueId ? { inheritExecutionWorkspaceFromIssueId: sameCodeChangeSourceIssueId } : {}),
+      ...(sameCodeChangeSourceIssueId
+        ? { executionProvenance: { handoffRole: sameCodeChangeHandoffRole } }
+        : {}),
+      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: effectiveExecutionWorkspacePreference } : {}),
+      ...(effectiveExecutionWorkspacePreference === "reuse_existing" && effectiveExecutionWorkspaceId
+        ? { executionWorkspaceId: effectiveExecutionWorkspaceId }
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
@@ -1003,18 +1069,63 @@ export function NewIssueDialog() {
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const sameCodeChangeSourceIssueOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      (sameCodeChangeIssues ?? [])
+        .filter((candidate) => Boolean(candidate.executionWorkspaceId))
+        .sort((left, right) => {
+          const leftLabel = `${left.identifier ?? left.id} ${left.title}`.trim();
+          const rightLabel = `${right.identifier ?? right.id} ${right.title}`.trim();
+          return leftLabel.localeCompare(rightLabel);
+        })
+        .map((candidate) => ({
+          id: candidate.id,
+          label: `${candidate.identifier ?? candidate.id.slice(0, 8)} ${candidate.title}`.trim(),
+          searchText: [
+            candidate.identifier ?? "",
+            candidate.title,
+            candidate.executionWorkspaceId ?? "",
+            candidate.executionWorkspaceSettings?.mode ?? "",
+          ].join(" "),
+        })),
+    [sameCodeChangeIssues],
+  );
+  const selectedSameCodeChangeSourceIssue = useMemo(
+    () => (sameCodeChangeIssues ?? []).find((candidate) => candidate.id === sameCodeChangeSourceIssueId) ?? null,
+    [sameCodeChangeIssues, sameCodeChangeSourceIssueId],
+  );
   const deduplicatedReusableWorkspaces = useMemo(() => {
     return orderReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []);
   }, [reusableExecutionWorkspaces]);
   const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
   );
+  const selectedSameCodeChangeWorkspace = sameCodeChangeSourceIssueId
+    ? deduplicatedReusableWorkspaces.find(
+        (workspace) => workspace.id === selectedSameCodeChangeSourceIssue?.executionWorkspaceId,
+      ) ?? null
+    : null;
+  const sameCodeChangeSourceDisplayLabel = selectedSameCodeChangeSourceIssue
+    ? `${selectedSameCodeChangeSourceIssue.identifier ?? selectedSameCodeChangeSourceIssue.id.slice(0, 8)} ${selectedSameCodeChangeSourceIssue.title}`.trim()
+    : sameCodeChangeSourceIssueId
+      ? `${defaultSameCodeChangeSourceIssueLabel} ${newIssueDefaults.sameCodeChangeSourceIssueTitle ?? ""}`.trim()
+      : "";
+  const selectedSameCodeChangeWorkspaceLabel =
+    selectedSameCodeChangeWorkspace?.name
+    ?? selectedSameCodeChangeWorkspace?.branchName
+    ?? selectedSameCodeChangeWorkspace?.cwd
+    ?? selectedSameCodeChangeSourceIssue?.executionWorkspaceId
+    ?? "";
+  const selectedHandoffRoleLabel =
+    EXECUTION_PROVENANCE_HANDOFF_ROLES.find((option) => option.value === sameCodeChangeHandoffRole)?.label
+    ?? "Follow-up";
   const isUsingParentExecutionWorkspace = isSubIssueMode && parentExecutionWorkspaceId
     ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
     : false;
   const showParentWorkspaceWarning = isSubIssueMode
     && currentProjectSupportsExecutionWorkspace
     && Boolean(parentExecutionWorkspaceId)
+    && !sameCodeChangeSourceIssueId
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
@@ -1076,6 +1187,8 @@ export function NewIssueDialog() {
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
     setSelectedExecutionWorkspaceId("");
+    setSameCodeChangeSourceIssueId("");
+    setSameCodeChangeHandoffRole("follow_up");
   }, [orderedProjects]);
 
   useEffect(() => {
@@ -1094,6 +1207,39 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
     setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorkspaceId]);
+
+  useEffect(() => {
+    if (!newIssueOpen || !sameCodeChangeSourceIssueId || !selectedSameCodeChangeSourceIssue) return;
+
+    if (
+      selectedSameCodeChangeSourceIssue.projectId &&
+      selectedSameCodeChangeSourceIssue.projectId !== projectId
+    ) {
+      const sourceProject = orderedProjects.find(
+        (project) => project.id === selectedSameCodeChangeSourceIssue.projectId,
+      );
+      setProjectId(selectedSameCodeChangeSourceIssue.projectId);
+      setProjectWorkspaceId(
+        selectedSameCodeChangeSourceIssue.projectWorkspaceId
+          ?? defaultProjectWorkspaceIdForProject(sourceProject),
+      );
+    } else if (
+      !projectWorkspaceId &&
+      selectedSameCodeChangeSourceIssue.projectWorkspaceId
+    ) {
+      setProjectWorkspaceId(selectedSameCodeChangeSourceIssue.projectWorkspaceId);
+    }
+
+    setExecutionWorkspaceMode("reuse_existing");
+    setSelectedExecutionWorkspaceId(selectedSameCodeChangeSourceIssue.executionWorkspaceId ?? "");
+  }, [
+    newIssueOpen,
+    orderedProjects,
+    projectId,
+    projectWorkspaceId,
+    sameCodeChangeSourceIssueId,
+    selectedSameCodeChangeSourceIssue,
+  ]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]
@@ -1503,6 +1649,62 @@ export function NewIssueDialog() {
           {currentProject && currentProjectSupportsExecutionWorkspace && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
+              <div className="text-xs font-medium">Same code change</div>
+              <div className="text-[11px] text-muted-foreground">
+                Use a source issue when this task is a follow-up, review, QA, or release step on the same branch and workspace.
+              </div>
+              <InlineEntitySelector
+                value={sameCodeChangeSourceIssueId}
+                options={sameCodeChangeSourceIssueOptions}
+                placeholder="Independent code change"
+                disablePortal
+                noneLabel="Independent code change"
+                searchPlaceholder="Search source issues..."
+                emptyMessage="No reusable source issues found."
+                onChange={(nextId) => {
+                  setSameCodeChangeSourceIssueId(nextId);
+                  if (!nextId) {
+                    setSameCodeChangeHandoffRole("follow_up");
+                  }
+                }}
+                renderTriggerValue={(option) =>
+                  option ? (
+                    <>
+                      <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Independent code change</span>
+                  )
+                }
+                renderOption={(option) => (
+                  <span className="truncate">{option.label}</span>
+                )}
+              />
+              {sameCodeChangeSourceIssueId ? (
+                <>
+                  <select
+                    className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                    value={sameCodeChangeHandoffRole}
+                    onChange={(e) => setSameCodeChangeHandoffRole(e.target.value)}
+                  >
+                    {EXECUTION_PROVENANCE_HANDOFF_ROLES.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="rounded-md border border-emerald-300/60 bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-800/70 dark:bg-emerald-950/30 dark:text-emerald-100">
+                    {selectedHandoffRoleLabel} handoff from{" "}
+                    <span className="font-medium">{sameCodeChangeSourceDisplayLabel}</span>
+                    {selectedSameCodeChangeWorkspaceLabel
+                      ? ` using ${selectedSameCodeChangeWorkspaceLabel}.`
+                      : "."}
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
               <div className="text-[11px] text-muted-foreground">
                 Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
@@ -1510,10 +1712,14 @@ export function NewIssueDialog() {
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
                 value={executionWorkspaceMode}
+                disabled={Boolean(sameCodeChangeSourceIssueId)}
                 onChange={(e) => {
-                  setExecutionWorkspaceMode(e.target.value);
-                  if (e.target.value !== "reuse_existing") {
+                  const nextMode = e.target.value;
+                  setExecutionWorkspaceMode(nextMode);
+                  if (nextMode !== "reuse_existing") {
                     setSelectedExecutionWorkspaceId("");
+                    setSameCodeChangeSourceIssueId("");
+                    setSameCodeChangeHandoffRole("follow_up");
                   }
                 }}
               >
@@ -1523,7 +1729,12 @@ export function NewIssueDialog() {
                   </option>
                 ))}
               </select>
-              {executionWorkspaceMode === "reuse_existing" && (
+              {sameCodeChangeSourceIssueId ? (
+                <div className="text-[11px] text-muted-foreground">
+                  Same-code-change handoffs always reuse the source issue workspace.
+                </div>
+              ) : null}
+              {executionWorkspaceMode === "reuse_existing" && !sameCodeChangeSourceIssueId && (
                 <select
                   className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
                   value={selectedExecutionWorkspaceId}
@@ -1537,7 +1748,7 @@ export function NewIssueDialog() {
                   ))}
                 </select>
               )}
-              {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
+              {executionWorkspaceMode === "reuse_existing" && !sameCodeChangeSourceIssueId && selectedReusableExecutionWorkspace && (
                 <div className="text-[11px] text-muted-foreground">
                   Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
                 </div>
