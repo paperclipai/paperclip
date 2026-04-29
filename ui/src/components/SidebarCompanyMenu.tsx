@@ -16,11 +16,18 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 
-export function SidebarCompanyMenu() {
-  const [open, setOpen] = useState(false);
+interface SidebarCompanyMenuProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
+  const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),

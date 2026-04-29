@@ -24,6 +24,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => ({
       canUser: vi.fn(async () => false),
       hasPermission: vi.fn(async () => false),
@@ -50,6 +53,19 @@ function registerModuleMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),

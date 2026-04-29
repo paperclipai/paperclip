@@ -84,6 +84,8 @@ const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackRoutineCreated: mockTrackRoutineCreated,
     trackErrorHandlerCrash: vi.fn(),
@@ -91,6 +93,18 @@ function registerModuleMocks() {
 
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/routines.js", () => ({
+    routineService: () => mockRoutineService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -121,12 +135,15 @@ describe("routine routes", () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/routines.js");
     vi.doUnmock("../routes/routines.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
@@ -262,6 +279,29 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
+  });
+
+  it("passes the board actor through when manually running a routine", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/run`)
+      .send({});
+
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenCalledWith(routineId, {
+      source: "manual",
+    }, {
+      agentId: null,
+      userId: "board-user",
+    });
   });
 
   it("allows routine creation when the board user has tasks:assign", async () => {

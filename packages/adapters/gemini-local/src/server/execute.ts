@@ -5,25 +5,41 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetPaperclipApiUrl,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  prepareAdapterExecutionTargetRuntime,
+  readAdapterExecutionTarget,
+  readAdapterExecutionTargetHomeDir,
+  resolveAdapterExecutionTargetCommandForLogs,
+  runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
+} from "@paperclipai/adapter-utils/execution-target";
+import {
   asBoolean,
   asNumber,
   asString,
   asStringArray,
+  applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   joinPromptSections,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
-  resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
@@ -135,12 +151,32 @@ async function ensureGeminiSkillsInjected(
   }
 }
 
+async function buildGeminiSkillsDir(
+  config: Record<string, unknown>,
+): Promise<string> {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-skills-"));
+  const target = path.join(tmp, "skills");
+  await fs.mkdir(target, { recursive: true });
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  for (const entry of availableEntries) {
+    if (!desiredNames.has(entry.key)) continue;
+    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+  }
+  return target;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
@@ -165,7 +201,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
-  await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
+  if (!executionTargetIsRemote) {
+    await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -203,13 +241,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (effectiveWorkspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    agentHome,
+  });
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
+  if (targetPaperclipApiUrl) env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -224,8 +266,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveGeminiBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
-  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+  const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
@@ -239,18 +281,78 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (fromExtraArgs.length > 0) return fromExtraArgs;
     return asStringArray(config.args);
   })();
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let remoteSkillsDir: string | null = null;
+  let localSkillsDir: string | null = null;
+
+  if (executionTargetIsRemote) {
+    try {
+      localSkillsDir = await buildGeminiSkillsDir(config);
+      await onLog(
+        "stdout",
+        `[paperclip] Syncing workspace and Gemini runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+      );
+      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        target: executionTarget,
+        adapterKey: "gemini",
+        workspaceLocalDir: cwd,
+        assets: [{
+          key: "skills",
+          localDir: localSkillsDir,
+          followSymlinks: true,
+        }],
+      });
+      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
+      if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
+        env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+      }
+      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+        ? preparedExecutionTargetRuntime.runtimeRootDir
+        : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+            cwd,
+            env,
+            timeoutSec,
+            graceSec,
+            onLog,
+          });
+      if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
+        remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+          { cwd, env, timeoutSec, graceSec, onLog },
+        );
+      }
+    } catch (error) {
+      await Promise.allSettled([
+        restoreRemoteWorkspace?.(),
+        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+      ]);
+      throw error;
+    }
+  }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
-      `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Gemini session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+    );
+  } else if (runtimeSessionId && !canResumeSession) {
+    await onLog(
+      "stdout",
+      `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
     );
   }
 
@@ -349,7 +451,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({
         adapterType: "gemini_local",
         command: resolvedCommand,
-        cwd,
+        cwd: effectiveExecutionCwd,
         commandNotes,
         commandArgs: args.map((value, index) => (
           index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
@@ -361,7 +463,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
       timeoutSec,
@@ -415,10 +517,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: effectiveExecutionCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(executionTargetIsRemote
+          ? {
+              remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget),
+            }
+          : {}),
       } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
@@ -457,20 +564,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    isGeminiUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
-  ) {
-    await onLog(
-      "stdout",
-      `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true, true);
-  }
+  try {
+    const initial = await runAttempt(sessionId);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isGeminiUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial);
+  } finally {
+    await Promise.all([
+      restoreRemoteWorkspace?.(),
+      localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+    ]);
+  }
 }

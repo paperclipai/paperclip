@@ -1,10 +1,14 @@
 import type {
   IssueExecutionDecisionOutcome,
   IssueExecutionPolicyMode,
+  IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueThreadInteractionContinuationPolicy,
+  IssueThreadInteractionKind,
+  IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
@@ -112,6 +116,43 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  terminalBlockers?: IssueRelationIssueSummary[];
+}
+
+export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
+
+export type IssueBlockerAttentionReason =
+  | "active_child"
+  | "active_dependency"
+  | "stalled_review"
+  | "attention_required"
+  | null;
+
+export interface IssueBlockerAttention {
+  state: IssueBlockerAttentionState;
+  reason: IssueBlockerAttentionReason;
+  unresolvedBlockerCount: number;
+  coveredBlockerCount: number;
+  stalledBlockerCount: number;
+  attentionBlockerCount: number;
+  sampleBlockerIdentifier: string | null;
+  sampleStalledBlockerIdentifier: string | null;
+}
+
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus;
+  priority: IssuePriority;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IssueRelation {
@@ -121,6 +162,24 @@ export interface IssueRelation {
   relatedIssueId: string;
   type: "blocks";
   relatedIssue: IssueRelationIssueSummary;
+}
+
+export interface IssueReferenceSource {
+  kind: IssueReferenceSourceKind;
+  sourceRecordId: string | null;
+  label: string;
+  matchedText: string | null;
+}
+
+export interface IssueRelatedWorkItem {
+  issue: IssueRelationIssueSummary;
+  mentionCount: number;
+  sources: IssueReferenceSource[];
+}
+
+export interface IssueRelatedWorkSummary {
+  outbound: IssueRelatedWorkItem[];
+  inbound: IssueRelatedWorkItem[];
 }
 
 export interface IssueExecutionStagePrincipal {
@@ -146,6 +205,10 @@ export interface IssueExecutionPolicy {
   stages: IssueExecutionStage[];
 }
 
+export interface IssueReviewRequest {
+  instructions: string;
+}
+
 export interface IssueExecutionState {
   status: IssueExecutionStateStatus;
   currentStageId: string | null;
@@ -153,6 +216,7 @@ export interface IssueExecutionState {
   currentStageType: IssueExecutionStageType | null;
   currentParticipant: IssueExecutionStagePrincipal | null;
   returnAssignee: IssueExecutionStagePrincipal | null;
+  reviewRequest: IssueReviewRequest | null;
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
@@ -198,6 +262,7 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  originFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
@@ -214,6 +279,10 @@ export interface Issue {
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
+  productivityReview?: IssueProductivityReview | null;
+  relatedWork?: IssueRelatedWorkSummary;
+  referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
@@ -237,9 +306,184 @@ export interface IssueComment {
   authorAgentId: string | null;
   authorUserId: string | null;
   body: string;
+  followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface IssueThreadInteractionActorFields {
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  resolvedByAgentId?: string | null;
+  resolvedByUserId?: string | null;
+}
+
+export interface SuggestedTaskDraft {
+  clientKey: string;
+  parentClientKey?: string | null;
+  parentId?: string | null;
+  title: string;
+  description?: string | null;
+  priority?: IssuePriority | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  projectId?: string | null;
+  goalId?: string | null;
+  billingCode?: string | null;
+  labels?: string[];
+  hiddenInPreview?: boolean;
+}
+
+export interface SuggestTasksPayload {
+  version: 1;
+  defaultParentId?: string | null;
+  tasks: SuggestedTaskDraft[];
+}
+
+export interface SuggestTasksResultCreatedTask {
+  clientKey: string;
+  issueId: string;
+  identifier?: string | null;
+  title?: string | null;
+  parentIssueId?: string | null;
+  parentIdentifier?: string | null;
+}
+
+export interface SuggestTasksResult {
+  version: 1;
+  createdTasks?: SuggestTasksResultCreatedTask[];
+  skippedClientKeys?: string[];
+  rejectionReason?: string | null;
+}
+
+export interface AskUserQuestionsQuestionOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface AskUserQuestionsQuestion {
+  id: string;
+  prompt: string;
+  helpText?: string | null;
+  selectionMode: "single" | "multi";
+  required?: boolean;
+  options: AskUserQuestionsQuestionOption[];
+}
+
+export interface AskUserQuestionsPayload {
+  version: 1;
+  title?: string | null;
+  submitLabel?: string | null;
+  questions: AskUserQuestionsQuestion[];
+}
+
+export interface AskUserQuestionsAnswer {
+  questionId: string;
+  optionIds: string[];
+}
+
+export interface AskUserQuestionsResult {
+  version: 1;
+  answers: AskUserQuestionsAnswer[];
+  summaryMarkdown?: string | null;
+}
+
+export interface RequestConfirmationIssueDocumentTarget {
+  type: "issue_document";
+  issueId?: string | null;
+  documentId?: string | null;
+  key: string;
+  revisionId: string;
+  revisionNumber?: number | null;
+  label?: string | null;
+  href?: string | null;
+}
+
+export interface RequestConfirmationCustomTarget {
+  type: "custom";
+  key: string;
+  revisionId?: string | null;
+  revisionNumber?: number | null;
+  label?: string | null;
+  href?: string | null;
+}
+
+export type RequestConfirmationTarget =
+  | RequestConfirmationIssueDocumentTarget
+  | RequestConfirmationCustomTarget;
+
+export interface RequestConfirmationPayload {
+  version: 1;
+  prompt: string;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  detailsMarkdown?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
+export interface RequestConfirmationResult {
+  version: 1;
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  reason?: string | null;
+  commentId?: string | null;
+  staleTarget?: RequestConfirmationTarget | null;
+}
+
+export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
+  id: string;
+  companyId: string;
+  issueId: string;
+  kind: IssueThreadInteractionKind;
+  idempotencyKey?: string | null;
+  sourceCommentId?: string | null;
+  sourceRunId?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  status: IssueThreadInteractionStatus;
+  continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  resolvedAt?: Date | string | null;
+}
+
+export interface SuggestTasksInteraction extends IssueThreadInteractionBase {
+  kind: "suggest_tasks";
+  payload: SuggestTasksPayload;
+  result?: SuggestTasksResult | null;
+}
+
+export interface AskUserQuestionsInteraction extends IssueThreadInteractionBase {
+  kind: "ask_user_questions";
+  payload: AskUserQuestionsPayload;
+  result?: AskUserQuestionsResult | null;
+}
+
+export interface RequestConfirmationInteraction extends IssueThreadInteractionBase {
+  kind: "request_confirmation";
+  payload: RequestConfirmationPayload;
+  result?: RequestConfirmationResult | null;
+}
+
+export type IssueThreadInteraction =
+  | SuggestTasksInteraction
+  | AskUserQuestionsInteraction
+  | RequestConfirmationInteraction;
+
+export type IssueThreadInteractionPayload =
+  | SuggestTasksPayload
+  | AskUserQuestionsPayload
+  | RequestConfirmationPayload;
+
+export type IssueThreadInteractionResult =
+  | SuggestTasksResult
+  | AskUserQuestionsResult
+  | RequestConfirmationResult;
 
 export interface IssueAttachment {
   id: string;

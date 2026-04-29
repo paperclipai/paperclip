@@ -20,18 +20,20 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
-import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -40,6 +42,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/Rout
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -349,6 +352,11 @@ export function RoutineDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const routineDefaults = useMemo(
     () =>
@@ -626,6 +634,7 @@ export function RoutineDetail() {
     [projects],
   );
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -647,6 +656,13 @@ export function RoutineDetail() {
       })),
     [projects],
   );
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    return buildMarkdownMentionOptions({
+      agents,
+      projects,
+      members: companyMembers?.users,
+    });
+  }, [agents, companyMembers?.users, projects]);
   const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
   const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
 
@@ -786,6 +802,7 @@ export function RoutineDetail() {
             ref={assigneeSelectorRef}
             value={editDraft.assigneeAgentId}
             options={assigneeOptions}
+            recentOptionIds={recentAssigneeIds}
             placeholder="Assignee"
             noneLabel="No assignee"
             searchPlaceholder="Search assignees..."
@@ -831,11 +848,15 @@ export function RoutineDetail() {
             ref={projectSelectorRef}
             value={editDraft.projectId}
             options={projectOptions}
+            recentOptionIds={recentProjectIds}
             placeholder="Project"
             noneLabel="No project"
             searchPlaceholder="Search projects..."
             emptyMessage="No projects found."
-            onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
+            onChange={(projectId) => {
+              if (projectId) trackRecentProject(projectId);
+              setEditDraft((current) => ({ ...current, projectId }));
+            }}
             onConfirm={() => descriptionEditorRef.current?.focus()}
             renderTriggerValue={(option) =>
               option && currentProject ? (
@@ -875,6 +896,7 @@ export function RoutineDetail() {
         placeholder="Add instructions..."
         bordered={false}
         contentClassName="min-h-[120px] text-[15px] leading-7"
+        mentions={mentionOptions}
         onSubmit={() => {
           if (!saveRoutine.isPending && editDraft.title.trim()) {
             saveRoutine.mutate();

@@ -11,6 +11,8 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueInboxArchives,
+  issueReadStates,
   issues,
   projectWorkspaces,
   projects,
@@ -46,6 +48,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueInboxArchives);
+    await db.delete(issueReadStates);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -269,6 +273,36 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
+  it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
+    const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    const [createdIssue] = await db
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+    expect(createdIssue).toMatchObject({
+      id: run.linkedIssueId,
+      assigneeAgentId: agentId,
+      createdByUserId: userId,
+    });
+
+    const inboxIssues = await issueSvc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      includeRoutineExecutions: true,
+    });
+    expect(inboxIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {
     let wakeupResolved = false;
     const { routine, svc } = await seedFixture({
@@ -347,6 +381,220 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("touches a coalesced routine issue for the manual runner's inbox", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: liveHeartbeatRunId,
+        executionRunId: liveHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+    await db.insert(issueInboxArchives).values({
+      companyId,
+      issueId: previousIssue.id,
+      userId,
+      archivedAt: new Date("2026-03-20T12:02:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    await expect(
+      db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        companyId,
+        issueId: previousIssue.id,
+        userId,
+      }),
+    ]);
+
+    const inboxIssues = await issueSvc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      includeRoutineExecutions: true,
+    });
+    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+  });
+
+  it("touches a skipped active routine issue for the manual runner's inbox", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "skip_if_active" })
+      .where(eq(routines.id, routine.id));
+
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: liveHeartbeatRunId,
+        executionRunId: liveHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+    await db.insert(issueInboxArchives).values({
+      companyId,
+      issueId: previousIssue.id,
+      userId,
+      archivedAt: new Date("2026-03-20T12:02:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("skipped");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    await expect(
+      db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        companyId,
+        issueId: previousIssue.id,
+        userId,
+      }),
+    ]);
+
+    const inboxIssues = await issueSvc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      includeRoutineExecutions: true,
+    });
+    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+  });
+
+  it("does not coalesce live routine runs with different resolved variables", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "pre-pr for {{branch}}",
+        description: "Create a pre-PR from {{branch}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "branch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    const first = await svc.runRoutine(variableRoutine.id, {
+      source: "manual",
+      variables: { branch: "feature/a" },
+    });
+    const second = await svc.runRoutine(variableRoutine.id, {
+      source: "manual",
+      variables: { branch: "feature/b" },
+    });
+
+    expect(first.status).toBe("issue_created");
+    expect(second.status).toBe("issue_created");
+    expect(first.linkedIssueId).toBeTruthy();
+    expect(second.linkedIssueId).toBeTruthy();
+    expect(first.linkedIssueId).not.toBe(second.linkedIssueId);
+
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        title: issues.title,
+        originFingerprint: issues.originFingerprint,
+      })
+      .from(issues)
+      .where(eq(issues.originId, variableRoutine.id));
+
+    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues.map((issue) => issue.title).sort()).toEqual([
+      "pre-pr for feature/a",
+      "pre-pr for feature/b",
+    ]);
+    expect(new Set(routineIssues.map((issue) => issue.originFingerprint)).size).toBe(2);
   });
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {
@@ -458,6 +706,90 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  it("auto-populates workspaceBranch from a reused isolated workspace", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
+      })
+      .where(eq(projects.id, projectId));
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "routine-primary",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Routine worktree",
+      status: "active",
+      providerType: "git_worktree",
+      branchName: "pap-1634-routine-branch",
+    });
+
+    const branchRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "Review {{workspaceBranch}}",
+        description: "Use branch {{workspaceBranch}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "workspaceBranch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(branchRoutine.id, {
+      source: "manual",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    const storedIssue = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.title).toBe("Review pap-1634-routine-branch");
+    expect(storedIssue?.description).toBe("Use branch pap-1634-routine-branch");
+    expect(storedRun?.triggerPayload).toEqual({
+      variables: {
+        workspaceBranch: "pap-1634-routine-branch",
+      },
     });
   });
 

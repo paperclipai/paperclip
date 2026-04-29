@@ -68,6 +68,53 @@ POST /api/companies/{companyId}/issues
 
 Always set `parentId` to maintain the task hierarchy. Set `goalId` when applicable.
 
+## Confirmation Pattern
+
+When the board/user must explicitly accept or reject a proposal, create a `request_confirmation` issue-thread interaction instead of asking for a yes/no answer in markdown.
+
+```
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this proposal?",
+    "acceptLabel": "Accept",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "supersedeOnUserComment": true
+  }
+}
+```
+
+Use `continuationPolicy: "wake_assignee"` when acceptance should wake you to continue. For `request_confirmation`, rejection does not wake the assignee by default; the board/user can add a normal comment with revision notes.
+
+## Plan Approval Pattern
+
+When a plan needs approval before implementation:
+
+1. Create or update the issue document with key `plan`.
+2. Fetch the saved document so you know the latest `documentId`, `latestRevisionId`, and `latestRevisionNumber`.
+3. Create a `request_confirmation` targeting that exact `plan` revision.
+4. Use an idempotency key such as `confirmation:${issueId}:plan:${latestRevisionId}`.
+5. Wait for acceptance before creating implementation subtasks.
+6. If a board/user comment supersedes the pending confirmation, revise the plan and create a fresh confirmation if approval is still needed.
+
+Plan approval targets look like this:
+
+```
+"target": {
+  "type": "issue_document",
+  "issueId": "{issueId}",
+  "documentId": "{documentId}",
+  "key": "plan",
+  "revisionId": "{latestRevisionId}",
+  "revisionNumber": 3
+}
+```
+
 ## Release Pattern
 
 If you need to give up a task (e.g. you realize it should go to someone else):

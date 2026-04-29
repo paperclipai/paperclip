@@ -1,13 +1,14 @@
 import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ExternalLink, Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
+import { Link } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { Link } from "@/lib/router";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
@@ -28,11 +29,9 @@ let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = nul
 
 function MarkdownIssueLink({
   issuePathId,
-  href,
   children,
 }: {
   issuePathId: string;
-  href: string;
   children: ReactNode;
 }) {
   const { data } = useQuery({
@@ -41,10 +40,23 @@ function MarkdownIssueLink({
     staleTime: 60_000,
   });
 
+  const identifier = data?.identifier ?? issuePathId;
+  const title = data?.title ?? identifier;
+  const status = data?.status;
+  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+
   return (
-    <Link to={href} className="inline-flex items-center gap-1.5 align-baseline">
-      {data ? <StatusIcon status={data.status} className="h-3.5 w-3.5" /> : null}
-      <span>{children}</span>
+    <Link
+      to={`/issues/${identifier}`}
+      data-mention-kind="issue"
+      className="paperclip-markdown-issue-ref"
+      title={title}
+      aria-label={issueLabel}
+    >
+      {status ? (
+        <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
+      ) : null}
+      {children}
     </Link>
   );
 }
@@ -97,6 +109,78 @@ function extractMermaidSource(children: ReactNode): string | null {
 
 function safeMarkdownUrlTransform(url: string): string {
   return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+}
+
+function isGitHubUrl(href: string | null | undefined): boolean {
+  if (!href) return false;
+  try {
+    const url = new URL(href);
+    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname === "www.github.com");
+  } catch {
+    return false;
+  }
+}
+
+function isExternalHttpUrl(href: string | null | undefined): boolean {
+  if (!href) return false;
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (typeof window === "undefined") return true;
+    return url.origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function renderLinkBody(
+  children: ReactNode,
+  leadingIcon: ReactNode,
+  trailingIcon: ReactNode,
+): ReactNode {
+  if (!leadingIcon && !trailingIcon) return children;
+
+  // React-markdown can pass arrays/elements for styled link text; the nowrap
+  // splitting below is intentionally limited to plain text links.
+  if (typeof children === "string" && children.length > 0) {
+    if (children.length === 1) {
+      return (
+        <span style={{ whiteSpace: "nowrap" }}>
+          {leadingIcon}
+          {children}
+          {trailingIcon}
+        </span>
+      );
+    }
+    const first = children[0];
+    const last = children[children.length - 1];
+    const middle = children.slice(1, -1);
+    return (
+      <>
+        {leadingIcon ? (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {leadingIcon}
+            {first}
+          </span>
+        ) : first}
+        {middle}
+        {trailingIcon ? (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {last}
+            {trailingIcon}
+          </span>
+        ) : last}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {leadingIcon}
+      {children}
+      {trailingIcon}
+    </>
+  );
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
@@ -213,7 +297,7 @@ export function MarkdownBody({
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
             {linkChildren}
           </MarkdownIssueLink>
         );
@@ -223,6 +307,8 @@ export function MarkdownBody({
       if (parsed) {
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
+          : parsed.kind === "issue"
+            ? `/issues/${parsed.identifier}`
           : parsed.kind === "skill"
             ? `/skills/${parsed.skillId}`
             : parsed.kind === "user"
@@ -243,9 +329,23 @@ export function MarkdownBody({
           </a>
         );
       }
+      const isGitHubLink = isGitHubUrl(href);
+      const isExternal = isExternalHttpUrl(href);
+      const leadingIcon = isGitHubLink ? (
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+      ) : null;
+      const trailingIcon = isExternal && !isGitHubLink ? (
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+      ) : null;
       return (
-        <a href={href} rel="noreferrer" style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
-          {linkChildren}
+        <a
+          href={href}
+          {...(isExternal
+            ? { target: "_blank", rel: "noopener noreferrer" }
+            : { rel: "noreferrer" })}
+          style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+        >
+          {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
         </a>
       );
     },
