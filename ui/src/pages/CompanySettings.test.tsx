@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanySettings } from "./CompanySettings";
+import { CompanyEnvironments } from "./CompanyEnvironments";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -105,7 +105,7 @@ async function flushReact() {
   });
 }
 
-describe("CompanySettings", () => {
+describe("CompanyEnvironments", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -146,7 +146,7 @@ describe("CompanySettings", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <CompanyEnvironments />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -212,7 +212,7 @@ describe("CompanySettings", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <CompanyEnvironments />
           </TooltipProvider>
         </QueryClientProvider>,
       );
