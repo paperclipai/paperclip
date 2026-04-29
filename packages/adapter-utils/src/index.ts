@@ -54,3 +54,14 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export type {
+  LoopDetectorConfig,
+  RunGuardConfig,
+  RunGuardAlertContext,
+} from "./loop-detector.js";
+export {
+  LoopDetector,
+  observeToolCallsFromChunk,
+  imputeSubscriptionCostUsd,
+  tryPostRunGuardAlert,
+} from "./loop-detector.js";
