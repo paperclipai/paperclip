@@ -170,9 +170,12 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function commandExists(command: string): boolean {
-  if (process.platform === "win32") return true; // cmd.exe always present
+  const checkCmd =
+    process.platform === "win32"
+      ? `where "${command}"`
+      : `command -v "${command}"`;
   try {
-    execSync(`command -v "${command}"`, { stdio: "ignore" });
+    execSync(checkCmd, { stdio: "ignore" });
     return true;
   } catch {
     return false;
