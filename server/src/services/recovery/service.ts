@@ -54,6 +54,13 @@ const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueR
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
+/**
+ * Maximum depth of recovery issue chain before the circuit breaker fires.
+ * A depth of 5 means the root issue has 5 consecutive recovery descendants.
+ * Beyond this, further recovery issues are suppressed and escalated.
+ */
+const MAX_RECOVERY_CHAIN_DEPTH = 5;
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -300,6 +307,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function getAgent(agentId: string) {
     return db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+  }
+
+  async function calculateRecoveryChainDepth(companyId: string, issueId: string): Promise<{ depth: number; rootIssueId: string }> {
+    const SAFETY_LIMIT = 100;
+    const currentIssue = await db
+      .select({ id: true, originKind: true, parentId: true })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!currentIssue) return { depth: 0, rootIssueId: issueId };
+
+    let depth = 0;
+    let cursor: string | null = issueId;
+    let rootIssueId = issueId;
+    for (let i = 0; i < SAFETY_LIMIT && cursor !== null; i++) {
+      const issue = await db
+        .select({ parentId: true, originKind: true })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) break;
+      rootIssueId = cursor;
+      if (
+        issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND ||
+        issue.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+      ) {
+        depth++;
+      }
+      cursor = issue.parentId;
+    }
+
+    return { depth, rootIssueId };
   }
 
   async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
@@ -1329,6 +1368,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
+    // Circuit breaker: prevent unbounded recovery chains. Once the chain depth
+    // exceeds MAX_RECOVERY_CHAIN_DEPTH, escalate instead of spawning another issue.
+    const { depth, rootIssueId } = await calculateRecoveryChainDepth(input.issue.companyId, input.issue.id);
+    if (depth >= MAX_RECOVERY_CHAIN_DEPTH) {
+      logger.warn(
+        {
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          rootIssueId,
+          depth,
+          maxDepth: MAX_RECOVERY_CHAIN_DEPTH,
+        },
+        "recovery circuit breaker tripped -- refusing to spawn another recovery issue",
+      );
+      return null;
+    }
+
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
 
@@ -2315,6 +2371,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         runId: input.runId ?? null,
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
+    }
+
+    // Circuit breaker: prevent unbounded recovery chains.
+    const { depth, rootIssueId } = await calculateRecoveryChainDepth(issue.companyId, recoveryIssue.id);
+    if (depth >= MAX_RECOVERY_CHAIN_DEPTH) {
+      logger.warn(
+        {
+          companyId: issue.companyId,
+          findingState: input.finding.state,
+          recoveryIssueId: recoveryIssue.id,
+          rootIssueId,
+          depth,
+          maxDepth: MAX_RECOVERY_CHAIN_DEPTH,
+        },
+        "liveness escalation circuit breaker tripped -- refusing to spawn escalation",
+      );
+      return { kind: "skipped" as const };
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
