@@ -29,7 +29,7 @@ export function registerActivityCommands(program: Command): void {
       .option("--entity-id <id>", "Filter by entity ID")
       .action(async (opts: ActivityListOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
           if (opts.agentId) params.set("agentId", opts.agentId);
           if (opts.entityType) params.set("entityType", opts.entityType);

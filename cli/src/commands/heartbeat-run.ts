@@ -66,7 +66,7 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
     ? (opts.trigger as HeartbeatTrigger)
     : "manual";
 
-  const ctx = resolveCommandContext({
+  const ctx = await resolveCommandContext({
     config: opts.config,
     context: opts.context,
     profile: opts.profile,

@@ -28,7 +28,7 @@ export function registerClientAuthCommands(auth: Command): void {
       .option("--instance-admin", "Request instance-admin approval instead of plain board access", false)
       .action(async (opts: AuthLoginOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const login = await loginBoardCli({
             apiBase: ctx.api.apiBase,
             requestedAccess: opts.instanceAdmin ? "instance_admin_required" : "board",
@@ -57,7 +57,7 @@ export function registerClientAuthCommands(auth: Command): void {
       .description("Remove the stored board-user credential for this API base")
       .action(async (opts: AuthLogoutOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const credential = getStoredBoardCredential(ctx.api.apiBase);
           if (!credential) {
             printOutput({ ok: true, apiBase: ctx.api.apiBase, revoked: false, removedLocalCredential: false }, { json: ctx.json });
@@ -95,7 +95,7 @@ export function registerClientAuthCommands(auth: Command): void {
       .description("Show the current board-user identity for this API base")
       .action(async (opts: AuthWhoamiOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const me = await ctx.api.get<{
             user: { id: string; name: string; email: string } | null;
             userId: string;

@@ -3,8 +3,9 @@ import type { Command } from "commander";
 import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
-import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
+import { readContext, resolveProfile, updateHistory, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
+import { searchableSelect } from "../../utils/searchable-select.js";
 
 export interface BaseClientOptions {
   config?: string;
@@ -42,10 +43,10 @@ export function addCommonClientOptions(command: Command, opts?: { includeCompany
   return command;
 }
 
-export function resolveCommandContext(
+export async function resolveCommandContext(
   options: BaseClientOptions,
   opts?: { requireCompany?: boolean },
-): ResolvedClientContext {
+): Promise<ResolvedClientContext> {
   const context = readContext(options.context);
   const { name: profileName, profile } = resolveProfile(context, options.profile);
 
@@ -62,15 +63,14 @@ export function resolveCommandContext(
   const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
   const apiKey = explicitApiKey || storedBoardCredential?.token;
 
-  const companyId =
+  let companyId =
     options.companyId?.trim() ||
     process.env.PAPERCLIP_COMPANY_ID?.trim() ||
     profile.companyId;
 
-  if (opts?.requireCompany && !companyId) {
-    throw new Error(
-      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
-    );
+  // Context-aware fallback: try history if still missing
+  if (!companyId && profile.history?.lastCompanyId) {
+    companyId = profile.history.lastCompanyId;
   }
 
   const api = new PaperclipApiClient({
@@ -94,6 +94,21 @@ export function resolveCommandContext(
           return login.token;
         },
   });
+
+  // Interactive fallback for missing company in TTY mode
+  if (opts?.requireCompany && !companyId && canAttemptInteractiveBoardAuth()) {
+    const selected = await pickCompanyInteractive(api, profileName, options.context);
+    if (selected) {
+      companyId = selected;
+    }
+  }
+
+  if (opts?.requireCompany && !companyId) {
+    throw new Error(
+      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
+    );
+  }
+
   return {
     api,
     companyId,
@@ -101,6 +116,40 @@ export function resolveCommandContext(
     profile,
     json: Boolean(options.json),
   };
+}
+
+interface CompanySummary {
+  id: string;
+  name: string;
+  status?: string;
+}
+
+async function pickCompanyInteractive(
+  api: PaperclipApiClient,
+  profileName: string,
+  contextPath?: string,
+): Promise<string | undefined> {
+  try {
+    const companies = (await api.get<CompanySummary[]>("/api/companies")) ?? [];
+    if (companies.length === 0) return undefined;
+
+    const choice = await searchableSelect({
+      message: "Select a company",
+      options: companies.map((c) => ({
+        value: c.id,
+        label: c.name || c.id,
+        hint: c.status ? `status=${c.status}` : undefined,
+      })),
+    });
+
+    if (choice) {
+      // Remember the choice
+      updateHistory(profileName, { lastCompanyId: choice }, contextPath);
+    }
+    return choice ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function shouldRecoverBoardAuth(error: ApiRequestError): boolean {

@@ -91,7 +91,7 @@ export function registerFeedbackCommands(program: Command): void {
       .option("--payloads", "Include raw payload dumps in the terminal report", false)
       .action(async (opts: FeedbackReportOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const companyId = await resolveFeedbackCompanyId(ctx, opts.companyId);
           const traces = await fetchCompanyFeedbackTraces(ctx, companyId, opts);
           const summary = summarizeFeedbackTraces(traces);
@@ -137,7 +137,7 @@ export function registerFeedbackCommands(program: Command): void {
       .option("--out <path>", "Output directory (default: ./feedback-export-<timestamp>)")
       .action(async (opts: FeedbackExportOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const companyId = await resolveFeedbackCompanyId(ctx, opts.companyId);
           const traces = await fetchCompanyFeedbackTraces(ctx, companyId, opts);
           const outputDir = path.resolve(opts.out?.trim() || defaultFeedbackExportDirName());

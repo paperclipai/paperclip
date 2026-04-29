@@ -1079,7 +1079,7 @@ export function registerCompanyCommands(program: Command): void {
       .description("List companies")
       .action(async (opts: CompanyCommandOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const rows = (await ctx.api.get<Company[]>("/api/companies")) ?? [];
           if (ctx.json) {
             printOutput(rows, { json: true });
@@ -1115,7 +1115,7 @@ export function registerCompanyCommands(program: Command): void {
       .argument("<companyId>", "Company ID")
       .action(async (companyId: string, opts: CompanyCommandOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const row = await ctx.api.get<Company>(`/api/companies/${companyId}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
@@ -1140,7 +1140,7 @@ export function registerCompanyCommands(program: Command): void {
       .option("--include-payload", "Include stored payload snapshots in the response")
       .action(async (opts: CompanyFeedbackOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const traces = (await ctx.api.get<FeedbackTrace[]>(
             `/api/companies/${ctx.companyId}/feedback-traces${buildFeedbackTraceQuery(opts)}`,
           )) ?? [];
@@ -1184,7 +1184,7 @@ export function registerCompanyCommands(program: Command): void {
       .option("--format <format>", "Export format: json or ndjson", "ndjson")
       .action(async (opts: CompanyFeedbackOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const traces = (await ctx.api.get<FeedbackTrace[]>(
             `/api/companies/${ctx.companyId}/feedback-traces${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
           )) ?? [];
@@ -1223,7 +1223,7 @@ export function registerCompanyCommands(program: Command): void {
       .option("--expand-referenced-skills", "Vendor skill contents instead of exporting upstream references", false)
       .action(async (companyId: string, opts: CompanyExportOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const include = parseInclude(opts.include);
           const exported = await ctx.api.post<CompanyPortabilityExportResult>(
             `/api/companies/${companyId}/export`,
@@ -1283,7 +1283,7 @@ export function registerCompanyCommands(program: Command): void {
           if (!opts.apiBase?.trim() && opts.paperclipUrl?.trim()) {
             opts.apiBase = opts.paperclipUrl.trim();
           }
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const interactiveView = isInteractiveTerminal() && !ctx.json;
           const from = fromPathOrUrl.trim();
           if (!from) {
@@ -1513,7 +1513,7 @@ export function registerCompanyCommands(program: Command): void {
             throw new Error(`Invalid --by mode '${opts.by}'. Expected one of: auto, id, prefix.`);
           }
 
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const normalizedSelector = normalizeSelector(selector);
           assertDeleteFlags(opts);
 

@@ -9,6 +9,16 @@ export interface ClientContextProfile {
   apiBase?: string;
   companyId?: string;
   apiKeyEnvVarName?: string;
+  /** Recently used entity IDs for context-aware defaults */
+  history?: ClientContextHistory;
+}
+
+export interface ClientContextHistory {
+  lastCompanyId?: string;
+  lastProjectId?: string;
+  lastAgentId?: string;
+  lastIssueId?: string;
+  updatedAt?: string;
 }
 
 export interface ClientContext {
@@ -63,6 +73,18 @@ function toStringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function normalizeHistory(value: unknown): ClientContextHistory | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const h = value as Record<string, unknown>;
+  return {
+    lastCompanyId: toStringOrUndefined(h.lastCompanyId),
+    lastProjectId: toStringOrUndefined(h.lastProjectId),
+    lastAgentId: toStringOrUndefined(h.lastAgentId),
+    lastIssueId: toStringOrUndefined(h.lastIssueId),
+    updatedAt: toStringOrUndefined(h.updatedAt),
+  };
+}
+
 function normalizeProfile(value: unknown): ClientContextProfile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   const profile = value as Record<string, unknown>;
@@ -71,6 +93,7 @@ function normalizeProfile(value: unknown): ClientContextProfile {
     apiBase: toStringOrUndefined(profile.apiBase),
     companyId: toStringOrUndefined(profile.companyId),
     apiKeyEnvVarName: toStringOrUndefined(profile.apiKeyEnvVarName),
+    history: normalizeHistory(profile.history),
   };
 }
 
@@ -151,6 +174,33 @@ export function upsertProfile(
 
   context.profiles[profileName] = merged;
   context.currentProfile = context.currentProfile || profileName;
+  writeContext(context, contextPath);
+  return context;
+}
+
+export function updateHistory(
+  profileName: string,
+  historyPatch: Partial<ClientContextHistory>,
+  contextPath?: string,
+): ClientContext {
+  const context = readContext(contextPath);
+  const existing = context.profiles[profileName] ?? {};
+  const history: ClientContextHistory = {
+    ...existing.history,
+    ...historyPatch,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Clean empty values
+  for (const key of Object.keys(history)) {
+    const k = key as keyof ClientContextHistory;
+    if (history[k] === undefined || history[k] === null || history[k] === "") {
+      delete (history as Record<string, unknown>)[key];
+    }
+  }
+
+  existing.history = history;
+  context.profiles[profileName] = existing;
   writeContext(context, contextPath);
   return context;
 }

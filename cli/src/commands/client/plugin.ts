@@ -104,7 +104,7 @@ export function registerPluginCommands(program: Command): void {
       .option("--status <status>", "Filter by status (ready, error, disabled, installed, upgrade_pending)")
       .action(async (opts: PluginListOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const qs = opts.status ? `?status=${encodeURIComponent(opts.status)}` : "";
           const plugins = await ctx.api.get<PluginRecord[]>(`/api/plugins${qs}`);
 
@@ -145,7 +145,7 @@ export function registerPluginCommands(program: Command): void {
       .option("--version <version>", "Specific npm version to install (npm packages only)")
       .action(async (packageArg: string, opts: PluginInstallOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
 
           // Auto-detect local paths: starts with . or / or ~ or is an absolute path
           const isLocal =
@@ -211,7 +211,7 @@ export function registerPluginCommands(program: Command): void {
       .option("--force", "Purge all plugin state and config (hard delete)", false)
       .action(async (pluginKey: string, opts: PluginUninstallOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const purge = opts.force === true;
           const qs = purge ? "?purge=true" : "";
 
@@ -250,7 +250,7 @@ export function registerPluginCommands(program: Command): void {
       .description("Enable a disabled or errored plugin")
       .action(async (pluginKey: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const result = await ctx.api.post<PluginRecord>(
             `/api/plugins/${encodeURIComponent(pluginKey)}/enable`,
           );
@@ -276,7 +276,7 @@ export function registerPluginCommands(program: Command): void {
       .description("Disable a running plugin without uninstalling it")
       .action(async (pluginKey: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const result = await ctx.api.post<PluginRecord>(
             `/api/plugins/${encodeURIComponent(pluginKey)}/disable`,
           );
@@ -302,7 +302,7 @@ export function registerPluginCommands(program: Command): void {
       .description("Show full details for an installed plugin")
       .action(async (pluginKey: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const result = await ctx.api.get<PluginRecord>(
             `/api/plugins/${encodeURIComponent(pluginKey)}`,
           );
@@ -336,7 +336,7 @@ export function registerPluginCommands(program: Command): void {
       .description("List bundled example plugins available for local install")
       .action(async (opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const examples = await ctx.api.get<
             Array<{
               packageName: string;

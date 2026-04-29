@@ -166,7 +166,7 @@ export function registerAgentCommands(program: Command): void {
       .requiredOption("-C, --company-id <id>", "Company ID")
       .action(async (opts: AgentListOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const rows = (await ctx.api.get<Agent[]>(`/api/companies/${ctx.companyId}/agents`)) ?? [];
 
           if (ctx.json) {
@@ -206,7 +206,7 @@ export function registerAgentCommands(program: Command): void {
       .argument("<agentId>", "Agent ID")
       .action(async (agentId: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const row = await ctx.api.get<Agent>(`/api/agents/${agentId}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
@@ -230,7 +230,7 @@ export function registerAgentCommands(program: Command): void {
       )
       .action(async (agentRef: string, opts: AgentLocalCliOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const query = new URLSearchParams({ companyId: ctx.companyId ?? "" });
           const agentRow = await ctx.api.get<Agent>(
             `/api/agents/${encodeURIComponent(agentRef)}?${query.toString()}`,

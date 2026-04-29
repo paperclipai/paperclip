@@ -24,6 +24,7 @@ import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
+import { registerCompletionCommand, registerHiddenCompletionCommand } from "./commands/completion.js";
 import { cliVersion } from "./version.js";
 
 const program = new Command();
@@ -164,6 +165,8 @@ auth
   .action(bootstrapCeoInvite);
 
 registerClientAuthCommands(auth);
+registerCompletionCommand(program);
+registerHiddenCompletionCommand(program);
 
 async function main(): Promise<void> {
   let failed = false;

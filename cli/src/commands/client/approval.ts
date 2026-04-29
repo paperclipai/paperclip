@@ -53,7 +53,7 @@ export function registerApprovalCommands(program: Command): void {
       .option("--status <status>", "Status filter")
       .action(async (opts: ApprovalListOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
           if (opts.status) params.set("status", opts.status);
           const query = params.toString();
@@ -97,7 +97,7 @@ export function registerApprovalCommands(program: Command): void {
       .argument("<approvalId>", "Approval ID")
       .action(async (approvalId: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const row = await ctx.api.get<Approval>(`/api/approvals/${approvalId}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
@@ -117,7 +117,7 @@ export function registerApprovalCommands(program: Command): void {
       .option("--issue-ids <csv>", "Comma-separated linked issue IDs")
       .action(async (opts: ApprovalCreateOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const payloadJson = parseJsonObject(opts.payload, "payload");
           const payload = createApprovalSchema.parse({
             type: opts.type,
@@ -143,7 +143,7 @@ export function registerApprovalCommands(program: Command): void {
       .option("--decided-by-user-id <id>", "Decision actor user ID")
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = resolveApprovalSchema.parse({
             decisionNote: opts.decisionNote,
             decidedByUserId: opts.decidedByUserId,
@@ -165,7 +165,7 @@ export function registerApprovalCommands(program: Command): void {
       .option("--decided-by-user-id <id>", "Decision actor user ID")
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = resolveApprovalSchema.parse({
             decisionNote: opts.decisionNote,
             decidedByUserId: opts.decidedByUserId,
@@ -187,7 +187,7 @@ export function registerApprovalCommands(program: Command): void {
       .option("--decided-by-user-id <id>", "Decision actor user ID")
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = requestApprovalRevisionSchema.parse({
             decisionNote: opts.decisionNote,
             decidedByUserId: opts.decidedByUserId,
@@ -208,7 +208,7 @@ export function registerApprovalCommands(program: Command): void {
       .option("--payload <json>", "Payload JSON object")
       .action(async (approvalId: string, opts: ApprovalResubmitOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = resubmitApprovalSchema.parse({
             payload: opts.payload ? parseJsonObject(opts.payload, "payload") : undefined,
           });
@@ -228,7 +228,7 @@ export function registerApprovalCommands(program: Command): void {
       .requiredOption("--body <text>", "Comment body")
       .action(async (approvalId: string, opts: ApprovalCommentOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const created = await ctx.api.post<ApprovalComment>(`/api/approvals/${approvalId}/comments`, {
             body: opts.body,
           });

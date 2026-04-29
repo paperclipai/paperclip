@@ -24,7 +24,7 @@ describe("resolveCommandContext", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("uses profile defaults when options/env are not provided", () => {
+  it("uses profile defaults when options/env are not provided", async () => {
     const contextPath = createTempPath("context.json");
 
     writeContext(
@@ -43,13 +43,13 @@ describe("resolveCommandContext", () => {
     );
     process.env.AGENT_KEY = "key-from-env";
 
-    const resolved = resolveCommandContext({ context: contextPath }, { requireCompany: true });
+    const resolved = await resolveCommandContext({ context: contextPath }, { requireCompany: true });
     expect(resolved.api.apiBase).toBe("http://127.0.0.1:9999");
     expect(resolved.companyId).toBe("company-profile");
     expect(resolved.api.apiKey).toBe("key-from-env");
   });
 
-  it("prefers explicit options over profile values", () => {
+  it("prefers explicit options over profile values", async () => {
     const contextPath = createTempPath("context.json");
     writeContext(
       {
@@ -65,7 +65,7 @@ describe("resolveCommandContext", () => {
       contextPath,
     );
 
-    const resolved = resolveCommandContext(
+    const resolved = await resolveCommandContext(
       {
         context: contextPath,
         apiBase: "http://override:3200",
@@ -80,7 +80,7 @@ describe("resolveCommandContext", () => {
     expect(resolved.api.apiKey).toBe("direct-token");
   });
 
-  it("throws when company is required but unresolved", () => {
+  it("throws when company is required but unresolved", async () => {
     const contextPath = createTempPath("context.json");
     writeContext(
       {
@@ -91,8 +91,8 @@ describe("resolveCommandContext", () => {
       contextPath,
     );
 
-    expect(() =>
+    await expect(
       resolveCommandContext({ context: contextPath, apiBase: "http://localhost:3100" }, { requireCompany: true }),
-    ).toThrow(/Company ID is required/);
+    ).rejects.toThrow(/Company ID is required/);
   });
 });

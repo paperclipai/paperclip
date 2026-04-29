@@ -95,7 +95,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--match <text>", "Local text match on identifier/title/description")
       .action(async (opts: IssueBaseOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
           if (opts.status) params.set("status", opts.status);
           if (opts.assigneeAgentId) params.set("assigneeAgentId", opts.assigneeAgentId);
@@ -143,7 +143,7 @@ export function registerIssueCommands(program: Command): void {
       .argument("<idOrIdentifier>", "Issue ID or identifier")
       .action(async (idOrIdentifier: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const row = await ctx.api.get<Issue>(`/api/issues/${idOrIdentifier}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
@@ -169,7 +169,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--billing-code <code>", "Billing code")
       .action(async (opts: IssueCreateOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = await resolveCommandContext(opts, { requireCompany: true });
           const payload = createIssueSchema.parse({
             title: opts.title,
             description: opts.description,
@@ -211,7 +211,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--hidden-at <iso8601|null>", "Set hiddenAt timestamp or literal 'null'")
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = updateIssueSchema.parse({
             title: opts.title,
             description: opts.description,
@@ -245,7 +245,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--resume", "Request explicit follow-up and wake the assignee when resumable")
       .action(async (issueId: string, opts: IssueCommentOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = addIssueCommentSchema.parse({
             body: opts.body,
             reopen: opts.reopen,
@@ -273,7 +273,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--include-payload", "Include stored payload snapshots in the response")
       .action(async (issueId: string, opts: IssueFeedbackOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const traces = (await ctx.api.get<FeedbackTrace[]>(
             `/api/issues/${issueId}/feedback-traces${buildFeedbackTraceQuery(opts)}`,
           )) ?? [];
@@ -314,7 +314,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--format <format>", "Export format: json or ndjson", "ndjson")
       .action(async (issueId: string, opts: IssueFeedbackOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const traces = (await ctx.api.get<FeedbackTrace[]>(
             `/api/issues/${issueId}/feedback-traces${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
           )) ?? [];
@@ -351,7 +351,7 @@ export function registerIssueCommands(program: Command): void {
       )
       .action(async (issueId: string, opts: IssueCheckoutOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const payload = checkoutIssueSchema.parse({
             agentId: opts.agentId,
             expectedStatuses: parseCsv(opts.expectedStatuses),
@@ -371,7 +371,7 @@ export function registerIssueCommands(program: Command): void {
       .argument("<issueId>", "Issue ID")
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = await resolveCommandContext(opts);
           const updated = await ctx.api.post<Issue>(`/api/issues/${issueId}/release`, {});
           printOutput(updated, { json: ctx.json });
         } catch (err) {
