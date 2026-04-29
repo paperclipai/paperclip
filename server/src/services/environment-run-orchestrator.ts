@@ -427,6 +427,7 @@ export function environmentRunOrchestrator(
           env: {
             SHELL: "/bin/bash",
           },
+          timeoutMs: 300_000,
         });
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
