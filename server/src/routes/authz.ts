@@ -8,6 +8,9 @@ export function assertAuthenticated(req: Request) {
 }
 
 export function assertBoard(req: Request) {
+  if (req.actor.type === "none") {
+    throw unauthorized();
+  }
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
   }

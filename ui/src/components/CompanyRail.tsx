@@ -141,18 +141,26 @@ export function CompanyRail() {
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const companyIds = useMemo(() => sidebarCompanies.map((company) => company.id), [sidebarCompanies]);
 
+  // Only poll dot indicators for the *selected* company. Other rail entries
+  // reuse whatever the cache already has (populated when the user visits each
+  // company) and otherwise render without a dot. Polling N companies every
+  // 10s/15s produced an HTTP/2 stream storm for users in many companies.
   const liveRunsQueries = useQueries({
     queries: companyIds.map((companyId) => ({
       queryKey: queryKeys.liveRuns(companyId),
       queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
-      refetchInterval: 10_000,
+      enabled: companyId === selectedCompanyId,
+      refetchInterval: companyId === selectedCompanyId ? 10_000 : false,
+      staleTime: 60_000,
     })),
   });
   const sidebarBadgeQueries = useQueries({
     queries: companyIds.map((companyId) => ({
       queryKey: queryKeys.sidebarBadges(companyId),
       queryFn: () => sidebarBadgesApi.get(companyId),
-      refetchInterval: 15_000,
+      enabled: companyId === selectedCompanyId,
+      refetchInterval: companyId === selectedCompanyId ? 15_000 : false,
+      staleTime: 60_000,
     })),
   });
   const hasLiveAgentsByCompanyId = useMemo(() => {

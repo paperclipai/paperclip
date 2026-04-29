@@ -26,6 +26,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
+    if (res.status === 401 && typeof window !== "undefined") {
+      // Session is gone — surface this once and let the auth flow take over.
+      // The fetch wrapper stays decoupled from the QueryClient/router via an event.
+      window.dispatchEvent(new CustomEvent("paperclip:auth-expired"));
+    }
     throw new ApiError(
       (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
       res.status,
