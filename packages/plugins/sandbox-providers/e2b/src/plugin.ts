@@ -144,13 +144,6 @@ function buildCommandLine(command: string, args: string[] = []) {
   return `exec ${[command, ...args].map(shellQuote).join(" ")}`;
 }
 
-function buildForegroundStdinPath() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  return path.posix.join("/tmp", `paperclip-stdin-${hex}.txt`);
-}
-
 async function killSandboxBestEffort(sandbox: Sandbox, reason: string): Promise<void> {
   await sandbox.kill().catch((error) => {
     console.warn(`Failed to kill E2B sandbox during ${reason}: ${formatErrorMessage(error)}`);
@@ -385,24 +378,29 @@ const plugin = definePlugin({
       }
     }
 
-    const stdinPath = buildForegroundStdinPath();
+    const started = await sandbox.commands.run(command, {
+      stdin: true,
+      cwd: params.cwd,
+      envs: params.env,
+      timeoutMs: params.timeoutMs ?? config.timeoutMs,
+    }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
+      pid: number;
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    };
 
     try {
-      await sandbox.files.write(stdinPath, params.stdin);
-      const result = await sandbox.commands.run(`${command} < ${shellQuote(stdinPath)}`, {
-        cwd: params.cwd,
-        envs: params.env,
-        timeoutMs: params.timeoutMs ?? config.timeoutMs,
-      }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-      };
+      try {
+        await sandbox.commands.sendStdin(started.pid, params.stdin);
+      } finally {
+        await sandbox.commands.closeStdin(started.pid);
+      }
       return {
-        exitCode: result.exitCode,
+        exitCode: started.exitCode,
         timedOut: false,
-        stdout: result.stdout,
-        stderr: result.stderr,
+        stdout: started.stdout,
+        stderr: started.stderr,
       };
     } catch (error) {
       if (error instanceof CommandExitError) {
@@ -418,8 +416,6 @@ const plugin = definePlugin({
         return buildTimeoutExecuteResult(error);
       }
       throw error;
-    } finally {
-      await sandbox.files.remove(stdinPath).catch(() => undefined);
     }
   },
 });
