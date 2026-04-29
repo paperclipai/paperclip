@@ -282,6 +282,7 @@ export {
   routineRevisionSnapshotTriggerV1Schema,
   routineRevisionSnapshotV1Schema,
   routineRevisionSnapshotSchema,
+  routinePreGateSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   type CreateRoutine,
@@ -290,6 +291,7 @@ export {
   type UpdateRoutineTrigger,
   type RunRoutine,
   type RotateRoutineTriggerSecret,
+  type RoutinePreGateInput,
 } from "./routine.js";
 
 export {
