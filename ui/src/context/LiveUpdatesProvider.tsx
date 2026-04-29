@@ -625,6 +625,39 @@ function invalidateHeartbeatQueries(
   }
 }
 
+// Leading+trailing throttle for high-frequency invalidations.
+// activity.logged events arrive ~10/sec per running agent; with 2+ agents
+// every event used to fan out to 7+ react-query refetches (incl. the
+// 215 KB issues.list), saturating the node event loop until the UI froze.
+// Coalesce by key: fire immediately on leading edge, drop within window,
+// schedule one trailing-edge fire so the final state is consistent.
+type ThrottleSlot = { lastFired: number; trailingTimer: ReturnType<typeof setTimeout> | null };
+const invalidationThrottleSlots = new Map<string, ThrottleSlot>();
+const INVALIDATION_THROTTLE_MS = 1500;
+
+function throttledInvalidate(key: string, run: () => void) {
+  const slot: ThrottleSlot = invalidationThrottleSlots.get(key) ?? { lastFired: 0, trailingTimer: null };
+  const now = Date.now();
+  const elapsed = now - slot.lastFired;
+  if (elapsed >= INVALIDATION_THROTTLE_MS) {
+    slot.lastFired = now;
+    if (slot.trailingTimer) {
+      clearTimeout(slot.trailingTimer);
+      slot.trailingTimer = null;
+    }
+    invalidationThrottleSlots.set(key, slot);
+    run();
+  } else if (!slot.trailingTimer) {
+    slot.trailingTimer = setTimeout(() => {
+      slot.lastFired = Date.now();
+      slot.trailingTimer = null;
+      invalidationThrottleSlots.set(key, slot);
+      run();
+    }, INVALIDATION_THROTTLE_MS - elapsed);
+    invalidationThrottleSlots.set(key, slot);
+  }
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -632,9 +665,11 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  throttledInvalidate(`activity.bulk:${companyId}`, () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -643,10 +678,12 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    throttledInvalidate(`issues.list:${companyId}`, () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    });
     if (entityId) {
       const details = readRecord(payload.details);
       const selfCommentActivity =
