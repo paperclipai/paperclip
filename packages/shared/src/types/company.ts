@@ -1,4 +1,5 @@
 import type { CompanyStatus, PauseReason } from "../constants.js";
+import type { CompanyDefaultExecutionPolicies } from "./issue.js";
 
 export interface Company {
   id: string;
@@ -18,6 +19,7 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   brandColor: string | null;
+  defaultExecutionPolicies: CompanyDefaultExecutionPolicies | null;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;

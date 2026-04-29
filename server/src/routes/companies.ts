@@ -5,6 +5,7 @@ import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
+  companyDefaultExecutionPoliciesSchema,
   createCompanySchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -407,6 +408,34 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  router.get("/:companyId/execution-policy-defaults", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json({ defaultExecutionPolicies: company.defaultExecutionPolicies ?? null });
+  });
+
+  router.put("/:companyId/execution-policy-defaults", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const parsed = companyDefaultExecutionPoliciesSchema.nullable().safeParse(req.body.defaultExecutionPolicies);
+    if (!parsed.success) {
+      res.status(422).json({ error: "Invalid execution policy defaults", details: parsed.error.flatten() });
+      return;
+    }
+    const company = await svc.update(companyId, { defaultExecutionPolicies: parsed.data ?? null });
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json({ defaultExecutionPolicies: company.defaultExecutionPolicies ?? null });
   });
 
   return router;
