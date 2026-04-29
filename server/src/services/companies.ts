@@ -272,45 +272,42 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
+        // Delete from child tables in dependency order.
+        // Children must be deleted before their parents when FKs lack ON DELETE CASCADE.
+        // Order computed via topological sort of the FK graph.
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
-        await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
-        // budget_incidents has FK to budgetPolicies and approvals (no cascade)
+        await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
-        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
-        await tx.delete(approvals).where(eq(approvals.companyId, id));
-        await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
-        await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
-        await tx.delete(invites).where(eq(invites.companyId, id));
-        await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
+        await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
+        await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        await tx.delete(documents).where(eq(documents.companyId, id));
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
+        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
+        await tx.delete(issueComments).where(eq(issueComments.companyId, id));
+        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
-        // workspace_* tables have set-null FKs to projects/heartbeatRuns — delete before company
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, id));
+        await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
+        await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(workspaceOperations).where(eq(workspaceOperations.companyId, id));
         await tx.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, id));
-        // inbox_dismissals has only a companyId FK (no cascade)
-        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
-        await tx.delete(documents).where(eq(documents.companyId, id));
-        // feedback_votes, issue_thread_interactions, issue_inbox_archives all
-        // have non-cascade FKs to issues — must delete before issues
-        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
-        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, id));
-        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.companyId, id));
+        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
+        await tx.delete(approvals).where(eq(approvals.companyId, id));
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        await tx.delete(invites).where(eq(invites.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
-        await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
-        await tx.delete(assets).where(eq(assets.companyId, id));
-        await tx.delete(goals).where(eq(goals.companyId, id));
+        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
+        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
+        await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
         const rows = await tx
           .delete(companies)
