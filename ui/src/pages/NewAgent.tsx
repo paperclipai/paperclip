@@ -408,9 +408,9 @@ export function NewAgent() {
       <Dialog open={showWorkerAdapterWarning} onOpenChange={setShowWorkerAdapterWarning}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Unusual role/adapter pairing</DialogTitle>
+            <DialogTitle>Unusual role and adapter pairing</DialogTitle>
             <DialogDescription>
-              The Worker role is intended for chief-local subordinate agents using the openclaw_gateway adapter. Pairing it with the {configValues.adapterType} adapter is unusual. Confirm this is intended?
+              The Worker role is designed for chief-local agents on the openclaw_gateway adapter. You've selected {configValues.adapterType} - this pairing is unusual but allowed. Confirm to proceed.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
