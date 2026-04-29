@@ -71,6 +71,12 @@ COPY --chown=node:node --from=build /app /app
 COPY vendor/ccrotate-1.1.0.tgz /tmp/ccrotate.tgz
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
+  # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
+  # which resolves to /usr/local/lib/node_modules/package.json (one level above the ccrotate
+  # package dir) when installed globally — that file does not exist. Source layout (dist/cli.js
+  # next to dist/package.json) makes `..` jump out of the package. Rewrite to `./package.json`
+  # so the bundled CLI finds its own manifest. Remove this line when the upstream fix lands.
+  && sed -i 's|new URL("../package.json"|new URL("./package.json"|' /usr/local/lib/node_modules/ccrotate/cli.js \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
   && rm -rf /var/lib/apt/lists/* \
