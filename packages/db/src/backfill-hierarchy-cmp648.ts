@@ -5,8 +5,9 @@
  * Updates the canonical 9 company agents with orgLevel, primaryWorkflowRole,
  * specialty, defaultReviewAgentId, and defaultQaAgentId per the CTO design table.
  *
- * Does NOT change `reportsTo`. The 윤광고 / 윤유튜브 reportsTo move from 윤CTO to
- * 윤CMO is held until 윤CEO posts an ack on CMP-647 — handled in a follow-up run.
+ * Updates `reportsTo` for 윤광고 / 윤유튜브 from 윤CTO → 윤CMO per CMP-647 design,
+ * approved by 윤CEO in comment `f456beb2` (2026-04-29). The held bit from the
+ * earlier revision of this script is now unblocked.
  *
  * Run with:
  *   DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:54329/paperclip \
@@ -151,5 +152,25 @@ for (const row of ROWS) {
   updated += 1;
 }
 
-console.log(`\nBackfill complete: ${updated} updated, ${missing} missing.`);
-console.log("Note: 윤광고 / 윤유튜브 reportsTo unchanged — pending 윤CEO ack on CMP-647.");
+// reportsTo move for 윤광고 / 윤유튜브: 윤CTO → 윤CMO (CEO ack `f456beb2`).
+const REPORTS_TO_MOVES: Array<{ name: string; id: string; reportsTo: string }> = [
+  { name: "윤광고", id: AGENT_ID.ads, reportsTo: AGENT_ID.cmo },
+  { name: "윤유튜브", id: AGENT_ID.youtube, reportsTo: AGENT_ID.cmo },
+];
+
+let movedReportsTo = 0;
+for (const move of REPORTS_TO_MOVES) {
+  const result = await db
+    .update(agents)
+    .set({ reportsTo: move.reportsTo })
+    .where(eq(agents.id, move.id))
+    .returning({ id: agents.id });
+  if (result.length === 0) {
+    console.warn(`  - SKIP reportsTo ${move.name} (${move.id}): agent not found`);
+    continue;
+  }
+  console.log(`  - OK   reportsTo ${move.name} → ${move.reportsTo}`);
+  movedReportsTo += 1;
+}
+
+console.log(`\nBackfill complete: ${updated} updated, ${missing} missing, ${movedReportsTo} reportsTo moved.`);
