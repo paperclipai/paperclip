@@ -7,8 +7,8 @@
 
 ### External Connectors
 
-- [ ] **EXT-01**: 운영자는 IdP OIDC/SAML handshake를 실제 metadata, callback state, 실패 사유, audit evidence와 함께 검증할 수 있다.
-- [ ] **EXT-02**: 운영자는 SCIM user/group 변경을 preview에서 apply로 승격하고, 적용 결과와 rollback candidate를 activity log에서 확인할 수 있다.
+- [x] **EXT-01**: 운영자는 IdP OIDC/SAML handshake를 실제 metadata, callback state, 실패 사유, audit evidence와 함께 검증할 수 있다.
+- [x] **EXT-02**: 운영자는 SCIM user/group 변경을 preview에서 apply로 승격하고, 적용 결과와 rollback candidate를 activity log에서 확인할 수 있다.
 - [ ] **EXT-03**: 운영자는 trusted local Obsidian bridge/daemon을 pairing하고 vault sync health, queue, conflict, last applied evidence를 확인할 수 있다.
 
 ### Native and Mobile Capture
@@ -56,8 +56,8 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EXT-01 | Phase 39 | Pending |
-| EXT-02 | Phase 39 | Pending |
+| EXT-01 | Phase 39 | Complete |
+| EXT-02 | Phase 39 | Complete |
 | EXT-03 | Phase 40 | Pending |
 | CAP-01 | Phase 41 | Pending |
 | CAP-02 | Phase 41 | Pending |
@@ -76,4 +76,4 @@
 
 ---
 *Requirements defined: 2026-04-29*
-*Last updated: 2026-04-29 after v2.6 milestone definition*
+*Last updated: 2026-04-29 after Phase 39 completion*

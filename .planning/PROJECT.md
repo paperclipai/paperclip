@@ -18,14 +18,14 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **최근 완료:** v2.5는 semantic index, semantic knowledge search, contradiction review workflow, Jarvis grounded answers, knowledge operations health gate를 완료하고 Phase 38 closure로 milestone audit gaps를 닫았다. 최종 re-audit은 requirements 19/19, phases 6/6, integration 5/5, flows 5/5로 `passed`다.
 
-**현재 진행:** v2.6 scope, requirements, roadmap이 정의되었다. 다음 단계는 Phase 39부터 external connector apply loop, trusted local bridge, native/mobile capture, Jarvis autonomy/eval guardrail, historical validation closure를 순서대로 구현하는 것이다.
+**현재 진행:** v2.6 Phase 39 Enterprise Connector Apply Loop가 완료되었다. 다음 단계는 Phase 40부터 trusted local bridge, native/mobile capture, Jarvis autonomy/eval guardrail, historical validation closure를 순서대로 구현하는 것이다.
 
 ## 현재 마일스톤: v2.6 운영 커넥터 및 자율성 하드닝
 
 **Goal:** v2.5에서 닫은 semantic knowledge loop를 실제 외부 운영 경계, mobile/native capture, Jarvis autonomy guardrail, validation gate까지 확장해 운영 가능한 hardening layer로 만든다.
 
 **Target features:**
-- 실제 IdP handshake 검증과 SCIM apply mutation을 audit 가능한 rollout connector flow로 고도화한다.
+- 실제 IdP handshake 검증과 SCIM apply mutation을 audit 가능한 rollout connector flow로 고도화한다. (Phase 39 완료)
 - Obsidian/local knowledge bridge를 trusted daemon/pairing/health 기반 운영 흐름으로 만든다.
 - Slack/Teams/native/mobile capture source를 설치, 검수, promotion, semantic search UX까지 hardening한다.
 - Jarvis autonomous knowledge rewrite 제안을 provider-backed eval, deterministic fallback, approval evidence, production monitoring으로 제한한다.
@@ -106,10 +106,11 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.5 Jarvis Grounding 요구사항 4개.
 - [x] v2.5 Knowledge Operations 요구사항 3개.
 - [x] v2.5 Phase 38 artifact closure.
+- [x] v2.6 external connector apply loop 요구사항 2개. - Phase 39
 
 ### 진행 중
 
-- [ ] v2.6 external connector hardening 요구사항 3개.
+- [ ] v2.6 trusted local bridge 요구사항 1개.
 - [ ] v2.6 native/mobile capture hardening 요구사항 3개.
 - [ ] v2.6 autonomy/evals hardening 요구사항 3개.
 - [ ] v2.6 validation closure 요구사항 3개.
@@ -157,7 +158,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-v2.6은 external connector, local knowledge bridge, native/mobile capture, Jarvis autonomy/evals, historical validation closure를 하나의 operational hardening milestone로 묶는다. 완료 기준은 사용자가 trusted external boundary에서 들어온 work/knowledge signal을 검수하고, Jarvis가 evidence-backed 제안만 만들며, milestone gate가 검증 산출물 누락을 조기에 막는 것이다.
+v2.6은 external connector, local knowledge bridge, native/mobile capture, Jarvis autonomy/evals, historical validation closure를 하나의 operational hardening milestone로 묶는다. Phase 39에서 external connector apply loop는 완료되었다. 남은 완료 기준은 사용자가 trusted local/native boundary에서 들어온 work/knowledge signal을 검수하고, Jarvis가 evidence-backed 제안만 만들며, milestone gate가 검증 산출물 누락을 조기에 막는 것이다.
 
 ## Evolution
 
@@ -177,4 +178,4 @@ v2.6은 external connector, local knowledge bridge, native/mobile capture, Jarvi
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-29, v2.6 milestone started*
+*마지막 업데이트: 2026-04-29, Phase 39 complete*
