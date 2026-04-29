@@ -44,6 +44,8 @@ describe("placeholder comments", () => {
     "No operation performed because the API was unavailable.",
     "Continuing with implementation after reading the plan.",
     "Polling Paperclip would be wrong here, so I am exiting.",
+    "Self-wake: implemented rate-limiting for ELEAAA-462 and verified all edge cases.",
+    "Self-wake — actually pausing because the Redis pool is exhausted; investigating now",
     "....",
   ])("rejects non-placeholder body %j", (body) => {
     expect(isPlaceholderCommentBody(body)).toBe(false);
