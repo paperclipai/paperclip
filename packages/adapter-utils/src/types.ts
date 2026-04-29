@@ -119,6 +119,14 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+export interface AdapterPluginToolDescriptor {
+  name: string;
+  displayName: string;
+  description: string;
+  parametersSchema: Record<string, unknown>;
+  pluginId: string;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -133,6 +141,7 @@ export interface AdapterExecutionContext {
   executionTransport?: {
     remoteExecution?: Record<string, unknown> | null;
   };
+  pluginTools?: AdapterPluginToolDescriptor[];
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;

@@ -392,6 +392,8 @@ By default, plugin tools are available to all agents. The operator may restrict 
 
 Plugin tools appear in the agent's tool list alongside core tools but are visually distinguished in the UI as plugin-contributed.
 
+During agent execution, Paperclip passes the available plugin tool descriptors to adapters through the adapter execution context. Adapters may expose those tools using their native tool mechanism; the OpenCode adapter writes temporary custom tool wrappers into an isolated `OPENCODE_CONFIG_DIR` for the run and routes calls back through Paperclip's authenticated `/api/plugins/tools/execute` endpoint.
+
 ### 11.4 Constraints
 
 - Plugin tools must not override or shadow core tools by name.

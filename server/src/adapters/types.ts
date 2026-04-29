@@ -8,6 +8,7 @@ export type {
   UsageSummary,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterPluginToolDescriptor,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

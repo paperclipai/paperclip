@@ -101,6 +101,16 @@ function boardActor(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function agentActor(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "agent",
+    companyId: companyA,
+    agentId: agentA,
+    runId: runA,
+    ...overrides,
+  };
+}
+
 function readyPlugin() {
   mockRegistry.getById.mockResolvedValue({
     id: pluginId,
@@ -457,6 +467,79 @@ describe.sequential("plugin tool and bridge authz", () => {
         projectId: projectA,
       },
     );
+  });
+
+  it("allows authenticated agents to execute plugin tools for their own run", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      {
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+        projectId: projectA,
+      },
+    );
+  });
+
+  it("rejects agent tool execution when runContext.runId does not match the authenticated run", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: "99999999-9999-4999-8999-999999999999",
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain('"runContext.runId" must match the authenticated run');
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
   it.each([

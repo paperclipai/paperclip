@@ -601,6 +601,34 @@ export function pluginRoutes(
     return null;
   }
 
+  function assertToolRunRequestAccess(req: Request, runContext: ToolRunContext): void {
+    assertAuthenticated(req);
+
+    if (req.actor.type === "board") {
+      assertCompanyAccess(req, runContext.companyId);
+      return;
+    }
+
+    if (req.actor.type !== "agent") {
+      throw forbidden("Board or agent access required");
+    }
+    if (!req.actor.runId?.trim()) {
+      throw unauthorized("Agent run id required");
+    }
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+    if (req.actor.companyId !== runContext.companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    if (req.actor.agentId !== runContext.agentId) {
+      throw forbidden('"runContext.agentId" must match the authenticated agent');
+    }
+    if (req.actor.runId !== runContext.runId) {
+      throw forbidden('"runContext.runId" must match the authenticated run');
+    }
+  }
+
   /**
    * GET /api/plugins
    *
@@ -761,8 +789,6 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
-
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
       return;
@@ -794,7 +820,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertCompanyAccess(req, runContext.companyId);
+    assertToolRunRequestAccess(req, runContext);
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
       res.status(403).json({ error: scopeError });

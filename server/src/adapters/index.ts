@@ -15,6 +15,7 @@ export type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterPluginToolDescriptor,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,

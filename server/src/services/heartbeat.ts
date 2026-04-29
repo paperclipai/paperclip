@@ -127,6 +127,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { getCurrentPluginToolDispatcher } from "./plugin-tool-runtime.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -5509,6 +5510,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      const pluginTools = getCurrentPluginToolDispatcher()?.listToolsForAgent();
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -5519,6 +5521,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTransport: remoteExecution
           ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
           : undefined,
+        pluginTools,
         onLog,
         onMeta: onAdapterMeta,
         onSpawn: async (meta) => {

@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetPaperclipApiUrl,
@@ -43,6 +47,7 @@ import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { prepareOpenCodePluginTools } from "./plugin-tools.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -224,17 +229,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  let preparedPluginTools: Awaited<ReturnType<typeof prepareOpenCodePluginTools>> | null = null;
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
+    preparedPluginTools = await prepareOpenCodePluginTools({
+      tools: ctx.pluginTools,
+      env: preparedRuntimeConfig.env,
+      runContext: {
+        agentId: agent.id,
+        runId,
+        companyId: agent.companyId,
+        projectId: asString(context.projectId, "").trim() || null,
+      },
+    });
+    const adapterEnv = preparedPluginTools.env;
+    const localPluginToolsConfigDir =
+      adapterEnv.OPENCODE_CONFIG_DIR && adapterEnv.OPENCODE_CONFIG_DIR !== preparedRuntimeConfig.env.OPENCODE_CONFIG_DIR
+        ? adapterEnv.OPENCODE_CONFIG_DIR
+        : "";
     const runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
+      Object.entries(ensurePathInEnv({ ...process.env, ...adapterEnv })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
-    const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+    const loggedEnv = buildInvocationEnvForLogs(adapterEnv, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
@@ -282,21 +303,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               localDir: localRuntimeConfigHome,
             }]
             : []),
+          ...(localPluginToolsConfigDir
+            ? [{
+              key: "opencodeConfig",
+              localDir: localPluginToolsConfigDir,
+            }]
+            : []),
         ],
       });
       restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
       if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
-        preparedRuntimeConfig.env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+        adapterEnv.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
       }
       if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
-        preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
+        adapterEnv.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
+      }
+      if (localPluginToolsConfigDir && preparedExecutionTargetRuntime.assetDirs.opencodeConfig) {
+        adapterEnv.OPENCODE_CONFIG_DIR = preparedExecutionTargetRuntime.assetDirs.opencodeConfig;
       }
       const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
         ? preparedExecutionTargetRuntime.runtimeRootDir
         : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
             cwd,
-            env: preparedRuntimeConfig.env,
+            env: adapterEnv,
             timeoutSec,
             graceSec,
             onLog,
@@ -307,7 +337,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           runId,
           executionTarget,
           `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
-          { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
+          { cwd, env: adapterEnv, timeoutSec, graceSec, onLog },
         );
       }
     }
@@ -355,7 +385,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const commandNotes = (() => {
-      const notes = [...preparedRuntimeConfig.notes];
+      const notes = [...preparedRuntimeConfig.notes, ...preparedPluginTools.notes];
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsPrefix.length > 0) {
         notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
@@ -431,7 +461,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
         cwd,
-        env: preparedRuntimeConfig.env,
+        env: adapterEnv,
         stdin: prompt,
         timeoutSec,
         graceSec,
@@ -543,6 +573,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ]);
     }
   } finally {
+    await preparedPluginTools?.cleanup();
     await preparedRuntimeConfig.cleanup();
   }
 }
