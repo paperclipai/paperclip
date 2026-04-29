@@ -288,7 +288,13 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 }
 
 function isProcessAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; }
+  catch (err) {
+    // EPERM: the process exists but we can't signal it (different OS user). Treat as alive.
+    if ((err as NodeJS.ErrnoException).code === "EPERM") return true;
+    // ESRCH or anything else: process not found.
+    return false;
+  }
 }
 
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; cancelRun?: (runId: string, reason: string) => Promise<unknown> }) {
@@ -940,7 +946,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; c
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
-      if (level === "critical" && existing.priority !== "high") {
+      const existingIsTerminal = ["done", "cancelled"].includes(existing.status);
+      if (level === "critical" && !existingIsTerminal && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
           priority: "high",
         });
@@ -958,7 +965,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; c
         });
         return { kind: "escalated" as const, evaluationIssueId: existing.id };
       }
-      if (level === "critical") {
+      // Re-escalate via source issue priority when the prior eval is closed — do NOT add it
+      // as a blocker since that would leave the source permanently blocked by a done issue.
+      if (level === "critical" && existingIsTerminal && sourceIssue && !["done", "cancelled"].includes(sourceIssue.status)) {
+        const escalatedPriority = sourceIssue.priority === "critical" ? "critical" : "high";
+        if (sourceIssue.priority !== escalatedPriority) {
+          await issuesSvc.update(sourceIssue.id, { priority: escalatedPriority });
+        }
+        return { kind: "existing" as const, evaluationIssueId: existing.id };
+      }
+      if (level === "critical" && !existingIsTerminal) {
         await ensureSourceIssueBlockedByStaleEvaluation({
           sourceIssue,
           evaluationIssue: existing,
