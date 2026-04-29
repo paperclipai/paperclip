@@ -222,6 +222,13 @@ async function flush() {
   });
 }
 
+async function waitForCondition(predicate: () => boolean, attempts = 8) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await flush();
+  }
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -404,6 +411,7 @@ describe("NewIssueDialog", () => {
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Issue"));
     expect(submitButton).not.toBeUndefined();
+    await waitForCondition(() => submitButton?.hasAttribute("disabled") === false);
     expect(submitButton?.hasAttribute("disabled")).toBe(false);
 
     await act(async () => {
