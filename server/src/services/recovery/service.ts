@@ -947,41 +947,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; c
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
       const existingIsTerminal = ["done", "cancelled"].includes(existing.status);
-      if (level === "critical" && !existingIsTerminal && existing.priority !== "high") {
-        await issuesSvc.update(existing.id, {
-          priority: "high",
-        });
-        await issuesSvc.addComment(existing.id, [
-          "Critical output silence threshold crossed.",
-          "",
-          `- Run: \`${input.run.id}\``,
-          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
-          `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
-        ].join("\n"), { runId: input.run.id });
-        await ensureSourceIssueBlockedByStaleEvaluation({
-          sourceIssue,
-          evaluationIssue: existing,
-          run: input.run,
-        });
-        return { kind: "escalated" as const, evaluationIssueId: existing.id };
-      }
-      // Re-escalate via source issue priority when the prior eval is closed — do NOT add it
-      // as a blocker since that would leave the source permanently blocked by a done issue.
-      if (level === "critical" && existingIsTerminal && sourceIssue && !["done", "cancelled"].includes(sourceIssue.status)) {
-        const escalatedPriority = sourceIssue.priority === "critical" ? "critical" : "high";
-        if (sourceIssue.priority !== escalatedPriority) {
-          await issuesSvc.update(sourceIssue.id, { priority: escalatedPriority });
+      if (existingIsTerminal) {
+        // Re-arm check: a "continue"/"snooze" decision on this eval means the quiet window
+        // has since expired and a fresh evaluation should be created. Without a prior continue
+        // decision the eval was simply closed — return existing to prevent looping.
+        const [priorContinue] = await db
+          .select({ id: heartbeatRunWatchdogDecisions.id })
+          .from(heartbeatRunWatchdogDecisions)
+          .where(and(
+            eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+            eq(heartbeatRunWatchdogDecisions.evaluationIssueId, existing.id),
+            inArray(heartbeatRunWatchdogDecisions.decision, ["continue", "snooze"]),
+          ))
+          .limit(1);
+        if (!priorContinue) {
+          // Dedup: closed without re-arm — re-escalate source priority if critical but don't re-block.
+          if (level === "critical" && sourceIssue && !["done", "cancelled"].includes(sourceIssue.status)) {
+            const escalatedPriority = sourceIssue.priority === "critical" ? "critical" : "high";
+            if (sourceIssue.priority !== escalatedPriority) {
+              await issuesSvc.update(sourceIssue.id, { priority: escalatedPriority });
+            }
+          }
+          return { kind: "existing" as const, evaluationIssueId: existing.id };
+        }
+        // priorContinue exists: re-arm after snooze expiry — fall through to create a new eval.
+      } else {
+        // Non-terminal: escalate priority or ensure source is blocked, then dedup.
+        if (level === "critical" && existing.priority !== "high") {
+          await issuesSvc.update(existing.id, {
+            priority: "high",
+          });
+          await issuesSvc.addComment(existing.id, [
+            "Critical output silence threshold crossed.",
+            "",
+            `- Run: \`${input.run.id}\``,
+            `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+            `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+          ].join("\n"), { runId: input.run.id });
+          await ensureSourceIssueBlockedByStaleEvaluation({
+            sourceIssue,
+            evaluationIssue: existing,
+            run: input.run,
+          });
+          return { kind: "escalated" as const, evaluationIssueId: existing.id };
+        }
+        if (level === "critical") {
+          await ensureSourceIssueBlockedByStaleEvaluation({
+            sourceIssue,
+            evaluationIssue: existing,
+            run: input.run,
+          });
         }
         return { kind: "existing" as const, evaluationIssueId: existing.id };
       }
-      if (level === "critical" && !existingIsTerminal) {
-        await ensureSourceIssueBlockedByStaleEvaluation({
-          sourceIssue,
-          evaluationIssue: existing,
-          run: input.run,
-        });
-      }
-      return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
