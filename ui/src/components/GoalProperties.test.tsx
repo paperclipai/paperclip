@@ -2,9 +2,10 @@
 
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoalProperties } from "./GoalProperties";
 
 const companyState = vi.hoisted(() => ({
@@ -88,6 +89,7 @@ function renderComponent(container: HTMLDivElement, goal: Record<string, unknown
 
 describe("GoalProperties", () => {
   let container: HTMLDivElement;
+  let root: Root | null = null;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -101,8 +103,16 @@ describe("GoalProperties", () => {
     mockGoalsApi.list.mockResolvedValue([]);
   });
 
+  afterEach(() => {
+    act(() => {
+      root?.unmount();
+    });
+    container.remove();
+    root = null;
+  });
+
   it("shows the resolved owner name when the goal already has an owner", async () => {
-    renderComponent(container, {
+    root = renderComponent(container, {
       id: "goal-1",
       title: "Goal",
       status: "active",
@@ -114,12 +124,13 @@ describe("GoalProperties", () => {
     });
 
     await flush();
+    await flush();
 
     expect(container.textContent).toContain("CEO");
   });
 
   it("shows the empty owner state when the goal has no owner", async () => {
-    renderComponent(container, {
+    root = renderComponent(container, {
       id: "goal-1",
       title: "Goal",
       status: "active",
@@ -130,6 +141,7 @@ describe("GoalProperties", () => {
       updatedAt: "2026-04-29T10:00:00.000Z",
     });
 
+    await flush();
     await flush();
 
     expect(container.textContent).toContain("No owner");

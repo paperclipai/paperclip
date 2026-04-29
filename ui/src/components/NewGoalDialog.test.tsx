@@ -2,9 +2,10 @@
 
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewGoalDialog } from "./NewGoalDialog";
 
 const dialogState = vi.hoisted(() => ({
@@ -139,6 +140,7 @@ function renderDialog(container: HTMLDivElement) {
 
 describe("NewGoalDialog", () => {
   let container: HTMLDivElement;
+  let root: Root | null = null;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -158,8 +160,16 @@ describe("NewGoalDialog", () => {
     ]);
   });
 
+  afterEach(() => {
+    act(() => {
+      root?.unmount();
+    });
+    container.remove();
+    root = null;
+  });
+
   it("includes ownerAgentId in the create payload when an owner is selected", async () => {
-    renderDialog(container);
+    ({ root } = renderDialog(container));
     await flush();
 
     const titleInput = container.querySelector('input[placeholder="Goal title"]') as HTMLInputElement | null;
