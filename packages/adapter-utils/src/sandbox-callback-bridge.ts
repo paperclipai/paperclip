@@ -499,9 +499,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
   return {
     stop: async (options = {}) => {
       stopping = true;
-      stopDeadline = Date.now() + normalizeTimeoutMs(options.drainTimeoutMs, DEFAULT_BRIDGE_STOP_TIMEOUT_MS);
+      const drainMs = normalizeTimeoutMs(options.drainTimeoutMs, DEFAULT_BRIDGE_STOP_TIMEOUT_MS);
+      stopDeadline = Date.now() + drainMs;
       if (!settled) {
-        await settledPromise;
+        await Promise.race([
+          settledPromise,
+          new Promise<void>((resolve) => setTimeout(resolve, drainMs)),
+        ]);
       }
       await failPendingRequests("Bridge worker stopped before request could be handled.");
     },
