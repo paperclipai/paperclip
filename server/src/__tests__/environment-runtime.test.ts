@@ -530,21 +530,22 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       throw new Error("Expected the test health servers to listen on TCP ports.");
     }
     const cachedUrl = `http://127.0.0.1:${cachedAddr.port}`;
-    const secondaryUrl = `http://127.0.0.1:${secondaryAddr.port}`;
+    const otherUrl = `http://127.0.0.1:${secondaryAddr.port}`;
     const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-    // List BOTH so the first probe walks them in order; the second probe
-    // should skip directly to the cached URL even though it's no longer
-    // first in the candidate list.
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([secondaryUrl, cachedUrl]);
+    // First probe: cachedUrl is at index 0 so it wins and lands in the lease's
+    // paperclipApiUrl. Second probe: we move it to index 1 — the only way a
+    // probe still hits cachedUrl first is if the cache lookup promoted it to
+    // the front of the sweep. Without this asymmetry the test would pass
+    // whether or not cache promotion works (Greptile #4715).
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([cachedUrl, otherUrl]);
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "ssh",
       name: "Fixture SSH Cache",
       config: sshConfig,
     });
     try {
-      // First acquire: candidates probed in declared order.
-      // [secondaryUrl, cachedUrl] — secondaryUrl is first, so it gets
-      // chosen and cached as paperclipApiUrl on the lease.
+      // First acquire: cachedUrl wins (first in declared order) and is
+      // cached as paperclipApiUrl on the lease.
       const first = await runtime.acquireRunLease({
         companyId,
         environment,
@@ -552,18 +553,20 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         heartbeatRunId: runId,
         persistedExecutionWorkspace: null,
       });
-      expect(first.lease.metadata).toMatchObject({ paperclipApiUrl: secondaryUrl });
-      const secondaryHitsAfterFirst = secondaryHits;
+      expect(first.lease.metadata).toMatchObject({ paperclipApiUrl: cachedUrl });
       const cachedHitsAfterFirst = cachedHits;
-      expect(cachedHitsAfterFirst).toBe(0);
+      expect(secondaryHits).toBe(0);
 
       // Release the first lease so it lands as a "released" lease in the table
       // (still discoverable by listLeases for the cache lookup).
       await runtime.releaseRunLeases(runId);
 
-      // Second acquire: cache lookup should pull paperclipApiUrl from the
-      // prior lease and probe it FIRST. Since the cached URL responds 200
-      // on first probe, no additional candidates should be probed.
+      // Reorder candidates so cachedUrl is NOT first on the second probe.
+      // This is the actual reordering test: if cache promotion works, the
+      // second probe still hits cachedUrl first (and otherUrl never gets a
+      // request); if not, otherUrl gets probed first and serves the lease.
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([otherUrl, cachedUrl]);
+
       const second = await runtime.acquireRunLease({
         companyId,
         environment,
@@ -571,11 +574,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         heartbeatRunId: runId,
         persistedExecutionWorkspace: null,
       });
-      expect(second.lease.metadata).toMatchObject({ paperclipApiUrl: secondaryUrl });
-      // Cache hit means exactly one additional probe to the cached
-      // (secondary) URL and zero probes to the un-cached one.
-      expect(secondaryHits).toBe(secondaryHitsAfterFirst + 1);
-      expect(cachedHits).toBe(0);
+      expect(second.lease.metadata).toMatchObject({ paperclipApiUrl: cachedUrl });
+      // Cache hit: exactly one additional probe to cachedUrl, zero to otherUrl.
+      expect(cachedHits).toBe(cachedHitsAfterFirst + 1);
+      expect(secondaryHits).toBe(0);
 
       await runtime.releaseRunLeases(runId);
     } finally {
