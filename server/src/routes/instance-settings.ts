@@ -72,7 +72,7 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/recovery-status", async (req, res) => {
     assertBoardOrgAccess(req);
-    res.json(recoveryStatus.get());
+    res.json(await recoveryStatus.get());
   });
 
   router.patch(

@@ -327,9 +327,13 @@ export function InstanceGeneralSettings() {
                     ))}
                   </div>
                 </div>
-              ) : (
+              ) : recoveryStatusQuery.data.state === "RestoreVerified" ? (
                 <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
                   Recovery is healthy: the latest manifest is fresh and a restore drill has passed.
+                </div>
+              ) : (
+                <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-100">
+                  Recovery setup is ready, but no restore drill has been verified yet.
                 </div>
               )}
             </>

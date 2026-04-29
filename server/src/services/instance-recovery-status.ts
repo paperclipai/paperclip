@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import {
   DEFAULT_RECOVERY_STATUS_FILE,
   evaluateRecoveryStatus,
@@ -80,31 +80,29 @@ function mergeRecoveryStatus(raw: unknown): RecoveryStatusFile {
 
 export function instanceRecoveryStatusService() {
   return {
-    get(): RecoveryStatusSnapshot & { statusFilePath: string } {
+    async get(): Promise<RecoveryStatusSnapshot & { statusFilePath: string }> {
       const config = loadConfig();
       const vault = loadRecoveryVaultSummaryFromEnv();
       const statusFilePath =
         process.env.PAPERCLIP_RECOVERY_STATUS_PATH?.trim() || resolveDefaultRecoveryStatusPath();
 
-      const base = (() => {
-        if (!existsSync(statusFilePath)) {
-          return {
-            ...structuredClone(DEFAULT_RECOVERY_STATUS_FILE),
-            backupIntervalMinutes: config.databaseBackupIntervalMinutes,
-            storageProvider: config.storageProvider,
-            vault,
-          };
-        }
+      const fallback = {
+        ...structuredClone(DEFAULT_RECOVERY_STATUS_FILE),
+        backupIntervalMinutes: config.databaseBackupIntervalMinutes,
+        storageProvider: config.storageProvider,
+        vault,
+      };
 
+      const base = await (async () => {
         try {
-          const raw = JSON.parse(readFileSync(statusFilePath, "utf8"));
-          return mergeRecoveryStatus(raw);
+          const raw = await fs.readFile(statusFilePath, "utf8");
+          return mergeRecoveryStatus(JSON.parse(raw));
         } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return fallback;
+          }
           return {
-            ...structuredClone(DEFAULT_RECOVERY_STATUS_FILE),
-            backupIntervalMinutes: config.databaseBackupIntervalMinutes,
-            storageProvider: config.storageProvider,
-            vault,
+            ...fallback,
             warnings: [
               `Recovery status file is unreadable: ${error instanceof Error ? error.message : String(error)}`,
             ],

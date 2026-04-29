@@ -537,6 +537,7 @@ async function getRecoveryAssetProofSnapshot(
       db
         .select({ objectKey: assets.objectKey })
         .from(assets)
+        .where(eq(assets.provider, "s3"))
         .orderBy(desc(assets.createdAt))
         .limit(sampleLimit),
     ]);

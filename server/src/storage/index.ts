@@ -1,5 +1,5 @@
 import { loadConfig, type Config } from "../config.js";
-import { createStorageProviderFromConfig, createStorageProvidersFromConfig } from "./provider-registry.js";
+import { createStorageProvidersFromConfig } from "./provider-registry.js";
 import { createStorageService } from "./service.js";
 import type { StorageService } from "./types.js";
 
@@ -19,9 +19,10 @@ function signatureForConfig(config: Config): string {
 }
 
 export function createStorageServiceFromConfig(config: Config): StorageService {
+  const providers = createStorageProvidersFromConfig(config);
   return createStorageService({
-    activeProvider: createStorageProviderFromConfig(config),
-    providers: createStorageProvidersFromConfig(config),
+    activeProvider: providers[config.storageProvider],
+    providers,
   });
 }
 

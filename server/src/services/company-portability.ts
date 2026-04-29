@@ -53,6 +53,7 @@ import { findServerAdapter } from "../adapters/index.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
+import { normalizeStorageProviderOverride } from "../storage/provider-override.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -3180,10 +3181,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Skipped company logo ${company.logoAssetId} because the asset record was not found.`);
         } else {
           try {
+            const providerOverride = normalizeStorageProviderOverride(logoAsset.provider);
             const object = await storage.getObject(
               company.id,
               logoAsset.objectKey,
-              logoAsset.provider as "local_disk" | "s3",
+              providerOverride,
             );
             const body = await streamToBuffer(object.stream);
             companyLogoPath = `images/${COMPANY_LOGO_FILE_NAME}${resolveCompanyLogoExtension(logoAsset.contentType, logoAsset.originalFilename)}`;

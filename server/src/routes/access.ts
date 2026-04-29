@@ -79,6 +79,7 @@ import {
   inspectBoardClaimChallenge
 } from "../board-claim.js";
 import { getStorageService } from "../storage/index.js";
+import { normalizeStorageProviderOverride } from "../storage/provider-override.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -2789,10 +2790,11 @@ export function accessRoutes(
       if (logoAsset?.companyId) {
         try {
           const storage = getStorageService();
+          const providerOverride = normalizeStorageProviderOverride(logoAsset.provider);
           const logoObject = await storage.headObject(
             logoAsset.companyId,
             logoAsset.objectKey,
-            logoAsset.provider as "local_disk" | "s3",
+            providerOverride,
           );
           if (logoObject.exists) {
             logoUrl = `/api/invites/${inviteToken}/logo`;
@@ -3053,10 +3055,11 @@ export function accessRoutes(
     const companyId = logoAsset.companyId;
 
     const storage = getStorageService();
+    const providerOverride = normalizeStorageProviderOverride(logoAsset.provider);
     const logoHead = await storage.headObject(
       companyId,
       logoAsset.objectKey,
-      logoAsset.provider as "local_disk" | "s3",
+      providerOverride,
     );
     if (!logoHead.exists) {
       throw notFound("Invite logo not found");
@@ -3064,7 +3067,7 @@ export function accessRoutes(
     const object = await storage.getObject(
       companyId,
       logoAsset.objectKey,
-      logoAsset.provider as "local_disk" | "s3",
+      providerOverride,
     );
     const responseContentType =
       logoAsset.contentType ||

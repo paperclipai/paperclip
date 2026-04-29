@@ -34,6 +34,7 @@ import {
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
+import { normalizeStorageProviderOverride } from "../storage/provider-override.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
@@ -2707,10 +2708,11 @@ export function issueRoutes(
 
     for (const attachment of attachments) {
       try {
+        const providerOverride = normalizeStorageProviderOverride(attachment.provider);
         await storage.deleteObject(
           attachment.companyId,
           attachment.objectKey,
-          attachment.provider as "local_disk" | "s3",
+          providerOverride,
         );
       } catch (err) {
         logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
@@ -3822,10 +3824,11 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, attachment.companyId);
 
+    const providerOverride = normalizeStorageProviderOverride(attachment.provider);
     const object = await storage.getObject(
       attachment.companyId,
       attachment.objectKey,
-      attachment.provider as "local_disk" | "s3",
+      providerOverride,
     );
     const responseContentType = normalizeContentType(attachment.contentType || object.contentType);
     res.setHeader("Content-Type", responseContentType);
@@ -3861,10 +3864,11 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
     try {
+      const providerOverride = normalizeStorageProviderOverride(attachment.provider);
       await storage.deleteObject(
         attachment.companyId,
         attachment.objectKey,
-        attachment.provider as "local_disk" | "s3",
+        providerOverride,
       );
     } catch (err) {
       logger.warn({ err, attachmentId }, "storage delete failed while removing attachment");

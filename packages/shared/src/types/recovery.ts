@@ -8,7 +8,6 @@ export const RECOVERY_STATES = [
   "ManifestPublished",
   "RestoreVerified",
   "ManifestStale",
-  "AssetReplicationLagging",
   "KeySnapshotMissing",
   "RestoreDrillFailed",
   "RecoveryDegraded",
