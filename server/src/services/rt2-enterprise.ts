@@ -1,8 +1,9 @@
-import { X509Certificate } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  rt2EnterpriseConnectorEvidence,
   rt2SsoConnections,
   rt2CompanyTemplates,
   rt2TenantPolicies,
@@ -19,7 +20,14 @@ import type {
   Rt2RolloutSsoValidationResult,
   Rt2RolloutValidationCheck,
   Rt2RolloutValidationStatus,
+  Rt2EnterpriseConnectorError,
+  Rt2EnterpriseConnectorFailureReason,
+  Rt2ScimApplyCandidateResult,
+  Rt2ScimApplyRequest,
+  Rt2ScimApplyResult,
+  Rt2ScimRollbackCandidate,
   Rt2ScimSyncPreviewInput,
+  Rt2ScimSyncPreviewCandidate,
   Rt2ScimSyncPreviewResult,
 } from "@paperclipai/shared";
 
@@ -156,7 +164,9 @@ export function rt2EnterpriseService(db: Db) {
   const rolloutAuditActions = [
     "rt2.rollout.settings_saved",
     "rt2.rollout.sso_validated",
+    "rt2.rollout.sso_handshake_validated",
     "rt2.rollout.scim_previewed",
+    "rt2.rollout.scim_applied",
   ];
 
   function parseUrl(value: string | null | undefined): URL | null {
@@ -179,6 +189,46 @@ export function rt2EnterpriseService(db: Db) {
     if (status === "pass") return "ready" as const;
     if (status === "warning") return "partial" as const;
     return "missing" as const;
+  }
+
+  function stableJson(value: unknown): string {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+
+  function fingerprint(value: unknown): string {
+    return createHash("sha256").update(stableJson(value)).digest("hex");
+  }
+
+  function stableCandidateId(candidate: Pick<Rt2ScimSyncPreviewCandidate, "kind" | "action" | "externalId">) {
+    return `${candidate.kind}:${candidate.action}:${candidate.externalId.trim().toLowerCase()}`;
+  }
+
+  function failureReasonsFromChecks(checks: Rt2RolloutValidationCheck[]): Rt2EnterpriseConnectorFailureReason[] {
+    return checks
+      .filter((check) => check.status === "fail")
+      .map((check) => ({
+        code: check.key,
+        message: check.detail,
+        field: check.key,
+      }));
+  }
+
+  function connectorError(
+    statusCode: Rt2EnterpriseConnectorError["statusCode"],
+    code: Rt2EnterpriseConnectorError["code"],
+    message: string,
+    field?: string,
+  ): Rt2EnterpriseConnectorError {
+    return {
+      ok: false,
+      statusCode,
+      code,
+      message,
+      failureReasons: [{ code, message, field }],
+    };
   }
 
   function validateSsoProviderMetadata(input: Rt2RolloutSsoValidationInput): Rt2RolloutSsoValidationResult {
@@ -256,6 +306,75 @@ export function rt2EnterpriseService(db: Db) {
     };
   }
 
+  async function validateSsoHandshake(
+    companyId: string,
+    input: Rt2RolloutSsoValidationInput,
+  ): Promise<Rt2RolloutSsoValidationResult> {
+    const base = validateSsoProviderMetadata(input);
+    const expectedState = input.expectedCallbackState?.trim() ?? "";
+    const callbackState = input.callbackState?.trim() ?? "";
+    const callbackStateChecks: Rt2RolloutValidationCheck[] = [];
+
+    if (expectedState && callbackState) {
+      callbackStateChecks.push({
+        key: "callback-state",
+        label: "Callback state",
+        status: expectedState === callbackState ? "pass" : "fail",
+        detail: expectedState === callbackState
+          ? "Callback state matches the expected rollout challenge."
+          : "Callback state does not match the expected rollout challenge.",
+      });
+    } else if (expectedState && !callbackState) {
+      callbackStateChecks.push({
+        key: "callback-state",
+        label: "Callback state",
+        status: "fail",
+        detail: "Callback state is required when an expected rollout challenge is supplied.",
+      });
+    } else {
+      callbackStateChecks.push({
+        key: "callback-state",
+        label: "Callback state",
+        status: "warning",
+        detail: "Callback state was not supplied; metadata validation evidence is persisted without a callback replay check.",
+      });
+    }
+
+    const checks = [...base.checks, ...callbackStateChecks];
+    const status = worstStatus(checks);
+    const failureReasons = failureReasonsFromChecks(checks);
+    const result = {
+      ...base,
+      status,
+      checks,
+      callbackStateChecks,
+      failureReasons,
+      warnings: checks.filter((check) => check.status !== "pass").map((check) => check.detail),
+    };
+
+    const [row] = await db.insert(rt2EnterpriseConnectorEvidence).values({
+      companyId,
+      connectorKind: "sso",
+      evidenceType: "sso_handshake",
+      status,
+      provider: result.provider,
+      summary: {
+        provider: result.provider,
+        status,
+        checkedAt: result.checkedAt,
+        certificateExpiresAt: result.certificateExpiresAt,
+        warnings: result.warnings,
+      },
+      checks,
+      failureReasons,
+    }).returning();
+
+    return {
+      ...result,
+      evidenceId: row.id,
+    };
+  }
+
   function previewScimSync(input: Rt2ScimSyncPreviewInput = {}): Rt2ScimSyncPreviewResult {
     const users = input.users ?? [];
     const groups = input.groups ?? [];
@@ -315,6 +434,193 @@ export function rt2EnterpriseService(db: Db) {
       summary,
       candidates,
       warnings: candidates.length > 0 ? warnings : ["No SCIM users or groups were provided for preview."],
+    };
+  }
+
+  async function createScimPreview(
+    companyId: string,
+    input: Rt2ScimSyncPreviewInput = {},
+  ): Promise<Rt2ScimSyncPreviewResult> {
+    const preview = previewScimSync(input);
+    const candidates = preview.candidates
+      .map((candidate) => ({ ...candidate, id: stableCandidateId(candidate) }))
+      .sort((left, right) => (left.id ?? "").localeCompare(right.id ?? ""));
+    const normalizedSource = {
+      users: [...(input.users ?? [])].sort((left, right) => left.externalId.localeCompare(right.externalId)),
+      groups: [...(input.groups ?? [])].sort((left, right) => left.externalId.localeCompare(right.externalId)),
+      candidates,
+      summary: preview.summary,
+      warnings: preview.warnings,
+    };
+    const previewFingerprint = fingerprint(normalizedSource);
+    const [row] = await db.insert(rt2EnterpriseConnectorEvidence).values({
+      companyId,
+      connectorKind: "scim",
+      evidenceType: "scim_preview",
+      status: preview.status,
+      sourceLabel: "operator_payload",
+      fingerprint: previewFingerprint,
+      summary: preview.summary,
+      candidates,
+      failureReasons: failureReasonsFromChecks(
+        candidates.flatMap((candidate) => candidate.warnings.map((warning, index) => ({
+          key: `${candidate.id}:warning:${index}`,
+          label: candidate.label,
+          status: "warning" as const,
+          detail: warning,
+        }))),
+      ),
+    }).returning();
+
+    return {
+      ...preview,
+      previewId: row.id,
+      previewFingerprint,
+      candidates,
+    };
+  }
+
+  async function applyScimPreview(
+    companyId: string,
+    input: Rt2ScimApplyRequest,
+  ): Promise<Rt2ScimApplyResult | Rt2EnterpriseConnectorError> {
+    if (!input.previewId || !input.previewFingerprint || input.selectedCandidateIds.length === 0) {
+      return connectorError(400, "invalid_apply_request", "previewId, previewFingerprint, and selectedCandidateIds are required.");
+    }
+
+    const [previewRow] = await db
+      .select()
+      .from(rt2EnterpriseConnectorEvidence)
+      .where(and(
+        eq(rt2EnterpriseConnectorEvidence.companyId, companyId),
+        eq(rt2EnterpriseConnectorEvidence.id, input.previewId),
+        eq(rt2EnterpriseConnectorEvidence.evidenceType, "scim_preview"),
+      ))
+      .limit(1);
+
+    if (!previewRow) {
+      return connectorError(404, "missing_preview", "SCIM preview evidence was not found for this company.", "previewId");
+    }
+    if (previewRow.fingerprint !== input.previewFingerprint) {
+      return connectorError(409, "stale_preview", "SCIM preview fingerprint is stale. Re-run preview before apply.", "previewFingerprint");
+    }
+
+    const candidates = (previewRow.candidates as Rt2ScimSyncPreviewCandidate[]).map((candidate) => ({
+      ...candidate,
+      id: candidate.id ?? stableCandidateId(candidate),
+    }));
+    const selectedIds = new Set(input.selectedCandidateIds);
+    const selected = candidates.filter((candidate) => candidate.id && selectedIds.has(candidate.id));
+
+    if (selected.some((candidate) => candidate.action === "deactivate") && !input.acknowledgeDeactivations) {
+      return connectorError(
+        400,
+        "deactivate_acknowledgement_required",
+        "Deactivate candidates require explicit acknowledgement before apply.",
+        "acknowledgeDeactivations",
+      );
+    }
+
+    const rollbackCandidates: Rt2ScimRollbackCandidate[] = [];
+    const results: Rt2ScimApplyCandidateResult[] = candidates.map((candidate) => {
+      const candidateId = candidate.id ?? stableCandidateId(candidate);
+      if (!selectedIds.has(candidateId)) {
+        return {
+          candidateId,
+          kind: candidate.kind,
+          action: candidate.action,
+          externalId: candidate.externalId,
+          label: candidate.label,
+          status: "skipped",
+          reason: "Candidate was not selected for this apply run.",
+          rollbackCandidate: null,
+          failureReason: null,
+        };
+      }
+
+      const invalidEmailWarning = candidate.warnings.find((warning) => warning.includes("not a valid address"));
+      if (invalidEmailWarning) {
+        return {
+          candidateId,
+          kind: candidate.kind,
+          action: candidate.action,
+          externalId: candidate.externalId,
+          label: candidate.label,
+          status: "failed",
+          reason: invalidEmailWarning,
+          rollbackCandidate: null,
+          failureReason: {
+            code: "candidate_validation_failed",
+            message: invalidEmailWarning,
+            field: candidateId,
+          },
+        };
+      }
+
+      const rollbackCandidate: Rt2ScimRollbackCandidate = {
+        candidateId,
+        kind: candidate.kind,
+        externalId: candidate.externalId,
+        action: candidate.action,
+        priorState: candidate.action === "create" ? null : { externalId: candidate.externalId, label: candidate.label },
+        targetState: { action: candidate.action, externalId: candidate.externalId, label: candidate.label },
+        reason: "Phase 39 records rollback evidence for operator review; no automatic rollback is executed.",
+      };
+      rollbackCandidates.push(rollbackCandidate);
+      return {
+        candidateId,
+        kind: candidate.kind,
+        action: candidate.action,
+        externalId: candidate.externalId,
+        label: candidate.label,
+        status: "applied",
+        reason: "Candidate apply evidence recorded.",
+        rollbackCandidate,
+        failureReason: null,
+      };
+    });
+
+    const applied = results.filter((candidate) => candidate.status === "applied").length;
+    const failed = results.filter((candidate) => candidate.status === "failed").length;
+    const skipped = results.filter((candidate) => candidate.status === "skipped").length;
+    const status = failed > 0 && applied > 0 ? "partial" : failed > 0 ? "failed" : "applied";
+    const failureReasons = results.flatMap((candidate) => candidate.failureReason ? [candidate.failureReason] : []);
+    const appliedAt = new Date();
+    const [row] = await db.insert(rt2EnterpriseConnectorEvidence).values({
+      companyId,
+      connectorKind: "scim",
+      evidenceType: "scim_apply",
+      status,
+      sourceLabel: "operator_payload",
+      previewEvidenceId: previewRow.id,
+      fingerprint: previewRow.fingerprint,
+      summary: {
+        applied,
+        skipped,
+        failed,
+        rollbackCandidates: rollbackCandidates.length,
+      },
+      candidates: results,
+      rollbackCandidates,
+      failureReasons,
+      appliedAt,
+    }).returning();
+
+    return {
+      evidenceId: row.id,
+      previewId: previewRow.id,
+      previewFingerprint: previewRow.fingerprint ?? "",
+      status,
+      appliedAt: appliedAt.toISOString(),
+      summary: {
+        applied,
+        skipped,
+        failed,
+        rollbackCandidates: rollbackCandidates.length,
+      },
+      candidates: results,
+      rollbackCandidates,
+      failureReasons,
     };
   }
 
@@ -745,18 +1051,65 @@ export function rt2EnterpriseService(db: Db) {
     ]);
     const activeSso = connections.filter((connection) => connection.isActive);
     const activeBindings = bindings.filter((binding) => binding.isActive);
-    const ssoValidation = activeSso[0]
-      ? validateSsoProviderMetadata({
-          provider: activeSso[0].provider as Rt2RolloutSsoValidationInput["provider"],
-          issuerUrl: activeSso[0].issuerUrl,
-          metadataUrl: activeSso[0].metadataUrl,
-          certificate: activeSso[0].certificate,
-          callbackUrl: typeof activeSso[0].providerConfig?.callbackUrl === "string"
-            ? activeSso[0].providerConfig.callbackUrl
-            : null,
-        })
+    const [latestSsoEvidence] = await db.select().from(rt2EnterpriseConnectorEvidence)
+      .where(and(
+        eq(rt2EnterpriseConnectorEvidence.companyId, companyId),
+        eq(rt2EnterpriseConnectorEvidence.connectorKind, "sso"),
+        eq(rt2EnterpriseConnectorEvidence.evidenceType, "sso_handshake"),
+      ))
+      .orderBy(desc(rt2EnterpriseConnectorEvidence.createdAt))
+      .limit(1);
+    const [latestScimApplyEvidence] = await db.select().from(rt2EnterpriseConnectorEvidence)
+      .where(and(
+        eq(rt2EnterpriseConnectorEvidence.companyId, companyId),
+        eq(rt2EnterpriseConnectorEvidence.connectorKind, "scim"),
+        eq(rt2EnterpriseConnectorEvidence.evidenceType, "scim_apply"),
+      ))
+      .orderBy(desc(rt2EnterpriseConnectorEvidence.createdAt))
+      .limit(1);
+    const [latestScimPreviewEvidence] = await db.select().from(rt2EnterpriseConnectorEvidence)
+      .where(and(
+        eq(rt2EnterpriseConnectorEvidence.companyId, companyId),
+        eq(rt2EnterpriseConnectorEvidence.connectorKind, "scim"),
+        eq(rt2EnterpriseConnectorEvidence.evidenceType, "scim_preview"),
+      ))
+      .orderBy(desc(rt2EnterpriseConnectorEvidence.createdAt))
+      .limit(1);
+    const ssoSummary = latestSsoEvidence?.summary as Partial<Rt2RolloutSsoValidationResult> | undefined;
+    const ssoValidation = latestSsoEvidence
+      ? {
+          evidenceId: latestSsoEvidence.id,
+          provider: (latestSsoEvidence.provider ?? ssoSummary?.provider ?? "custom") as Rt2RolloutSsoValidationInput["provider"],
+          status: latestSsoEvidence.status as Rt2RolloutValidationStatus,
+          checkedAt: typeof ssoSummary?.checkedAt === "string" ? ssoSummary.checkedAt : latestSsoEvidence.createdAt.toISOString(),
+          certificateExpiresAt: typeof ssoSummary?.certificateExpiresAt === "string" ? ssoSummary.certificateExpiresAt : null,
+          checks: latestSsoEvidence.checks as Rt2RolloutValidationCheck[],
+          callbackStateChecks: (latestSsoEvidence.checks as Rt2RolloutValidationCheck[]).filter((check) => check.key === "callback-state"),
+          failureReasons: latestSsoEvidence.failureReasons as Rt2EnterpriseConnectorFailureReason[],
+          warnings: Array.isArray(ssoSummary?.warnings)
+            ? ssoSummary.warnings as string[]
+            : (latestSsoEvidence.checks as Rt2RolloutValidationCheck[]).filter((check) => check.status !== "pass").map((check) => check.detail),
+        }
       : null;
     const emptyScimPreview = previewScimSync();
+    const scimPreview = latestScimPreviewEvidence
+      ? {
+          previewId: latestScimPreviewEvidence.id,
+          previewFingerprint: latestScimPreviewEvidence.fingerprint ?? "",
+          status: latestScimPreviewEvidence.status as Rt2RolloutValidationStatus,
+          checkedAt: latestScimPreviewEvidence.createdAt.toISOString(),
+          summary: latestScimPreviewEvidence.summary as Rt2ScimSyncPreviewResult["summary"],
+          candidates: latestScimPreviewEvidence.candidates as Rt2ScimSyncPreviewResult["candidates"],
+          warnings: (latestScimPreviewEvidence.candidates as Rt2ScimSyncPreviewCandidate[])
+            .flatMap((candidate) => candidate.warnings ?? []),
+        }
+      : null;
+    const scimEvidenceStatus = latestScimApplyEvidence
+      ? latestScimApplyEvidence.status === "applied" ? "ready" : "partial"
+      : latestScimPreviewEvidence ? "partial" : "partial";
+    const scimReadinessStatus: Rt2RolloutValidationStatus = latestScimApplyEvidence
+      ? latestScimApplyEvidence.status === "applied" ? "pass" : "warning"
+      : latestScimPreviewEvidence ? "warning" : "warning";
     const rolloutEvidence: Rt2RolloutEvidenceItem[] = [
       {
         area: "sso",
@@ -765,16 +1118,22 @@ export function rt2EnterpriseService(db: Db) {
         detail: activeSso.length > 0
           ? `${activeSso[0].provider} active, validation ${ssoValidation?.status ?? "missing"}`
           : "No active SSO provider saved.",
-        recordIds: activeSso.map((connection) => connection.id),
+        recordIds: latestSsoEvidence ? [latestSsoEvidence.id] : activeSso.map((connection) => connection.id),
         warnings: ssoValidation?.warnings ?? [],
       },
       {
         area: "scim",
-        status: "partial",
+        status: scimEvidenceStatus,
         label: "SCIM sync preview",
-        detail: "SCIM preview endpoint is available; run preview with source users/groups before rollout apply.",
-        recordIds: [],
-        warnings: emptyScimPreview.warnings,
+        detail: latestScimApplyEvidence
+          ? `SCIM apply evidence ${latestScimApplyEvidence.status}; preview ${latestScimApplyEvidence.previewEvidenceId ?? "unknown"}.`
+          : latestScimPreviewEvidence
+            ? "SCIM preview evidence exists; apply is still required before rollout readiness is ready."
+            : "SCIM preview endpoint is available; run preview with source users/groups before rollout apply.",
+        recordIds: [latestScimApplyEvidence?.id, latestScimPreviewEvidence?.id].filter((id): id is string => Boolean(id)),
+        warnings: latestScimApplyEvidence
+          ? (latestScimApplyEvidence.failureReasons as Rt2EnterpriseConnectorFailureReason[]).map((reason) => reason.message)
+          : latestScimPreviewEvidence ? ["Preview-only SCIM evidence is partial until applied."] : emptyScimPreview.warnings,
       },
       {
         area: "template",
@@ -879,17 +1238,27 @@ export function rt2EnterpriseService(db: Db) {
       {
         area: "scim",
         label: "SCIM sync preview",
-        status: "warning",
-        detail: "Run SCIM preview with source payload before applying rollout.",
+        status: scimReadinessStatus,
+        detail: latestScimApplyEvidence
+          ? `Latest SCIM apply status: ${latestScimApplyEvidence.status}.`
+          : latestScimPreviewEvidence
+            ? "Latest SCIM evidence is preview-only and must be applied."
+            : "Run SCIM preview with source payload before applying rollout.",
         checks: [
           {
             key: "scim-preview",
-            label: "Preview route",
-            status: "warning",
-            detail: "Preview route is available; no persisted preview has been applied in this overview.",
+            label: latestScimApplyEvidence ? "Apply evidence" : "Preview route",
+            status: scimReadinessStatus,
+            detail: latestScimApplyEvidence
+              ? `Apply evidence ${latestScimApplyEvidence.id} is stored for this company.`
+              : latestScimPreviewEvidence
+                ? `Preview evidence ${latestScimPreviewEvidence.id} is stored for this company.`
+                : "Preview route is available; no persisted preview has been applied in this overview.",
           },
         ],
-        warnings: ["SCIM preview is read-only and must be reviewed before apply."],
+        warnings: latestScimApplyEvidence
+          ? (latestScimApplyEvidence.failureReasons as Rt2EnterpriseConnectorFailureReason[]).map((reason) => reason.message)
+          : latestScimPreviewEvidence ? ["SCIM preview is read-only and must be reviewed before apply."] : ["SCIM preview is read-only and must be reviewed before apply."],
       },
       {
         area: "binding",
@@ -969,7 +1338,7 @@ export function rt2EnterpriseService(db: Db) {
         items: rolloutEvidence,
       },
       ssoValidation,
-      scimPreview: null,
+      scimPreview,
       readiness: {
         overallStatus: readinessStatus,
         items: readinessItems,
@@ -1146,7 +1515,10 @@ export function rt2EnterpriseService(db: Db) {
     getRolloutOverview,
     saveRolloutSettings,
     validateSsoProviderMetadata,
+    validateSsoHandshake,
     previewScimSync,
+    createScimPreview,
+    applyScimPreview,
     getRolloutAuditLog,
   };
 }
