@@ -99,7 +99,13 @@ async function installLocalPluginIfAbsent(
     const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ packageName: spec.absPath, isLocalPath: true }),
+      body: JSON.stringify({
+        packageName: spec.absPath,
+        isLocalPath: true,
+        // On drift, repoint the existing registry row to the new bundle path
+        // instead of failing with "Plugin already installed".
+        ...(driftDetected ? { force: true } : {}),
+      }),
     });
     if (res.ok) {
       const result = (await res.json()) as { pluginKey?: string; status?: string };

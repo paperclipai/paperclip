@@ -212,6 +212,14 @@ export interface PluginInstallOptions {
    * Defaults to the localPluginDir configured on the service.
    */
   installDir?: string;
+
+  /**
+   * When true, allows reinstall over an existing non-uninstalled row by
+   * updating packageName/packagePath/manifest in place instead of throwing
+   * "Plugin already installed". Used by the kkroo bundled-plugin bootstrap
+   * to repoint a registry row whose packageName has drifted from the bundle.
+   */
+  force?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1277,6 +1285,7 @@ export function pluginLoader(
           packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
         },
         discovered.manifest!,
+        { force: installOptions.force === true },
       );
 
       log.info(

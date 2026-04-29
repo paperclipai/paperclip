@@ -101,6 +101,13 @@ interface PluginInstallRequest {
   version?: string;
   /** True if packageName is a local filesystem path */
   isLocalPath?: boolean;
+  /**
+   * Repoint an already-installed plugin to a new local path/packageName
+   * (in-place metadata update, no worker restart). Only valid alongside
+   * `isLocalPath: true`. Used by the kkroo bundled-plugin bootstrap to fix
+   * packageName drift between an in-image bundle and the registry row.
+   */
+  force?: boolean;
 }
 
 interface AvailablePluginExample {
@@ -854,7 +861,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/install", async (req, res) => {
     assertInstanceAdmin(req);
-    const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
+    const { packageName, version, isLocalPath, force } = req.body as PluginInstallRequest;
 
     // Input validation
     if (!packageName || typeof packageName !== "string") {
@@ -869,6 +876,16 @@ export function pluginRoutes(
 
     if (isLocalPath !== undefined && typeof isLocalPath !== "boolean") {
       res.status(400).json({ error: "isLocalPath must be a boolean if provided" });
+      return;
+    }
+
+    if (force !== undefined && typeof force !== "boolean") {
+      res.status(400).json({ error: "force must be a boolean if provided" });
+      return;
+    }
+
+    if (force === true && isLocalPath !== true) {
+      res.status(400).json({ error: "force is only valid when isLocalPath is true" });
       return;
     }
 
@@ -887,7 +904,7 @@ export function pluginRoutes(
 
     try {
       const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+        ? { localPath: trimmedPackage, ...(force === true ? { force: true } : {}) }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
@@ -900,7 +917,14 @@ export function pluginRoutes(
       // Transition to ready state
       const existingPlugin = await registry.getByKey(discovered.manifest.id);
       if (existingPlugin) {
-        await lifecycle.load(existingPlugin.id);
+        // Skip lifecycle.load on a force repoint: registry.install has already
+        // updated packageName/path in place while preserving status. Calling
+        // load() here would try to start a worker for a plugin that may already
+        // be running, conflicting with the existing handle. New metadata takes
+        // effect on the next worker (re)start.
+        if (force !== true) {
+          await lifecycle.load(existingPlugin.id);
+        }
         const updated = await registry.getById(existingPlugin.id);
         await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
           pluginId: existingPlugin.id,
@@ -908,6 +932,7 @@ export function pluginRoutes(
           packageName: updated?.packageName ?? existingPlugin.packageName,
           version: updated?.version ?? existingPlugin.version,
           source: isLocalPath ? "local_path" : "npm",
+          force: force === true ? true : undefined,
         });
         publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
         res.json(updated);
