@@ -119,11 +119,12 @@ export interface IssueRelationIssueSummary {
   terminalBlockers?: IssueRelationIssueSummary[];
 }
 
-export type IssueBlockerAttentionState = "none" | "covered" | "needs_attention";
+export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =
   | "active_child"
   | "active_dependency"
+  | "stalled_review"
   | "attention_required"
   | null;
 
@@ -132,8 +133,26 @@ export interface IssueBlockerAttention {
   reason: IssueBlockerAttentionReason;
   unresolvedBlockerCount: number;
   coveredBlockerCount: number;
+  stalledBlockerCount: number;
   attentionBlockerCount: number;
   sampleBlockerIdentifier: string | null;
+  sampleStalledBlockerIdentifier: string | null;
+}
+
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus;
+  priority: IssuePriority;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IssueRelation {
@@ -261,6 +280,7 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
+  productivityReview?: IssueProductivityReview | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;

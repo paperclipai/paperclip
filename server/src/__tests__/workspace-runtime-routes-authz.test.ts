@@ -320,6 +320,55 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(mockAssertCanManageProjectWorkspaceRuntimeServices).toHaveBeenCalled();
   }, 15000);
 
+  it("blocks shared-project stop/restart requests from agents", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      id: projectId,
+      workspaces: [{
+        id: workspaceId,
+        companyId: "company-1",
+        projectId,
+        name: "Workspace",
+        sourceType: "local_path",
+        cwd: "/tmp/project",
+        repoUrl: null,
+        repoRef: null,
+        defaultRef: null,
+        visibility: "default",
+        setupCommand: null,
+        cleanupCommand: null,
+        remoteProvider: null,
+        remoteWorkspaceRef: null,
+        sharedWorkspaceKey: "shared-key",
+        metadata: null,
+        runtimeConfig: null,
+        isPrimary: false,
+        runtimeServices: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+    }));
+    const app = await createProjectApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const responses = await Promise.all([
+      request(app).post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/stop`).send({}),
+      request(app).post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/restart`).send({}),
+    ]);
+
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Missing permission");
+      expect(mockProjectService.getById).toHaveBeenCalledWith(projectId);
+      expect(mockAssertCanManageProjectWorkspaceRuntimeServices).not.toHaveBeenCalled();
+    }
+
+  }, 15000);
+
   it("rejects agent callers that create project execution workspace commands", async () => {
     const app = await createProjectApp({
       type: "agent",

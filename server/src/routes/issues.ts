@@ -39,6 +39,7 @@ import * as serviceIndex from "../services/index.js";
 import {
   accessService,
   agentService,
+  companyService,
   executionWorkspaceService,
   goalService,
   heartbeatService,
@@ -65,7 +66,7 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
-  MAX_ATTACHMENT_BYTES,
+  normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
@@ -404,6 +405,7 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const feedback = feedbackService(db);
+  const companiesSvc = companyService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -427,11 +429,6 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
-  const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
-  });
-
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -493,7 +490,11 @@ export function issueRoutes(
     return parsed;
   }
 
-  async function runSingleFileUpload(req: Request, res: Response) {
+  async function runSingleFileUpload(req: Request, res: Response, fileSizeLimit: number) {
+    const upload = multer({
+      storage: multer.memoryStorage(),
+      limits: { fileSize: fileSizeLimit, files: 1 },
+    });
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
         if (err) reject(err);
@@ -602,22 +603,38 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (issue.status !== "in_progress" || issue.assigneeAgentId === null) {
+    if (issue.assigneeAgentId === null) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
-      res.status(409).json({
-        error: "Issue is checked out by another agent",
-        details: {
-          issueId: issue.id,
-          assigneeAgentId: issue.assigneeAgentId,
-          actorAgentId,
-        },
-      });
+      if (issue.status === "in_progress") {
+        res.status(409).json({
+          error: "Issue is checked out by another agent",
+          details: {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+          },
+        });
+      } else {
+        res.status(403).json({
+          error: "Agent cannot mutate another agent's issue",
+          details: {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+            status: issue.status,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+      }
       return false;
+    }
+    if (issue.status !== "in_progress") {
+      return true;
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
@@ -654,7 +671,6 @@ export function issueRoutes(
         details: {
           issueId: issue.id,
           status: issue.status,
-          securityPrinciples: ["Complete Mediation", "Fail Securely"],
         },
       });
       return false;
@@ -677,7 +693,6 @@ export function issueRoutes(
           holdId: activePauseHold.holdId,
           rootIssueId: activePauseHold.rootIssueId,
           mode: activePauseHold.mode,
-          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
         },
       });
       return false;
@@ -907,6 +922,10 @@ export function issueRoutes(
       ? Number.parseInt(rawLimit, 10)
       : null;
     const limit = parsedLimit === null ? ISSUE_LIST_DEFAULT_LIMIT : clampIssueListLimit(parsedLimit);
+    const rawOffset = req.query.offset as string | undefined;
+    const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
+      ? Number.parseInt(rawOffset, 10)
+      : null;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -928,6 +947,11 @@ export function issueRoutes(
       res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}` });
       return;
     }
+    if (rawOffset !== undefined && (parsedOffset === null || !Number.isInteger(parsedOffset) || parsedOffset < 0)) {
+      res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+    const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
@@ -949,8 +973,10 @@ export function issueRoutes(
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       excludeRoutineExecutions:
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
+      includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       q: req.query.q as string | undefined,
       limit,
+      offset,
     });
     res.json(result);
   });
@@ -1033,6 +1059,7 @@ export function issueRoutes(
       wakeComment,
       relations,
       blockerAttention,
+      productivityReview,
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
@@ -1044,6 +1071,7 @@ export function issueRoutes(
         wakeCommentId ? svc.getComment(wakeCommentId) : null,
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+        svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
@@ -1057,6 +1085,7 @@ export function issueRoutes(
         description: issue.description,
         status: issue.status,
         ...(blockerAttention ? { blockerAttention } : {}),
+        productivityReview,
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
@@ -1065,6 +1094,8 @@ export function issueRoutes(
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        originKind: issue.originKind,
+        originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
       ancestors: ancestors.map((ancestor) => ({
@@ -1126,13 +1157,23 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations, blockerAttention, referenceSummary] = await Promise.all([
+    const [
+      { project, goal },
+      ancestors,
+      mentionedProjectIds,
+      documentPayload,
+      relations,
+      blockerAttention,
+      productivityReview,
+      referenceSummary,
+    ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
@@ -1147,6 +1188,7 @@ export function issueRoutes(
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
+      productivityReview,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
       relatedWork: referenceSummary,
@@ -3691,12 +3733,15 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
+    const company = await companiesSvc.getById(companyId);
+    const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
+
     try {
-      await runSingleFileUpload(req, res);
+      await runSingleFileUpload(req, res, attachmentMaxBytes);
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
           return;
         }
         res.status(400).json({ error: err.message });

@@ -12,6 +12,7 @@ import {
   matchesIssueRef,
   mergeIssueComments,
   removeIssueCommentFromPages,
+  shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
   upsertIssueComment,
   upsertIssueCommentInPages,
@@ -231,6 +232,45 @@ describe("optimistic issue comments", () => {
         2,
       ),
     ).toBe("comment-1");
+  });
+
+  it("autoloads older chat comments while the initial thread is still under the threshold", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "chat",
+        hasOlderComments: true,
+        loadedCommentCount: 50,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 150,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not autoload older comments outside the chat tab", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "activity",
+        hasOlderComments: true,
+        loadedCommentCount: 50,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 150,
+      }),
+    ).toBe(false);
+  });
+
+  it("stops autoloading once the initial comment window reaches the cap", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "chat",
+        hasOlderComments: true,
+        loadedCommentCount: 150,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 150,
+      }),
+    ).toBe(false);
   });
 
   it("upserts paged comments without dropping older pages", () => {

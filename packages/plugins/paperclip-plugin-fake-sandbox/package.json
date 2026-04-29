@@ -12,10 +12,10 @@
     "worker": "./dist/worker.js"
   },
   "scripts": {
-    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {

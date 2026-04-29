@@ -134,6 +134,9 @@ vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
     openNewIssue: vi.fn(),
   }),
+  useDialogActions: () => ({
+    openNewIssue: vi.fn(),
+  }),
 }));
 
 vi.mock("../context/PanelContext", () => ({
@@ -824,8 +827,10 @@ describe("IssueDetail", () => {
         reason: "active_child",
         unresolvedBlockerCount: 1,
         coveredBlockerCount: 1,
+        stalledBlockerCount: 0,
         attentionBlockerCount: 0,
         sampleBlockerIdentifier: "PAP-2",
+        sampleStalledBlockerIdentifier: null,
       },
     }));
 
@@ -908,6 +913,7 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Subtree pause is active.");
       expect(mockIssuesListRender.mock.calls.at(-1)?.[0].issueBadgeById.get("child-1")).toBe("Paused");
+      expect(mockIssuesListRender.mock.calls.at(-1)?.[0].showProgressSummary).toBe(true);
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button"))
