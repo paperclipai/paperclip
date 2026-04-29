@@ -870,6 +870,41 @@ export interface PluginCompaniesClient {
 }
 
 /**
+ * Public user identity. Returned by `ctx.users.*` lookups so plugins can
+ * resolve a Paperclip user record to email/name for cross-system mapping
+ * (Linear assignees, Slack DMs, etc.). Authentication-sensitive fields
+ * (`emailVerified`, `image`, `createdAt`) intentionally omitted.
+ */
+export interface PluginUser {
+  id: string;
+  email: string;
+  name: string;
+}
+
+/**
+ * `ctx.users` — read instance user identity for cross-system mapping.
+ *
+ * Requires `users.read` capability. Lazy-on-first-need: plugins typically
+ * use `findByEmail` to resolve a Linear/Slack user's email back to a
+ * Paperclip user id for assignment, then cache the mapping in plugin state.
+ *
+ * Scoped at the instance level (not per-company) since `auth_users` is
+ * itself instance-global. Company-scoped checks are the caller's
+ * responsibility — pair with `instanceUserRoles` or company membership
+ * lookups when "is this user a member of company X?" matters.
+ */
+export interface PluginUsersClient {
+  /** Get one user by id. Returns null when not found. */
+  get(userId: string): Promise<PluginUser | null>;
+
+  /**
+   * Find a user by exact email match. Returns null when no user has that
+   * email. `email` is matched case-insensitively against the stored value.
+   */
+  findByEmail(email: string): Promise<PluginUser | null>;
+}
+
+/**
  * `ctx.issues.documents` — read and write issue documents.
  *
  * Requires:
@@ -1530,6 +1565,9 @@ export interface PluginContext {
 
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;
+
+  /** Read instance user identity. Requires `users.read`. */
+  users: PluginUsersClient;
 
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;

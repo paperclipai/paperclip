@@ -576,6 +576,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
 export const PLUGIN_CAPABILITIES = [
   // Data Read
   "companies.read",
+  "users.read",
   "projects.read",
   "project.workspaces.read",
   "issues.read",

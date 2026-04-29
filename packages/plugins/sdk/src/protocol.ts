@@ -750,6 +750,17 @@ export interface WorkerToHostMethods {
     result: Company | null,
   ];
 
+  // Users (read) — for cross-system identity mapping (Linear assignees,
+  // Slack DMs, etc.). Requires `users.read` capability.
+  "users.get": [
+    params: { userId: string },
+    result: { id: string; email: string; name: string } | null,
+  ];
+  "users.findByEmail": [
+    params: { email: string },
+    result: { id: string; email: string; name: string } | null,
+  ];
+
   // Projects (read)
   "projects.list": [
     params: { companyId: string; limit?: number; offset?: number },

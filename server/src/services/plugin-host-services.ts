@@ -2,6 +2,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agentTaskSessions as agentTaskSessionsTable,
   agents as agentsTable,
+  authUsers,
   budgetIncidents,
   costEvents,
   heartbeatRuns,
@@ -980,6 +981,27 @@ export function buildHostServices(
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
         return (await companies.getById(params.companyId)) as Company;
+      },
+    },
+
+    users: {
+      async get(params: { userId: string }) {
+        const rows = await db
+          .select({ id: authUsers.id, email: authUsers.email, name: authUsers.name })
+          .from(authUsers)
+          .where(eq(authUsers.id, params.userId))
+          .limit(1);
+        return rows[0] ?? null;
+      },
+      async findByEmail(params: { email: string }) {
+        const normalized = params.email.trim().toLowerCase();
+        if (!normalized) return null;
+        const rows = await db
+          .select({ id: authUsers.id, email: authUsers.email, name: authUsers.name })
+          .from(authUsers)
+          .where(sql`lower(${authUsers.email}) = ${normalized}`)
+          .limit(1);
+        return rows[0] ?? null;
       },
     },
 

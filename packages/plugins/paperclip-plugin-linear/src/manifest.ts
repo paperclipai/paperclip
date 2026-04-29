@@ -22,6 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     // Data access
     "companies.read",
+    "users.read",
     "projects.read",
     "issues.read",
     "issues.create",

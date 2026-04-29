@@ -629,6 +629,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      users: {
+        async get(userId: string) {
+          return callHost("users.get", { userId });
+        },
+        async findByEmail(email: string) {
+          return callHost("users.findByEmail", { email });
+        },
+      },
+
       issues: {
         async list(input) {
           return callHost("issues.list", {

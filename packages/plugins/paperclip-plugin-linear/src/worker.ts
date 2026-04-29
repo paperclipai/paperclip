@@ -105,6 +105,40 @@ async function getCompanyId(ctx: PluginContext): Promise<string | null> {
   return stored ? String(stored) : null;
 }
 
+/**
+ * Resolve a Linear assignee's email to a Paperclip user id, with caching.
+ *
+ * Lazy-on-first-need: looks up `ctx.users.findByEmail` on first call for a
+ * given email, then caches `linear-user-by-email:<email>` → paperclip user
+ * id in plugin state so subsequent calls skip the round-trip. Returns null
+ * if no Paperclip user has that email (Linear teammate hasn't signed up
+ * for this Paperclip instance yet).
+ */
+async function resolvePaperclipUserIdForEmail(
+  ctx: PluginContext,
+  email: string | undefined | null,
+): Promise<string | undefined> {
+  if (!email) return undefined;
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return undefined;
+  const stateKey = `linear-user-by-email:${normalized}`;
+  const cached = await ctx.state.get({ scopeKind: "instance", stateKey });
+  if (typeof cached === "string" && cached.length > 0) return cached;
+  if (cached === null || cached === "") return undefined;
+
+  try {
+    const user = await ctx.users.findByEmail(normalized);
+    const userId = user?.id ?? null;
+    // Cache positive AND negative resolutions to avoid retrying every import.
+    // Empty string for negative; user id for positive.
+    await ctx.state.set({ scopeKind: "instance", stateKey }, userId ?? "");
+    return userId ?? undefined;
+  } catch (err) {
+    ctx.logger.warn(`Failed to resolve user by email ${normalized}: ${err}`);
+    return undefined;
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Plugin definition
@@ -548,6 +582,8 @@ const plugin = definePlugin({
         };
       }
 
+      const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
+
       const created = await ctx.issues.create({
         companyId,
         title: linearIssue.title,
@@ -555,6 +591,7 @@ const plugin = definePlugin({
         priority: priority as "critical" | "high" | "medium" | "low",
         originKind: "plugin:paperclip-plugin-linear",
         originId: linearIssue.id,
+        ...(assigneeUserId ? { assigneeUserId } : {}),
       });
 
       if (status !== "backlog") {
@@ -1131,6 +1168,9 @@ async function handleWebhookEvent(
           return;
         }
 
+        const assigneeRecord = (data.assignee as { email?: string | null } | null | undefined) ?? null;
+        const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, assigneeRecord?.email);
+
         const created = await ctx.issues.create({
           companyId,
           title: (data.title as string) ?? "Untitled",
@@ -1138,6 +1178,7 @@ async function handleWebhookEvent(
           priority: priority as "critical" | "high" | "medium" | "low",
           originKind: "plugin:paperclip-plugin-linear",
           originId: linearIssueId,
+          ...(assigneeUserId ? { assigneeUserId } : {}),
         });
 
         if (status !== "backlog") {
@@ -1720,6 +1761,8 @@ async function runImport(ctx: PluginContext): Promise<{
           continue;
         }
 
+        const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
+
         const created = await ctx.issues.create({
           companyId,
           title: linearIssue.title,
@@ -1729,6 +1772,7 @@ async function runImport(ctx: PluginContext): Promise<{
           originId: linearIssue.id,
           ...(projectId ? { projectId } : {}),
           ...(issueLabelIds.length > 0 ? { labelIds: issueLabelIds } : {}),
+          ...(assigneeUserId ? { assigneeUserId } : {}),
         } as any);
 
         if (status !== "backlog") {

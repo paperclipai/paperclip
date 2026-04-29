@@ -164,6 +164,12 @@ export interface HostServices {
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
   };
 
+  /** Provides `users.get`, `users.findByEmail`. */
+  users: {
+    get(params: WorkerToHostMethods["users.get"][0]): Promise<WorkerToHostMethods["users.get"][1]>;
+    findByEmail(params: WorkerToHostMethods["users.findByEmail"][0]): Promise<WorkerToHostMethods["users.findByEmail"][1]>;
+  };
+
   /** Provides `projects.list`, `projects.get`, `projects.listWorkspaces`, `projects.getPrimaryWorkspace`, `projects.getWorkspaceForIssue`. */
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
@@ -345,6 +351,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Companies
   "companies.list": "companies.read",
   "companies.get": "companies.read",
+
+  // Users (cross-system identity mapping)
+  "users.get": "users.read",
+  "users.findByEmail": "users.read",
 
   // Projects
   "projects.list": "projects.read",
@@ -568,6 +578,14 @@ export function createHostClientHandlers(
     }),
     "companies.get": gated("companies.get", async (params) => {
       return services.companies.get(params);
+    }),
+
+    // Users
+    "users.get": gated("users.get", async (params) => {
+      return services.users.get(params);
+    }),
+    "users.findByEmail": gated("users.findByEmail", async (params) => {
+      return services.users.findByEmail(params);
     }),
 
     // Projects

@@ -694,6 +694,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return companies.get(companyId) ?? null;
       },
     },
+    users: {
+      async get(_userId: string) {
+        requireCapability(manifest, capabilitySet, "users.read" as never);
+        return null;
+      },
+      async findByEmail(_email: string) {
+        requireCapability(manifest, capabilitySet, "users.read" as never);
+        return null;
+      },
+    },
     issues: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "issues.read");
