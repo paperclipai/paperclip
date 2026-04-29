@@ -15,6 +15,7 @@ import {
   getMockProviderHealth,
   getMockRunAttemptMetadata,
   getMockRuntimeProjection,
+  getProviderRuntimeMode,
   reconcileMockProjection,
   replayMockJournal,
   compareOrAdvanceCursor,
@@ -59,6 +60,46 @@ describe("Dark Factory deterministic mock runtime adapter", () => {
     expect(["available", "degraded", "blocked", "fallback"]).toContain(first.providerState);
     expect(["closed", "open", "half_open"]).toContain(first.breakerState);
     expect(first.fallbackTriggered).toBe(first.providerState === "fallback");
+  });
+
+  it("derives explicit provider runtime modes without advancing Paperclip terminal state", () => {
+    const available = getProviderRuntimeMode(getMockProviderHealth("issue-available-closed"));
+    const degraded = getProviderRuntimeMode(getMockProviderHealth("issue-provider-half"));
+    const blocked = getProviderRuntimeMode(getMockProviderHealth("issue-provider-blocked"));
+    const fallback = getProviderRuntimeMode(getMockProviderHealth("issue-provider-fallback"));
+
+    expect(available).toMatchObject({
+      mode: "available",
+      severity: "info",
+      operatorAction: "monitor",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: null,
+    });
+    expect(degraded).toMatchObject({
+      mode: "degraded",
+      severity: "warning",
+      operatorAction: "retry_or_wait_for_provider_recovery",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: "mock_half_open_probe_required",
+    });
+    expect(blocked).toMatchObject({
+      mode: "blocked",
+      severity: "critical",
+      operatorAction: "pause_external_execution_and_reconcile_journal",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: "mock_provider_breaker_open",
+    });
+    expect(fallback).toMatchObject({
+      mode: "degraded",
+      severity: "warning",
+      operatorAction: "verify_fallback_projection_before_retry",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: "mock_fallback_policy_triggered",
+    });
   });
 
   it("returns deterministic run projection metadata without claiming authority", () => {

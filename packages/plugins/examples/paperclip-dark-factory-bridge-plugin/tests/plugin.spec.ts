@@ -17,6 +17,17 @@ type RehydrateReceiptBody = {
   requestSemantics: string;
 };
 
+type ProviderHealthBody = {
+  providerHealth: { providerState: string; breakerState: string };
+  runtimeImpact: {
+    mode: string;
+    severity: string;
+    operatorAction: string;
+    paperclipTerminalState: string;
+    terminalStateAdvanced: boolean;
+  };
+};
+
 function apiInput(routeKey: string, issueId: string, companyId: string, method: "GET" | "POST" = "GET", body: unknown = null) {
   return {
     routeKey,
@@ -216,6 +227,76 @@ describe("Dark Factory bridge projection plugin", () => {
     const repeatedRehydrateBody = (repeatedRehydrate as ApiResponseBody<RehydrateReceiptBody>).body;
     expect(repeatedRehydrateBody.receipt).toMatchObject(rehydrateBody.receipt);
     expect(repeatedRehydrateBody.requestSemantics).toBe("receipt_only_not_terminal_success");
+  });
+
+  it("surfaces provider runtime impact for degraded and blocked modes as non-terminal observations", async () => {
+    const companyId = randomUUID();
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const degraded = await plugin.definition.onApiRequest?.(apiInput("provider-health", "issue-provider-half", companyId));
+    const blocked = await plugin.definition.onApiRequest?.(apiInput("provider-health", "issue-provider-blocked", companyId));
+
+    expect(degraded).toMatchObject({
+      status: 200,
+      body: {
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
+        authoritative: false,
+        observationSource: "runtime_observation",
+        providerHealth: expect.objectContaining({ providerState: "degraded", breakerState: "half_open" }),
+        runtimeImpact: {
+          mode: "degraded",
+          severity: "warning",
+          operatorAction: "retry_or_wait_for_provider_recovery",
+          paperclipTerminalState: "unchanged",
+          terminalStateAdvanced: false,
+        },
+      },
+    });
+    expect(blocked).toMatchObject({
+      status: 200,
+      body: {
+        providerHealth: expect.objectContaining({ providerState: "blocked", breakerState: "open" }),
+        runtimeImpact: {
+          mode: "blocked",
+          severity: "critical",
+          operatorAction: "pause_external_execution_and_reconcile_journal",
+          paperclipTerminalState: "unchanged",
+          terminalStateAdvanced: false,
+        },
+      },
+    });
+
+    for (const response of [degraded, blocked]) {
+      const body = (response as ApiResponseBody<ProviderHealthBody>).body;
+      expect(body.runtimeImpact.terminalStateAdvanced).toBe(false);
+      expect(body.runtimeImpact.paperclipTerminalState).toBe("unchanged");
+    }
+  });
+
+  it("returns hardened non-authoritative API errors for unknown routes", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const response = await plugin.definition.onApiRequest?.(apiInput("unknown-route", issueId, companyId));
+
+    expect(response).toMatchObject({
+      status: 404,
+      body: {
+        error: {
+          code: "dark_factory_route_not_found",
+          message: "Unknown Dark Factory bridge route",
+          routeKey: "unknown-route",
+        },
+        source: "dark-factory-projection",
+        truthSource: "dark-factory-journal",
+        authoritative: false,
+        terminalStateAdvanced: false,
+      },
+    });
   });
 
   it("treats non-object rehydrate request route bodies as receipt-only requests with the default reason", async () => {

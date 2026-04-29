@@ -19,6 +19,7 @@ import {
   type ProjectionStalenessReason,
   type ProjectionStatus,
   type ProviderHealthState,
+  type ProviderRuntimeImpact,
   type ReconciliationCursor,
 } from "./runtime-contract.js";
 
@@ -57,6 +58,7 @@ function breakerFor(issueId: string): BreakerState {
   const normalized = issueId.toLowerCase();
   if (normalized.includes("open") || normalized.includes("blocked")) return "open";
   if (normalized.includes("half")) return "half_open";
+  if (normalized.includes("closed") || normalized.includes("available")) return "closed";
   return (["closed", "half_open", "open"] as const)[stableInt(`${issueId}:breaker`, 3)];
 }
 
@@ -156,6 +158,47 @@ export function getMockProviderHealth(issueId: string): MockProviderHealth {
     lastFailureAt: breakerState === "closed" ? null : isoFromOffset(`${issueId}:failure`, -7),
     openReason: breakerState === "open" ? "mock_provider_timeout_threshold" : null,
     cooldownUntil: breakerState === "open" ? isoFromOffset(`${issueId}:cooldown`, -30) : null,
+  };
+}
+
+export function getProviderRuntimeMode(health: MockProviderHealth): ProviderRuntimeImpact {
+  if (health.providerState === "blocked") {
+    return {
+      mode: "blocked",
+      severity: "critical",
+      operatorAction: "pause_external_execution_and_reconcile_journal",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: health.blockedReason ?? health.openReason ?? "provider_blocked",
+    };
+  }
+  if (health.providerState === "fallback") {
+    return {
+      mode: "degraded",
+      severity: "warning",
+      operatorAction: "verify_fallback_projection_before_retry",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: health.degradedReason ?? health.fallbackReason ?? "provider_fallback_triggered",
+    };
+  }
+  if (health.providerState === "degraded") {
+    return {
+      mode: "degraded",
+      severity: "warning",
+      operatorAction: "retry_or_wait_for_provider_recovery",
+      paperclipTerminalState: "unchanged",
+      terminalStateAdvanced: false,
+      reason: health.degradedReason ?? "provider_degraded",
+    };
+  }
+  return {
+    mode: "available",
+    severity: "info",
+    operatorAction: "monitor",
+    paperclipTerminalState: "unchanged",
+    terminalStateAdvanced: false,
+    reason: null,
   };
 }
 

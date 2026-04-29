@@ -12,6 +12,7 @@ import {
   getMockProviderHealth,
   getMockRunAttemptMetadata,
   getMockRuntimeProjection,
+  getProviderRuntimeMode,
 } from "./mock-runtime-adapter.js";
 
 export { PROJECTION_DISCLAIMER } from "./runtime-contract.js";
@@ -30,11 +31,13 @@ type ProjectionSummary = {
   blockedReason: string | null;
   projection: ReturnType<typeof getMockRuntimeProjection>;
   providerHealth: ReturnType<typeof getMockProviderHealth>;
+  runtimeImpact: ReturnType<typeof getProviderRuntimeMode>;
   runAttemptMetadata: ReturnType<typeof getMockRunAttemptMetadata>;
 };
 
 function buildSummary(issueId: string): ProjectionSummary {
   const projection = getMockRuntimeProjection(issueId);
+  const providerHealth = getMockProviderHealth(issueId);
   return {
     source: DARK_FACTORY_PROJECTION_SOURCE,
     truthSource: DARK_FACTORY_TRUTH_SOURCE,
@@ -48,7 +51,8 @@ function buildSummary(issueId: string): ProjectionSummary {
     degradedReason: projection.degradedReason,
     blockedReason: projection.blockedReason,
     projection,
-    providerHealth: getMockProviderHealth(issueId),
+    providerHealth,
+    runtimeImpact: getProviderRuntimeMode(providerHealth),
     runAttemptMetadata: getMockRunAttemptMetadata(issueId),
   };
 }
@@ -126,6 +130,7 @@ const plugin = definePlugin({
           blocked: providerHealth.blocked,
           fallbackTriggered: providerHealth.fallbackTriggered,
           providerHealth,
+          runtimeImpact: getProviderRuntimeMode(providerHealth),
           runAttemptMetadata: getMockRunAttemptMetadata(issueId),
         },
       };
@@ -151,7 +156,17 @@ const plugin = definePlugin({
 
     return {
       status: 404,
-      body: { error: `Unknown Dark Factory bridge route: ${input.routeKey}` },
+      body: {
+        error: {
+          code: "dark_factory_route_not_found",
+          message: "Unknown Dark Factory bridge route",
+          routeKey: input.routeKey,
+        },
+        source: DARK_FACTORY_PROJECTION_SOURCE,
+        truthSource: DARK_FACTORY_TRUTH_SOURCE,
+        authoritative: PROJECTION_AUTHORITATIVE,
+        terminalStateAdvanced: false,
+      },
     };
   },
 

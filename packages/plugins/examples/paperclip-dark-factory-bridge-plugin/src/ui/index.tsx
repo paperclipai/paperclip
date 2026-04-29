@@ -48,6 +48,14 @@ type ProjectionSummary = {
     };
     lastUpdatedAt: string;
   };
+  runtimeImpact: {
+    mode: string;
+    severity: string;
+    operatorAction: string;
+    paperclipTerminalState: "unchanged";
+    terminalStateAdvanced: false;
+    reason: string | null;
+  };
   providerHealth: {
     providerRole: string;
     modelRole: string;
@@ -174,6 +182,10 @@ function ProviderHealthRows({ data }: { data: ProjectionSummary }) {
       <div style={rowStyle}><span>Concrete model protocol MUST</span><strong>{data.providerHealth.modelSelection.protocolMustSpecifyConcreteModel ? "yes" : "no"}</strong></div>
       <div style={rowStyle}><span>Breaker state</span><strong>{data.providerHealth.breakerState}</strong></div>
       <div style={rowStyle}><span>Provider state</span><strong>{data.providerHealth.providerState}</strong></div>
+      <div style={rowStyle}><span>Runtime impact</span><strong>{data.runtimeImpact.mode} / {data.runtimeImpact.severity}</strong></div>
+      <div style={rowStyle}><span>Operator action</span><code>{data.runtimeImpact.operatorAction}</code></div>
+      <div style={rowStyle}><span>Paperclip terminal state</span><strong>{data.runtimeImpact.paperclipTerminalState}</strong></div>
+      <div style={rowStyle}><span>Terminal advanced</span><strong>{data.runtimeImpact.terminalStateAdvanced ? "yes" : "no"}</strong></div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <Badge label="provider degraded" active={data.providerHealth.degraded} reason={data.providerHealth.degradedReason} />
         <Badge label="provider blocked" active={data.providerHealth.blocked} reason={data.providerHealth.blockedReason} />

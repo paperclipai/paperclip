@@ -6,6 +6,8 @@ export const PROJECTION_DISCLAIMER = "Projection only — Dark Factory Journal r
 
 export type ProjectionStatus = "current" | "degraded" | "blocked" | "needs_approval" | "stale";
 export type ProviderHealthState = "available" | "degraded" | "blocked" | "fallback";
+export type ProviderRuntimeMode = "available" | "degraded" | "blocked";
+export type ProviderRuntimeSeverity = "info" | "warning" | "critical";
 export type BreakerState = "closed" | "open" | "half_open";
 export type FailureClass = "none" | "transient_provider" | "provider_unavailable" | "quota_exceeded" | "runtime_blocked";
 
@@ -75,6 +77,15 @@ export type MockRuntimeProjection = ProjectionBoundary & {
     stale: boolean;
   };
   lastUpdatedAt: string;
+};
+
+export type ProviderRuntimeImpact = {
+  mode: ProviderRuntimeMode;
+  severity: ProviderRuntimeSeverity;
+  operatorAction: "monitor" | "retry_or_wait_for_provider_recovery" | "pause_external_execution_and_reconcile_journal" | "verify_fallback_projection_before_retry";
+  paperclipTerminalState: "unchanged";
+  terminalStateAdvanced: false;
+  reason: string | null;
 };
 
 export type MockProviderHealth = ProjectionBoundary & {

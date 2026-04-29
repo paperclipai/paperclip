@@ -24,3 +24,17 @@ Boundary rules:
 UI surfaces must continue to show:
 
 > Projection only — Dark Factory Journal remains truth source
+
+## Phase 3 provider health / degraded / blocked hardening evidence
+
+Phase 3 adds a deterministic provider runtime impact layer on top of the mock adapter. It keeps provider health as `runtime_observation` metadata and makes degraded, fallback, and blocked modes visible to API/UI operators without treating them as Paperclip Task terminal states.
+
+Evidence boundaries:
+
+- Provider runtime impact is advisory observation metadata: `paperclipTerminalState: "unchanged"` and `terminalStateAdvanced: false`.
+- Blocked mode asks operators to pause external execution and reconcile against the Dark Factory Journal; it does not mark the Paperclip Issue/Task complete or failed.
+- Degraded/fallback modes ask operators to retry, wait for provider recovery, or verify fallback projection before retry; they remain projection-only.
+- API route responses include non-authoritative projection metadata (`source`, `truthSource`, `authoritative: false`) and receipt-only terminal-state guards.
+- The UI displays provider state, runtime impact, operator action, and terminal-state invariants beside the projection disclaimer.
+
+Local validation used for this evidence should include direct plugin `pnpm typecheck`, `pnpm build`, and `pnpm test` from this package directory.
