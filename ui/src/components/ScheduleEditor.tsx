@@ -72,23 +72,23 @@ function parseCronToPreset(cron: string): {
   }
 
   // Every day: "M H * * *"
-  if (dom === "*" && dow === "*" && hr !== "*") {
-    return { preset: "every_day", ...defaults, hour: hr, minute: min === "*" ? "0" : min };
+  if (dom === "*" && dow === "*" && /^\d{1,2}$/.test(hr) && /^\d{1,2}$/.test(min)) {
+    return { preset: "every_day", ...defaults, hour: hr, minute: min };
   }
 
   // Weekdays: "M H * * 1-5"
-  if (dom === "*" && dow === "1-5" && hr !== "*") {
-    return { preset: "weekdays", ...defaults, hour: hr, minute: min === "*" ? "0" : min };
+  if (dom === "*" && dow === "1-5" && /^\d{1,2}$/.test(hr) && /^\d{1,2}$/.test(min)) {
+    return { preset: "weekdays", ...defaults, hour: hr, minute: min };
   }
 
   // Weekly: "M H * * D" (single day)
-  if (dom === "*" && /^\d$/.test(dow) && hr !== "*") {
-    return { preset: "weekly", ...defaults, hour: hr, minute: min === "*" ? "0" : min, dayOfWeek: dow };
+  if (dom === "*" && /^\d$/.test(dow) && /^\d{1,2}$/.test(hr) && /^\d{1,2}$/.test(min)) {
+    return { preset: "weekly", ...defaults, hour: hr, minute: min, dayOfWeek: dow };
   }
 
   // Monthly: "M H D * *"
-  if (/^\d{1,2}$/.test(dom) && dow === "*" && hr !== "*") {
-    return { preset: "monthly", ...defaults, hour: hr, minute: min === "*" ? "0" : min, dayOfMonth: dom };
+  if (/^\d{1,2}$/.test(dom) && dow === "*" && /^\d{1,2}$/.test(hr) && /^\d{1,2}$/.test(min)) {
+    return { preset: "monthly", ...defaults, hour: hr, minute: min, dayOfMonth: dom };
   }
 
   return { preset: "custom", ...defaults };
