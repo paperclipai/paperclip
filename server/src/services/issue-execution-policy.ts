@@ -314,7 +314,7 @@ export async function resolveDefaultExecutionPolicy(
   const assignee = await db
     .select({ id: agents.id, role: agents.role, reportsTo: agents.reportsTo })
     .from(agents)
-    .where(eq(agents.id, assigneeAgentId))
+    .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   if (!assignee) return null;
 
@@ -331,7 +331,8 @@ export async function resolveDefaultExecutionPolicy(
         ne(agents.id, assigneeAgentId),
         ne(agents.status, "terminated"),
       ),
-    );
+    )
+    .orderBy(agents.createdAt);
   const peerId = peerAgents[0]?.id ?? assignee.reportsTo ?? null;
 
   const stages: IssueExecutionStage[] = [];

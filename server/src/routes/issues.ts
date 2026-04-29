@@ -2067,8 +2067,7 @@ export function issueRoutes(
     const assigneeChangedToNew =
       req.body.executionPolicy === undefined &&
       !previousExecutionPolicy &&
-      normalizedAssigneeAgentId != null &&
-      normalizedAssigneeAgentId !== existing.assigneeAgentId;
+      normalizedAssigneeAgentId != null;
     if (assigneeChangedToNew) {
       const company = await companiesSvc.getById(existing.companyId);
       const resolved = await resolveDefaultExecutionPolicy(
