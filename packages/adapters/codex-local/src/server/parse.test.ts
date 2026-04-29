@@ -121,6 +121,17 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
+  it("classifies generic usage-limit messages with full-date retry windows", () => {
+    const errorMessage =
+      "You've hit your usage limit. To get more access now, send a request to your admin or try again at Apr 30th, 2026 12:01 AM.";
+    const now = new Date(2026, 3, 29, 19, 52, 0);
+
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
+      new Date(2026, 3, 30, 0, 1, 0, 0).getTime(),
+    );
+  });
+
   it("does not classify deterministic compaction errors as transient", () => {
     expect(
       isCodexTransientUpstreamError({
