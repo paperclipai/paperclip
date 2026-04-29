@@ -250,7 +250,11 @@ export type Rt2KnowledgeOperationsReasonCode =
   | "semantic_index_stale_chunks"
   | "contradictions_open"
   | "jarvis_grounding_unavailable"
-  | "jarvis_grounding_at_risk";
+  | "jarvis_grounding_at_risk"
+  | "jarvis_rewrite_provider_unavailable"
+  | "jarvis_rewrite_eval_disagreement"
+  | "jarvis_rewrite_low_confidence"
+  | "jarvis_rewrite_blocked";
 
 export interface Rt2KnowledgeOperationsReason {
   code: Rt2KnowledgeOperationsReasonCode;
@@ -306,6 +310,14 @@ export interface Rt2KnowledgeOperationsJarvisHealth {
   warningSources: {
     staleChunks: number;
     openContradictions: number;
+  };
+  rewriteProposals?: {
+    total: number;
+    blocked: number;
+    highRisk: number;
+    providerUnavailable: number;
+    disagreement: number;
+    lowConfidence: number;
   };
 }
 

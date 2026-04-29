@@ -2,6 +2,9 @@ import { api } from "./client";
 import type {
   Rt2JarvisAutoPolicyDecision,
   Rt2JarvisQualityReviewQueue,
+  Rt2JarvisRewriteProposal,
+  Rt2JarvisRewriteProposalInput,
+  Rt2JarvisRewriteProposalList,
   Rt2JarvisReverseDesignProposal,
   Rt2JarvisSkillCapability,
   Rt2JarvisTaskAdvice,
@@ -30,6 +33,29 @@ export const rt2JarvisRuntimeApi = {
   getQualityReviews: (companyId: string): Promise<Rt2JarvisQualityReviewQueue> =>
     api.get<Rt2JarvisQualityReviewQueue>(
       `/companies/${encodeURIComponent(companyId)}/rt2/jarvis/quality-reviews`,
+    ),
+
+  listRewriteProposals: (companyId: string): Promise<Rt2JarvisRewriteProposalList> =>
+    api.get<Rt2JarvisRewriteProposalList>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/jarvis/rewrite-proposals`,
+    ),
+
+  createRewriteProposal: (
+    companyId: string,
+    input: Rt2JarvisRewriteProposalInput,
+  ): Promise<Rt2JarvisRewriteProposal> =>
+    api.post<Rt2JarvisRewriteProposal>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/jarvis/rewrite-proposals`,
+      input,
+    ),
+
+  requestRewriteApproval: (
+    companyId: string,
+    proposalId: string,
+  ): Promise<Rt2JarvisRewriteProposal> =>
+    api.post<Rt2JarvisRewriteProposal>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/jarvis/rewrite-proposals/${encodeURIComponent(proposalId)}/request-approval`,
+      {},
     ),
 
   approveQualityReview: (

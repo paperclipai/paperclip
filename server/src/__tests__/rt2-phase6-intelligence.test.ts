@@ -11,6 +11,8 @@ import {
   issueWorkProducts,
   issues,
   projects,
+  rt2JarvisRewriteEvals,
+  rt2JarvisRewriteProposals,
   rt2QualityScores,
   rt2ReverseDesignRuns,
   rt2RuntimeSkillInjections,
@@ -55,6 +57,8 @@ describeEmbeddedPostgres("rt2 phase 6 intelligence", () => {
   afterEach(async () => {
     await db.delete(rt2SearchLog);
     await db.delete(rt2SearchIndex);
+    await db.delete(rt2JarvisRewriteEvals);
+    await db.delete(rt2JarvisRewriteProposals);
     await db.delete(rt2V33ContradictionCandidates);
     await db.delete(rt2V33SemanticIndexChunks);
     await db.delete(approvals);
@@ -224,6 +228,7 @@ describeEmbeddedPostgres("rt2 phase 6 intelligence", () => {
       rawEvidence: [{ reason: "test" }],
       deterministicSignals: { issueType: "embedding_consistency" },
     });
+    return { contradictionId };
   }
 
   it("returns Jarvis advice from live task, wiki, graph, and deliverable evidence", async () => {
@@ -403,6 +408,65 @@ describeEmbeddedPostgres("rt2 phase 6 intelligence", () => {
     expect(list.body[0]).toEqual(expect.objectContaining({
       injectionId: created.body.injectionId,
       approvalId: created.body.approvalId,
+    }));
+  });
+
+  it("creates proposal-only Jarvis rewrite evals with deterministic fallback and approval linkage", async () => {
+    const { contradictionId } = await seedRt2Task();
+    const app = createApp(companyId);
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals`)
+      .send({
+        targetType: "wiki_page",
+        targetId: "wiki-1",
+        targetKey: "daily/hybrid-project.md",
+        projectId,
+        title: "Rewrite stale project wiki",
+        before: "Old revenue forecast automation note.",
+        after: "Updated revenue forecast automation note with current task evidence.",
+        citations: [
+          {
+            id: "citation:task",
+            sourceType: "task",
+            sourceId: taskIssueId,
+            sourceKey: taskIssueId,
+            freshness: "stale",
+            contradictionStatus: "unresolved",
+            score: 100,
+          },
+        ],
+        contradictionIds: [contradictionId],
+        providerEval: { status: "unavailable", errorMessage: "provider offline" },
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body).toEqual(expect.objectContaining({
+      status: "blocked",
+      riskLevel: "high",
+      targetKey: "daily/hybrid-project.md",
+    }));
+    expect(created.body.latestEval).toEqual(expect.objectContaining({
+      providerStatus: "unavailable",
+      fallbackStatus: "completed",
+      finalRecommendation: "block",
+      reasonCodes: expect.arrayContaining(["provider_unavailable", "fallback_blocked"]),
+    }));
+
+    const directApply = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/${created.body.id}/apply`)
+      .send({});
+    expect(directApply.status).toBe(404);
+
+    const approval = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/${created.body.id}/request-approval`)
+      .send({});
+
+    expect(approval.status).toBe(200);
+    expect(approval.body).toEqual(expect.objectContaining({
+      status: "approval_requested",
+      approvalId: expect.any(String),
+      approvalRoute: expect.stringContaining("/approvals/"),
     }));
   });
 

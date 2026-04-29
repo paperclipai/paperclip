@@ -66,6 +66,19 @@ export function Rt2QualityPanel({
     enabled: Boolean(companyId),
   });
 
+  const { data: rewriteProposals } = useQuery({
+    queryKey: ["rt2-jarvis-rewrite-proposals", companyId],
+    queryFn: () => rt2JarvisRuntimeApi.listRewriteProposals(companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const requestRewriteApprovalMutation = useMutation({
+    mutationFn: (proposalId: string) => rt2JarvisRuntimeApi.requestRewriteApproval(companyId, proposalId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rt2-jarvis-rewrite-proposals", companyId] });
+    },
+  });
+
   const approveMutation = useMutation({
     mutationFn: (evaluationId: string) =>
       rt2JarvisRuntimeApi.approveQualityReview(companyId, evaluationId, "관리자 cockpit에서 승인"),
@@ -256,6 +269,58 @@ export function Rt2QualityPanel({
                         거절
                       </Button>
                     </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {rewriteProposals && rewriteProposals.proposals.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Jarvis Rewrite Proposals
+            </div>
+            <div className="flex gap-1">
+              <Badge variant="outline" className="text-xs">Blocked {rewriteProposals.stats.blocked}</Badge>
+              <Badge variant="secondary" className="text-xs">Disagree {rewriteProposals.stats.disagreement}</Badge>
+              <Badge variant="secondary" className="text-xs">Fallback {rewriteProposals.stats.providerUnavailable}</Badge>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {rewriteProposals.proposals.slice(0, 4).map((proposal) => (
+              <div key={proposal.id} className="rounded-lg border border-border px-3 py-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={proposal.riskLevel === "high" ? "destructive" : proposal.riskLevel === "medium" ? "secondary" : "outline"} className="text-xs">
+                        {proposal.riskLevel}
+                      </Badge>
+                      <Badge variant="outline" className="text-xs">{proposal.status}</Badge>
+                      <span className="truncate text-sm font-medium">{proposal.title}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {proposal.targetType}:{proposal.targetKey} · {proposal.latestEval?.finalRecommendation ?? "no-eval"} · confidence {proposal.latestEval ? Math.round(proposal.latestEval.finalConfidence * 100) : "-"}%
+                    </p>
+                    {proposal.latestEval?.reasonCodes.length ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {proposal.latestEval.reasonCodes.map((code) => (
+                          <Badge key={code} variant="secondary" className="text-xs">{code}</Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  {proposal.status === "proposed" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => requestRewriteApprovalMutation.mutate(proposal.id)}
+                      disabled={requestRewriteApprovalMutation.isPending}
+                    >
+                      승인 요청
+                    </Button>
                   )}
                 </div>
               </div>

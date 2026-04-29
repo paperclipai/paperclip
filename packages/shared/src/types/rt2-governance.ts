@@ -167,6 +167,121 @@ export interface Rt2JarvisAutoPolicyDecision {
   approvalRequired: boolean;
 }
 
+export type Rt2JarvisRewriteProposalStatus = "proposed" | "approval_requested" | "approved" | "rejected" | "blocked";
+export type Rt2JarvisRewriteRiskLevel = "low" | "medium" | "high";
+export type Rt2JarvisRewriteEvalProviderStatus = "not_run" | "completed" | "unavailable" | "error";
+export type Rt2JarvisRewriteEvalFallbackStatus = "completed" | "error";
+export type Rt2JarvisRewriteEvalRecommendation = "approve" | "revise" | "reject" | "block";
+
+export interface Rt2JarvisRewriteDiff {
+  before: string;
+  after: string;
+  summary: string;
+}
+
+export interface Rt2JarvisRewriteCitationEvidence {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  sourceKey: string;
+  freshness: "fresh" | "stale" | "unknown";
+  contradictionStatus: "none" | "unknown" | "unresolved" | "resolved";
+  score?: number;
+}
+
+export interface Rt2JarvisRewriteEvalDimension {
+  key: "citation_coverage" | "freshness" | "contradiction_safety" | "diff_scope" | "evidence_density";
+  score: number;
+  rationale: string;
+}
+
+export interface Rt2JarvisRewriteEvalRubric {
+  rubricVersion: string;
+  dimensions: Rt2JarvisRewriteEvalDimension[];
+  overallScore: number;
+  confidence: number;
+  recommendation: Rt2JarvisRewriteEvalRecommendation;
+  rationale: string;
+}
+
+export interface Rt2JarvisRewriteEvalComparison {
+  providerStatus: Rt2JarvisRewriteEvalProviderStatus;
+  fallbackStatus: Rt2JarvisRewriteEvalFallbackStatus;
+  disagreement: boolean;
+  lowConfidence: boolean;
+  finalRecommendation: Rt2JarvisRewriteEvalRecommendation;
+  finalConfidence: number;
+  reasonCodes: string[];
+}
+
+export interface Rt2JarvisRewriteProposalInput {
+  targetType: "wiki_page" | "daily_wiki_page" | "graph_node" | "graph_edge" | "work_artifact" | "document";
+  targetId: string;
+  targetKey: string;
+  projectId?: string | null;
+  title: string;
+  before: string;
+  after: string;
+  rationale?: string;
+  citations?: Rt2JarvisRewriteCitationEvidence[];
+  contradictionIds?: string[];
+  providerEval?: Partial<Rt2JarvisRewriteEvalRubric> & {
+    status?: Exclude<Rt2JarvisRewriteEvalProviderStatus, "not_run">;
+    errorMessage?: string;
+  };
+}
+
+export interface Rt2JarvisRewriteProposal {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  targetType: Rt2JarvisRewriteProposalInput["targetType"];
+  targetId: string;
+  targetKey: string;
+  title: string;
+  status: Rt2JarvisRewriteProposalStatus;
+  riskLevel: Rt2JarvisRewriteRiskLevel;
+  proposedDiff: Rt2JarvisRewriteDiff;
+  rationale: string | null;
+  citations: Rt2JarvisRewriteCitationEvidence[];
+  contradictionIds: string[];
+  approvalId: string | null;
+  approvalRoute: string | null;
+  latestEval: Rt2JarvisRewriteEvalComparison | null;
+  createdBy: string;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface Rt2JarvisRewriteEvalRecord {
+  id: string;
+  proposalId: string;
+  companyId: string;
+  providerStatus: Rt2JarvisRewriteEvalProviderStatus;
+  fallbackStatus: Rt2JarvisRewriteEvalFallbackStatus;
+  providerRubric: Rt2JarvisRewriteEvalRubric | null;
+  fallbackRubric: Rt2JarvisRewriteEvalRubric;
+  comparison: Rt2JarvisRewriteEvalComparison;
+  createdAt: Date | string;
+}
+
+export interface Rt2JarvisRewriteProposalList {
+  companyId: string;
+  proposals: Rt2JarvisRewriteProposal[];
+  stats: {
+    total: number;
+    proposed: number;
+    approvalRequested: number;
+    approved: number;
+    rejected: number;
+    blocked: number;
+    highRisk: number;
+    providerUnavailable: number;
+    disagreement: number;
+    lowConfidence: number;
+  };
+}
+
 export interface Rt2JarvisReverseDesignedTask {
   title: string;
   description: string;

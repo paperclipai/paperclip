@@ -1,8 +1,12 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
+  approvals,
   issueWorkProducts,
   issues,
+  rt2JarvisRewriteEvals,
+  rt2JarvisRewriteProposals,
   rt2QualityScores,
   rt2V33ContradictionCandidates,
   rt2V33GraphEdges,
@@ -11,6 +15,17 @@ import {
   rt2V33TaskProfiles,
   rt2V33WikiPages,
 } from "@paperclipai/db";
+import type {
+  Rt2JarvisRewriteCitationEvidence,
+  Rt2JarvisRewriteEvalComparison,
+  Rt2JarvisRewriteEvalProviderStatus,
+  Rt2JarvisRewriteEvalRecommendation,
+  Rt2JarvisRewriteEvalRubric,
+  Rt2JarvisRewriteProposal,
+  Rt2JarvisRewriteProposalInput,
+  Rt2JarvisRewriteProposalList,
+  Rt2JarvisRewriteRiskLevel,
+} from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { rt2HybridSearchService, type SearchResult } from "./rt2-hybrid-search.js";
 
@@ -49,6 +64,10 @@ type GroundingWarning = {
   message: string;
   citationId: string;
 };
+
+type RewriteEvalRow = typeof rt2JarvisRewriteEvals.$inferInsert;
+type RewriteProposalInsert = typeof rt2JarvisRewriteProposals.$inferInsert;
+type RewriteProposalRow = typeof rt2JarvisRewriteProposals.$inferSelect;
 
 function short(text: string | null | undefined, max = 220): string {
   const value = (text ?? "").replace(/\s+/g, " ").trim();
@@ -205,6 +224,166 @@ export function rt2JarvisService(db: Db) {
   }
 
   return {
+    createRewriteProposal: async (
+      companyId: string,
+      input: Rt2JarvisRewriteProposalInput,
+      actorId = "system",
+    ): Promise<Rt2JarvisRewriteProposal> => {
+      const citations = input.citations ?? [];
+      const contradictionIds = input.contradictionIds ?? [];
+      const fallbackRubric = buildFallbackRewriteEval(input, citations, contradictionIds);
+      const providerStatus = input.providerEval?.status ?? "not_run";
+      const providerRubric = buildProviderRubric(input.providerEval, providerStatus);
+      const comparison = compareRewriteEvals(providerStatus, providerRubric, fallbackRubric);
+      const riskLevel = riskFromEvidence(citations, contradictionIds, comparison);
+      const status = riskLevel === "high" || comparison.finalRecommendation === "block" ? "blocked" : "proposed";
+
+      const proposalInsert: RewriteProposalInsert = {
+        companyId,
+        projectId: input.projectId ?? null,
+        targetType: input.targetType,
+        targetId: input.targetId,
+        targetKey: input.targetKey,
+        title: input.title,
+        status,
+        riskLevel,
+        proposedDiff: {
+          before: input.before,
+          after: input.after,
+          summary: summarizeDiff(input.before, input.after),
+        },
+        rationale: input.rationale ?? null,
+        citations: citations as unknown as Array<Record<string, unknown>>,
+        contradictionIds,
+        latestEval: comparison as unknown as Record<string, unknown>,
+        createdBy: actorId,
+      };
+      const [proposal] = await db.insert(rt2JarvisRewriteProposals).values(proposalInsert).returning();
+
+      const evalInsert: RewriteEvalRow = {
+        proposalId: proposal.id,
+        companyId,
+        providerStatus,
+        fallbackStatus: "completed",
+        providerRubric: providerRubric as unknown as Record<string, unknown> | null,
+        fallbackRubric: fallbackRubric as unknown as Record<string, unknown>,
+        comparison: comparison as unknown as Record<string, unknown>,
+      };
+      await db.insert(rt2JarvisRewriteEvals).values(evalInsert);
+
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: actorId === "system" ? "system" : "user",
+        actorId,
+        action: "rt2.jarvis.rewrite_proposal_created",
+        entityType: "jarvis_rewrite_proposal",
+        entityId: proposal.id,
+        details: {
+          targetType: input.targetType,
+          targetKey: input.targetKey,
+          riskLevel,
+          status,
+          providerStatus,
+          reasonCodes: comparison.reasonCodes,
+          contradictionIds,
+          citationIds: citations.map((citation) => citation.id),
+        },
+      });
+
+      return mapRewriteProposal(proposal);
+    },
+
+    listRewriteProposals: async (companyId: string): Promise<Rt2JarvisRewriteProposalList> => {
+      const rows = await db.select()
+        .from(rt2JarvisRewriteProposals)
+        .where(eq(rt2JarvisRewriteProposals.companyId, companyId))
+        .orderBy(desc(rt2JarvisRewriteProposals.createdAt))
+        .limit(100);
+      const proposals = rows.map(mapRewriteProposal);
+      return {
+        companyId,
+        proposals,
+        stats: summarizeRewriteProposals(proposals),
+      };
+    },
+
+    requestRewriteApproval: async (companyId: string, proposalId: string, requestedByUserId = "system") => {
+      const proposal = await getRewriteProposal(companyId, proposalId);
+      const [approval] = await db.insert(approvals).values({
+        companyId,
+        type: "jarvis_auto_action",
+        requestedByUserId,
+        payload: {
+          title: proposal.title,
+          proposalId: proposal.id,
+          targetType: proposal.targetType,
+          targetKey: proposal.targetKey,
+          riskLevel: proposal.riskLevel,
+          eval: proposal.latestEval,
+          citationIds: proposal.citations.map((citation) => citation.id),
+          contradictionIds: proposal.contradictionIds,
+        },
+      }).returning();
+
+      const approvalRoute = `/approvals/${approval.id}`;
+      const [updated] = await db.update(rt2JarvisRewriteProposals).set({
+        status: "approval_requested",
+        approvalId: approval.id,
+        approvalRoute,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(rt2JarvisRewriteProposals.companyId, companyId),
+        eq(rt2JarvisRewriteProposals.id, proposalId),
+      )).returning();
+
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: requestedByUserId === "system" ? "system" : "user",
+        actorId: requestedByUserId,
+        action: "rt2.jarvis.rewrite_approval_requested",
+        entityType: "jarvis_rewrite_proposal",
+        entityId: proposalId,
+        details: { approvalId: approval.id, approvalRoute, riskLevel: proposal.riskLevel },
+      });
+
+      return mapRewriteProposal(updated);
+    },
+
+    decideRewriteProposal: async (
+      companyId: string,
+      proposalId: string,
+      decision: "approved" | "rejected",
+      actorId = "system",
+      reason?: string,
+    ) => {
+      const proposal = await getRewriteProposal(companyId, proposalId);
+      const [updated] = await db.update(rt2JarvisRewriteProposals).set({
+        status: decision,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(rt2JarvisRewriteProposals.companyId, companyId),
+        eq(rt2JarvisRewriteProposals.id, proposalId),
+      )).returning();
+
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: actorId === "system" ? "system" : "user",
+        actorId,
+        action: decision === "approved" ? "rt2.jarvis.rewrite_proposal_approved" : "rt2.jarvis.rewrite_proposal_rejected",
+        entityType: "jarvis_rewrite_proposal",
+        entityId: proposalId,
+        details: {
+          approvalId: proposal.approvalId,
+          reason: reason ?? null,
+          targetType: proposal.targetType,
+          targetKey: proposal.targetKey,
+          riskLevel: proposal.riskLevel,
+        },
+      });
+
+      return mapRewriteProposal(updated);
+    },
+
     getTaskAdvice: async (companyId: string, taskIssueId: string) => {
       const task = await getTaskContext(companyId, taskIssueId);
       const evidence = await getTaskEvidence(companyId, task);
@@ -355,6 +534,181 @@ export function rt2JarvisService(db: Db) {
         summary: `${taskRows.length} tasks, ${deliverableRows.length} deliverables, ${projectQualityRows.length} quality evaluations`,
       };
     },
+  };
+
+  async function getRewriteProposal(companyId: string, proposalId: string): Promise<Rt2JarvisRewriteProposal> {
+    const row = await db.select()
+      .from(rt2JarvisRewriteProposals)
+      .where(and(eq(rt2JarvisRewriteProposals.companyId, companyId), eq(rt2JarvisRewriteProposals.id, proposalId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Jarvis rewrite proposal not found");
+    return mapRewriteProposal(row);
+  }
+}
+
+function buildFallbackRewriteEval(
+  input: Rt2JarvisRewriteProposalInput,
+  citations: Rt2JarvisRewriteCitationEvidence[],
+  contradictionIds: string[],
+): Rt2JarvisRewriteEvalRubric {
+  const hasCitations = citations.length > 0;
+  const staleCount = citations.filter((citation) => citation.freshness === "stale").length;
+  const unresolvedCount = citations.filter((citation) => citation.contradictionStatus === "unresolved").length + contradictionIds.length;
+  const diffChars = Math.abs(input.after.length - input.before.length) + input.after.length;
+  const citationDensity = citations.length / Math.max(1, Math.ceil(diffChars / 500));
+
+  const dimensions = [
+    {
+      key: "citation_coverage" as const,
+      score: hasCitations ? Math.min(100, 55 + citations.length * 15) : 0,
+      rationale: hasCitations ? `${citations.length} citation(s) attached to the rewrite proposal.` : "No citations attached to the rewrite proposal.",
+    },
+    {
+      key: "freshness" as const,
+      score: staleCount > 0 ? 40 : hasCitations ? 95 : 60,
+      rationale: staleCount > 0 ? `${staleCount} stale citation(s) require review.` : "No stale citations detected by deterministic fallback.",
+    },
+    {
+      key: "contradiction_safety" as const,
+      score: unresolvedCount > 0 ? 20 : 95,
+      rationale: unresolvedCount > 0 ? `${unresolvedCount} unresolved contradiction signal(s) block direct trust.` : "No unresolved contradiction signal detected.",
+    },
+    {
+      key: "diff_scope" as const,
+      score: diffChars <= 1000 ? 95 : diffChars <= 4000 ? 70 : 45,
+      rationale: `Rewrite diff scope is ${diffChars} character units.`,
+    },
+    {
+      key: "evidence_density" as const,
+      score: Math.min(100, Math.round(citationDensity * 50)),
+      rationale: `Citation density is ${citationDensity.toFixed(2)} citation(s) per 500 changed characters.`,
+    },
+  ];
+  const overallScore = Math.round(dimensions.reduce((sum, item) => sum + item.score, 0) / dimensions.length);
+  const confidence = Math.max(0.1, Math.min(0.95, overallScore / 100));
+  const recommendation: Rt2JarvisRewriteEvalRecommendation = unresolvedCount > 0 || staleCount > 0 || !hasCitations
+    ? "block"
+    : overallScore >= 80
+      ? "approve"
+      : overallScore >= 60
+        ? "revise"
+        : "reject";
+
+  return {
+    rubricVersion: "rt2-jarvis-rewrite-rubric-v1",
+    dimensions,
+    overallScore,
+    confidence,
+    recommendation,
+    rationale: "Deterministic fallback eval based on citation coverage, freshness, contradiction safety, diff scope, and evidence density.",
+  };
+}
+
+function buildProviderRubric(
+  providerEval: Rt2JarvisRewriteProposalInput["providerEval"],
+  status: Rt2JarvisRewriteEvalProviderStatus,
+): Rt2JarvisRewriteEvalRubric | null {
+  if (!providerEval || status !== "completed") return null;
+  return {
+    rubricVersion: providerEval.rubricVersion ?? "provider-rubric-v1",
+    dimensions: providerEval.dimensions ?? [],
+    overallScore: providerEval.overallScore ?? 0,
+    confidence: providerEval.confidence ?? 0,
+    recommendation: providerEval.recommendation ?? "revise",
+    rationale: providerEval.rationale ?? "Provider eval completed without detailed rationale.",
+  };
+}
+
+function compareRewriteEvals(
+  providerStatus: Rt2JarvisRewriteEvalProviderStatus,
+  providerRubric: Rt2JarvisRewriteEvalRubric | null,
+  fallbackRubric: Rt2JarvisRewriteEvalRubric,
+): Rt2JarvisRewriteEvalComparison {
+  const disagreement = Boolean(providerRubric && providerRubric.recommendation !== fallbackRubric.recommendation);
+  const finalConfidence = providerRubric
+    ? Math.min(providerRubric.confidence, fallbackRubric.confidence)
+    : fallbackRubric.confidence;
+  const lowConfidence = finalConfidence < 0.65;
+  const reasonCodes = [
+    ...(providerStatus === "unavailable" || providerStatus === "error" ? ["provider_unavailable"] : []),
+    ...(disagreement ? ["provider_fallback_disagreement"] : []),
+    ...(lowConfidence ? ["low_confidence"] : []),
+    ...(fallbackRubric.recommendation === "block" ? ["fallback_blocked"] : []),
+  ];
+  const finalRecommendation: Rt2JarvisRewriteEvalRecommendation = fallbackRubric.recommendation === "block" || disagreement || lowConfidence
+    ? "block"
+    : providerRubric?.recommendation ?? fallbackRubric.recommendation;
+
+  return {
+    providerStatus,
+    fallbackStatus: "completed",
+    disagreement,
+    lowConfidence,
+    finalRecommendation,
+    finalConfidence,
+    reasonCodes,
+  };
+}
+
+function riskFromEvidence(
+  citations: Rt2JarvisRewriteCitationEvidence[],
+  contradictionIds: string[],
+  comparison: Rt2JarvisRewriteEvalComparison,
+): Rt2JarvisRewriteRiskLevel {
+  if (
+    citations.length === 0 ||
+    citations.some((citation) => citation.freshness === "stale" || citation.contradictionStatus === "unresolved") ||
+    contradictionIds.length > 0 ||
+    comparison.reasonCodes.length > 0 ||
+    comparison.finalRecommendation === "block"
+  ) {
+    return "high";
+  }
+  return comparison.finalConfidence >= 0.8 ? "low" : "medium";
+}
+
+function summarizeDiff(before: string, after: string): string {
+  if (before === after) return "No textual change proposed.";
+  return `Rewrite proposal changes ${before.length} chars to ${after.length} chars.`;
+}
+
+function mapRewriteProposal(row: RewriteProposalRow): Rt2JarvisRewriteProposal {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    projectId: row.projectId,
+    targetType: row.targetType as Rt2JarvisRewriteProposal["targetType"],
+    targetId: row.targetId,
+    targetKey: row.targetKey,
+    title: row.title,
+    status: row.status as Rt2JarvisRewriteProposal["status"],
+    riskLevel: row.riskLevel as Rt2JarvisRewriteRiskLevel,
+    proposedDiff: row.proposedDiff as unknown as Rt2JarvisRewriteProposal["proposedDiff"],
+    rationale: row.rationale,
+    citations: row.citations as unknown as Rt2JarvisRewriteCitationEvidence[],
+    contradictionIds: row.contradictionIds,
+    approvalId: row.approvalId,
+    approvalRoute: row.approvalRoute,
+    latestEval: row.latestEval as Rt2JarvisRewriteEvalComparison | null,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function summarizeRewriteProposals(proposals: Rt2JarvisRewriteProposalList["proposals"]): Rt2JarvisRewriteProposalList["stats"] {
+  return {
+    total: proposals.length,
+    proposed: proposals.filter((proposal) => proposal.status === "proposed").length,
+    approvalRequested: proposals.filter((proposal) => proposal.status === "approval_requested").length,
+    approved: proposals.filter((proposal) => proposal.status === "approved").length,
+    rejected: proposals.filter((proposal) => proposal.status === "rejected").length,
+    blocked: proposals.filter((proposal) => proposal.status === "blocked").length,
+    highRisk: proposals.filter((proposal) => proposal.riskLevel === "high").length,
+    providerUnavailable: proposals.filter((proposal) => proposal.latestEval?.reasonCodes.includes("provider_unavailable")).length,
+    disagreement: proposals.filter((proposal) => proposal.latestEval?.disagreement).length,
+    lowConfidence: proposals.filter((proposal) => proposal.latestEval?.lowConfidence).length,
   };
 }
 

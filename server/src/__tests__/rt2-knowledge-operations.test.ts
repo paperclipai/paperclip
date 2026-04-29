@@ -8,6 +8,7 @@ import {
   getEmbeddedPostgresTestSupport,
   issues,
   projects,
+  rt2JarvisRewriteProposals,
   rt2V33ContradictionCandidates,
   rt2V33SemanticIndexChunks,
   rt2V33SemanticIndexRuns,
@@ -40,6 +41,7 @@ describeEmbeddedPostgres("rt2 knowledge operations health", () => {
 
   afterEach(async () => {
     await db.delete(rt2V33ContradictionCandidates);
+    await db.delete(rt2JarvisRewriteProposals);
     await db.delete(rt2V33SemanticIndexChunks);
     await db.delete(rt2V33SemanticIndexRuns);
     await db.delete(rt2V33TaskProfiles);
@@ -209,6 +211,56 @@ describeEmbeddedPostgres("rt2 knowledge operations health", () => {
       expect.objectContaining({ code: "semantic_index_stale_chunks" }),
       expect.objectContaining({ code: "contradictions_open" }),
       expect.objectContaining({ code: "jarvis_grounding_at_risk" }),
+    ]));
+  });
+
+  it("reports Jarvis rewrite proposal eval guardrail risks", async () => {
+    await seedCompany();
+    await seedTask();
+    await seedSemanticIndex();
+    await db.insert(rt2JarvisRewriteProposals).values({
+      companyId,
+      projectId,
+      targetType: "wiki_page",
+      targetId: "wiki-ops",
+      targetKey: "daily/ops.md",
+      title: "Rewrite ops note",
+      status: "blocked",
+      riskLevel: "high",
+      proposedDiff: { before: "old", after: "new", summary: "test" },
+      citations: [],
+      contradictionIds: [],
+      latestEval: {
+        providerStatus: "unavailable",
+        fallbackStatus: "completed",
+        disagreement: true,
+        lowConfidence: true,
+        finalRecommendation: "block",
+        finalConfidence: 0.42,
+        reasonCodes: ["provider_unavailable", "provider_fallback_disagreement", "low_confidence"],
+      },
+      createdBy: "test",
+    });
+    const app = createApp(companyId);
+
+    const response = await request(app)
+      .get(`/api/companies/${companyId}/rt2/knowledge/operations/health`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("degraded");
+    expect(response.body.jarvisGrounding.rewriteProposals).toEqual(expect.objectContaining({
+      total: 1,
+      blocked: 1,
+      highRisk: 1,
+      providerUnavailable: 1,
+      disagreement: 1,
+      lowConfidence: 1,
+    }));
+    expect(response.body.reasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "jarvis_rewrite_provider_unavailable" }),
+      expect.objectContaining({ code: "jarvis_rewrite_eval_disagreement" }),
+      expect.objectContaining({ code: "jarvis_rewrite_low_confidence" }),
+      expect.objectContaining({ code: "jarvis_rewrite_blocked" }),
     ]));
   });
 

@@ -5,6 +5,7 @@ import { errorHandler } from "../middleware/index.js";
 import { rt2AgentMarketplaceRoutes } from "../routes/rt2-agent-marketplace.js";
 import { rt2CollaborationRewardsRoutes } from "../routes/rt2-collaboration-rewards.js";
 import { rt2EnterpriseRoutes } from "../routes/rt2-enterprise.js";
+import { rt2JarvisRoutes } from "../routes/rt2-jarvis.js";
 import { rt2KnowledgeRoutes } from "../routes/rt2-knowledge.js";
 import { rt2PersonalPnLRoutes } from "../routes/rt2-personal-pnl.js";
 import { rt2TaskRoutes } from "../routes/rt2-tasks.js";
@@ -51,6 +52,12 @@ const mocks = vi.hoisted(() => ({
     previewScimSync: vi.fn(),
     createScimPreview: vi.fn(),
     applyScimPreview: vi.fn(),
+  },
+  jarvis: {
+    createRewriteProposal: vi.fn(),
+    listRewriteProposals: vi.fn(),
+    requestRewriteApproval: vi.fn(),
+    decideRewriteProposal: vi.fn(),
   },
   workBoard: {
     createInboundDraft: vi.fn(),
@@ -100,6 +107,15 @@ vi.mock("../services/rt2-enterprise.js", () => ({
   rt2EnterpriseService: () => mocks.enterprise,
 }));
 
+vi.mock("../services/rt2-jarvis.js", () => ({
+  rt2JarvisService: () => ({
+    ...mocks.jarvis,
+    getTaskAdvice: vi.fn(),
+    getTaskBreakdown: vi.fn(),
+    getProjectInsights: vi.fn(),
+  }),
+}));
+
 vi.mock("../services/rt2-work-board.js", () => ({
   rt2WorkBoardService: () => mocks.workBoard,
 }));
@@ -141,6 +157,7 @@ function createApp() {
   app.use("/api", rt2AgentMarketplaceRoutes(null as never));
   app.use("/api", rt2CollaborationRewardsRoutes(null as never));
   app.use("/api", rt2EnterpriseRoutes(null as never));
+  app.use("/api", rt2JarvisRoutes(null as never));
   app.use(errorHandler);
   return app;
 }
@@ -484,6 +501,64 @@ describe("RT2 v2.3 fallback route contracts", () => {
       ],
       failureReasons: [{ code: "candidate_validation_failed", message: "User email is not a valid address." }],
     });
+    mocks.jarvis.createRewriteProposal.mockResolvedValue({
+      id: "proposal-1",
+      companyId,
+      projectId: null,
+      targetType: "wiki_page",
+      targetId: "wiki-1",
+      targetKey: "daily/test.md",
+      title: "Rewrite test",
+      status: "blocked",
+      riskLevel: "high",
+      proposedDiff: { before: "old", after: "new", summary: "Rewrite proposal changes 3 chars to 3 chars." },
+      rationale: null,
+      citations: [],
+      contradictionIds: [],
+      approvalId: null,
+      approvalRoute: null,
+      latestEval: {
+        providerStatus: "unavailable",
+        fallbackStatus: "completed",
+        disagreement: false,
+        lowConfidence: true,
+        finalRecommendation: "block",
+        finalConfidence: 0.4,
+        reasonCodes: ["provider_unavailable", "low_confidence"],
+      },
+      createdBy: "board-user",
+      createdAt: "2026-04-29T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+    });
+    mocks.jarvis.requestRewriteApproval.mockResolvedValue({
+      id: "proposal-1",
+      companyId,
+      projectId: null,
+      targetType: "wiki_page",
+      targetId: "wiki-1",
+      targetKey: "daily/test.md",
+      title: "Rewrite test",
+      status: "approval_requested",
+      riskLevel: "high",
+      proposedDiff: { before: "old", after: "new", summary: "Rewrite proposal changes 3 chars to 3 chars." },
+      rationale: null,
+      citations: [],
+      contradictionIds: [],
+      approvalId: "approval-1",
+      approvalRoute: "/approvals/approval-1",
+      latestEval: {
+        providerStatus: "unavailable",
+        fallbackStatus: "completed",
+        disagreement: false,
+        lowConfidence: true,
+        finalRecommendation: "block",
+        finalConfidence: 0.4,
+        reasonCodes: ["provider_unavailable", "low_confidence"],
+      },
+      createdBy: "board-user",
+      createdAt: "2026-04-29T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+    });
 
     mocks.workBoard.getBoardOverview.mockResolvedValue({
       companyId,
@@ -765,6 +840,54 @@ describe("RT2 v2.3 fallback route contracts", () => {
     expect(mocks.logActivity).not.toHaveBeenCalledWith(null, expect.objectContaining({
       action: "rt2.rollout.scim_applied",
       companyId: "other-company",
+    }));
+  });
+
+  it("validates Jarvis rewrite proposal route contracts without embedded Postgres", async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals`)
+      .send({
+        targetType: "wiki_page",
+        targetId: "wiki-1",
+        targetKey: "daily/test.md",
+        title: "Rewrite test",
+        before: "old",
+        after: "new",
+        providerEval: { status: "unavailable" },
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body).toEqual(expect.objectContaining({
+      id: "proposal-1",
+      status: "blocked",
+      riskLevel: "high",
+      latestEval: expect.objectContaining({
+        providerStatus: "unavailable",
+        reasonCodes: expect.arrayContaining(["provider_unavailable", "low_confidence"]),
+      }),
+    }));
+    expect(mocks.jarvis.createRewriteProposal).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ targetKey: "daily/test.md" }),
+      "board-user",
+    );
+
+    const directApply = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/proposal-1/apply`)
+      .send({});
+    expect(directApply.status).toBe(404);
+
+    const approval = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/proposal-1/request-approval`)
+      .send({});
+
+    expect(approval.status).toBe(200);
+    expect(approval.body).toEqual(expect.objectContaining({
+      status: "approval_requested",
+      approvalId: "approval-1",
+      approvalRoute: "/approvals/approval-1",
     }));
   });
 

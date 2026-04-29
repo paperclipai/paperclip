@@ -56,6 +56,7 @@ export {
   rt2V33SurprisingConnections,
 } from "./rt2_v33_graph_projection.js";
 export { rt2QualityScores } from "./rt2_quality_scores.js";
+export { rt2JarvisRewriteEvals, rt2JarvisRewriteProposals } from "./rt2_jarvis_autonomy.js";
 export { rt2BasePrices, DEFAULT_BASE_PRICES } from "./rt2_base_prices.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
