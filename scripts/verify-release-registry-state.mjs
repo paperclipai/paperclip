@@ -144,10 +144,13 @@ export function collectInternalDependencyProblems(manifest, packageDocsByName) {
   return problems;
 }
 
-function requireManifest(packageName, version, packageDoc) {
+function requireManifest(packageName, version, packageDoc, problems) {
   const manifest = packageDoc.versions?.[version];
   if (!manifest) {
-    throw new Error(`${packageName}: npm registry is missing manifest data for ${version}`);
+    if (problems) {
+      problems.push(`${packageName}: npm registry is missing manifest data for ${version}`);
+    }
+    return null;
   }
   return manifest;
 }
@@ -171,9 +174,11 @@ export function verifyPackageRegistryState({
     );
   }
 
-  const targetManifest = requireManifest(packageName, targetVersion, packageDoc);
-  for (const problem of collectInternalDependencyProblems(targetManifest, packageDocsByName)) {
-    problems.push(`${packageName}@${targetVersion}: ${problem}`);
+  const targetManifest = requireManifest(packageName, targetVersion, packageDoc, problems);
+  if (targetManifest) {
+    for (const problem of collectInternalDependencyProblems(targetManifest, packageDocsByName)) {
+      problems.push(`${packageName}@${targetVersion}: ${problem}`);
+    }
   }
 
   if (channel === "canary") {
@@ -186,9 +191,11 @@ export function verifyPackageRegistryState({
     }
 
     if (latestVersion && isCanaryVersion(latestVersion)) {
-      const latestManifest = requireManifest(packageName, latestVersion, packageDoc);
-      for (const problem of collectInternalDependencyProblems(latestManifest, packageDocsByName)) {
-        problems.push(`${packageName}@${latestVersion} via latest: ${problem}`);
+      const latestManifest = requireManifest(packageName, latestVersion, packageDoc, problems);
+      if (latestManifest) {
+        for (const problem of collectInternalDependencyProblems(latestManifest, packageDocsByName)) {
+          problems.push(`${packageName}@${latestVersion} via latest: ${problem}`);
+        }
       }
     }
   }
@@ -201,9 +208,11 @@ async function main() {
   const packageNames = [...new Set(options.packages)];
   const packageDocsByName = new Map();
 
-  for (const packageName of packageNames) {
-    packageDocsByName.set(packageName, await fetchPackageDocument(packageName));
-  }
+  await Promise.all(
+    packageNames.map(async (packageName) => {
+      packageDocsByName.set(packageName, await fetchPackageDocument(packageName));
+    }),
+  );
 
   const additionalInternalDeps = new Set();
   for (const packageDoc of packageDocsByName.values()) {
@@ -233,14 +242,15 @@ async function main() {
     }
   }
 
-  for (const dependencyName of additionalInternalDeps) {
-    if (!packageDocsByName.has(dependencyName)) {
+  const missingDeps = [...additionalInternalDeps].filter((dep) => !packageDocsByName.has(dep));
+  await Promise.all(
+    missingDeps.map(async (dependencyName) => {
       packageDocsByName.set(
         dependencyName,
         await fetchPackageDocument(dependencyName, { allowMissing: true }),
       );
-    }
-  }
+    }),
+  );
 
   const problems = [];
 
