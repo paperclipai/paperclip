@@ -1,11 +1,19 @@
 import type {
+  IssueBlockedReasonCode,
   IssueExecutionDecisionOutcome,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueExternalGateKind,
+  IssueExternalGateSignal,
+  IssueExternalGateStatus,
+  IssueGitHubPrCheckStatus,
+  IssueGitHubPrRequiredReview,
   IssueOriginKind,
   IssuePriority,
+  IssuePreviewProtectionStatus,
+  IssuePreviewSmokeStatus,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
@@ -237,6 +245,54 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export interface IssueGitHubVisibleReview {
+  authorLogin: string | null;
+  state: string;
+  submittedAt: string | null;
+  commitOid: string | null;
+}
+
+export interface IssueGitHubPrGateSnapshot {
+  provider: "github";
+  repoOwner: string;
+  repoName: string;
+  prNumber: number;
+  prUrl: string | null;
+  headSha: string | null;
+  isDraft: boolean | null;
+  mergeable: boolean | null;
+  mergeStateStatus: string | null;
+  checksStatus: IssueGitHubPrCheckStatus | null;
+  requiredChecks: string[];
+  passedChecks: string[];
+  failedChecks: string[];
+  pendingChecks: string[];
+  reviewDecision: string | null;
+  requiredReview: IssueGitHubPrRequiredReview;
+  nonAuthorApprovalSatisfied: boolean | null;
+  visibleReviews: IssueGitHubVisibleReview[];
+  unresolvedReviewThreads: number | null;
+  previewProtectionStatus: IssuePreviewProtectionStatus | null;
+  previewSmokeStatus: IssuePreviewSmokeStatus | null;
+  currentViewerLogin: string | null;
+  prAuthorLogin: string | null;
+  currentViewerCanSatisfyReview: boolean | null;
+}
+
+export interface IssueExternalGateResolution {
+  signal: IssueExternalGateSignal;
+  capturedAt: string | null;
+  note: string | null;
+}
+
+export interface IssueExternalGate {
+  kind: IssueExternalGateKind;
+  status: IssueExternalGateStatus;
+  requiredSignal: IssueExternalGateSignal;
+  resolution: IssueExternalGateResolution | null;
+  githubPr: IssueGitHubPrGateSnapshot | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -249,6 +305,8 @@ export interface Issue {
   description: string | null;
   status: IssueStatus;
   priority: IssuePriority;
+  blockedReasonCode?: IssueBlockedReasonCode | null;
+  externalGate?: IssueExternalGate | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   checkoutRunId: string | null;

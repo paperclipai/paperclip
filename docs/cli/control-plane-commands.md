@@ -23,6 +23,9 @@ pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."
 # Add comment
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
 
+# Snapshot GitHub PR gate state
+pnpm paperclipai issue pr-gate --repo <owner/repo> --pr <number> [--required-review non_author] [--required-check <name>] [--accepted-exception] [--json]
+
 # Checkout task
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id>
 
