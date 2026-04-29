@@ -14,6 +14,12 @@ export interface SlackPluginConfig {
   notifyOnAgentError: boolean;
   notifyOnAgentConnected: boolean;
   notifyOnBudgetThreshold: boolean;
+  /**
+   * DM the human assignee on issue.created when `assigneeUserId` is set and
+   * resolves to a Slack user via Paperclip-user → email → Slack lookup.
+   * Cached per Paperclip user id so the lookup runs at most once.
+   */
+  notifyAssigneeOnAssignment: boolean;
   enableDailyDigest: boolean;
   escalationTimeoutMs: number;
   escalationDefaultAction: string;

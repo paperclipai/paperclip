@@ -95,6 +95,42 @@ export function formatIssueCreated(event: PluginEvent): SlackMessage {
   };
 }
 
+/**
+ * DM payload sent to the human assignee when an issue is created with them
+ * already on it. Personal phrasing — recipient is the assignee, not a channel.
+ */
+export function formatAssigneeDmIssueCreated(event: PluginEvent): SlackMessage {
+  const p = event.payload as Record<string, unknown>;
+  const identifier = String(p.identifier ?? event.entityId);
+  const title = String(p.title ?? "Untitled");
+  const description = p.description ? String(p.description).slice(0, 300) : null;
+  const status = p.status ? String(p.status) : null;
+  const priority = p.priority ? String(p.priority) : null;
+  const fields: Array<{ type: string; text: string }> = [];
+  if (status) fields.push({ type: "mrkdwn", text: `*Status*\n\`${status}\`` });
+  if (priority) fields.push({ type: "mrkdwn", text: `*Priority*\n\`${priority}\`` });
+  const blocks: Array<Record<string, unknown>> = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: description
+          ? `You've been assigned an issue.\n*${identifier}* ${title}\n> ${description}`
+          : `You've been assigned an issue.\n*${identifier}* ${title}`,
+      },
+      accessory: viewButton("View Issue", `${dashboardBase}/issues/${event.entityId}`),
+    },
+  ];
+  if (fields.length > 0) {
+    blocks.push({ type: "section", fields });
+  }
+  blocks.push(contextFooter(event.occurredAt));
+  return {
+    text: `You've been assigned: ${identifier} - ${title}`,
+    blocks,
+  };
+}
+
 export function formatIssueDone(event: PluginEvent): SlackMessage {
   const p = event.payload as Record<string, unknown>;
   const identifier = String(p.identifier ?? event.entityId);

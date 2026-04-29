@@ -53,6 +53,7 @@ export const DEFAULT_CONFIG: SlackPluginConfig = {
   notifyOnAgentError: true,
   notifyOnAgentConnected: true,
   notifyOnBudgetThreshold: true,
+  notifyAssigneeOnAssignment: true,
   enableDailyDigest: false,
   escalationTimeoutMs: 900000,
   escalationDefaultAction: "defer",

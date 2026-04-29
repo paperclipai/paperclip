@@ -41,6 +41,7 @@ import {
 import {
   setBaseUrl,
   formatIssueCreated,
+  formatAssigneeDmIssueCreated,
   formatIssueDone,
   formatApprovalCreated,
   formatApprovalResolved,
@@ -1435,9 +1436,12 @@ const plugin = definePlugin({
     }
     slackAdapter = new SlackAdapter(ctx, token);
 
-    // Cross-system user mapping. Other plugins (Linear, etc.) ask "what's
-    // the slack id for this paperclip user?" by calling
-    // ctx.data.get("slack:resolve-user", { paperclipUserId }).
+    // Expose paperclip-user → slack-user mapping to this plugin's UI via
+    // usePluginData("slack:resolve-user", { paperclipUserId }). Cross-plugin
+    // invocation (e.g. from the Linear plugin) is not yet wired in the SDK
+    // — until it is, sibling plugins reach assignees via `issue.created` /
+    // `issue.updated` event payloads carrying assigneeUserId, which the
+    // subscriber below acts on.
     ctx.data.register("slack:resolve-user", async (params) => {
       const paperclipUserId = (params as { paperclipUserId?: string })
         .paperclipUserId;
@@ -1446,6 +1450,47 @@ const plugin = definePlugin({
       }
       return resolveSlackUserId(ctx, token, paperclipUserId);
     });
+
+    // DM the human assignee when an issue is created with one already set.
+    // Linear-imported issues hit this path: the Linear plugin resolves
+    // assignee email → paperclip user id at create time, and the Slack
+    // plugin completes the chain by mapping that paperclip user id → slack
+    // user id. resolveSlackUserId caches per paperclip user, so the email
+    // → Slack lookup runs at most once per assignee per install.
+    if (config.notifyAssigneeOnAssignment) {
+      ctx.events.on("issue.created", async (event) => {
+        const payload = event.payload as Record<string, unknown>;
+        const assigneeUserId = payload.assigneeUserId;
+        if (typeof assigneeUserId !== "string" || !assigneeUserId) return;
+
+        const resolved = await resolveSlackUserId(ctx, token, assigneeUserId);
+        if (!resolved.slackUserId) {
+          if (resolved.source === "slack-error") {
+            ctx.logger.warn(
+              `Skipped assignee DM for issue ${event.entityId}: slack lookup error (${resolved.error ?? "unknown"})`,
+            );
+          }
+          return;
+        }
+
+        const result = await postMessage(
+          ctx,
+          token,
+          resolved.slackUserId,
+          formatAssigneeDmIssueCreated(event),
+        );
+        if (result.ok) {
+          await ctx.metrics.write("slack.assignee_dm.sent", 1, {
+            event_type: event.eventType,
+          });
+        } else {
+          await ctx.metrics.write("slack.assignee_dm.failed", 1, {
+            event_type: event.eventType,
+            error_code: result.error ?? "unknown",
+          });
+        }
+      });
+    }
 
     ctx.logger.info("Slack Chat OS plugin started (v2.0.0) - all 5 phases active");
   },

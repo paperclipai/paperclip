@@ -1134,6 +1134,9 @@ export function buildHostServices(
           details: {
             title: issue.title,
             identifier: issue.identifier,
+            status: issue.status,
+            priority: issue.priority,
+            assigneeUserId: issue.assigneeUserId,
             originKind: normalizedOriginKind,
             originId: issue.originId,
             billingCode: issue.billingCode,
