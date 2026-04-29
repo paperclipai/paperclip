@@ -580,7 +580,7 @@ const plugin = definePlugin({
         if (!existingAssigneeUserId && linearIssue.assignee?.email) {
           const userId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee.email);
           if (userId) {
-            await ctx.issues.update(existing.id, { assigneeUserId: userId } as any, companyId);
+            await ctx.issues.update(existing.id, { assigneeUserId: userId }, companyId);
           }
         }
         return {
@@ -1183,7 +1183,7 @@ async function handleWebhookEvent(
           if (!existingAssigneeUserId && webhookAssignee?.email) {
             const userId = await resolvePaperclipUserIdForEmail(ctx, webhookAssignee.email);
             if (userId) {
-              await ctx.issues.update(existing.id, { assigneeUserId: userId } as any, companyId);
+              await ctx.issues.update(existing.id, { assigneeUserId: userId }, companyId);
             }
           }
           ctx.logger.info(`Skipped duplicate webhook create for Linear ${identifier ?? linearIssueId} (already imported)`);
@@ -1789,7 +1789,7 @@ async function runImport(ctx: PluginContext): Promise<{
           if (!existingAssigneeUserId && linearIssue.assignee?.email) {
             const userId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee.email);
             if (userId) {
-              await ctx.issues.update(existing.id, { assigneeUserId: userId } as any, companyId);
+              await ctx.issues.update(existing.id, { assigneeUserId: userId }, companyId);
             }
           }
           skipped++;
