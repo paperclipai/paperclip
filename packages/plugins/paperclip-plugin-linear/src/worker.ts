@@ -123,14 +123,14 @@ async function resolvePaperclipUserIdForEmail(
   if (!normalized) return undefined;
   const stateKey = `linear-user-by-email:${normalized}`;
   const cached = await ctx.state.get({ scopeKind: "instance", stateKey });
+  // Positive cache: non-empty string id. Negative cache: "" (looked up, no match).
+  // null means never queried — fall through to the lookup.
   if (typeof cached === "string" && cached.length > 0) return cached;
-  if (cached === null || cached === "") return undefined;
+  if (cached === "") return undefined;
 
   try {
     const user = await ctx.users.findByEmail(normalized);
     const userId = user?.id ?? null;
-    // Cache positive AND negative resolutions to avoid retrying every import.
-    // Empty string for negative; user id for positive.
     await ctx.state.set({ scopeKind: "instance", stateKey }, userId ?? "");
     return userId ?? undefined;
   } catch (err) {
@@ -572,6 +572,17 @@ const plugin = definePlugin({
       });
       if (existingByOrigin.length > 0) {
         const existing = existingByOrigin[0]!;
+        // Backfill on re-import: if the existing Paperclip issue has no
+        // human assignee but Linear now has one whose email maps to a
+        // Paperclip user, set it. Lets a re-trigger of the import act as
+        // a one-shot backfill without needing a separate action.
+        const existingAssigneeUserId = (existing as unknown as { assigneeUserId?: string | null }).assigneeUserId;
+        if (!existingAssigneeUserId && linearIssue.assignee?.email) {
+          const userId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee.email);
+          if (userId) {
+            await ctx.issues.update(existing.id, { assigneeUserId: userId } as any, companyId);
+          }
+        }
         return {
           ok: true,
           imported: false,
@@ -1163,6 +1174,18 @@ async function handleWebhookEvent(
           limit: 1,
         });
         if (existingByOrigin.length > 0) {
+          // Webhook re-delivery → backfill assigneeUserId if the existing
+          // row is unassigned and the webhook payload's assignee resolves
+          // to a Paperclip user. Cheap idempotent update.
+          const existing = existingByOrigin[0]!;
+          const webhookAssignee = (data.assignee as { email?: string | null } | null | undefined) ?? null;
+          const existingAssigneeUserId = (existing as unknown as { assigneeUserId?: string | null }).assigneeUserId;
+          if (!existingAssigneeUserId && webhookAssignee?.email) {
+            const userId = await resolvePaperclipUserIdForEmail(ctx, webhookAssignee.email);
+            if (userId) {
+              await ctx.issues.update(existing.id, { assigneeUserId: userId } as any, companyId);
+            }
+          }
           ctx.logger.info(`Skipped duplicate webhook create for Linear ${identifier ?? linearIssueId} (already imported)`);
           inFlightCreates.delete(linearIssueId);
           return;
@@ -1757,6 +1780,18 @@ async function runImport(ctx: PluginContext): Promise<{
           limit: 1,
         });
         if (existingByOrigin.length > 0) {
+          // Bulk-import re-runs are the natural moment to backfill
+          // assigneeUserId for previously-imported issues that had no
+          // resolved human assignee. One update per pre-existing row
+          // whose Linear assignee email maps to a known Paperclip user.
+          const existing = existingByOrigin[0]!;
+          const existingAssigneeUserId = (existing as unknown as { assigneeUserId?: string | null }).assigneeUserId;
+          if (!existingAssigneeUserId && linearIssue.assignee?.email) {
+            const userId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee.email);
+            if (userId) {
+              await ctx.issues.update(existing.id, { assigneeUserId: userId } as any, companyId);
+            }
+          }
           skipped++;
           continue;
         }
@@ -1773,7 +1808,7 @@ async function runImport(ctx: PluginContext): Promise<{
           ...(projectId ? { projectId } : {}),
           ...(issueLabelIds.length > 0 ? { labelIds: issueLabelIds } : {}),
           ...(assigneeUserId ? { assigneeUserId } : {}),
-        } as any);
+        });
 
         if (status !== "backlog") {
           await ctx.issues.update(created.id, {
