@@ -615,9 +615,15 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  // Summary queries: many heartbeat events fire per second when several agents
+  // are active. Mark stale only; rely on each query's own refetchInterval (15s
+  // for sidebarBadges) or window-focus refetch to pick up the fresh data.
+  // Without this, every event would force an immediate refetch and the same
+  // companyId's /sidebar-badges, /dashboard, /costs URLs would be hammered
+  // tens of times per second.
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
@@ -634,8 +640,10 @@ function invalidateActivityQueries(
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  // Same rationale as in invalidateHeartbeatQueries: dashboard and sidebar
+  // badges are summary surfaces that don't need a refetch per activity event.
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -814,7 +822,7 @@ function handleLiveEvent(
 
   if (event.type === "agent.status") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId), refetchType: "none" });
     queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
