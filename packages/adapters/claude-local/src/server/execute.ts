@@ -2,6 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  LoopDetector,
+  observeToolCallsFromChunk,
+  imputeSubscriptionCostUsd,
+  tryPostRunGuardAlert,
+  type RunGuardConfig,
+} from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -316,6 +323,34 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+
+  // --- Run guard: loop detector + per-run $ cap (with subscription cost imputation) ---
+  const guardConfig = (parseObject(config.paperclipRunGuard) as unknown) as RunGuardConfig;
+  const guardEnabled = guardConfig.enabled !== false;
+  let loopTripReason: string | null = null;
+  let capturedPid: number | null = null;
+  const loopDetector = guardEnabled
+    ? new LoopDetector(guardConfig.loopDetector ?? {}, (reason) => {
+        loopTripReason = reason;
+        if (capturedPid != null) {
+          try { process.kill(capturedPid, "SIGTERM"); } catch { /* best-effort */ }
+        }
+      })
+    : null;
+  const guardIssueId =
+    (typeof context.taskId === "string" ? context.taskId : null) ??
+    (typeof context.issueId === "string" ? context.issueId : null) ??
+    null;
+  const guardedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+    capturedPid = meta.pid;
+    return onSpawn?.(meta);
+  };
+  const guardedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    if (stream === "stdout" && loopDetector) observeToolCallsFromChunk(chunk, loopDetector);
+    return onLog(stream, chunk);
+  };
+  // --- End run guard setup ---
+
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -580,8 +615,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
-      onSpawn,
-      onLog,
+      onSpawn: guardedOnSpawn,
+      onLog: guardedOnLog,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
@@ -762,6 +797,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const applyRunGuard = async (result: AdapterExecutionResult): Promise<AdapterExecutionResult> => {
+    const alertCtx = { runId, issueId: guardIssueId, authToken, agentId: agent.id };
+
+    if (loopTripReason && (result.exitCode ?? 0) !== 0) {
+      const msg = `[paperclip] Run guard: loop detected — ${loopTripReason}`;
+      await onLog("stdout", `${msg}\n`);
+      await tryPostRunGuardAlert(alertCtx, `**Run guard tripped on ${agent.name}** (claude_local)\n\n${msg}\n\nRun: ${runId}`);
+      return { ...result, errorMessage: msg, errorCode: "run_guard_loop" };
+    }
+
+    const budgetCap = guardConfig.budgetCapUsd ?? 0.5;
+    const resolvedBillingType = result.billingType ?? "subscription";
+    const effectiveCost =
+      resolvedBillingType === "subscription" && result.usage
+        ? imputeSubscriptionCostUsd(result.model ?? "", result.usage)
+        : (result.costUsd ?? 0);
+    if (guardEnabled && effectiveCost > budgetCap) {
+      const msg = `[paperclip] Run guard: cost $${effectiveCost.toFixed(4)} exceeded cap $${budgetCap.toFixed(2)}`;
+      await onLog("stdout", `${msg}\n`);
+      await tryPostRunGuardAlert(alertCtx, `**Run guard: budget cap exceeded on ${agent.name}** (claude_local)\n\n${msg}\n\nRun: ${runId}`);
+      return { ...result, errorMessage: msg, errorCode: "run_guard_budget", exitCode: result.exitCode ?? 1 };
+    }
+
+    return result;
+  };
+
   try {
     const initial = await runAttempt(sessionId ?? null);
     if (
@@ -776,10 +837,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      return applyRunGuard(toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true }));
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return applyRunGuard(toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId }));
   } finally {
     if (restoreRemoteWorkspace) {
       await onLog(
