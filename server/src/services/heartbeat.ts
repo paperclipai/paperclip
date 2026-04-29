@@ -4411,8 +4411,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+          continue;
         }
-        continue;
+        // Already marked detached on a prior reap pass (e.g. periodic with staleness), but the
+        // adapter child is still alive — do not spin forever at 100% CPU. Terminate and fall
+        // through to the normal process-loss path (same as descendant-only PGID cleanup).
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
       }
 
       let descendantOnlyCleanup = false;
