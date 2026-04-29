@@ -3452,6 +3452,13 @@ export function issueRoutes(
       }
     }
 
+    if (actor.runId) {
+      const run = await heartbeat.getRun(actor.runId);
+      if (!run) {
+        res.status(409).json({ error: "Unknown runId: x-paperclip-run-id does not match any heartbeat_runs row" });
+        return;
+      }
+    }
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
