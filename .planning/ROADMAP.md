@@ -8,7 +8,7 @@
 - [shipped] **v2.3 운영 검증 및 외부 연동 실체화** - Phase 19-24 완료, 2026-04-27 ([archive](milestones/v2.3-ROADMAP.md), [requirements](milestones/v2.3-REQUIREMENTS.md), [audit](milestones/v2.3-MILESTONE-AUDIT.md))
 - [shipped] **v2.4 Knowledge+Economy 심화** - Phase 25-32 완료, 2026-04-28 ([archive](milestones/v2.4-ROADMAP.md), [requirements](milestones/v2.4-REQUIREMENTS.md), [audit](milestones/v2.4-MILESTONE-AUDIT.md), [re-audit](milestones/v2.4-MILESTONE-REAUDIT.md))
 - [shipped] **v2.5 Semantic Knowledge Intelligence** - Phase 33-38 완료, 2026-04-29 ([archive](milestones/v2.5-ROADMAP.md), [requirements](milestones/v2.5-REQUIREMENTS.md), [audit](milestones/v2.5-MILESTONE-AUDIT.md), [re-audit](milestones/v2.5-MILESTONE-REAUDIT.md))
-- [active] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 planned, 12 requirements mapped
+- [active] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 complete, 12 requirements mapped
 
 ## 완료됨
 
@@ -181,7 +181,7 @@ Success criteria:
 
 ## 현재 위치
 
-Phase 39 Enterprise Connector Apply Loop가 완료되었다. 다음 단계는 `$gsd-discuss-phase 40 --auto --chain`로 Trusted Local Knowledge Bridge 구현 접근을 정리하고 이어 실행하는 것이다.
+Phase 43 Validation Debt and Milestone Gate Closure가 완료되었다. v2.6은 milestone artifact gate와 requirements traceability 12/12 closure까지 도달했으며, 다음 단계는 milestone close/audit이다.
 
 ## 진행상황
 
@@ -226,10 +226,10 @@ Phase 39 Enterprise Connector Apply Loop가 완료되었다. 다음 단계는 `$
 | 37. Knowledge Intelligence Operations | v2.5 | 1/1 | Complete | 2026-04-28 |
 | 38. Semantic Knowledge Artifact Closure | v2.5 | 1/1 | Complete | 2026-04-29 |
 | 39. Enterprise Connector Apply Loop | v2.6 | 2/2 | Complete | 2026-04-29 |
-| 40. Trusted Local Knowledge Bridge | v2.6 | 0/0 | Planned | - |
-| 41. Native and Mobile Capture Hardening | v2.6 | 0/0 | Planned | - |
-| 42. Jarvis Autonomy Eval Guardrails | v2.6 | 0/0 | Planned | - |
-| 43. Validation Debt and Milestone Gate Closure | v2.6 | 0/0 | Planned | - |
+| 40. Trusted Local Knowledge Bridge | v2.6 | 1/1 | Complete | 2026-04-29 |
+| 41. Native and Mobile Capture Hardening | v2.6 | 1/1 | Complete | 2026-04-29 |
+| 42. Jarvis Autonomy Eval Guardrails | v2.6 | 1/1 | Complete | 2026-04-29 |
+| 43. Validation Debt and Milestone Gate Closure | v2.6 | 1/1 | Complete | 2026-04-29 |
 
 ## Archive
 
@@ -254,4 +254,4 @@ Phase 39 Enterprise Connector Apply Loop가 완료되었다. 다음 단계는 `$
 - [v2.5 milestone re-audit](milestones/v2.5-MILESTONE-REAUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-29, Phase 39 complete*
+*마지막 업데이트: 2026-04-29, Phase 43 complete*

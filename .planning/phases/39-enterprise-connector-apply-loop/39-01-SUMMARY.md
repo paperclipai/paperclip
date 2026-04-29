@@ -1,7 +1,11 @@
 ---
 phase: 39-enterprise-connector-apply-loop
 plan: 01
+status: complete
 subsystem: backend
+requirements_addressed:
+  - EXT-01
+  - EXT-02
 tags: [rt2, enterprise, sso, scim, postgres, audit-log]
 requires:
   - phase: 20-enterprise-rollout-connectors
