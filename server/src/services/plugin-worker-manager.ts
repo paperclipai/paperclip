@@ -619,7 +619,7 @@ export function createPluginWorkerHandle(
       TZ: process.env.TZ ?? "UTC",
     };
 
-    const child = fork(pathToFileURL(options.entrypointPath), [], {
+    const child = fork(pathToFileURL(options.entrypointPath).href, [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
       execArgv: options.execArgv ?? [],
       env: workerEnv,
