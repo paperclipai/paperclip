@@ -55,17 +55,20 @@ spec:
                 chmod 0600 "${INST}/secrets/master.key"
               fi
               # The chat plugin (@lucitra/paperclip-plugin-chat) hard-spawns
-              # `${HOME}/.local/bin/claude`. The image bakes this symlink, but the
-              # PVC mount at ${BASE} hides anything baked under it, so we must
-              # recreate the symlink on every pod boot. The container deployment
-              # overrides the image entrypoint to run `node` directly, which
-              # means docker-entrypoint.sh never runs — the seed init container
-              # is the right place to do this once before the main container
-              # starts.
+              # `${HOME}/.local/bin/<binary>` for both claude and codex agents.
+              # The image bakes these symlinks at /usr/local/bin/, but the PVC
+              # mount at ${BASE} hides anything baked under it, so we must
+              # recreate the symlinks on every pod boot. The container
+              # deployment overrides the image entrypoint to run `node`
+              # directly, which means docker-entrypoint.sh never runs — the
+              # seed init container is the right place to do this once before
+              # the main container starts.
               mkdir -p "${BASE}/.local/bin"
-              if [ ! -e "${BASE}/.local/bin/claude" ] && [ -e /usr/local/bin/claude ]; then
-                ln -sf /usr/local/bin/claude "${BASE}/.local/bin/claude"
-              fi
+              for bin in claude codex; do
+                if [ ! -e "${BASE}/.local/bin/${bin}" ] && [ -e "/usr/local/bin/${bin}" ]; then
+                  ln -sf "/usr/local/bin/${bin}" "${BASE}/.local/bin/${bin}"
+                fi
+              done
               chown -R 1000:1000 "${BASE}/.local" 2>/dev/null || true
           env:
             {{- if .Values.secret.masterKey }}
