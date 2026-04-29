@@ -2,7 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  LoopDetector,
+  observeToolCallsFromChunk,
+  tryPostRunGuardAlert,
+  type RunGuardConfig,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetPaperclipApiUrl,
@@ -123,6 +131,33 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+
+  // --- Run guard: loop detector + per-run $ cap ---
+  const guardConfig = (parseObject(config.paperclipRunGuard) as unknown) as RunGuardConfig;
+  const guardEnabled = guardConfig.enabled !== false;
+  let loopTripReason: string | null = null;
+  let capturedPid: number | null = null;
+  const loopDetector = guardEnabled
+    ? new LoopDetector(guardConfig.loopDetector ?? {}, (reason) => {
+        loopTripReason = reason;
+        if (capturedPid != null) {
+          try { process.kill(capturedPid, "SIGTERM"); } catch { /* best-effort */ }
+        }
+      })
+    : null;
+  const guardIssueId =
+    (typeof context.taskId === "string" ? context.taskId : null) ??
+    (typeof context.issueId === "string" ? context.issueId : null) ??
+    null;
+  const guardedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+    capturedPid = meta.pid;
+    return onSpawn?.(meta);
+  };
+  const guardedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    if (stream === "stdout" && loopDetector) observeToolCallsFromChunk(chunk, loopDetector);
+    return onLog(stream, chunk);
+  };
+  // --- End run guard setup ---
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -435,8 +470,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: prompt,
         timeoutSec,
         graceSec,
-        onSpawn,
-        onLog,
+        onSpawn: guardedOnSpawn,
+        onLog: guardedOnLog,
       });
       return {
         proc,
@@ -518,6 +553,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    const applyRunGuard = async (result: AdapterExecutionResult): Promise<AdapterExecutionResult> => {
+      const alertCtx = { runId, issueId: guardIssueId, authToken, agentId: agent.id };
+
+      if (loopTripReason && (result.exitCode ?? 0) !== 0) {
+        const msg = `[paperclip] Run guard: loop detected — ${loopTripReason}`;
+        await onLog("stdout", `${msg}\n`);
+        await tryPostRunGuardAlert(alertCtx, `**Run guard tripped on ${agent.name}** (opencode_local)\n\n${msg}\n\nRun: ${runId}`);
+        return { ...result, errorMessage: msg, errorCode: "run_guard_loop" };
+      }
+
+      const budgetCap = guardConfig.budgetCapUsd ?? 0.5;
+      const effectiveCost = result.costUsd ?? 0;
+      if (guardEnabled && effectiveCost > budgetCap) {
+        const msg = `[paperclip] Run guard: cost $${effectiveCost.toFixed(4)} exceeded cap $${budgetCap.toFixed(2)}`;
+        await onLog("stdout", `${msg}\n`);
+        await tryPostRunGuardAlert(alertCtx, `**Run guard: budget cap exceeded on ${agent.name}** (opencode_local)\n\n${msg}\n\nRun: ${runId}`);
+        return { ...result, errorMessage: msg, errorCode: "run_guard_budget", exitCode: result.exitCode ?? 1 };
+      }
+
+      return result;
+    };
+
     try {
       const initial = await runAttempt(sessionId);
       const initialFailed =
@@ -532,10 +589,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true);
+        return applyRunGuard(toResult(retry, true));
       }
 
-      return toResult(initial);
+      return applyRunGuard(toResult(initial));
     } finally {
       await Promise.all([
         restoreRemoteWorkspace?.(),

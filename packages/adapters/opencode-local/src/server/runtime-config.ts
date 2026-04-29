@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean, asNumber } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -63,27 +63,44 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
+  const maxSteps = asNumber(input.config.maxTurnsPerRun, 0);
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const nextConfig = {
+  const existingAgent = isPlainObject(existingConfig.agent) ? existingConfig.agent : {};
+  const existingBuild = isPlainObject(existingAgent.build) ? existingAgent.build : {};
+  const nextConfig: Record<string, unknown> = {
     ...existingConfig,
     permission: {
       ...existingPermission,
       external_directory: "allow",
+      // Deny doom-loop prompts so headless runs terminate immediately instead of hanging.
+      doom_loop: "deny",
+    },
+    agent: {
+      ...existingAgent,
+      build: {
+        ...existingBuild,
+        ...(maxSteps > 0 ? { maxSteps } : {}),
+      },
     },
   };
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+
+  const notes = [
+    "Injected runtime OpenCode config: permission.external_directory=allow, permission.doom_loop=deny.",
+  ];
+  if (maxSteps > 0) {
+    notes.push(`Capped OpenCode build agent at ${maxSteps} steps via agent.build.maxSteps.`);
+  }
 
   return {
     env: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },

@@ -31,6 +31,8 @@ Core fields:
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
+- maxTurnsPerRun (number, optional): cap the OpenCode build agent at this many steps per run via agent.build.maxSteps in the injected runtime config; 0 means uncapped (default)
+- paperclipRunGuard (object, optional): run-guard settings — { enabled?: boolean, budgetCapUsd?: number (default 0.5), loopDetector?: { enabled?: boolean, maxSameToolSameArgs5s?: number, maxSameToolSameArgs30s?: number, maxSameTool60s?: number } }
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
@@ -49,7 +51,9 @@ Notes:
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
   writing an opencode.json config file into the project working directory. Model \
   selection is passed via the --model CLI flag instead.
-- When \`dangerouslySkipPermissions\` is enabled, Paperclip injects a temporary \
-  runtime config with \`permission.external_directory=allow\` so headless runs do \
-  not stall on approval prompts.
+- When \`dangerouslySkipPermissions\` is enabled (default), the adapter injects a \
+  runtime opencode.json with permission.external_directory=allow and \
+  permission.doom_loop=deny so headless runs do not stall on approval or loop prompts.
+- The run guard (paperclipRunGuard) terminates OpenCode and posts an issue alert \
+  when a tool-call loop or per-run budget cap is exceeded.
 `;
