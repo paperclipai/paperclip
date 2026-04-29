@@ -10,7 +10,6 @@
     { "path": "./packages/adapters/codex-local" },
     { "path": "./packages/adapters/cursor-local" },
     { "path": "./packages/adapters/droid-local" },
-    { "path": "./packages/adapters/gemini-local" },
     { "path": "./packages/adapters/kilocode-local" },
     { "path": "./packages/adapters/openclaw-gateway" },
     { "path": "./packages/adapters/opencode-local" },

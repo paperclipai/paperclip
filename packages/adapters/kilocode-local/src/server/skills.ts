@@ -82,10 +82,3 @@ export async function syncKilocodeSkills(
 
   return buildKilocodeSkillSnapshot(ctx.config);
 }
-
-export function resolveKilocodeDesiredSkillNames(
-  config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; required?: boolean }>,
-) {
-  return resolvePaperclipDesiredSkillNames(config, availableEntries);
-}
