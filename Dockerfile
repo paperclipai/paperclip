@@ -69,12 +69,12 @@ COPY --chown=node:node --from=build /app /app
 #   mv ccrotate-<NEW>.tgz <kkroo>/vendor/
 #   bump ARG CCROTATE_TARBALL below
 COPY vendor/ccrotate-1.1.0.tgz /tmp/ccrotate.tgz
-# Vendored patched paperclip-adapter-claude-k8s with the init-container data-mount
-# fix and the cephfs-tail parser-race fix (sources: kkroo fork, branches
-# fix/init-container-data-mount + fix/consolidated-k8s-adapter-fixes, both merged
-# to kkroo master). Bundled here so a fresh PVC bootstrap doesn't have to fetch
-# from npm registry (which only has the unpatched 0.2.1).
-COPY vendor/paperclip-adapter-claude-k8s-0.2.1-kkroo.1.tgz /tmp/paperclip-adapter-claude-k8s.tgz
+# Vendored patched paperclip-adapter-claude-k8s with init-container data-mount
+# fix, cephfs-tail parser-race fix, and ccrotate refresh prepended to the Job
+# mainCommand (rotates OAuth before claude reads /paperclip/.claude/.credentials.json).
+# Sources: kkroo fork master @ 1ece9bb. Bundled here so a fresh PVC bootstrap
+# doesn't have to fetch from npm registry (which only has the unpatched 0.2.1).
+COPY vendor/paperclip-adapter-claude-k8s-0.2.1-kkroo.2.tgz /tmp/paperclip-adapter-claude-k8s.tgz
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
   # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
