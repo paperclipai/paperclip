@@ -1,0 +1,389 @@
+/**
+ * Heartbeat ccrotate-awareness gate.
+ *
+ * Reads ccrotate's tier-cache to decide whether the agent's adapter has at
+ * least one underlying provider account on a usable tier. If not, the gate
+ * returns a deferral with the soonest plausible resume time so the heartbeat
+ * scheduler can stop burning quota until ccrotate has a fresh account.
+ *
+ * Provider mapping: only `claude_local` and `codex_local` are routed through
+ * ccrotate today. All other adapter types are passed through (no opinion).
+ *
+ * The cache file lives at:
+ *   - ~/.ccrotate/tier-cache.json        (Claude target)
+ *   - ~/.ccrotate/tier-cache.codex.json  (Codex target)
+ *
+ * Schemas differ slightly between targets — Claude uses `serviceTier` =
+ * "base" | "extra" | "exhausted"; Codex uses `serviceTier` = "available" |
+ * "exhausted" | null. Both use `rateLimits.reset5h` / `rateLimits.reset7d`
+ * unix-second epochs to indicate when the next quota window opens.
+ */
+
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+export type CcrotateTarget = "claude" | "codex";
+
+export interface CcrotateTierCacheAccount {
+  email: string;
+  status?: string | null;
+  serviceTier?: string | null;
+  rateLimits?: {
+    reset5h?: number | null;
+    reset7d?: number | null;
+  } | null;
+}
+
+export interface CcrotateTierCacheSnapshot {
+  updatedAt?: string | null;
+  accounts: CcrotateTierCacheAccount[];
+}
+
+export interface CcrotateGateLogger {
+  info(payload: Record<string, unknown>, msg: string): void;
+  warn(payload: Record<string, unknown>, msg: string): void;
+}
+
+export interface CcrotateSwitcher {
+  /**
+   * Switch ccrotate's active account for the given target. Should be
+   * idempotent (the upstream `ccrotate switch` short-circuits when the
+   * current account already matches). Implementations must not throw — they
+   * should return `{ ok: false, error }` so the gate can warn-and-proceed.
+   */
+  switchTo(target: CcrotateTarget, email: string): Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface CcrotateTierGateOptions {
+  readCache: (target: CcrotateTarget) => Promise<CcrotateTierCacheSnapshot | null>;
+  log: CcrotateGateLogger;
+  /**
+   * Optional. When set, the gate will (best-effort) ensure ccrotate's active
+   * account is the best base-tier account before allowing dispatch. Failures
+   * are warned but never deny dispatch — switching is an optimization.
+   */
+  switcher?: CcrotateSwitcher;
+  /** In-process cache TTL for tier-cache reads. Defaults to 30s. */
+  cacheTtlMs?: number;
+  /** Grace period appended to the earliest reset epoch when computing resumeAt. */
+  graceMs?: number;
+}
+
+export interface CcrotateGateAllowResult {
+  allow: true;
+  /**
+   * Set when the gate identified (and best-effort switched ccrotate to) a
+   * usable base account for the target. Absent for adapters that don't go
+   * through ccrotate, and absent if the underlying tier-cache read failed
+   * (the gate falls back to allow without a switch in that case).
+   */
+  switchedTo?: { target: CcrotateTarget; email: string };
+}
+
+export interface CcrotateGateDenyResult {
+  allow: false;
+  target: CcrotateTarget;
+  reason: "ccrotate.no_usable_account";
+  resumeAt: Date | null;
+}
+
+export type CcrotateGateResult = CcrotateGateAllowResult | CcrotateGateDenyResult;
+
+export interface CcrotateGateCheckInput {
+  adapterType: string;
+  agentId: string;
+  now: Date;
+}
+
+const USABLE_TIERS: Record<CcrotateTarget, ReadonlySet<string>> = {
+  claude: new Set(["base"]),
+  codex: new Set(["available"]),
+};
+
+const DEFAULT_CACHE_TTL_MS = 30_000;
+const DEFAULT_GRACE_MS = 120_000;
+
+/**
+ * Maps a paperclip agent adapter type to the ccrotate target whose tier-cache
+ * governs that adapter, or null if the adapter doesn't go through ccrotate.
+ */
+export function mapAdapterToCcrotateTarget(adapterType: string): CcrotateTarget | null {
+  if (adapterType === "claude_local") return "claude";
+  if (adapterType === "codex_local") return "codex";
+  return null;
+}
+
+function pickEarliestFutureResetEpoch(
+  snapshot: CcrotateTierCacheSnapshot,
+  nowSec: number,
+): number | null {
+  let earliest: number | null = null;
+  for (const account of snapshot.accounts) {
+    const limits = account.rateLimits;
+    if (!limits) continue;
+    for (const candidate of [limits.reset5h, limits.reset7d]) {
+      if (typeof candidate !== "number") continue;
+      if (!Number.isFinite(candidate)) continue;
+      if (candidate <= nowSec) continue;
+      if (earliest === null || candidate < earliest) earliest = candidate;
+    }
+  }
+  return earliest;
+}
+
+/**
+ * Pure evaluator: given a snapshot and "now", decides whether the target has a
+ * usable account and (when not) the earliest future reset epoch. When
+ * `allow=true`, `usableAccount` is the email the gate will switch ccrotate to
+ * — the first usable account in tier-cache order.
+ */
+export function evaluateTierCacheSnapshot(
+  target: CcrotateTarget,
+  snapshot: CcrotateTierCacheSnapshot,
+  now: Date,
+): { allow: boolean; resumeAt: Date | null; usableAccount: string | null } {
+  const usable = USABLE_TIERS[target];
+  for (const account of snapshot.accounts) {
+    if (account.status && account.status !== "success") continue;
+    if (account.serviceTier && usable.has(account.serviceTier)) {
+      return { allow: true, resumeAt: null, usableAccount: account.email };
+    }
+  }
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const earliest = pickEarliestFutureResetEpoch(snapshot, nowSec);
+  return {
+    allow: false,
+    resumeAt: earliest === null ? null : new Date(earliest * 1000),
+    usableAccount: null,
+  };
+}
+
+export interface CcrotateTierGate {
+  checkAdapter(input: CcrotateGateCheckInput): Promise<CcrotateGateResult>;
+  /** Test helper to wipe in-process state. */
+  _resetForTesting(): void;
+}
+
+interface CacheEntry {
+  fetchedAt: number;
+  snapshot: CcrotateTierCacheSnapshot | null;
+  /** True when the underlying read failed (we treat as "no opinion"). */
+  errored: boolean;
+}
+
+interface DeferralEntry {
+  resumeAt: number | null;
+  /** Epoch ms at which we should drop the in-memory deferral memo. */
+  expiresAt: number;
+}
+
+export function createCcrotateTierGate(opts: CcrotateTierGateOptions): CcrotateTierGate {
+  const cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+  const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+
+  const cache = new Map<CcrotateTarget, CacheEntry>();
+  const deferrals = new Map<string, DeferralEntry>();
+  // Track the email we last successfully asked ccrotate to switch to per
+  // target. Used to skip the subprocess spawn when the active account hasn't
+  // moved. Resets on process restart (initial dispatch always spawns once).
+  const lastSwitchedEmail = new Map<CcrotateTarget, string>();
+  let warnedMissingCache = false;
+
+  async function readWithCache(
+    target: CcrotateTarget,
+    nowMs: number,
+  ): Promise<{ snapshot: CcrotateTierCacheSnapshot | null; errored: boolean }> {
+    const existing = cache.get(target);
+    if (existing && nowMs - existing.fetchedAt < cacheTtlMs) return existing;
+
+    let snapshot: CcrotateTierCacheSnapshot | null = null;
+    let errored = false;
+    try {
+      snapshot = await opts.readCache(target);
+    } catch (err) {
+      errored = true;
+      if (!warnedMissingCache) {
+        warnedMissingCache = true;
+        opts.log.warn(
+          {
+            target,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "ccrotate tier-cache read failed; falling back to dispatch (further failures suppressed)",
+        );
+      }
+    }
+    if (!errored && !snapshot && !warnedMissingCache) {
+      warnedMissingCache = true;
+      opts.log.warn(
+        { target },
+        "ccrotate tier-cache missing; falling back to dispatch (further misses suppressed)",
+      );
+    }
+    const entry: CacheEntry = { fetchedAt: nowMs, snapshot, errored };
+    cache.set(target, entry);
+    return entry;
+  }
+
+  function deferralKey(target: CcrotateTarget, agentId: string): string {
+    return `${target}::${agentId}`;
+  }
+
+  return {
+    async checkAdapter(input: CcrotateGateCheckInput): Promise<CcrotateGateResult> {
+      const target = mapAdapterToCcrotateTarget(input.adapterType);
+      if (!target) return { allow: true };
+
+      const nowMs = input.now.getTime();
+      const key = deferralKey(target, input.agentId);
+
+      const existingDeferral = deferrals.get(key);
+      if (existingDeferral && nowMs < existingDeferral.expiresAt) {
+        // Still inside the previously computed deferral window; return deny
+        // without re-reading the cache or re-logging.
+        return {
+          allow: false,
+          target,
+          reason: "ccrotate.no_usable_account",
+          resumeAt: existingDeferral.resumeAt === null ? null : new Date(existingDeferral.resumeAt),
+        };
+      }
+
+      const { snapshot } = await readWithCache(target, nowMs);
+      if (!snapshot) {
+        // Cache missing or unreadable → fall back to allow.
+        deferrals.delete(key);
+        return { allow: true };
+      }
+
+      const evaluation = evaluateTierCacheSnapshot(target, snapshot, input.now);
+      if (evaluation.allow) {
+        deferrals.delete(key);
+        const email = evaluation.usableAccount;
+        if (email && opts.switcher && lastSwitchedEmail.get(target) !== email) {
+          const result = await opts.switcher.switchTo(target, email);
+          if (result.ok) {
+            lastSwitchedEmail.set(target, email);
+            opts.log.info(
+              { target, email },
+              "ccrotate active account switched to base-tier account",
+            );
+          } else {
+            opts.log.warn(
+              { target, email, err: result.error ?? "unknown" },
+              "ccrotate switch failed; proceeding with current active account",
+            );
+          }
+        }
+        return email
+          ? { allow: true, switchedTo: { target, email } }
+          : { allow: true };
+      }
+
+      const resumeAtMs =
+        evaluation.resumeAt === null ? null : evaluation.resumeAt.getTime() + graceMs;
+
+      // Memoize so we don't re-log on every tick. Keep the memo at least until
+      // the resume time we just computed — after that the next tick re-reads
+      // the cache.
+      const expiresAt = resumeAtMs ?? nowMs + cacheTtlMs;
+      deferrals.set(key, { resumeAt: resumeAtMs, expiresAt });
+
+      opts.log.info(
+        {
+          target,
+          agentId: input.agentId,
+          adapterType: input.adapterType,
+          reason: "ccrotate.no_usable_account",
+          resumeAt: resumeAtMs === null ? null : new Date(resumeAtMs).toISOString(),
+        },
+        "heartbeat dispatch deferred: no ccrotate account on usable tier",
+      );
+
+      return {
+        allow: false,
+        target,
+        reason: "ccrotate.no_usable_account",
+        resumeAt: resumeAtMs === null ? null : new Date(resumeAtMs),
+      };
+    },
+
+    _resetForTesting() {
+      cache.clear();
+      deferrals.clear();
+      lastSwitchedEmail.clear();
+      warnedMissingCache = false;
+    },
+  };
+}
+
+/**
+ * Default switcher that spawns `ccrotate --target <target> switch <email>`.
+ * Idempotent at the ccrotate level (short-circuits when already on the target
+ * account). Returns `{ ok: false, error }` on any failure — the gate logs and
+ * proceeds; switching is best-effort.
+ */
+export function createDefaultCcrotateSwitcher(): CcrotateSwitcher {
+  return {
+    async switchTo(target, email) {
+      try {
+        await execFileAsync(
+          "ccrotate",
+          ["--target", target, "switch", email],
+          { timeout: 30_000 },
+        );
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  };
+}
+
+/**
+ * Default reader that loads ccrotate's tier-cache JSON from disk.
+ * Returns null if the file does not exist (e.g. ccrotate not installed).
+ * Throws on parse errors so the gate's error path can warn once.
+ */
+export async function readDefaultCcrotateTierCache(
+  target: CcrotateTarget,
+): Promise<CcrotateTierCacheSnapshot | null> {
+  const filename = target === "claude" ? "tier-cache.json" : "tier-cache.codex.json";
+  const filePath = path.join(os.homedir(), ".ccrotate", filename);
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw err;
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== "object") return null;
+  const accounts = Array.isArray((parsed as Record<string, unknown>).accounts)
+    ? ((parsed as Record<string, unknown>).accounts as unknown[]).filter(
+      (a): a is CcrotateTierCacheAccount => typeof a === "object" && a !== null && typeof (a as { email?: unknown }).email === "string",
+    )
+    : [];
+  return {
+    updatedAt:
+      typeof (parsed as Record<string, unknown>).updatedAt === "string"
+        ? ((parsed as Record<string, unknown>).updatedAt as string)
+        : null,
+    accounts,
+  };
+}

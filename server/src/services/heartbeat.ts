@@ -112,6 +112,12 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import {
+  createCcrotateTierGate,
+  createDefaultCcrotateSwitcher,
+  readDefaultCcrotateTierCache,
+  type CcrotateTierGate,
+} from "./ccrotate-tier-gate.js";
+import {
   RECOVERY_ORIGIN_KINDS,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
@@ -2056,6 +2062,12 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /**
+   * Optional override for the ccrotate tier-gate. Defaults to a gate that
+   * reads ~/.ccrotate/tier-cache(.codex).json on disk. Tests inject a
+   * deterministic gate.
+   */
+  ccrotateGate?: CcrotateTierGate;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -2086,6 +2098,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const ccrotateGate: CcrotateTierGate = options.ccrotateGate ?? createCcrotateTierGate({
+    readCache: readDefaultCcrotateTierCache,
+    switcher: createDefaultCcrotateSwitcher(),
+    log: {
+      info: (payload, msg) => logger.info(payload, msg),
+      warn: (payload, msg) => logger.warn(payload, msg),
+    },
+  });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function hasUnsafeTextProjectionDatabase() {
@@ -6609,6 +6629,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { agentId, source, cooldownSec: policy.cooldownSec, cooldownRemainingSec: remainingSec, preset: policy.preset },
           "Wakeup skipped due to heartbeat cooldown",
         );
+        return null;
+      }
+    }
+
+    // Heartbeat ccrotate-awareness: for adapters routed through ccrotate
+    // (claude_local, codex_local), refuse to dispatch a *timer* heartbeat when
+    // no underlying provider account is on a usable tier. The agent will be
+    // re-evaluated on the next scheduler tick after the deferral memo expires.
+    // User-initiated wakeups are passed through — the caller may have just
+    // rotated accounts and we don't want to mask their intent.
+    if (source === "timer") {
+      const gateResult = await ccrotateGate.checkAdapter({
+        adapterType: agent.adapterType,
+        agentId,
+        now: new Date(),
+      });
+      if (!gateResult.allow) {
+        await db.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: gateResult.reason,
+          payload: {
+            ...(payload ?? {}),
+            ccrotateTarget: gateResult.target,
+            ccrotateResumeAt: gateResult.resumeAt ? gateResult.resumeAt.toISOString() : null,
+          },
+          status: "skipped",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          finishedAt: new Date(),
+        });
         return null;
       }
     }
