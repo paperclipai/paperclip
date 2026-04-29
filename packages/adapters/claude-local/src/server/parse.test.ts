@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
@@ -19,6 +20,29 @@ describe("isClaudeTransientUpstreamError", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it("does not let app-level auth text override a Claude usage-limit result", () => {
+    const parsed = {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "You're out of extra usage · resets 12:10am (UTC)",
+    };
+    const stdout = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "text",
+            text: "The Paperclip API returned 401 (Agent authentication required).",
+          },
+        ],
+      },
+    });
+
+    expect(detectClaudeLoginRequired({ parsed, stdout, stderr: "" }).requiresLogin).toBe(false);
+    expect(isClaudeTransientUpstreamError({ parsed, stdout })).toBe(true);
   });
 
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
