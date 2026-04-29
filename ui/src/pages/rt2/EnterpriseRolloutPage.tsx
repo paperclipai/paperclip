@@ -6,6 +6,7 @@ import type {
   Rt2RolloutSsoValidationResult,
   Rt2RolloutSsoProvider,
   Rt2RolloutValidationStatus,
+  Rt2ScimApplyResult,
   Rt2ScimSyncPreviewResult,
   Rt2TemplatePlanItem,
 } from "@paperclipai/shared";
@@ -88,6 +89,9 @@ export function EnterpriseRolloutPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [ssoValidation, setSsoValidation] = useState<Rt2RolloutSsoValidationResult | null>(null);
   const [scimPreview, setScimPreview] = useState<Rt2ScimSyncPreviewResult | null>(null);
+  const [selectedScimCandidateIds, setSelectedScimCandidateIds] = useState<string[]>([]);
+  const [acknowledgeDeactivations, setAcknowledgeDeactivations] = useState(false);
+  const [scimApplyResult, setScimApplyResult] = useState<Rt2ScimApplyResult | null>(null);
   const [scimUsersJson, setScimUsersJson] = useState(`[
   { "externalId": "u-001", "email": "ops@isens.local", "displayName": "운영 담당자", "role": "operator", "active": true },
   { "externalId": "u-002", "email": "former@isens.local", "displayName": "퇴사 예정자", "role": "member", "active": false }
@@ -110,6 +114,19 @@ export function EnterpriseRolloutPage() {
     setSsoValidation(rolloutQuery.data?.ssoValidation ?? null);
     setScimPreview(rolloutQuery.data?.scimPreview ?? null);
   }, [rolloutQuery.data?.ssoValidation, rolloutQuery.data?.scimPreview]);
+
+  useEffect(() => {
+    if (!scimPreview) {
+      setSelectedScimCandidateIds([]);
+      return;
+    }
+    setSelectedScimCandidateIds(
+      scimPreview.candidates
+        .filter((candidate) => candidate.action !== "deactivate")
+        .map(scimCandidateId),
+    );
+    setAcknowledgeDeactivations(false);
+  }, [scimPreview]);
 
   useEffect(() => {
     const defaults = rolloutQuery.data?.recommendedDefaults;
@@ -248,6 +265,7 @@ export function EnterpriseRolloutPage() {
     }),
     onSuccess: async (result) => {
       setScimPreview(result);
+      setScimApplyResult(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.rt2Enterprise.rollout(selectedCompanyId!) });
       pushToast({ tone: result.status === "fail" ? "error" : "success", title: `SCIM preview ${result.status}` });
     },
@@ -256,6 +274,27 @@ export function EnterpriseRolloutPage() {
         tone: "error",
         title: "SCIM preview failed",
         body: error instanceof Error ? error.message : "Check the source JSON payload.",
+      });
+    },
+  });
+
+  const scimApplyMutation = useMutation({
+    mutationFn: () => rt2EnterpriseApi.applyScim(selectedCompanyId!, {
+      previewId: scimPreview?.previewId ?? "",
+      previewFingerprint: scimPreview?.previewFingerprint ?? "",
+      selectedCandidateIds: selectedScimCandidateIds,
+      acknowledgeDeactivations,
+    }),
+    onSuccess: async (result) => {
+      setScimApplyResult(result);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.rt2Enterprise.rollout(selectedCompanyId!) });
+      pushToast({ tone: result.status === "failed" ? "error" : "success", title: `SCIM apply ${result.status}` });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "SCIM apply failed",
+        body: error instanceof Error ? error.message : "SCIM apply failed.",
       });
     },
   });
@@ -285,6 +324,25 @@ export function EnterpriseRolloutPage() {
     policy: !!rolloutQuery.data?.tenantPolicy?.isActive,
     template: templateOptions.length > 0,
   }), [rolloutQuery.data, templateOptions.length]);
+
+  const selectedScimCandidates = useMemo(() => {
+    if (!scimPreview) return [];
+    const selected = new Set(selectedScimCandidateIds);
+    return scimPreview.candidates.filter((candidate) => selected.has(scimCandidateId(candidate)));
+  }, [scimPreview, selectedScimCandidateIds]);
+  const selectedDeactivateCount = selectedScimCandidates.filter((candidate) => candidate.action === "deactivate").length;
+  const canApplyScim = !!scimPreview?.previewId
+    && !!scimPreview.previewFingerprint
+    && selectedScimCandidateIds.length > 0
+    && (selectedDeactivateCount === 0 || acknowledgeDeactivations)
+    && !scimApplyMutation.isPending;
+
+  function toggleScimCandidate(candidateId: string, checked: boolean) {
+    setSelectedScimCandidateIds((current) => {
+      if (checked) return current.includes(candidateId) ? current : [...current, candidateId];
+      return current.filter((id) => id !== candidateId);
+    });
+  }
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Building2} message="기업 연동을 설정할 회사를 먼저 선택하세요." />;
@@ -374,8 +432,21 @@ export function EnterpriseRolloutPage() {
           </div>
           {ssoValidation ? (
             <div className="mt-4 space-y-2">
+              <div className="grid gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground md:grid-cols-3">
+                <div>evidence: {ssoValidation.evidenceId ?? "not recorded"}</div>
+                <div>checked: {new Date(ssoValidation.checkedAt).toLocaleString()}</div>
+                <div>cert: {ssoValidation.certificateExpiresAt ? new Date(ssoValidation.certificateExpiresAt).toLocaleDateString() : "not provided"}</div>
+              </div>
               {ssoValidation.checks.map((check) => (
                 <ValidationRow key={check.key} label={check.label} status={check.status} detail={check.detail} />
+              ))}
+              {(ssoValidation.callbackStateChecks ?? []).map((check) => (
+                <ValidationRow key={`callback-${check.key}`} label={check.label} status={check.status} detail={check.detail} />
+              ))}
+              {(ssoValidation.failureReasons ?? []).map((failure) => (
+                <p key={`${failure.code}-${failure.field ?? "global"}`} className="rounded-md border border-destructive/30 bg-background px-3 py-2 text-xs text-destructive">
+                  {failure.code}: {failure.message}
+                </p>
               ))}
             </div>
           ) : null}
@@ -513,17 +584,31 @@ export function EnterpriseRolloutPage() {
           <div className="mt-4 space-y-3">
             <div className="flex flex-wrap gap-2 text-xs">
               <ValidationStatus status={scimPreview.status} />
+              <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">preview {scimPreview.previewId ?? "not recorded"}</span>
+              <span className="max-w-full truncate rounded-md border border-border px-2 py-1 text-muted-foreground">fingerprint {scimPreview.previewFingerprint ?? "missing"}</span>
               <span className="rounded-md border border-emerald-500/30 px-2 py-1 text-emerald-600">Create {scimPreview.summary.create}</span>
               <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">Update {scimPreview.summary.update}</span>
               <span className="rounded-md border border-amber-500/30 px-2 py-1 text-amber-600">Deactivate {scimPreview.summary.deactivate}</span>
             </div>
             <div className="overflow-hidden rounded-md border border-border">
               {scimPreview.candidates.map((candidate) => (
-                <div key={`${candidate.kind}-${candidate.externalId}`} className="grid gap-2 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[7rem_8rem_minmax(0,1fr)]">
+                <div
+                  key={scimCandidateId(candidate)}
+                  className={`grid gap-2 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[2rem_7rem_8rem_minmax(0,1fr)] ${candidate.action === "deactivate" ? "bg-amber-500/5" : ""}`}
+                >
+                  <input
+                    aria-label={`select ${candidate.label}`}
+                    type="checkbox"
+                    checked={selectedScimCandidateIds.includes(scimCandidateId(candidate))}
+                    onChange={(event) => toggleScimCandidate(scimCandidateId(candidate), event.target.checked)}
+                  />
                   <div className="text-xs font-medium uppercase text-muted-foreground">{candidate.kind}</div>
-                  <span className="w-fit rounded-md border border-border px-2 py-0.5 text-xs">{candidate.action}</span>
+                  <span className={`w-fit rounded-md border px-2 py-0.5 text-xs ${candidate.action === "deactivate" ? "border-amber-500/30 text-amber-600" : "border-border"}`}>
+                    {candidate.action}
+                  </span>
                   <div>
                     <div className="font-medium">{candidate.label}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">id: {scimCandidateId(candidate)}</div>
                     <p className="mt-1 text-xs text-muted-foreground">{candidate.reason}</p>
                     {candidate.warnings.map((warning) => (
                       <p key={warning} className="mt-1 text-xs text-amber-600">{warning}</p>
@@ -532,6 +617,25 @@ export function EnterpriseRolloutPage() {
                 </div>
               ))}
             </div>
+            <div className="flex flex-col gap-3 rounded-md border border-border bg-background px-3 py-3 text-sm md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">Selected {selectedScimCandidateIds.length}</span>
+                <span className="rounded-md border border-amber-500/30 px-2 py-1 text-amber-600">Selected deactivate {selectedDeactivateCount}</span>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={acknowledgeDeactivations}
+                  disabled={selectedDeactivateCount === 0}
+                  onChange={(event) => setAcknowledgeDeactivations(event.target.checked)}
+                />
+                Deactivate 후보 적용 승인
+              </label>
+              <Button size="sm" disabled={!canApplyScim} onClick={() => scimApplyMutation.mutate()}>
+                {scimApplyMutation.isPending ? "적용 중..." : "선택 SCIM 적용"}
+              </Button>
+            </div>
+            {scimApplyResult ? <ScimApplyEvidence result={scimApplyResult} /> : null}
           </div>
         ) : null}
       </section>
@@ -610,6 +714,7 @@ export function EnterpriseRolloutPage() {
                 <div className="text-xs font-medium text-muted-foreground">{entry.action}</div>
                 <div className="mt-1 text-sm">{entry.actorType}:{entry.actorId}</div>
                 <div className="mt-1 text-xs text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</div>
+                {entry.details ? <AuditDetails details={entry.details} /> : null}
               </div>
             ))}
             {(rolloutQuery.data?.auditLog.length ?? 0) === 0 ? (
@@ -671,6 +776,74 @@ export function EnterpriseRolloutPage() {
           <EmptyState icon={PackageCheck} message="Save or select a template to preview apply objects." />
         )}
       </section>
+    </div>
+  );
+}
+
+function scimCandidateId(candidate: { id?: string; kind: string; action: string; externalId: string }) {
+  return candidate.id ?? `${candidate.kind}:${candidate.action}:${candidate.externalId}`;
+}
+
+function ScimApplyEvidence({ result }: { result: Rt2ScimApplyResult }) {
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-background px-3 py-3">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">evidence {result.evidenceId}</span>
+        <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">applied {new Date(result.appliedAt).toLocaleString()}</span>
+        <span className="rounded-md border border-emerald-500/30 px-2 py-1 text-emerald-600">Applied {result.summary.applied}</span>
+        <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">Skipped {result.summary.skipped}</span>
+        <span className="rounded-md border border-destructive/40 px-2 py-1 text-destructive">Failed {result.summary.failed}</span>
+        <span className="rounded-md border border-amber-500/30 px-2 py-1 text-amber-600">Rollback {result.summary.rollbackCandidates}</span>
+      </div>
+      <div className="overflow-hidden rounded-md border border-border">
+        {result.candidates.map((candidate) => (
+          <div key={candidate.candidateId} className="grid gap-2 border-b border-border px-3 py-2 text-sm last:border-b-0 md:grid-cols-[8rem_7rem_minmax(0,1fr)]">
+            <div className="text-xs font-medium uppercase text-muted-foreground">{candidate.kind}</div>
+            <span className="w-fit rounded-md border border-border px-2 py-0.5 text-xs">{candidate.status}</span>
+            <div>
+              <div className="font-medium">{candidate.label}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{candidate.candidateId}</div>
+              <p className="mt-1 text-xs text-muted-foreground">{candidate.reason}</p>
+              {candidate.failureReason ? (
+                <p className="mt-1 text-xs text-destructive">{candidate.failureReason.code}: {candidate.failureReason.message}</p>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+      {result.rollbackCandidates.length > 0 ? (
+        <div className="overflow-hidden rounded-md border border-amber-500/30">
+          {result.rollbackCandidates.map((candidate) => (
+            <div key={candidate.candidateId} className="grid gap-2 border-b border-border px-3 py-2 text-xs last:border-b-0 md:grid-cols-[8rem_1fr]">
+              <div className="font-medium text-amber-600">rollback</div>
+              <div>
+                <div>{candidate.candidateId}</div>
+                <div className="mt-1 text-muted-foreground">{candidate.reason}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {result.failureReasons.map((failure) => (
+        <p key={`${failure.code}-${failure.field ?? "global"}`} className="text-xs text-destructive">{failure.code}: {failure.message}</p>
+      ))}
+    </div>
+  );
+}
+
+function AuditDetails({ details }: { details: Record<string, unknown> }) {
+  const evidenceId = typeof details.evidenceId === "string" ? details.evidenceId : null;
+  const previewId = typeof details.previewId === "string" ? details.previewId : null;
+  const status = typeof details.status === "string" ? details.status : null;
+  const rollbackCandidateCount = typeof details.rollbackCandidateCount === "number" ? details.rollbackCandidateCount : null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+      {status ? <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">status {status}</span> : null}
+      {evidenceId ? <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">evidence {evidenceId}</span> : null}
+      {previewId ? <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">preview {previewId}</span> : null}
+      {rollbackCandidateCount !== null ? (
+        <span className="rounded-md border border-amber-500/30 px-2 py-1 text-amber-600">rollback {rollbackCandidateCount}</span>
+      ) : null}
     </div>
   );
 }
