@@ -14,11 +14,21 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝
 
-**현재 마일스톤:** 다음 milestone planning 전 상태
+**현재 마일스톤:** v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
 
 **최근 완료:** v2.6은 enterprise connector apply, trusted local bridge, native/mobile capture hardening, Jarvis autonomy eval guardrails, validation debt closure를 완료했다. Audit은 requirements 12/12, phases 5/5, integration 5/5, flows 5/5이며 full-suite timeout과 Windows embedded Postgres skip을 `tech_debt`로 수용했다.
 
-**현재 진행:** v2.6 archive/tag가 완료되면 새 milestone 요구사항 정의가 다음 단계다.
+**현재 진행:** v2.7은 v2.6에서 tech debt로 수용한 full-suite timeout, Windows embedded Postgres skip, stale validation metadata, legacy UAT closure inconsistency를 release-host에서 재현 가능하고 audit 가능한 confidence gate로 닫는다.
+
+## 현재 마일스톤: v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
+
+**Goal:** v2.6에서 남은 verification/runtime confidence 부채를 release-host 재현성, embedded Postgres coverage, artifact metadata consistency, operator-visible confidence evidence로 닫는다.
+
+**Target features:**
+- Full `pnpm typecheck && pnpm test`가 release-host 기준에서 timeout 원인과 owner를 남기며 재시도 가능한 gate로 동작한다.
+- Embedded Postgres persistence/route suites가 Windows 기본 실행에서 skip으로 사라지지 않고 opt-in 또는 host-ready path로 검증된다.
+- Phase validation metadata, legacy UAT closure, milestone artifact gate가 같은 truth를 보고하도록 정렬된다.
+- 운영자가 release confidence와 남은 validation debt를 앱/문서/CLI evidence에서 확인할 수 있다.
 
 ## 최근 마일스톤: v2.6 운영 커넥터 및 자율성 하드닝
 
@@ -114,7 +124,10 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- [ ] 다음 milestone requirements 정의.
+- [ ] v2.7 release-host verification과 runtime confidence gate 요구사항 정의.
+- [ ] Full-suite timeout 원인을 분류하고 release-host 재실행 기준을 만든다.
+- [ ] Embedded Postgres persistence/route 검증을 Windows host에서 신뢰 가능한 경로로 올린다.
+- [ ] Validation metadata와 legacy UAT closure 상태를 milestone gate truth와 정렬한다.
 
 ### 범위 밖
 
@@ -161,7 +174,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-다음 milestone은 fresh requirements부터 정의한다. 후보 축은 v2.6에서 deferred된 full-suite/runtime verification, embedded Postgres release-host validation, native distribution, cross-company federation, provider-backed eval hardening, 또는 approval-first autonomy observation이다.
+v2.7은 새 product feature 확장보다 release-host verification과 runtime confidence를 우선한다. native distribution, cross-company federation, provider-backed eval hardening, approval-first autonomy observation은 v2.7 confidence gate가 안정화된 뒤 다시 평가한다.
 
 ## Evolution
 
@@ -181,4 +194,4 @@ v2.0-v2.2에서 완료한 것:
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-29 after v2.6 milestone*
+*마지막 업데이트: 2026-04-29 after v2.7 milestone start*

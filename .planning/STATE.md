@@ -1,32 +1,32 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.6
-milestone_name: 운영 커넥터 및 자율성 하드닝
-status: complete
-last_updated: "2026-04-29T16:55:00+09:00"
+milestone: v2.7
+milestone_name: 릴리즈 호스트 검증 및 런타임 신뢰도
+status: planning
+last_updated: "2026-04-29T17:10:00+09:00"
 last_activity: 2026-04-29
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # RealTycoon2 Planning State
 
 ## Current Position
 
-Phase: -
-Plan: -
-Status: v2.6 milestone complete; ready for next milestone planning
-Last activity: 2026-04-29 - v2.6 milestone archived
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-29 - Milestone v2.7 started
 
 ## 현재 위치
 
-v2.6 운영 커넥터 및 자율성 하드닝 milestone이 완료되었다. IdP/SCIM apply loop, trusted local bridge, native/mobile capture hardening, Jarvis autonomy eval guardrails, validation debt closure, legacy UAT classification, and milestone artifact gate가 구현 또는 문서화되었다.
+v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 milestone이 시작되었다. 목표는 v2.6에서 tech debt로 수용한 full-suite timeout, Windows embedded Postgres skip, stale validation metadata, legacy UAT closure inconsistency를 release-host 재현성과 artifact gate truth로 닫는 것이다.
 
-다음 위치는 새 milestone 요구사항 정의다.
+다음 위치는 Phase 44 계획 수립이다.
 
 ## 최근 완료한 마일스톤
 
@@ -44,7 +44,7 @@ v2.6은 운영 커넥터 및 자율성 하드닝 milestone이었다:
 
 **핵심 가치:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
 
-**현재 초점:** Planning next milestone after v2.6 archive. Fresh requirements should be created before new execution.
+**현재 초점:** v2.7 release-host verification, embedded Postgres runtime coverage, artifact metadata consistency, operations confidence reporting.
 
 ## 누적 맥락
 
@@ -91,11 +91,11 @@ v2.6 close 시점 인정/defer:
 
 ## 다음 단계
 
-새 milestone을 시작한다:
+Phase 44 계획을 시작한다:
 
 ```sh
-$gsd-new-milestone
+$gsd-plan-phase 44
 ```
 
 ---
-*상태 업데이트: 2026-04-29, v2.6 milestone complete*
+*상태 업데이트: 2026-04-29, v2.7 milestone started*
