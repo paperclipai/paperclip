@@ -107,8 +107,8 @@ describe("GET /invites/:token/logo", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("image/png");
-    expect(mockStorage.headObject).toHaveBeenCalledWith("company-1", "assets/companies/logo-1");
-    expect(mockStorage.getObject).toHaveBeenCalledWith("company-1", "assets/companies/logo-1");
+    expect(mockStorage.headObject).toHaveBeenCalledWith("company-1", "assets/companies/logo-1", undefined);
+    expect(mockStorage.getObject).toHaveBeenCalledWith("company-1", "assets/companies/logo-1", undefined);
   });
 
   it("returns 404 when the logo asset record exists but storage does not", async () => {
