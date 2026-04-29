@@ -14,6 +14,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
@@ -79,6 +87,7 @@ export function NewAgent() {
     errorMessage: null,
     result: null,
   });
+  const [showWorkerAdapterWarning, setShowWorkerAdapterWarning] = useState(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -150,6 +159,25 @@ export function NewAgent() {
     return adapter.buildAdapterConfig(configValues);
   }
 
+  function performCreate() {
+    createAgent.mutate(
+      buildNewAgentHirePayload({
+        name,
+        effectiveRole,
+        title,
+        reportsTo,
+        selectedSkillKeys,
+        configValues,
+        adapterConfig: buildAdapterConfig(),
+      }),
+    );
+  }
+
+  function confirmWorkerAdapterPairing() {
+    setShowWorkerAdapterWarning(false);
+    performCreate();
+  }
+
   function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
@@ -181,17 +209,11 @@ export function NewAgent() {
         return;
       }
     }
-    createAgent.mutate(
-      buildNewAgentHirePayload({
-        name,
-        effectiveRole,
-        title,
-        reportsTo,
-        selectedSkillKeys,
-        configValues,
-        adapterConfig: buildAdapterConfig(),
-      }),
-    );
+    if (effectiveRole === "worker" && configValues.adapterType !== "openclaw_gateway") {
+      setShowWorkerAdapterWarning(true);
+      return;
+    }
+    performCreate();
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
@@ -382,6 +404,25 @@ export function NewAgent() {
           </div>
         </div>
       </div>
+
+      <Dialog open={showWorkerAdapterWarning} onOpenChange={setShowWorkerAdapterWarning}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Unusual role/adapter pairing</DialogTitle>
+            <DialogDescription>
+              The Worker role is intended for chief-local subordinate agents using the openclaw_gateway adapter. Pairing it with the {configValues.adapterType} adapter is unusual. Confirm this is intended?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setShowWorkerAdapterWarning(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={confirmWorkerAdapterPairing}>
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
