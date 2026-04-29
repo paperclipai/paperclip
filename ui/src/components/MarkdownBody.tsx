@@ -133,6 +133,17 @@ function isExternalHttpUrl(href: string | null | undefined): boolean {
   }
 }
 
+/**
+ * Returns true for absolute Unix filesystem paths like /home/…, /etc/…, /var/…, etc.
+ * These cannot be opened by a browser as app routes and must not be rendered as
+ * clickable links — doing so causes the SPA router to misinterpret the path segment
+ * (e.g. "/home" → company prefix "HOME") and display a "Company not found" error.
+ */
+function isLocalFilesystemPath(href: string | null | undefined): boolean {
+  if (!href) return false;
+  return /^\/(?:home|etc|usr|var|tmp|root|opt|srv|mnt|proc|sys|dev|run)\//.test(href);
+}
+
 function renderLinkBody(
   children: ReactNode,
   leadingIcon: ReactNode,
@@ -329,6 +340,18 @@ export function MarkdownBody({
           </a>
         );
       }
+      if (isLocalFilesystemPath(href)) {
+        return (
+          <code
+            className="paperclip-local-path"
+            title="Local filesystem path (not openable in browser)"
+            style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+          >
+            {linkChildren}
+          </code>
+        );
+      }
+
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (

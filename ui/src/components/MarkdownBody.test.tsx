@@ -378,4 +378,38 @@ describe("MarkdownBody", () => {
     expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
   });
+
+  describe("local filesystem paths", () => {
+    it("renders /home/... links as inline code, not anchor tags", () => {
+      const html = renderMarkdown(
+        "[draft file](/home/paperclip/projects/sdl-framework/draft.md)",
+      );
+
+      expect(html).toContain("<code");
+      expect(html).toContain("paperclip-local-path");
+      expect(html).toContain("draft file");
+      expect(html).not.toContain('<a href="/home/');
+    });
+
+    it("renders /etc/... links as inline code", () => {
+      const html = renderMarkdown("[config](/etc/nginx/nginx.conf)");
+
+      expect(html).toContain("<code");
+      expect(html).not.toContain('<a href="/etc/');
+    });
+
+    it("renders /var/... links as inline code", () => {
+      const html = renderMarkdown("[log](/var/log/app.log)");
+
+      expect(html).toContain("<code");
+      expect(html).not.toContain('<a href="/var/');
+    });
+
+    it("does not affect normal internal app routes", () => {
+      const html = renderMarkdown("[settings](/company/settings)");
+
+      expect(html).toContain('<a href="/company/settings"');
+      expect(html).not.toContain("paperclip-local-path");
+    });
+  });
 });
