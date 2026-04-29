@@ -10,6 +10,7 @@ import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chi
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { remarkLinkAbsolutePaths } from "../lib/absolute-path-link";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
 
@@ -107,8 +108,18 @@ function extractMermaidSource(children: ReactNode): string | null {
   return flattenText(childProps.children).replace(/\n$/, "");
 }
 
+function isEditorProtocolUrl(url: string): boolean {
+  // Narrow allowlist: only `vscode://file/...` URLs that open a path in
+  // VS Code or Cursor. Other `vscode:` schemes (e.g. `vscode://extension/...`,
+  // `vscode://settings`) can trigger extension commands or settings actions
+  // and must not be reachable from agent-authored markdown.
+  return /^vscode:\/\/file\//i.test(url);
+}
+
 function safeMarkdownUrlTransform(url: string): string {
-  return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+  if (parseMentionChipHref(url)) return url;
+  if (isEditorProtocolUrl(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 function isGitHubUrl(href: string | null | undefined): boolean {
@@ -252,6 +263,7 @@ export function MarkdownBody({
   if (linkIssueReferences) {
     remarkPlugins.push(remarkLinkIssueReferences);
   }
+  remarkPlugins.push(remarkLinkAbsolutePaths);
   if (softBreaks) {
     remarkPlugins.push(remarkSoftBreaks);
   }
@@ -331,6 +343,7 @@ export function MarkdownBody({
       }
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
+      const isEditorLink = !!href && isEditorProtocolUrl(href);
       const leadingIcon = isGitHubLink ? (
         <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
       ) : null;
@@ -343,6 +356,7 @@ export function MarkdownBody({
           {...(isExternal
             ? { target: "_blank", rel: "noopener noreferrer" }
             : { rel: "noreferrer" })}
+          {...(isEditorLink ? { title: "Open in VS Code / Cursor", "data-editor-link": "true" } : {})}
           style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
         >
           {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
