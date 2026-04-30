@@ -53,7 +53,9 @@
     "test:release-host-verify": "node scripts/rt2-release-host-verify.test.mjs",
     "rt2:runtime-confidence": "node scripts/rt2-runtime-confidence.mjs",
     "test:runtime-confidence": "node scripts/rt2-runtime-confidence.test.mjs",
-    "test:native-distribution-foundation": "node scripts/rt2-native-distribution-foundation.test.mjs"
+    "test:native-distribution-foundation": "node scripts/rt2-native-distribution-foundation.test.mjs",
+    "rt2:native-signing-gate": "node scripts/rt2-native-signing-gate.mjs",
+    "test:native-signing-gate": "node scripts/rt2-native-signing-gate.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
