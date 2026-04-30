@@ -187,7 +187,9 @@ export function InstanceGeneralSettings() {
             <p className="max-w-2xl text-sm text-muted-foreground">
               Shell command to run when a Claude/Codex adapter reports{" "}
               <code>provider_quota_exhausted</code>. Typical use: rotate to a non-rate-limited
-              account (e.g. <code>ccrotate next</code>) so heartbeats can resume automatically.
+              account (e.g. <code>ccrotate next -y</code>) so heartbeats can resume automatically.
+              The <code>-y</code> flag matters: without it, ccrotate's non-TTY default is to deny
+              extra usage and silently refuse to rotate when base accounts are also rate-limited.
               Leave blank to disable. Calls are debounced to once per 60s and time out after 30s.
             </p>
             <p className="max-w-2xl text-xs text-destructive">
@@ -200,7 +202,7 @@ export function InstanceGeneralSettings() {
             <Input
               value={quotaExhaustedCmdDraft}
               onChange={(e) => setQuotaExhaustedCmdDraft(e.target.value)}
-              placeholder="ccrotate next"
+              placeholder="ccrotate next -y"
               className="max-w-xl font-mono text-sm"
               disabled={updateGeneralMutation.isPending}
               aria-label="Quota-exhausted hook command"
