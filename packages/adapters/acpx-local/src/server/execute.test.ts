@@ -119,6 +119,7 @@ describe("acpx_local runtime skill isolation", () => {
     const keep = await createSkill(skillRoot, "keep");
     const remove = await createSkill(skillRoot, "remove");
     await fs.symlink(path.join(outsideRoot, "secret.txt"), path.join(keep.source, "leak.txt"));
+    await fs.symlink(outsideRoot, path.join(keep.source, "leak-dir"));
 
     const baseConfig = {
       agent: "codex",
@@ -140,6 +141,27 @@ describe("acpx_local runtime skill isolation", () => {
 
     expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "SKILL.md"))).toBe(true);
     expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "leak.txt"))).toBe(false);
+    expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "leak-dir"))).toBe(false);
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, "skills");
+    const codexHome = path.join(root, "codex-home");
+    const legacy = await createSkill(skillRoot, "legacy");
+    const skillsHome = path.join(codexHome, "skills");
+    await fs.mkdir(skillsHome, { recursive: true });
+    await fs.symlink(legacy.source, path.join(skillsHome, legacy.runtimeName));
+
+    await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [legacy],
+      paperclipSkillSync: { desiredSkills: [] },
+    });
+
+    expect(await pathExists(path.join(skillsHome, legacy.runtimeName))).toBe(false);
   });
 });
