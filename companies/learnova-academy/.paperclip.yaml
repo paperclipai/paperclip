@@ -1,0 +1,290 @@
+schema: paperclip/v1
+
+# Paperclip vendor extension — runtime overrides for the learnova-academy company.
+#
+# IMPORTANT: cwd is set to the koenig-ai-org repo root for every agent so they
+# inherit the project-level .mcp.json (Claude Code) and opencode.json (OpenCode).
+# This wires filesystem + tavily + github + fetch MCP servers without touching
+# user-global config.
+#
+# Per-agent path discipline (which vault folder each agent writes to) is enforced
+# via SOUL/skill instructions, not hard ACLs at the MCP layer.
+#
+# OpenRouter creds live in ~/.local/share/opencode/auth.json (OpenCode auth), not env.
+
+# YAML anchor for the koenig-ai-org repo root (reused by every agent's cwd)
+_anchors:
+  repo_root: &repo_root /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+agents:
+  # ─────────────────────────── C-suite ───────────────────────────
+  ceo:
+    # Cost optimization 2026-04-30: switched from Opus 4.7 → Sonnet 4.6.
+    # Opus cost $4.36 across 4 runs in one cycle (auto-triggers from issue assignment).
+    # Sonnet 4.6 has comparable orchestration quality at ~3x lower cost.
+    # Reserve Opus 4.7 for weekly-retrospective only (deep synthesis).
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        RESEND_API_KEY:
+          kind: secret
+          requirement: required
+        GH_TOKEN:
+          kind: secret
+          requirement: optional
+
+  # ─────────────────────────── Chiefs (Sonnet 4.6 via Claude Code) ───────────────────────────
+  chief-research:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+  chief-content:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+  chief-engineering:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+  chief-marketing:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+  # ─────────────────────────── Researchers (Grok 4.1 Fast via OpenCode→OpenRouter) ───────────────────────────
+  researcher-anthropic:
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/x-ai/grok-4.1-fast
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: required
+        XAI_API_KEY:
+          kind: secret
+          requirement: optional
+  researcher-openai:
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/x-ai/grok-4.1-fast
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: required
+  researcher-google:
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/x-ai/grok-4.1-fast
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: required
+  researcher-community:
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/x-ai/grok-4.1-fast
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: required
+        XAI_API_KEY:
+          kind: secret
+          requirement: required   # community researcher uses Grok x_search heavily
+  research-editor:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+  # ─────────────────────────── Content team ───────────────────────────
+  content-author:
+    # Gemini 3 Flash Preview — Vardaan explicitly excluded Gemini 2.5 Flash 2026-04-29.
+    # Verified slug at /api/companies/.../adapters/opencode_local/models on 2026-04-30.
+    adapter:
+      type: opencode_local
+      config:
+        model: openrouter/google/gemini-3-flash-preview
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        ACADEMY_AGENT_API_KEY:
+          kind: secret
+          requirement: required
+        TAVILY_API_KEY:
+          kind: secret
+          requirement: optional
+  content-reviewer:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+  slide-audio-producer:
+    # NotebookLM (notebooklm-py primary, open-notebook fallback) decision logged
+    # 2026-04-30 in docs/V2_PRODUCER_EXPANSION.md.
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+  voice-producer:
+    # Lightweight: orchestrates Kokoro CLI via Bash. Haiku 4.5 is sufficient.
+    adapter:
+      type: claude_local
+      config:
+        model: claude-haiku-4-5
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+  # ─────────────────────────── Engineering — harness pattern (Anthropic April 2026) ───────────────────────────
+  # Planner and Executor are SAME model + SAME context + SAME tools.
+  # Split into two agents for clear audit logs (Planner-only entries, Executor-only entries).
+  # Planner runs Claude Code with --permission-mode plan; Executor runs without it.
+  planner:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-opus-4-7
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+        extraArgs: ["--permission-mode", "plan"]
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+  executor:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-opus-4-7
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+  code-reviewer:
+    adapter:
+      type: codex_local
+      config:
+        model: gpt-5
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+  qa-verifier:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-haiku-4-5
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+  # ─────────────────────────── Marketing/SEO ───────────────────────────
+  seo-optimizer:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+  # ─────────────────────────── G5 (post-publish) — Haiku 4.5 (lightweight URL fetches) ───────────────────────────
+  publish-verifier:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-haiku-4-5
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+  # ─────────────────────────── Vault Historian — librarian/curator ───────────────────────────
+  vault-historian:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-sonnet-4-6
+        cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
+
+# Per-agent monthly + per-task budgets (USD)
+budgets:
+  ceo:                    { monthly: 80, perTask: 2 }
+  chief-research:         { monthly: 40, perTask: 1 }
+  chief-content:          { monthly: 80, perTask: 2 }
+  chief-engineering:      { monthly: 120, perTask: 4 }
+  chief-marketing:        { monthly: 40, perTask: 1 }
+  researcher-anthropic:   { monthly: 20, perTask: 0.50 }
+  researcher-openai:      { monthly: 20, perTask: 0.50 }
+  researcher-google:      { monthly: 20, perTask: 0.50 }
+  researcher-community:   { monthly: 20, perTask: 0.50 }
+  research-editor:        { monthly: 20, perTask: 0.50 }
+  content-author:         { monthly: 40, perTask: 1 }
+  content-reviewer:       { monthly: 20, perTask: 0.50 }
+  slide-audio-producer:   { monthly: 20, perTask: 1 }
+  voice-producer:         { monthly: 10, perTask: 0.50 }
+  planner:                { monthly: 30, perTask: 1 }
+  executor:               { monthly: 30, perTask: 1 }
+  code-reviewer:          { monthly: 30, perTask: 0.75 }
+  qa-verifier:            { monthly: 20, perTask: 0.50 }
+  seo-optimizer:          { monthly: 20, perTask: 0.50 }
+  publish-verifier:       { monthly: 20, perTask: 0.20 }
+  vault-historian:        { monthly: 30, perTask: 1 }
+
+# Schedules (heartbeat / cron)
+schedules:
+  daily-research:
+    cron: "0 0 * * *"   # 06:00 IST = 00:30 UTC; refine after first cycle
+    agents: [researcher-anthropic, researcher-openai, researcher-google, researcher-community]
+    parallel: true
+  daily-synthesis:
+    cron: "30 0 * * *"  # 06:30 IST
+    agents: [research-editor]
+  daily-triage:
+    cron: "30 1 * * *"  # 07:00 IST
+    agents: [ceo]
+  hourly-worker-dispatch:
+    cron: "0 2-12 * * *"
+    agents: [chief-content, chief-engineering, chief-marketing]
+  eod-digest:
+    cron: "30 12 * * *" # 18:00 IST
+    agents: [ceo]
+  weekly-retrospective:
+    cron: "30 3 * * 1"  # Mon 09:00 IST
+    agents: [ceo, chief-research, chief-content, chief-engineering, chief-marketing]
+  vault-historian-daily:
+    cron: "30 2 * * *"   # 08:00 IST (after CEO triage)
+    agents: [vault-historian]
+  vault-historian-weekly:
+    cron: "30 4 * * 1"   # Mon 10:00 IST (after weekly retro)
+    agents: [vault-historian]
+  publish-verifier-poll:
+    cron: "*/15 0-13 * * *"  # every 15 min during work hours UTC (covers IST work day)
+    agents: [publish-verifier]

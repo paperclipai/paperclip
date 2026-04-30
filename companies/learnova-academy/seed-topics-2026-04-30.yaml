@@ -1,0 +1,156 @@
+date: 2026-04-30
+seeded_by: chief-content
+quality_bar: medium-grade
+
+# Medium-grade quality bar (per piece):
+# - Lead with a real, falsifiable claim (not generic intro)
+# - 800-1500 words for blogs, 2000-5000 per chapter for courses
+# - ≥5 inline citations to primary sources
+# - ≥1 specific actionable takeaway with runnable example
+# - ONE contrarian or non-obvious angle per piece
+# - Pass G0 (content-reviewer) AND AEO audit (seo-optimizer)
+
+defaults:
+  word_count_blog: [800, 1500]
+  word_count_chapter: [2000, 5000]
+  min_citations: 5
+  require_contrarian_angle: true
+  require_runnable_example: true
+  require_internal_wikilinks: 3
+  voice: "confident, friendly, source-citing, never hype-y; answer-first H1; no AI tells"
+
+# ────────────────────── BLOGS (7) ──────────────────────
+
+topics:
+
+  - kind: blog
+    slug: openai-on-aws-bedrock-the-real-tradeoffs
+    title: "OpenAI on AWS Bedrock — what AWS-native teams gain (and what they still can't do natively)"
+    vendor_tag: openai
+    priority: hot
+    angle: "AWS-only orgs that previously couldn't use OpenAI now can — but Bedrock's auth/observability story is non-trivial; this isn't 'OpenAI-on-Azure parity'"
+    runnable_example: "Bedrock InvokeModel boto3 call vs raw OpenAI SDK call — token cost diff, IAM-vs-API-key auth"
+    sources_required:
+      - https://openai.com/index/openai-on-aws/
+      - https://docs.aws.amazon.com/bedrock/
+    affects_courses: []
+
+  - kind: blog
+    slug: gemini-enterprise-vertex-the-first-real-agent-platform
+    title: "Gemini Enterprise Agent Platform on Vertex — the first OSS-comparable production agentic stack"
+    vendor_tag: google
+    priority: hot
+    angle: "Why Vertex's agent platform finally bridges 'I built a demo' to 'this runs in prod' — and what's still missing vs Anthropic's Agent SDK"
+    runnable_example: "Vertex Agent Builder hello-world: agent + tool + state persistence in <50 lines"
+    sources_required:
+      - https://cloud.google.com/blog/products/ai-machine-learning/introducing-gemini-enterprise-agent-platform
+
+  - kind: blog
+    slug: claude-code-hermes-billing-three-lessons
+    title: "Claude Code's HERMES.md billing bug — three lessons for anyone running agents in production"
+    vendor_tag: community
+    priority: hot
+    angle: "It's tempting to laugh, but every agent-in-prod team will hit a similar class bug. Here's the 3-layer guardrail you should have today."
+    runnable_example: "Cost-circuit-breaker pattern in 30 lines (per-task cap, monthly cap, anomaly alert)"
+    sources_required:
+      - https://news.ycombinator.com/item?id=47952722
+      - https://github.com/anthropics/claude-code/issues/53262
+
+  - kind: blog
+    slug: mcp-from-first-principles
+    title: "MCP from first principles — what the protocol does, why it beat the alternatives, and what it can't do (yet)"
+    vendor_tag: anthropic
+    priority: normal
+    angle: "Most explainers describe MCP. This one explains why JSON-RPC over stdio + a manifest spec was the right design call vs WebSockets + OpenAPI"
+    runnable_example: "Minimal MCP server in 60 lines (Python + fastmcp): exposes one tool, one resource, one prompt"
+    sources_required:
+      - https://modelcontextprotocol.io/
+      - https://spec.modelcontextprotocol.io/
+
+  - kind: blog
+    slug: tool-use-vs-function-calling-the-three-vendor-comparison
+    title: "Tool use vs function calling — Anthropic, OpenAI, and Gemini compared with real prompts"
+    vendor_tag: community
+    priority: normal
+    angle: "The three vendors have surface-level identical APIs but very different reliability profiles — here's what the benchmarks actually show"
+    runnable_example: "Same prompt across all 3: identical 'get_weather' tool, compare error handling + parallel-call behavior"
+    sources_required:
+      - https://docs.anthropic.com/en/docs/build-with-claude/tool-use
+      - https://platform.openai.com/docs/guides/function-calling
+      - https://ai.google.dev/gemini-api/docs/function-calling
+
+  - kind: blog
+    slug: why-your-rag-is-slow
+    title: "Why your RAG is slow (and 5 specific fixes you can deploy this afternoon)"
+    vendor_tag: community
+    priority: normal
+    angle: "Most 'speed up RAG' posts focus on embedding latency. The actual bottleneck is usually one of these 5 things, in order of frequency."
+    runnable_example: "Before/after benchmark — same query, p50 from 4.2s → 380ms with reranker swap + context trimming"
+    sources_required:
+      - https://docs.anthropic.com/
+      - https://www.pinecone.io/learn/
+
+  - kind: blog
+    slug: harness-engineering-pattern-2026
+    title: "The 2026 agent harness pattern — Planner, Executor, Reviewer, QA: why splits beat monoliths"
+    vendor_tag: anthropic
+    priority: normal
+    angle: "Anthropic published the harness pattern in April. Here's what we learned running it on a real engineering ticket: same model, different roles, dramatic audit-log clarity."
+    runnable_example: "Real Paperclip task trace: KOE-8 cron-wiring through all 4 stages with cost + duration per stage"
+
+# ────────────────────── COURSES (3) ──────────────────────
+
+  - kind: course-delta
+    slug: claude-tool-use-from-zero
+    title: "Claude Tool-Use from Zero — add chapter on 9 creative connectors"
+    vendor_tag: anthropic
+    priority: hot
+    chapter_to_add:
+      number: 7
+      title: "Creative pipelines with the 9 connectors (Blender, Adobe CC, Ableton, etc.)"
+      learning_objectives:
+        - Identify which of the 9 connectors fits a given creative workflow
+        - Drive Blender via Claude's Python API connector
+        - Compose connectors (e.g., SketchUp → Blender → Adobe Premiere) for cross-tool pipelines
+    angle: "Why Anthropic chose creative apps as the connector beachhead (not enterprise SaaS) — and what that signals about their distribution strategy"
+
+  - kind: new-course
+    slug: mcp-server-scaffolding-production
+    title: "MCP Server Scaffolding — first principles to production"
+    vendor_tag: anthropic
+    level: Builder
+    priority: normal
+    chapters:
+      - "What MCP is and isn't (vs LSP, vs OpenAPI)"
+      - "Your first MCP server in 60 lines"
+      - "Tools, Resources, Prompts — the three primitives"
+      - "Production: auth, multi-client, observability"
+      - "Real-world case study — wiring Slack to Claude via MCP"
+    angle: "Most MCP tutorials skip the production posture. This is what's actually needed when 50 humans hit your server simultaneously."
+    runnable_example: "Full repo of a production MCP server with auth, structured logging, and tests"
+
+  - kind: new-course
+    slug: agent-eval-harnesses
+    title: "Agent Eval Harnesses — measuring what matters when nothing's deterministic"
+    vendor_tag: community
+    level: Professional
+    priority: normal
+    chapters:
+      - "Why string-match eval fails for agents"
+      - "Trajectory eval — judging the path, not the answer"
+      - "LLM-as-judge — when it works, when it lies"
+      - "Building a regression suite for a real agent"
+    angle: "Most eval frameworks treat 'agent eval' as a marketing add-on. The real discipline borrows from QA, not from ML benchmarks."
+    runnable_example: "Open-source eval harness running against the Koenig CEO agent's daily-triage skill, with ground-truth tickets"
+
+# ────────────────────── DISPATCH POLICY ──────────────────────
+
+dispatch:
+  hot_priority:
+    - dispatch_immediately: true
+    - max_in_flight: 2  # don't overwhelm Author + Reviewer
+  normal_priority:
+    - queue_in_backlog: true
+    - chief_content_picks_up: hourly
+    - max_in_flight: 1
+  pace_policy: "Author bandwidth is the constraint, not budget. Vardaan is on Claude Max 20x at 31% / 46% utilization (2-hr / weekly). Quota is healthy; quality is the bottleneck. Allow extra revision cycles per piece."
