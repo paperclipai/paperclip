@@ -6,6 +6,7 @@ export type ThresholdSeverity = "warn" | "error";
 
 export interface CheckCtx {
   db: Db;
+  fs: typeof import("node:fs/promises");
   now: () => Date;
   logger: CheckLogger;
 }
