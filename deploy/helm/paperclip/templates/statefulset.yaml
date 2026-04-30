@@ -70,56 +70,155 @@ spec:
                 fi
               done
               chown -R 1000:1000 "${BASE}/.local" 2>/dev/null || true
-              # Install bundled adapter tarballs from /opt/paperclip-bundled-adapters
-              # into the runtime adapter-plugins dir on the shared PVC. This makes the
-              # patched paperclip-adapter-claude-k8s (kkroo fork) self-bootstrapping —
-              # a fresh PVC doesn't need an out-of-band kubectl-cp + /api/adapters/install
-              # round-trip. Skipped if the adapter package dir already exists with the
-              # bundled version (so paperclip's runtime install path can still upgrade).
-              if [ -d /opt/paperclip-bundled-adapters ]; then
-                ADAPTER_DIR="${BASE}/adapter-plugins"
-                mkdir -p "${ADAPTER_DIR}/node_modules"
-                for tgz in /opt/paperclip-bundled-adapters/*.tgz; do
-                  [ -f "${tgz}" ] || continue
-                  pkg_name=$(tar -xzOf "${tgz}" package/package.json 2>/dev/null | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-                  pkg_ver=$(tar -xzOf "${tgz}" package/package.json 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-                  [ -n "${pkg_name}" ] || continue
-                  installed_ver=""
-                  if [ -f "${ADAPTER_DIR}/node_modules/${pkg_name}/package.json" ]; then
-                    installed_ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${ADAPTER_DIR}/node_modules/${pkg_name}/package.json" | head -1)
-                  fi
-                  if [ "${installed_ver}" = "${pkg_ver}" ]; then
-                    echo "seed: bundled adapter ${pkg_name}@${pkg_ver} already installed"
-                  else
-                    echo "seed: installing bundled adapter ${pkg_name}@${pkg_ver} (was: ${installed_ver:-none})"
-                    rm -rf "${ADAPTER_DIR}/node_modules/${pkg_name}"
-                    mkdir -p "${ADAPTER_DIR}/node_modules/${pkg_name}"
-                    tar -xzf "${tgz}" -C "${ADAPTER_DIR}/node_modules/${pkg_name}" --strip-components=1
-                  fi
-                  # Ensure adapter-plugins.json registry entry exists / is updated.
-                  python3 - "${BASE}/adapter-plugins.json" "${pkg_name}" "${pkg_ver}" "${ADAPTER_DIR}/node_modules/${pkg_name}" <<'PY' || echo "seed: registry update for ${pkg_name} failed (non-fatal)"
-              import json, os, sys
-              path, name, ver, local_path = sys.argv[1:5]
-              # adapter-plugins.json stores [{packageName,version,type,installedAt,localPath?}]
-              # We don't know the adapter `type` field without loading the dist — leave it
-              # to the runtime /api/adapters reload to populate. Just ensure the shape so
-              # paperclip's loadFromRecord picks it up. If existing record present, update.
+              # Private kkroo plugins and k8s adapters are image-owned now.
+              # Older PVCs may still have package.json/package-lock.json entries
+              # pointing at deleted /tmp tarballs or adapter packages; npm install
+              # in the plugin store will fail until those stale entries are gone.
+              PLUGIN_STORE="${BASE}/.paperclip/plugins"
+              if [ -d "${PLUGIN_STORE}" ]; then
+                python3 - "${PLUGIN_STORE}" <<'PY' || echo "seed: plugin store cleanup failed (non-fatal)"
+              import json
+              import os
+              import shutil
+              import sys
+
+              store = sys.argv[1]
+              remove_names = {
+                  "@kkroo/paperclip-plugin-ccrotate",
+                  "@kkroo/paperclip-plugin-linear",
+                  "@lucitra/paperclip-plugin-linear",
+                  "paperclip-plugin-alertmanager",
+                  "paperclip-adapter-claude-k8s",
+                  "paperclip-adapter-opencode-k8s",
+              }
+              dep_sections = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+
+
+              def read_json(path):
+                  try:
+                      with open(path) as f:
+                          return json.load(f)
+                  except Exception:
+                      return None
+
+
+              def write_json(path, value):
+                  with open(path, "w") as f:
+                      json.dump(value, f, indent=2)
+                      f.write("\n")
+
+
+              def remove_deps(mapping):
+                  changed = False
+                  if not isinstance(mapping, dict):
+                      return changed
+                  for section in dep_sections:
+                      deps = mapping.get(section)
+                      if not isinstance(deps, dict):
+                          continue
+                      for name in sorted(remove_names):
+                          if name in deps:
+                              print(f"seed: removing stale PVC plugin dependency {name} from {section}")
+                              deps.pop(name, None)
+                              changed = True
+                      if not deps:
+                          mapping.pop(section, None)
+                  return changed
+
+
+              pkg_path = os.path.join(store, "package.json")
+              pkg = read_json(pkg_path)
+              if isinstance(pkg, dict) and remove_deps(pkg):
+                  write_json(pkg_path, pkg)
+
+              lock_path = os.path.join(store, "package-lock.json")
+              lock = read_json(lock_path)
+              if isinstance(lock, dict):
+                  changed = False
+                  root_pkg = lock.get("packages", {}).get("") if isinstance(lock.get("packages"), dict) else None
+                  changed = remove_deps(root_pkg) or changed
+
+                  packages = lock.get("packages")
+                  if isinstance(packages, dict):
+                      remove_prefixes = tuple(f"node_modules/{name}" for name in remove_names)
+                      for key in list(packages):
+                          if any(key == prefix or key.startswith(prefix + "/") for prefix in remove_prefixes):
+                              print(f"seed: removing stale PVC package-lock entry {key}")
+                              packages.pop(key, None)
+                              changed = True
+
+                  deps = lock.get("dependencies")
+                  if isinstance(deps, dict):
+                      for name in sorted(remove_names):
+                          if name in deps:
+                              print(f"seed: removing stale PVC package-lock dependency {name}")
+                              deps.pop(name, None)
+                              changed = True
+
+                  if changed:
+                      write_json(lock_path, lock)
+
+              for name in sorted(remove_names):
+                  module_path = os.path.join(store, "node_modules", *name.split("/"))
+                  if os.path.exists(module_path):
+                      print(f"seed: removing stale PVC module {module_path}")
+                      shutil.rmtree(module_path, ignore_errors=True)
+              PY
+                chown 1000:1000 "${PLUGIN_STORE}/package.json" "${PLUGIN_STORE}/package-lock.json" 2>/dev/null || true
+              fi
+              # Register k8s adapters installed in the image at build time.
+              # Adapter code and dependencies stay in /opt, so a fresh PVC only
+              # needs adapter-plugins.json state, not package contents.
+              if [ -d /opt/paperclip-bundled-adapters/node_modules ]; then
+                for pkg_json in /opt/paperclip-bundled-adapters/node_modules/paperclip-adapter-*/package.json; do
+                  [ -f "${pkg_json}" ] || continue
+                  pkg_dir=$(dirname "${pkg_json}")
+                  pkg_name=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${pkg_json}" | head -1)
+                  pkg_ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${pkg_json}" | head -1)
+                  case "${pkg_name}" in
+                    paperclip-adapter-claude-k8s) adapter_type="claude_k8s" ;;
+                    paperclip-adapter-opencode-k8s) adapter_type="opencode_k8s" ;;
+                    *) echo "seed: skipping unknown bundled adapter ${pkg_name:-unknown}"; continue ;;
+                  esac
+                  echo "seed: registering bundled adapter ${pkg_name}@${pkg_ver} as ${adapter_type}"
+                  python3 - "${BASE}/adapter-plugins.json" "${pkg_name}" "${pkg_ver}" "${adapter_type}" "${pkg_dir}" <<'PY' || echo "seed: registry update for ${pkg_name} failed (non-fatal)"
+              import datetime, json, os, sys
+              path, name, ver, adapter_type, local_path = sys.argv[1:6]
               records = []
               if os.path.exists(path):
                   try:
-                      with open(path) as f: records = json.load(f) or []
-                  except Exception: records = []
-              # Find by packageName
-              hit = next((r for r in records if isinstance(r, dict) and r.get("packageName") == name), None)
-              if hit is None:
-                  records.append({"packageName": name, "version": ver, "localPath": local_path, "type": "", "installedAt": "1970-01-01T00:00:00.000Z"})
-              else:
-                  hit["version"] = ver
-                  hit["localPath"] = local_path
-              with open(path, "w") as f: json.dump(records, f, indent=2)
+                      with open(path) as f:
+                          parsed = json.load(f)
+                      records = parsed if isinstance(parsed, list) else []
+                  except Exception:
+                      records = []
+              existing = next(
+                  (
+                      r for r in records
+                      if isinstance(r, dict)
+                      and (r.get("type") == adapter_type or r.get("packageName") == name or r.get("localPath") == local_path)
+                  ),
+                  {},
+              )
+              installed_at = existing.get("installedAt") or datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+              next_records = [
+                  r for r in records
+                  if not (
+                      isinstance(r, dict)
+                      and (r.get("type") == adapter_type or r.get("packageName") == name or r.get("localPath") == local_path)
+                  )
+              ]
+              next_records.append({
+                  "packageName": name,
+                  "version": ver,
+                  "type": adapter_type,
+                  "localPath": local_path,
+                  "installedAt": installed_at,
+              })
+              with open(path, "w") as f:
+                  json.dump(next_records, f, indent=2)
               PY
                 done
-                chown -R 1000:1000 "${ADAPTER_DIR}" 2>/dev/null || true
                 if [ -f "${BASE}/adapter-plugins.json" ]; then
                   chown 1000:1000 "${BASE}/adapter-plugins.json" 2>/dev/null || true
                 fi

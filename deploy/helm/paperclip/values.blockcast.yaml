@@ -9,8 +9,9 @@
 
 image:
   repository: registry.blockcast.net/paperclip
-  pullPolicy: IfNotPresent
-  # Override `image.tag` per release (e.g. `--set image.tag=sha-<commit>`).
+  tag: sha-bba75d4a-k8s-vendored
+  pullPolicy: Always
+  # Bump this to the kkroo image tag built from this repo when deploying.
 
 imagePullSecrets:
   - name: registry-blockcast-net-pull
@@ -39,11 +40,6 @@ env:
   serveUi: true
   instanceId: default
   extra:
-    - name: PAPERCLIP_AGENT_JWT_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: paperclip-credentials
-          key: agentJwtSecret
     - name: DATABASE_URL
       valueFrom:
         secretKeyRef:

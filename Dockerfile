@@ -69,20 +69,11 @@ COPY --chown=node:node --from=build /app /app
 #   mv ccrotate-<NEW>.tgz <kkroo>/vendor/
 #   bump ARG CCROTATE_TARBALL below
 COPY vendor/ccrotate-1.1.0.tgz /tmp/ccrotate.tgz
-# Vendored patched paperclip-adapter-{claude,opencode}-k8s tarballs.
-# claude-k8s 0.2.1-kkroo.3: init-container data-mount fix, cephfs-tail
-#   parser-race fix, and `ccrotate snap --force; ccrotate next --yes` prepended
-#   to the Job mainCommand (--yes is required because Job pods have no stdin
-#   to answer the "all rate-limited, wait?" prompt).
-# opencode-k8s 0.1.38-kkroo.2: same `ccrotate snap; ccrotate next --yes`
-#   prepended (with --target codex) so opencode reads fresh codex auth from
-#   /paperclip/.codex/auth.json on every Job pod boot; also treats temporary
-#   PVC binding Unschedulable events as transient while dedicated agent DB PVCs
-#   are still provisioning.
-# Bundled here so a fresh PVC bootstrap (seed init container) doesn't have to
-# fetch from npm registry — the public 0.2.1 / 0.1.38 lack the kkroo patches.
-COPY vendor/paperclip-adapter-claude-k8s-0.2.1-kkroo.5.tgz /tmp/paperclip-adapter-claude-k8s.tgz
-COPY vendor/paperclip-adapter-opencode-k8s-0.1.38-kkroo.2.tgz /tmp/paperclip-adapter-opencode-k8s.tgz
+# Vendored patched k8s adapter tarballs are installed into the image, not the
+# PVC. Keep exactly one tarball per adapter package under
+# vendor/paperclip-adapter-*.tgz; the wildcard avoids hardcoding version
+# numbers in this Dockerfile.
+COPY vendor/paperclip-adapter-*.tgz /tmp/paperclip-bundled-adapters/
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
   # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
@@ -95,9 +86,10 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip /paperclip/.local/bin /opt/paperclip-bundled-adapters \
-  && mv /tmp/paperclip-adapter-claude-k8s.tgz /tmp/paperclip-adapter-opencode-k8s.tgz /opt/paperclip-bundled-adapters/ \
+  && npm install --prefix /opt/paperclip-bundled-adapters --omit=dev --no-save /tmp/paperclip-bundled-adapters/*.tgz \
+  && rm -rf /tmp/paperclip-bundled-adapters \
   && ln -sf /usr/local/bin/claude /paperclip/.local/bin/claude \
-  && chown -R node:node /paperclip
+  && chown -R node:node /paperclip /opt/paperclip-bundled-adapters
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

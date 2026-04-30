@@ -1,8 +1,9 @@
 # vendor/
 
-Tarballs that get installed into the running paperclip image or PVC because
-upstream isn't where we need it yet. Each entry below names the upstream, the
-divergence, and how to refresh.
+Tarballs that get installed into the running paperclip image because upstream
+isn't where we need it yet, or because fresh PVC bootstrap must not depend on
+runtime npm installs. Each entry below names the upstream, the divergence, and
+how to refresh.
 
 ## ccrotate-1.1.0.tgz
 
@@ -41,45 +42,22 @@ v0.2.1. Patches over upstream live in `dist/server/`:
    `agent_runtime_state.session_id`-clear-on-adapter-flip fix in
    `server/src/routes/agents.ts` (commit `bf30056f`).
 
-### How to install on a running paperclip-0 pod
+Dockerfile installs all `vendor/paperclip-adapter-*.tgz` packages into
+`/opt/paperclip-bundled-adapters/node_modules`. The Helm init container writes
+typed `adapter-plugins.json` records whose `localPath` points at those image
+paths. Adapter code and dependencies are therefore image state, not PVC state.
 
-This adapter does NOT auto-install via the kkroo bootstrap; install once after
-each fresh PVC:
+Keep exactly one tarball per adapter package in `vendor/`; the Dockerfile uses a
+wildcard so the version number does not need to be edited there.
 
-```bash
-# 1. Copy the tarball into the pod
-kubectl -n paperclip cp \
-  vendor/paperclip-adapter-claude-k8s-0.2.1-kkroo.1.tgz \
-  paperclip/paperclip-0:/tmp/p-claude-k8s.tgz
+## paperclip-adapter-opencode-k8s-0.1.38-kkroo.2.tgz
 
-# 2. Extract on the pod (preserve existing node_modules):
-kubectl -n paperclip exec paperclip-0 -- bash -c '
-  mkdir -p /tmp/p-claude-k8s
-  tar -xzf /tmp/p-claude-k8s.tgz -C /tmp/p-claude-k8s --strip-components=1
-
-  # First time only: install the upstream adapter so node_modules gets seeded.
-  # Existing kkroo deployments already have this from the original
-  #   POST /api/adapters/install paperclip-adapter-claude-k8s
-  # call. Skip if /paperclip/adapter-plugins/node_modules/paperclip-adapter-claude-k8s
-  # already exists.
-
-  # Overlay the patched dist/* + package.json onto the installed copy:
-  rsync -a --exclude=node_modules /tmp/p-claude-k8s/ \
-    /paperclip/adapter-plugins/node_modules/paperclip-adapter-claude-k8s/
-'
-
-# 3. Reload the adapter (clears Node module cache; or restart paperclip-0 if
-# the reload endpoint isn't enough):
-TOKEN=<your pcp_board_* token>
-kubectl -n paperclip exec paperclip-0 -- curl -sS -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  http://localhost:3100/api/adapters/claude_k8s/reload
-
-# 4. Verify:
-kubectl -n paperclip exec paperclip-0 -- \
-  grep version /paperclip/adapter-plugins/node_modules/paperclip-adapter-claude-k8s/package.json
-# expect 0.2.1-kkroo.1
-```
+Upstream npm package `paperclip-adapter-opencode-k8s@0.1.38`, patched to run
+`ccrotate snap --target codex --force` and `ccrotate next --target codex --yes`
+before `opencode` reads
+`/paperclip/.codex/auth.json` in each Job pod. It is bundled into the image for
+the same reason as the Claude adapter: the running pod should not depend on npm
+or manual PVC package installs to load `opencode_k8s`.
 
 ### How to refresh when upstream cuts a new release
 
@@ -89,19 +67,25 @@ cd /tmp && rm -rf k8s-fork && mkdir k8s-fork && cd k8s-fork
 npm pack paperclip-adapter-claude-k8s@<NEW>
 tar -xzf paperclip-adapter-claude-k8s-<NEW>.tgz
 
-# 2. Apply the same two seds to dist/server/job-manifest.js:
+# 2. Apply the data-PVC init-container mount patch to dist/server/job-manifest.js:
 sed -i 's|volumeMounts: \[{ name: "prompt", mountPath: "/tmp/prompt" }\]|volumeMounts: [{ name: "prompt", mountPath: "/tmp/prompt" }, { name: "data", mountPath: "/paperclip" }]|' \
   package/dist/server/job-manifest.js
 sed -i '/^                { name: "prompt", mountPath: "\/tmp\/prompt" },$/a\                { name: "data", mountPath: "/paperclip" },' \
   package/dist/server/job-manifest.js
 
-# 3. Bump version + repack
+# 3. Reapply kkroo patches:
+#    - ccrotate next command in package/dist/server/job-manifest.js
+#    - tailPodLogFile stable-size drain + pendingLine flush in execute.js
+#    - unknown-session clearSession handler in execute.js
+
+# 4. Bump version + repack
 cd package
-python3 -c "import json; p=json.load(open('package.json')); p['version']='<NEW>-kkroo.1'; json.dump(p, open('package.json','w'), indent=2)"
+python3 -c "import json; p=json.load(open('package.json')); p['version']='<NEW>-kkroo.<N>'; json.dump(p, open('package.json','w'), indent=2)"
 npm pack
-mv paperclip-adapter-claude-k8s-<NEW>-kkroo.1.tgz <kkroo>/vendor/
+mv paperclip-adapter-claude-k8s-<NEW>-kkroo.<N>.tgz <kkroo>/vendor/
 
-# 4. Drop the previous .tgz from vendor/ if it's no longer referenced.
+# 5. Drop the previous .tgz from vendor/. Keep one tarball per adapter package
+#    because the Dockerfile copies vendor/paperclip-adapter-*.tgz.
 
-# 5. Watch upstream — once they fix the bug we can drop the fork entirely.
+# 6. Watch upstream — once they fix the bug we can drop the fork entirely.
 ```

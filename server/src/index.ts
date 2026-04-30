@@ -107,7 +107,10 @@ async function autoInstallBundledPlugins(
       if (listRes.ok) {
         const plugins = (await listRes.json()) as Array<{ packageName: string; pluginKey: string; status: string }>;
         const existing = plugins.find((p) => p.packageName === pkg || p.pluginKey === pkg);
-        if (existing && existing.status === "ready") continue;
+        // Treat disabled / pending-approval bundled plugins as already
+        // installed. Re-posting them on every startup only produces a 400
+        // "already installed" response and hides real bootstrap failures.
+        if (existing && existing.status !== "error") continue;
       }
 
       logger.info({ package: pkg }, "auto-installing bundled plugin via API");
