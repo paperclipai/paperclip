@@ -2620,7 +2620,7 @@ export function Inbox() {
                   ) : (
                     <ChevronDown className="h-3 w-3" />
                   )}
-                  {isLoadingMoreInboxIssues ? "Loading" : `Load ${INBOX_ISSUE_PAGE_SIZE} more`}
+                  {isLoadingMoreInboxIssues ? "Loading" : "Load more"}
                 </Button>
                 <div className="h-px flex-1 bg-border" />
               </div>
