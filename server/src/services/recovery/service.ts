@@ -616,6 +616,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: issues.status,
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
+        description: issues.description,
         updatedAt: issues.updatedAt,
       })
       .from(issues)
@@ -630,6 +631,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1);
     return row ?? null;
+  }
+
+  function parseStaleRunReasonsFromDescription(description: string | null | undefined): Set<StaleActiveRunReason> {
+    const reasons = new Set<StaleActiveRunReason>();
+    if (!description) return reasons;
+    if (/^- output silence:/m.test(description)) reasons.add("output_silence");
+    if (/^- no progress:/m.test(description)) reasons.add("no_progress");
+    return reasons;
   }
 
   async function buildRunOutputSilence(
@@ -927,7 +936,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       output_silence: "output silence",
       no_progress: "no progress",
     };
-    const reasonsList = input.reasons.length > 0 ? input.reasons : ["output_silence" as const];
+    const reasonsList = input.reasons;
     const headlineReasons = reasonsList.map((r) => reasonLabels[r]).join(" + ");
     const reasonBullets = [
       reasonsList.includes("output_silence")
@@ -1086,6 +1095,64 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       : "silent";
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
+      const knownReasons = parseStaleRunReasonsFromDescription(existing.description);
+      const newlyDetectedReasons = input.reasons.filter((r) => !knownReasons.has(r));
+      if (newlyDetectedReasons.length > 0) {
+        const mergedReasons: StaleActiveRunReason[] = [];
+        if (knownReasons.has("output_silence") || input.reasons.includes("output_silence")) {
+          mergedReasons.push("output_silence");
+        }
+        if (knownReasons.has("no_progress") || input.reasons.includes("no_progress")) {
+          mergedReasons.push("no_progress");
+        }
+        const updatedDescription = buildStaleRunEvaluationDescription({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          prefix,
+          evidence,
+          reasons: mergedReasons,
+          progressEvidenceCounts: input.progressEvidenceCounts,
+          runAgeMs: ageMs,
+          level,
+          now: input.now,
+        });
+        await issuesSvc.update(existing.id, {
+          description: updatedDescription,
+        });
+        const newLabels = newlyDetectedReasons.map((r) => r === "output_silence" ? "output silence" : "no progress");
+        const mergedLabels = mergedReasons.map((r) => r === "output_silence" ? "output silence" : "no progress");
+        await issuesSvc.addComment(existing.id, [
+          `Additional stale-run signal detected: ${newLabels.join(" + ")}.`,
+          "",
+          "Description updated to cover all current detection reasons.",
+          "",
+          `- Run: \`${input.run.id}\``,
+          `- Reasons now: ${mergedLabels.join(" + ")}`,
+          `- Run age: ${formatDuration(ageMs)}`,
+          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+        ].join("\n"), { runId: input.run.id });
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: existing.assigneeAgentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_reasons_grown",
+          entityType: "issue",
+          entityId: existing.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            level,
+            previousReasons: Array.from(knownReasons),
+            currentReasons: mergedReasons,
+            addedReasons: newlyDetectedReasons,
+            runAgeMs: ageMs,
+            silenceAgeMs: evidence.silenceAgeMs,
+            progressEvidenceCounts: input.progressEvidenceCounts,
+          },
+        });
+      }
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
           priority: "high",
@@ -1251,9 +1318,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
-        result.snoozed += 1;
-        continue;
+      const quietUntilDecision = await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now);
+      if (quietUntilDecision) {
+        // Watchdog snooze/continue decisions today are scoped to output_silence (that's the
+        // only reason a reviewer can currently snooze for via the watchdog UX). no_progress is
+        // a distinct concern — zero useful work despite output ticking — and must surface even
+        // if the operator already acknowledged the silence. Bypass the snooze when no_progress
+        // is in the reasons set, but drop the (already-snoozed) output_silence reason from the
+        // effective set so we don't re-flag it.
+        if (!reasons.includes("no_progress")) {
+          result.snoozed += 1;
+          continue;
+        }
+        const silenceIdx = reasons.indexOf("output_silence");
+        if (silenceIdx >= 0) reasons.splice(silenceIdx, 1);
       }
       const outcome = await createOrUpdateStaleRunEvaluation({
         run,
