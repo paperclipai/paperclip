@@ -16,6 +16,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("../services/index.js", () => ({
   accessService: () => ({ canUser: vi.fn(), hasPermission: vi.fn() }),
   agentService: () => ({}),
+  companyService: () => ({}),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   goalService: () => ({}),
@@ -27,13 +28,18 @@ vi.mock("../services/index.js", () => ({
     cancelRun: vi.fn(async () => null),
   }),
   issueApprovalService: () => ({}),
+  issueReferenceService: () => ({}),
   issueService: () => mockIssueService,
+  issueThreadInteractionService: () => ({}),
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
+  clampIssueListLimit: (n: number) => Math.min(1000, Math.max(1, Math.floor(n))),
+  ISSUE_LIST_DEFAULT_LIMIT: 500,
+  ISSUE_LIST_MAX_LIMIT: 1000,
 }));
 
 const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
