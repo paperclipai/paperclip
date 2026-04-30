@@ -107,6 +107,7 @@ export {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  agentRuntimeConfigSchema,
   agentInstructionsBundleModeSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
