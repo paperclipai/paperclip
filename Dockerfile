@@ -49,8 +49,8 @@ WORKDIR /vendor
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
 ARG CCROTATE_REF=1ca257afa27928599eacaf4f88dc71e9febe1dfd
-ARG CLAUDE_K8S_REF=ea0a3ff788564abc399a0725edc5df6a5a721370
-ARG OPENCODE_K8S_REF=59371f2cf42484577041bc3416dd729da6f69ab0
+ARG CLAUDE_K8S_REF=41f6eef46d0c215ce27e04d2f40597e7fcb2b95a
+ARG OPENCODE_K8S_REF=5b75cfdb050e62b2007109fe0b428c9ebc255352
 
 RUN git clone https://github.com/kkroo/ccrotate.git ccrotate \
   && cd ccrotate && git checkout "${CCROTATE_REF}" \
@@ -68,9 +68,9 @@ RUN git clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k
 
 RUN git clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git opencode-k8s \
   && cd opencode-k8s && git checkout "${OPENCODE_K8S_REF}" \
-  && pnpm install --frozen-lockfile \
-  && pnpm run build \
-  && pnpm pack \
+  && npm ci \
+  && npm run build \
+  && npm pack \
   && mv paperclip-adapter-opencode-k8s-*.tgz /vendor/paperclip-adapter-opencode-k8s.tgz
 
 FROM base AS build
