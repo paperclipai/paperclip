@@ -39,7 +39,7 @@ function commandLooksLike(command: string, expected: string): boolean {
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
-  const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  const raw = parsedError?.trim() || firstNonEmptyLine(stderr, true) || firstNonEmptyLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
