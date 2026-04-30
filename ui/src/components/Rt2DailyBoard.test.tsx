@@ -599,4 +599,25 @@ describe("Rt2DailyBoard", () => {
 
     act(() => root.unmount());
   });
+
+  it("shows Jarvis, wiki, graph, and economy as compact support evidence", () => {
+    const { container, root } = renderBoard();
+
+    expect(container.querySelector('aside[aria-label="보조 근거"]')).not.toBeNull();
+    expect(container.textContent).toContain("보조 근거");
+    expect(container.textContent).toContain("Jarvis 추천");
+    expect(container.textContent).toContain("지식 근거");
+    expect(container.textContent).toContain("그래프 연결");
+    expect(container.textContent).toContain("경제 근거");
+    expect(container.textContent).toContain("오늘 위키와 카드 메모에 연결된 업무");
+    expect(container.textContent).toContain("OKR/KPI 추적 노드");
+    expect(container.textContent).toContain("가격 또는 제출 근거가 있는 카드");
+    expect(container.querySelector('[aria-label="todo-1-support-evidence"]')?.textContent).toContain("보완 필요 항목 확인");
+    expect(container.querySelector('[aria-label="todo-2-support-evidence"]')?.textContent).toContain("90,000 Gold 근거");
+    expect(container.textContent).not.toContain("Task Mesh");
+    expect(container.textContent).not.toContain("Paper Company");
+    expect(container.textContent).not.toContain("No graph data available");
+
+    act(() => root.unmount());
+  });
 });

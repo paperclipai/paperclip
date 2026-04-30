@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import type {
   Rt2BoardQualityStatus,
   Rt2CaptureDraftSummary,
@@ -415,6 +416,8 @@ export function Rt2DailyBoard({
                           {card.status === "blocked" ? <StatusPill label="막힘" tone="warn" /> : null}
                         </div>
 
+                        <CardEvidenceSummary card={card} traceGoal={traceGoalByTodoId.get(card.todoIssueId) ?? ""} />
+
                         {renderFieldFeedback(card.todoIssueId, pendingTodoIssueId, failedTodoIssueId)}
 
                         {isEditing ? (
@@ -614,38 +617,107 @@ export function Rt2DailyBoard({
         </div>
       </main>
 
-      <aside className="space-y-4 rounded-lg border border-border bg-card/80 p-4">
-        <div>
-          <h3 className="text-sm font-semibold">Jarvis 요약</h3>
-          <div className="mt-2 space-y-2">
-            {board.cockpit.aiSummary.map((line) => (
-              <p key={line} className="text-sm">{line}</p>
-            ))}
-          </div>
-        </div>
+      <SupportEvidenceRail board={board} />
+    </div>
+  );
+}
+
+function SupportEvidenceRail({ board }: { board: Rt2DailyBoardData }) {
+  const cardsWithKnowledge = board.cards.filter((card) => card.note || card.deliverableCount > 0 || card.gapFlags.length > 0).length;
+  const graphLinks = new Set([
+    ...board.cockpit.traceRows.map((trace) => trace.taskIssueId),
+    ...board.cockpit.traceRows.map((trace) => trace.todoIssueId),
+  ]).size;
+  const economyCards = board.cards.filter((card) => card.basePriceTotal > 0 || card.submittedDeliverableCount > 0).length;
+  const qualityIssues = board.cards.filter(isQualityIssue).length;
+
+  return (
+    <aside className="space-y-4 rounded-lg border border-border bg-card/80 p-4" aria-label="보조 근거">
+      <div>
+        <h3 className="text-sm font-semibold">보조 근거</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Jarvis, 지식, 그래프, 경제 신호를 일일 업무 보드 맥락 안에서 확인합니다.
+        </p>
+      </div>
+
+      <EvidenceSection title="Jarvis 추천">
+        {board.cockpit.aiSummary.length === 0 ? (
+          <EvidenceEmpty>오늘 카드에 연결된 Jarvis 추천이 없습니다.</EvidenceEmpty>
+        ) : (
+          board.cockpit.aiSummary.slice(0, 3).map((line) => <EvidenceLine key={line}>{line}</EvidenceLine>)
+        )}
+        {qualityIssues > 0 ? <EvidenceLine tone="warn">품질 이슈 {qualityIssues}개는 먼저 검토하는 것이 좋습니다.</EvidenceLine> : null}
+      </EvidenceSection>
+
+      <EvidenceSection title="지식 근거">
+        <EvidenceLine>오늘 위키와 카드 메모에 연결된 업무 {cardsWithKnowledge}개</EvidenceLine>
+        {board.cockpit.gapFlags.length === 0 ? (
+          <EvidenceLine tone="ok">현재 보완 필요 근거가 없습니다.</EvidenceLine>
+        ) : (
+          board.cockpit.gapFlags.slice(0, 3).map((gap) => (
+            <EvidenceLine key={`${gap.todoIssueId}-${gap.kind}`} tone="warn">
+              {gap.label}
+            </EvidenceLine>
+          ))
+        )}
+      </EvidenceSection>
+
+      <EvidenceSection title="그래프 연결">
+        <EvidenceLine>OKR/KPI 추적 노드 {board.cockpit.traceRows.length}개</EvidenceLine>
+        <EvidenceLine>업무/To-Do 연결 {graphLinks}개</EvidenceLine>
+      </EvidenceSection>
+
+      <EvidenceSection title="경제 근거">
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Metric label="Gold" value={board.cockpit.summary.goldImpact} />
           <Metric label="XP" value={board.cockpit.summary.xpImpact} />
           <Metric label="제출 산출물" value={board.cockpit.summary.deliverablesSubmitted} />
           <Metric label="품질 상태" value={qualityLabel(board.cockpit.summary.qualityStatus)} />
         </div>
-        <div className="space-y-2">
-          <h4 className="text-xs font-medium text-muted-foreground">보완 필요</h4>
-          {board.cockpit.gapFlags.length === 0 ? (
-            <p className="rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
-              현재 표시할 gap이 없습니다.
-            </p>
-          ) : (
-            board.cockpit.gapFlags.map((gap) => (
-              <div key={`${gap.todoIssueId}-${gap.kind}`} className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
-                {gap.label}
-              </div>
-            ))
-          )}
-        </div>
-      </aside>
+        <EvidenceLine>가격 또는 제출 근거가 있는 카드 {economyCards}개</EvidenceLine>
+      </EvidenceSection>
+    </aside>
+  );
+}
+
+function CardEvidenceSummary({ card, traceGoal }: { card: Rt2DailyReportCard; traceGoal: string }) {
+  const wikiText = card.note ? "메모 근거 있음" : card.deliverableCount > 0 ? "산출물 근거 있음" : "지식 근거 필요";
+  const graphText = traceGoal || card.directGoalTitle || card.inheritedGoalTitle || "OKR 연결 필요";
+  const economyText = card.basePriceTotal > 0
+    ? `${formatGold(card.basePriceTotal)} Gold 근거`
+    : "가격 근거 필요";
+
+  return (
+    <div className="mt-3 grid gap-1 rounded-md border border-border bg-muted/30 px-2 py-2 text-[11px] text-muted-foreground" aria-label={`${card.todoIssueId}-support-evidence`}>
+      <div><span className="font-medium text-foreground">Jarvis 추천</span> {card.gapFlags.length > 0 ? "보완 필요 항목 확인" : "현재 흐름 유지"}</div>
+      <div><span className="font-medium text-foreground">지식 근거</span> {wikiText}</div>
+      <div><span className="font-medium text-foreground">그래프 연결</span> {graphText}</div>
+      <div><span className="font-medium text-foreground">경제 근거</span> {economyText} · {qualityLabel(card.qualityStatus, card.qualityLabel)}</div>
     </div>
   );
+}
+
+function EvidenceSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <h4 className="text-xs font-medium text-muted-foreground">{title}</h4>
+      <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function EvidenceLine({ children, tone = "muted" }: { children: ReactNode; tone?: "ok" | "warn" | "muted" }) {
+  const toneClass =
+    tone === "ok"
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+      : tone === "warn"
+        ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+        : "border-border bg-background text-muted-foreground";
+  return <p className={`rounded-md border px-3 py-2 text-sm ${toneClass}`}>{children}</p>;
+}
+
+function EvidenceEmpty({ children }: { children: ReactNode }) {
+  return <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">{children}</p>;
 }
 
 function cardMatchesFilters(

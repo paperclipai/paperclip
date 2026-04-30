@@ -627,11 +627,11 @@ export function KnowledgePage() {
                             to={citationTarget(result)!}
                             className="rounded-md border border-border px-2 py-1 font-medium text-foreground hover:bg-accent"
                           >
-                            Open citation
+                            근거 열기
                           </Link>
                         ) : (
                           <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
-                            Citation: {result.sourceKey}
+                            근거: {result.sourceKey}
                           </span>
                         )}
                         <span className="rounded-md bg-muted px-2 py-1 text-muted-foreground">
@@ -758,7 +758,7 @@ export function KnowledgePage() {
             {selectedProjectId ? (
               <Rt2GraphPanel companyId={selectedCompanyId} projectId={selectedProjectId} />
             ) : (
-              <p className="text-sm text-muted-foreground">Project를 선택하면 Task Mesh graph가 표시됩니다.</p>
+              <p className="text-sm text-muted-foreground">프로젝트를 선택하면 업무 연결 그래프가 표시됩니다.</p>
             )}
           </TabsContent>
 
