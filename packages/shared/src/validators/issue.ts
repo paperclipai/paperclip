@@ -5,11 +5,14 @@ import {
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_PRIORITIES,
+  clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
+import { multilineTextSchema } from "./text.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -42,6 +45,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
+    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z.record(z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -122,6 +126,12 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
+const issueRequestDepthInputSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .transform((value) => clampIssueRequestDepth(value));
+
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -130,12 +140,12 @@ export const createIssueSchema = z.object({
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
-  description: z.string().optional().nullable(),
+  description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
-  requestDepth: z.number().int().nonnegative().optional().default(0),
+  requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
@@ -167,10 +177,12 @@ export const createIssueLabelSchema = z.object({
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
+  requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-  comment: z.string().min(1).optional(),
+  comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),
+  resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
@@ -186,8 +198,9 @@ export const checkoutIssueSchema = z.object({
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
 export const addIssueCommentSchema = z.object({
-  body: z.string().min(1),
+  body: multilineTextSchema.pipe(z.string().min(1)),
   reopen: z.boolean().optional(),
+  resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
 });
 
@@ -211,7 +224,7 @@ export const suggestedTaskDraftSchema = z.object({
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
   title: z.string().trim().min(1).max(240),
-  description: z.string().trim().max(20000).nullable().optional(),
+  description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),
   assigneeUserId: z.string().trim().min(1).nullable().optional(),
@@ -319,6 +332,8 @@ export const askUserQuestionsAnswerSchema = z.object({
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  cancelled: z.literal(true).optional(),
+  cancellationReason: z.string().trim().max(4000).nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -435,9 +450,14 @@ export const rejectIssueThreadInteractionSchema = z.object({
 });
 export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInteractionSchema>;
 
+export const cancelIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
+
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
-  summaryMarkdown: z.string().max(20000).nullable().optional(),
+  summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 
@@ -460,7 +480,7 @@ export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
 export const upsertIssueDocumentSchema = z.object({
   title: z.string().trim().max(200).nullable().optional(),
   format: issueDocumentFormatSchema,
-  body: z.string().max(524288),
+  body: multilineTextSchema.pipe(z.string().max(524288)),
   changeSummary: z.string().trim().max(500).nullable().optional(),
   baseRevisionId: z.string().uuid().nullable().optional(),
 });

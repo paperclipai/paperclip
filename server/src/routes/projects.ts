@@ -13,8 +13,8 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { environmentService, projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import { conflict, forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -32,8 +32,11 @@ import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runt
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { environmentService } from "../services/environments.js";
+import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -46,7 +49,7 @@ export function projectRoutes(db: Db) {
   async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
     if (environmentId === undefined || environmentId === null) return;
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ["local", "ssh"],
+      allowedDrivers: ["local", "ssh", "sandbox"],
     });
   }
 
@@ -344,6 +347,15 @@ export function projectRoutes(db: Db) {
       return;
     }
 
+    const isSharedWorkspace = Boolean(workspace.sharedWorkspaceKey);
+    if (
+      req.actor.type === "agent"
+      && isSharedWorkspace
+      && SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS.has(action)
+    ) {
+      throw forbidden("Missing permission to manage workspace runtime services");
+    }
+
     await assertCanManageProjectWorkspaceRuntimeServices(db, req, {
       companyId: project.companyId,
       projectWorkspaceId: workspace.id,
@@ -547,9 +559,9 @@ export function projectRoutes(db: Db) {
           stderr,
           system:
             action === "stop"
-              ? "Stopped project workspace runtime services.\n"
+              ? "Stopped project workspace runtime services.\nThis does not pause issue work or held wake scheduling."
               : action === "restart"
-                ? "Restarted project workspace runtime services.\n"
+                ? "Restarted project workspace runtime services.\nThis does not pause issue work or held wake scheduling."
                 : "Started project workspace runtime services.\n",
           metadata: {
             runtimeServiceCount,

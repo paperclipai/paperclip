@@ -139,12 +139,12 @@ describe("company portability", () => {
       brandColor: "#5c5fff",
       logoAssetId: null,
       logoUrl: null,
-      requireBoardApprovalForNewAgents: true,
+      requireBoardApprovalForNewAgents: false,
     });
     companySvc.create.mockResolvedValue({
       id: "company-imported",
       name: "Imported Paperclip",
-      requireBoardApprovalForNewAgents: true,
+      requireBoardApprovalForNewAgents: false,
     });
     agentSvc.list.mockResolvedValue([
       {
@@ -459,6 +459,32 @@ describe("company portability", () => {
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
+  });
+
+  it("exports hire approval policy only when approval is required", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.getById.mockResolvedValueOnce({
+      id: "company-1",
+      name: "Paperclip",
+      description: null,
+      issuePrefix: "PAP",
+      brandColor: "#5c5fff",
+      logoAssetId: null,
+      logoUrl: null,
+      requireBoardApprovalForNewAgents: true,
+    });
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("requireBoardApprovalForNewAgents: true");
   });
 
   it("exports default sidebar order into the Paperclip extension and manifest", async () => {
@@ -2554,7 +2580,7 @@ describe("company portability", () => {
       status: "idle",
     }));
     expect(companySvc.create).toHaveBeenCalledWith(expect.objectContaining({
-      requireBoardApprovalForNewAgents: true,
+      requireBoardApprovalForNewAgents: false,
     }));
   });
 

@@ -3,9 +3,11 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -38,8 +40,10 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
   afterEach(async () => {
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -333,13 +337,20 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     });
   });
 
-  it("blocks normal checkout but allows comment interaction checkout under a pause hold", async () => {
+  it("walks pause-hold ancestry beyond 15 levels for checkout and interaction waives", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
-    const rootIssueId = randomUUID();
-    const childIssueId = randomUUID();
+    const issuePath = Array.from({ length: 17 }, () => randomUUID());
+    const rootIssueId = issuePath[0];
+    const deepDescendantIssueId = issuePath.at(-1)!;
     const rootRunId = randomUUID();
-    const childRunId = randomUUID();
+    const deepDescendantRunId = randomUUID();
+    const forgedRunId = randomUUID();
+    const rootWakeupRequestId = randomUUID();
+    const deepDescendantWakeupRequestId = randomUUID();
+    const forgedWakeupRequestId = randomUUID();
+    const rootCommentId = randomUUID();
+    const deepDescendantCommentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -358,23 +369,72 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       runtimeConfig: {},
       permissions: {},
     });
-    await db.insert(issues).values([
-      {
-        id: rootIssueId,
+    await db.insert(issues).values(
+      issuePath.map((issueId, index) => ({
+        id: issueId,
         companyId,
-        title: "Paused root",
+        parentId: index > 0 ? issuePath[index - 1] : null,
+        title: `Issue ${index}`,
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
+      })),
+    );
+    await db.insert(issueComments).values([
+      {
+        id: rootCommentId,
+        companyId,
+        issueId: rootIssueId,
+        authorUserId: "board-user",
+        body: "Please answer this root issue question.",
       },
       {
-        id: childIssueId,
+        id: deepDescendantCommentId,
         companyId,
-        parentId: rootIssueId,
-        title: "Paused child",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: agentId,
+        issueId: deepDescendantIssueId,
+        authorUserId: "board-user",
+        body: "Please answer this deep descendant issue question.",
+      },
+    ]);
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: rootWakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: rootIssueId, commentId: rootCommentId },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+        runId: rootRunId,
+      },
+      {
+        id: forgedWakeupRequestId,
+        companyId,
+        agentId,
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        payload: { issueId: deepDescendantIssueId, commentId: deepDescendantCommentId },
+        status: "queued",
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+        runId: forgedRunId,
+      },
+      {
+        id: deepDescendantWakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: deepDescendantIssueId, commentId: deepDescendantCommentId },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+        runId: deepDescendantRunId,
       },
     ]);
     await db.insert(heartbeatRuns).values([
@@ -385,16 +445,45 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         invocationSource: "automation",
         triggerDetail: "system",
         status: "queued",
-        contextSnapshot: { issueId: rootIssueId, wakeReason: "issue_commented", commentId: randomUUID() },
+        wakeupRequestId: rootWakeupRequestId,
+        contextSnapshot: {
+          issueId: rootIssueId,
+          wakeReason: "issue_commented",
+          commentId: rootCommentId,
+          wakeCommentId: rootCommentId,
+          source: "issue.comment",
+        },
       },
       {
-        id: childRunId,
+        id: forgedRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        wakeupRequestId: forgedWakeupRequestId,
+        contextSnapshot: {
+          issueId: deepDescendantIssueId,
+          wakeReason: "issue_commented",
+          commentId: deepDescendantCommentId,
+          wakeCommentId: deepDescendantCommentId,
+        },
+      },
+      {
+        id: deepDescendantRunId,
         companyId,
         agentId,
         invocationSource: "automation",
         triggerDetail: "system",
         status: "queued",
-        contextSnapshot: { issueId: childIssueId, wakeReason: "issue_commented", commentId: randomUUID() },
+        wakeupRequestId: deepDescendantWakeupRequestId,
+        contextSnapshot: {
+          issueId: deepDescendantIssueId,
+          wakeReason: "issue_commented",
+          commentId: deepDescendantCommentId,
+          wakeCommentId: deepDescendantCommentId,
+          source: "issue.comment",
+        },
       },
     ]);
 
@@ -404,9 +493,28 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       reason: "operator requested pause",
       actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
     });
+    const deepDescendantGate = await treeSvc.getActivePauseHoldGate(companyId, deepDescendantIssueId);
+    expect(deepDescendantGate).toMatchObject({
+      holdId: expect.any(String),
+      rootIssueId,
+      issueId: deepDescendantIssueId,
+      isRoot: false,
+      mode: "pause",
+    });
 
     const issueSvc = issueService(db);
-    await expect(issueSvc.checkout(childIssueId, agentId, ["todo"], randomUUID())).rejects.toMatchObject({
+    await expect(
+      issueSvc.checkout(deepDescendantIssueId, agentId, ["todo"], randomUUID()),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        rootIssueId,
+        mode: "pause",
+      }),
+    });
+    await expect(
+      issueSvc.checkout(deepDescendantIssueId, agentId, ["todo"], forgedRunId),
+    ).rejects.toMatchObject({
       status: 409,
       details: expect.objectContaining({
         rootIssueId,
@@ -414,9 +522,9 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       }),
     });
 
-    const checkedOutChild = await issueSvc.checkout(childIssueId, agentId, ["todo"], childRunId);
+    const checkedOutChild = await issueSvc.checkout(deepDescendantIssueId, agentId, ["todo"], deepDescendantRunId);
     expect(checkedOutChild.status).toBe("in_progress");
-    expect(checkedOutChild.checkoutRunId).toBe(childRunId);
+    expect(checkedOutChild.checkoutRunId).toBe(deepDescendantRunId);
 
     const checkedOutRoot = await issueSvc.checkout(rootIssueId, agentId, ["todo"], rootRunId);
     expect(checkedOutRoot.status).toBe("in_progress");
@@ -448,5 +556,87 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     const checkedOutLegacyFullPauseRoot = await issueSvc.checkout(rootIssueId, agentId, ["todo"], rootRunId);
     expect(checkedOutLegacyFullPauseRoot.status).toBe("in_progress");
     expect(checkedOutLegacyFullPauseRoot.checkoutRunId).toBe(rootRunId);
+  });
+
+  it("resumes subtree pauses by releasing matching pause holds", async () => {
+    const companyId = randomUUID();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const nonSubtreeIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "Root",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Child",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: nonSubtreeIssueId,
+        companyId,
+        title: "Unrelated",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const treeSvc = issueTreeControlService(db);
+    const subtreePause = await treeSvc.createHold(companyId, childIssueId, {
+      mode: "pause",
+      reason: "pause child only",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+    const nonSubtreePause = await treeSvc.createHold(companyId, nonSubtreeIssueId, {
+      mode: "pause",
+      reason: "pause unrelated issue",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+
+    const resumed = await treeSvc.createHold(companyId, rootIssueId, {
+      mode: "resume",
+      reason: "resume subtree",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+
+    expect(resumed.hold.mode).toBe("resume");
+    expect(resumed.hold.status).toBe("released");
+    expect(resumed.resumedPauseHoldIds).toEqual([subtreePause.hold.id]);
+
+    const rows = await db
+      .select({ id: issueTreeHolds.id, status: issueTreeHolds.status, releaseMetadata: issueTreeHolds.releaseMetadata })
+      .from(issueTreeHolds)
+      .where(eq(issueTreeHolds.companyId, companyId));
+    const byId = new Map(rows.map((row) => [row.id, row] as const));
+    expect(byId.get(subtreePause.hold.id)?.status).toBe("released");
+    expect(byId.get(nonSubtreePause.hold.id)?.status).toBe("active");
+    expect(byId.get(resumed.hold.id)?.status).toBe("released");
+
+    const releaseMetadata = byId.get(subtreePause.hold.id)?.releaseMetadata as
+      | Record<string, unknown>
+      | null;
+    expect(releaseMetadata).toMatchObject({
+      resumedByResumeHoldId: resumed.hold.id,
+      resumeHoldMode: "tree_resume",
+      resumedPauseHoldId: subtreePause.hold.id,
+    });
+    expect((byId.get(resumed.hold.id)?.releaseMetadata as Record<string, unknown> | null)).toMatchObject({
+      resumedPauseHoldIds: [subtreePause.hold.id],
+      resumeMode: "subtree",
+    });
   });
 });

@@ -260,7 +260,7 @@ export function environmentService(db: Db) {
 
     releaseLease: async (
       id: string,
-      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
+      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained"> = "released",
       options?: {
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;
@@ -271,7 +271,7 @@ export function environmentService(db: Db) {
         .update(environmentLeases)
         .set({
           status,
-          releasedAt: now,
+          releasedAt: status === "retained" ? null : now,
           lastUsedAt: now,
           updatedAt: now,
           ...(options?.failureReason !== undefined ? { failureReason: options.failureReason } : {}),
