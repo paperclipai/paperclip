@@ -120,7 +120,7 @@ describe("Sidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).not.toContain("Workspaces");
+    expect(container.textContent).not.toContain("작업공간");
 
     await act(async () => {
       root.unmount();
@@ -143,7 +143,7 @@ describe("Sidebar", () => {
     });
     await flushReact();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "작업공간");
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
     await act(async () => {

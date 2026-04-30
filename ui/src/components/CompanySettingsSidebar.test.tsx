@@ -103,21 +103,21 @@ describe("CompanySettingsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Paperclip");
-    expect(container.textContent).toContain("Company Settings");
-    expect(container.textContent).toContain("General");
-    expect(container.textContent).toContain("Access");
-    expect(container.textContent).toContain("Invites");
+    expect(container.textContent).toContain("회사 설정");
+    expect(container.textContent).toContain("일반");
+    expect(container.textContent).toContain("접근 권한");
+    expect(container.textContent).toContain("초대");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
-        label: "General",
+        label: "일반",
         end: true,
       }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/access",
-        label: "Access",
+        label: "접근 권한",
         badge: 2,
         end: true,
       }),
@@ -125,7 +125,7 @@ describe("CompanySettingsSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/invites",
-        label: "Invites",
+        label: "초대",
         end: true,
       }),
     );

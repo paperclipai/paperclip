@@ -9,14 +9,14 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Instance setup required</h1>
+        <h1 className="text-xl font-semibold">RealTycoon2 초기 설정이 필요합니다</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {hasActiveInvite
-            ? "No instance admin exists yet. A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:"
-            : "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"}
+            ? "아직 인스턴스 관리자가 없습니다. 첫 관리자 초대가 이미 생성되어 있으니 RealTycoon2 시작 로그에서 초대 URL을 확인하거나 아래 명령으로 다시 발급하세요:"
+            : "아직 인스턴스 관리자가 없습니다. RealTycoon2 환경에서 아래 명령으로 첫 관리자 초대 URL을 생성하세요:"}
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm paperclipai auth bootstrap-ceo`}
+{`pnpm realtycoon2 auth bootstrap-ceo`}
         </pre>
       </div>
     </div>
@@ -27,13 +27,12 @@ function NoBoardAccessPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">No company access</h1>
+        <h1 className="text-xl font-semibold">회사 접근 권한이 없습니다</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This account is signed in, but it does not have an active company membership or instance-admin access on
-          this Paperclip instance.
+          로그인은 되었지만 이 계정에는 활성 회사 멤버십이나 RealTycoon2 인스턴스 관리자 권한이 없습니다.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          Use a company invite or sign in with an account that already belongs to this org.
+          회사 초대를 사용하거나 이미 이 조직에 속한 계정으로 다시 로그인하세요.
         </p>
       </div>
     </div>
@@ -77,7 +76,7 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">RealTycoon2를 불러오는 중입니다...</div>;
   }
 
   if (healthQuery.error || boardAccessQuery.error) {
@@ -87,7 +86,7 @@ export function CloudAccessGate() {
           ? healthQuery.error.message
           : boardAccessQuery.error instanceof Error
             ? boardAccessQuery.error.message
-            : "Failed to load app state"}
+            : "RealTycoon2 상태를 불러오지 못했습니다"}
       </div>
     );
   }

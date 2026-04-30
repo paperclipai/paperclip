@@ -31,14 +31,14 @@ export function InstanceGeneralSettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+      setActionError(error instanceof Error ? error.message : "로그아웃하지 못했습니다.");
     },
   });
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
+      { label: "RealTycoon2 설정" },
+      { label: "일반" },
     ]);
   }, [setBreadcrumbs]);
 
@@ -59,12 +59,12 @@ export function InstanceGeneralSettings() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update general settings.");
+      setActionError(error instanceof Error ? error.message : "일반 설정을 저장하지 못했습니다.");
     },
   });
 
   if (generalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">일반 설정을 불러오는 중입니다...</div>;
   }
 
   if (generalQuery.error) {
@@ -72,7 +72,7 @@ export function InstanceGeneralSettings() {
       <div className="text-sm text-destructive">
         {generalQuery.error instanceof Error
           ? generalQuery.error.message
-          : "Failed to load general settings."}
+          : "일반 설정을 불러오지 못했습니다."}
       </div>
     );
   }
@@ -87,11 +87,10 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold">일반 설정</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide preferences including log display, keyboard shortcuts, backup
-          retention, and data sharing.
+          로그 표시, 단축키, 백업 보관, 데이터 공유 등 RealTycoon2 전체 환경을 설정합니다.
         </p>
       </div>
 
@@ -104,7 +103,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">Deployment and auth</h2>
+            <h2 className="text-sm font-semibold">배포와 인증</h2>
             <ModeBadge
               deploymentMode={healthQuery.data?.deploymentMode}
               deploymentExposure={healthQuery.data?.deploymentExposure}
@@ -112,23 +111,23 @@ export function InstanceGeneralSettings() {
           </div>
           <div className="text-sm text-muted-foreground">
             {healthQuery.data?.deploymentMode === "local_trusted"
-              ? "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required."
+              ? "로컬 신뢰 모드는 로컬 운영자 환경에 맞춰져 있습니다. 브라우저 요청은 로컬 업무 보드 권한으로 실행되며 로그인이 필요 없습니다."
               : healthQuery.data?.deploymentExposure === "public"
-                ? "Authenticated public mode requires sign-in for board access and is intended for public URLs."
-                : "Authenticated private mode requires sign-in and is intended for LAN, VPN, or other private-network deployments."}
+                ? "인증된 공개 모드는 업무 보드 접근에 로그인이 필요하며 공개 URL 운영에 사용합니다."
+                : "인증된 비공개 모드는 로그인이 필요하며 LAN, VPN 등 사설 네트워크 배포에 사용합니다."}
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             <StatusBox
-              label="Auth readiness"
-              value={healthQuery.data?.authReady ? "Ready" : "Not ready"}
+              label="인증 준비"
+              value={healthQuery.data?.authReady ? "준비됨" : "미완료"}
             />
             <StatusBox
-              label="Bootstrap status"
-              value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? "Setup required" : "Ready"}
+              label="초기 설정"
+              value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? "설정 필요" : "준비됨"}
             />
             <StatusBox
-              label="Bootstrap invite"
-              value={healthQuery.data?.bootstrapInviteActive ? "Active" : "None"}
+              label="초대 상태"
+              value={healthQuery.data?.bootstrapInviteActive ? "활성" : "없음"}
             />
           </div>
         </div>
@@ -137,18 +136,16 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <h2 className="text-sm font-semibold">로그의 사용자 이름 숨기기</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
-              username mentions outside of paths are not yet masked in the live transcript view. This is off by
-              default.
+              홈 디렉터리 경로 등 운영자에게 보이는 로그에서 사용자 이름 구간을 숨깁니다. 경로 밖의 단독 사용자 이름은 아직 실시간 transcript에서 마스킹되지 않습니다. 기본값은 꺼짐입니다.
             </p>
           </div>
           <ToggleSwitch
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle username log censoring"
+            aria-label="로그 사용자 이름 숨김 전환"
           />
         </div>
       </section>
@@ -156,17 +153,16 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">키보드 단축키</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
-              toggling panels. This is off by default.
+              받은함 이동, 업무 추가, 패널 전환 같은 RealTycoon2 단축키를 켭니다. 기본값은 꺼짐입니다.
             </p>
           </div>
           <ToggleSwitch
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle keyboard shortcuts"
+            aria-label="키보드 단축키 전환"
           />
         </div>
       </section>
@@ -174,16 +170,14 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Backup retention</h2>
+            <h2 className="text-sm font-semibold">백업 보관</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long automatic database backups are retained. Backups run roughly
-              every hour and are compressed with gzip. Within the daily window all backups are
-              kept; beyond that, one backup per week and one per month are preserved.
+              자동 데이터베이스 백업을 얼마나 오래 보관할지 설정합니다. 백업은 대략 매시간 실행되고 gzip으로 압축됩니다. 일 단위 기간에는 모든 백업을 보관하고, 이후에는 주/월 단위 대표 백업을 보존합니다.
             </p>
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">일 단위</h3>
             <div className="flex flex-wrap gap-2">
               {DAILY_RETENTION_PRESETS.map((days) => {
                 const active = backupRetention.dailyDays === days;
@@ -204,7 +198,7 @@ export function InstanceGeneralSettings() {
                       })
                     }
                   >
-                    <div className="text-sm font-medium">{days} days</div>
+                    <div className="text-sm font-medium">{days}일</div>
                   </button>
                 );
               })}
@@ -212,11 +206,11 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">주 단위</h3>
             <div className="flex flex-wrap gap-2">
               {WEEKLY_RETENTION_PRESETS.map((weeks) => {
                 const active = backupRetention.weeklyWeeks === weeks;
-                const label = weeks === 1 ? "1 week" : `${weeks} weeks`;
+                const label = `${weeks}주`;
                 return (
                   <button
                     key={weeks}
@@ -242,11 +236,11 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">월 단위</h3>
             <div className="flex flex-wrap gap-2">
               {MONTHLY_RETENTION_PRESETS.map((months) => {
                 const active = backupRetention.monthlyMonths === months;
-                const label = months === 1 ? "1 month" : `${months} months`;
+                const label = `${months}개월`;
                 return (
                   <button
                     key={months}
@@ -276,10 +270,9 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">AI feedback sharing</h2>
+            <h2 className="text-sm font-semibold">AI 피드백 공유</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Control whether thumbs up and thumbs down votes can send the voted AI output to
-              RealTycoon2 Labs. Votes are always saved locally.
+              좋아요/싫어요 피드백의 AI 출력을 RealTycoon2 Labs로 보낼 수 있는지 설정합니다. 피드백 기록은 항상 로컬에 저장됩니다.
             </p>
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -288,27 +281,26 @@ export function InstanceGeneralSettings() {
                 rel="noreferrer"
                 className="inline-flex text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
               >
-                Read our terms of service
+                이용 약관 보기
               </a>
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
             <div className="rounded-lg border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-              No default is saved yet. The next thumbs up or thumbs down choice will ask once and
-              then save the answer here.
+              아직 기본값이 없습니다. 다음 좋아요/싫어요 선택 시 한 번 확인하고 이곳에 저장합니다.
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {[
               {
                 value: "allowed",
-                label: "Always allow",
-                description: "Share voted AI outputs automatically.",
+                label: "항상 허용",
+                description: "피드백한 AI 출력을 자동으로 공유합니다.",
               },
               {
                 value: "not_allowed",
-                label: "Don't allow",
-                description: "Keep voted AI outputs local only.",
+                label: "허용하지 않음",
+                description: "피드백한 AI 출력을 로컬에만 보관합니다.",
               },
             ].map((option) => {
               const active = feedbackDataSharingPreference === option.value;
@@ -340,11 +332,10 @@ export function InstanceGeneralSettings() {
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
+            로컬 개발에서 첫 사용 확인을 다시 보려면{" "}
             <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
+            <code>instance_settings.general</code> JSON row에서 제거하거나{" "}
+            <code>"prompt"</code>로 되돌리세요. 값이 없거나 <code>"prompt"</code>이면 아직 기본값을 정하지 않았다는 뜻입니다.
           </p>
         </div>
       </section>
@@ -352,9 +343,9 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
+            <h2 className="text-sm font-semibold">로그아웃</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Sign out of this RealTycoon2 instance. You will be redirected to the login page.
+              이 RealTycoon2 인스턴스에서 로그아웃합니다. 이후 로그인 화면으로 이동합니다.
             </p>
           </div>
           <Button
@@ -364,7 +355,7 @@ export function InstanceGeneralSettings() {
             onClick={() => signOutMutation.mutate()}
           >
             <LogOut className="size-4" />
-            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+            {signOutMutation.isPending ? "로그아웃 중..." : "로그아웃"}
           </Button>
         </div>
       </section>

@@ -58,4 +58,30 @@ describe("BreadcrumbContext", () => {
 
     expect(renderCounts).toHaveLength(2);
   });
+
+  it("keeps RealTycoon2 in the runtime document title", () => {
+    let updateBreadcrumbs: ((crumbs: Array<{ label: string; href?: string }>) => void) | null = null;
+
+    function TestConsumer() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      updateBreadcrumbs = setBreadcrumbs;
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <BreadcrumbProvider>
+          <TestConsumer />
+        </BreadcrumbProvider>,
+      );
+    });
+
+    expect(document.title).toBe("RealTycoon2");
+
+    act(() => {
+      updateBreadcrumbs?.([{ label: "업무", href: "/issues" }, { label: "PAP-1488" }]);
+    });
+
+    expect(document.title).toBe("PAP-1488 · 업무 · RealTycoon2");
+  });
 });

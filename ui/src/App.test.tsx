@@ -68,7 +68,7 @@ describe("CloudAccessGate", () => {
     vi.clearAllMocks();
   });
 
-  it("shows a no-access message for signed-in users without org access", async () => {
+  it("shows a Korean no-access message for signed-in users without org access", async () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1", email: "user@example.com", name: "User", image: null },
@@ -98,7 +98,7 @@ describe("CloudAccessGate", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("No company access");
+    expect(container.textContent).toContain("회사 접근 권한이 없습니다");
     expect(container.textContent).not.toContain("Outlet content");
 
     await act(async () => {
@@ -137,7 +137,7 @@ describe("CloudAccessGate", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Outlet content");
-    expect(container.textContent).not.toContain("No company access");
+    expect(container.textContent).not.toContain("회사 접근 권한이 없습니다");
 
     await act(async () => {
       root.unmount();
