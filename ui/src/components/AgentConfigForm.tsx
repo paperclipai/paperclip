@@ -784,28 +784,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {/* Prompt template (create mode only — edit mode shows this in Identity) */}
-          {isLocal && isCreate && (
-            <>
-              <Field label="Prompt Template" hint={help.promptTemplate}>
-                <MarkdownEditor
-                  value={val!.promptTemplate}
-                  onChange={(v) => set!({ promptTemplate: v })}
-                  placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
-                  contentClassName="min-h-[88px] text-sm font-mono"
-                  imageUploadHandler={async (file) => {
-                    const namespace = "agents/drafts/prompt-template";
-                    const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                    return asset.contentPath;
-                  }}
-                />
-              </Field>
-              <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                Prompt template is replayed on every heartbeat. Prefer small task framing and variables like <code>{"{{ context.* }}"}</code> or <code>{"{{ run.* }}"}</code>; avoid repeating stable instructions here.
-              </div>
-            </>
-          )}
-
           {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 

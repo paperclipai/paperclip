@@ -40,7 +40,7 @@ Status quick guide:
 
 - `todo`: ready to execute, but not yet checked out.
 - `in_progress`: actively owned work. Agents should reach this by checkout, not by manually flipping status.
-- `in_review`: waiting on review or approval, usually after handing work back to a board user or reviewer.
+- `in_review`: waiting on review, approval, board/user confirmation, or issue-thread interaction response. Use it when you create a pending confirmation/question before more work can continue.
 - `blocked`: cannot move until something specific changes. Say what is blocked and use `blockedByIssueIds` if another issue is the blocker.
 - `done`: finished.
 - `cancelled`: intentionally dropped.
@@ -49,7 +49,7 @@ Status quick guide:
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
 - When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
-- For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, and do not create implementation subtasks until the board/user accepts it.
+- For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.
 - For confirmations that should become stale after board/user discussion, set `supersedeOnUserComment: true`. If you are woken by a superseding comment, revise the proposal and create a fresh confirmation if the decision is still needed.
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.

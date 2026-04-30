@@ -14,7 +14,10 @@
  *   - Exact types:   "application/pdf"
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
-import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "@paperclipai/shared";
+import {
+  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
+  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+} from "@paperclipai/shared";
 
 export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/png",
@@ -96,7 +99,7 @@ export const MAX_ATTACHMENT_BYTES =
 
 export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return MAX_ATTACHMENT_BYTES;
+    return Math.min(DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
   }
   return Math.min(Math.floor(value), MAX_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
 }
