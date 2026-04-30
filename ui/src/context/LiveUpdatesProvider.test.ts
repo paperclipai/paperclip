@@ -74,6 +74,31 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("does not refetch issue queries for live activity while the tab is backgrounded", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.updated",
+        details: null,
+      },
+      { userId: null, agentId: null },
+      { pathname: "/PTG/issues/PTG-3653", isForegrounded: false },
+    );
+
+    expect(invalidations).toEqual([]);
+  });
+
   it("still refreshes comments when a comment activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

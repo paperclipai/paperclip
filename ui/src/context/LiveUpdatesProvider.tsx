@@ -671,6 +671,9 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
+  const isForegrounded = options?.isForegrounded ?? true;
+  if (!isForegrounded) return;
+
   throttledInvalidate(`activity.bulk:${companyId}`, () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
@@ -835,6 +838,9 @@ function handleLiveEvent(
     return;
   }
 
+  const isForegrounded = isPageForegrounded();
+  if (!isForegrounded) return;
+
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
@@ -871,8 +877,8 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
-    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {
+    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname, isForegrounded });
+    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload, { isForegrounded })) {
       void hydrateVisibleIssueComment(queryClient, pathname, payload);
     }
     const action = readString(payload.action);
@@ -881,7 +887,7 @@ function handleLiveEvent(
       buildJoinRequestToast(payload);
     if (
       toast &&
-      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload)
+      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload, { isForegrounded })
     ) {
       gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
     }
