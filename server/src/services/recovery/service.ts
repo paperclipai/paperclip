@@ -333,7 +333,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function calculateRecoveryChainDepth(companyId: string, issueId: string): Promise<{ depth: number; rootIssueId: string }> {
     const SAFETY_LIMIT = 100;
     const currentIssue = await db
-      .select({ id: true, originKind: true, parentId: true })
+      .select({ id: issues.id, originKind: issues.originKind, parentId: issues.parentId })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
       .then((rows) => rows[0] ?? null);
@@ -344,7 +344,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let rootIssueId = issueId;
     for (let i = 0; i < SAFETY_LIMIT && cursor !== null; i++) {
       const issue = await db
-        .select({ parentId: true, originKind: true })
+        .select({ parentId: issues.parentId, originKind: issues.originKind })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)))
         .then((rows) => rows[0] ?? null);
@@ -1697,8 +1697,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const autoRecoveryEnabled = asBoolean(experimentalSettings.enableStrandedIssueAutoRecovery, true);
     if (!autoRecoveryEnabled) {
       return {
+        assignmentDispatched: 0,
         dispatchRequeued: 0,
         continuationRequeued: 0,
+        productiveContinuationObserved: 0,
+        successfulContinuationObserved: 0,
         orphanBlockersAssigned: 0,
         escalated: 0,
         skipped: 0,
