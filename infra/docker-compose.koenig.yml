@@ -127,6 +127,30 @@ services:
         max-size: "5m"
         max-file: "3"
 
+  spend-tail:
+    # Phase J workaround: tails postgres cost_events to /paperclip/spend.jsonl
+    # so spend tracking is durable + greppable while the cost-events API endpoint
+    # is missing from this Paperclip build.
+    image: python:3.12-slim
+    container_name: koenig-spend-tail
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgres://paperclip:paperclip@db:5432/paperclip"
+      KOENIG_SPEND_JSONL: "/paperclip/spend.jsonl"
+      KOENIG_SPEND_POLL_S: "60"
+    volumes:
+      - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts:/scripts:ro
+      - paperclip-data:/paperclip
+    command: ["sh", "-c", "pip install --quiet psycopg2-binary && python3 /scripts/koenig-spend-tail.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
 volumes:
   paperclip-pgdata:
     name: paperclip-pgdata
