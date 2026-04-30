@@ -6,11 +6,10 @@
  */
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { ExpressInstrumentation } from "@opentelemetry/instrumentation-express";
-import { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
@@ -20,7 +19,6 @@ import {
   AlwaysOnSampler,
   ParentBasedSampler,
 } from "@opentelemetry/sdk-trace-node";
-import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { trace, type Tracer, type Span, SpanStatusCode, context } from "@opentelemetry/api";
 import { resolveOtelConfig, type OtelConfig } from "./config.js";
 
@@ -39,7 +37,7 @@ export function initOtel(): OtelConfig {
     return config;
   }
 
-  const resource = new Resource({
+  const resource = resourceFromAttributes({
     [ATTR_SERVICE_NAME]: config.serviceName,
     [ATTR_SERVICE_VERSION]: process.env.npm_package_version ?? "unknown",
   });
@@ -58,27 +56,10 @@ export function initOtel(): OtelConfig {
       })
     : undefined;
 
-  // Metrics: Prometheus exporter for /metrics scraping + optional OTLP push
-  const metricReaders: PeriodicExportingMetricReader[] = [];
-
-  if (config.otlpEndpoint) {
-    metricReaders.push(
-      new PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter({
-          url: `${config.otlpEndpoint}/v1/metrics`,
-          headers: config.otlpHeaders,
-        }),
-        exportIntervalMillis: 15_000,
-      }),
-    );
-  }
-
   // Prometheus exporter serves /metrics on a separate port (if configured)
-  // or we'll mount it on the main express app
+  // or mounted on the main express app via getMetricsRequestHandler()
   const prometheusExporter = new PrometheusExporter({
     port: config.prometheusPort,
-    // If no separate port, don't start a standalone server —
-    // we'll use getMetricsRequestHandler() in express
     preventServerStart: !config.prometheusPort,
   });
 

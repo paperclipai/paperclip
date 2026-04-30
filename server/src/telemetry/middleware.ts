@@ -5,7 +5,6 @@
  * - Exposes /metrics endpoint for Prometheus scraping
  */
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
 import { httpRequestsTotal, httpRequestDuration } from "./metrics.js";
 
 /**
@@ -31,41 +30,42 @@ export function otelHttpMetrics(): RequestHandler {
 
 /**
  * Handler for the /metrics Prometheus scrape endpoint.
- * This delegates to the PrometheusExporter's built-in handler.
+ * Delegates to the PrometheusExporter's built-in HTTP handler.
  */
 export function createMetricsHandler(): RequestHandler {
-  return async (_req: Request, res: Response) => {
-    try {
-      // The PrometheusExporter is registered as a metric reader in the SDK.
-      // We need to get its handler. Since we use preventServerStart: true,
-      // we use the OpenTelemetry metrics API to collect and serialize.
-      const { metrics } = await import("@opentelemetry/api");
-      const meterProvider = metrics.getMeterProvider() as any;
+  // Lazy-import to avoid circular deps and ensure SDK is initialized
+  let handler: ((req: any, res: any) => void) | null = null;
 
-      // Try to find the PrometheusExporter from the meter provider
-      if (meterProvider._sharedState?.metricCollectors) {
-        for (const collector of meterProvider._sharedState.metricCollectors) {
-          const reader = collector._metricReader;
-          if (reader instanceof PrometheusExporter) {
-            // Use the exporter's internal handler
-            reader.getMetricsRequestHandler()(_req as any, res as any);
-            return;
+  return (req: Request, res: Response) => {
+    if (!handler) {
+      try {
+        // The PrometheusExporter is registered as the metricReader on the SDK.
+        // Access it through the metrics API meter provider internals.
+        const { metrics } = require("@opentelemetry/api") as typeof import("@opentelemetry/api");
+        const meterProvider = metrics.getMeterProvider() as any;
+
+        // Walk the meter provider to find the PrometheusExporter
+        const { PrometheusExporter } = require("@opentelemetry/exporter-prometheus") as typeof import("@opentelemetry/exporter-prometheus");
+
+        const readers = meterProvider?._sharedState?.metricCollectors;
+        if (readers) {
+          for (const collector of readers) {
+            const reader = collector._metricReader;
+            if (reader instanceof PrometheusExporter) {
+              handler = (rq: any, rs: any) => reader.getMetricsRequestHandler(rq, rs);
+              break;
+            }
           }
         }
+      } catch {
+        // SDK not initialized or Prometheus exporter not found
       }
+    }
 
-      // Fallback: try accessing _metricReaders directly
-      if (typeof meterProvider.getMetricReader === "function") {
-        const reader = meterProvider.getMetricReader();
-        if (reader instanceof PrometheusExporter) {
-          reader.getMetricsRequestHandler()(_req as any, res as any);
-          return;
-        }
-      }
-
-      res.status(503).send("# Prometheus exporter not available\n");
-    } catch {
-      res.status(503).send("# Metrics collection error\n");
+    if (handler) {
+      handler(req, res);
+    } else {
+      res.status(503).type("text/plain").send("# Prometheus exporter not available\n");
     }
   };
 }

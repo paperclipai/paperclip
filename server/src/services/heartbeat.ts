@@ -5732,12 +5732,12 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      // Propagate trace context to adapter via environment variables
+      // Propagate trace context to adapter via context snapshot env vars
       const traceHeaders = getTraceContextHeaders();
       if (traceHeaders.traceparent) {
-        runtimeConfig.TRACEPARENT = traceHeaders.traceparent;
+        context.TRACEPARENT = traceHeaders.traceparent;
         if (traceHeaders.tracestate) {
-          runtimeConfig.TRACESTATE = traceHeaders.tracestate;
+          context.TRACESTATE = traceHeaders.tracestate;
         }
       }
 
