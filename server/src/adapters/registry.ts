@@ -5,6 +5,8 @@ import {
   testEnvironment as acpxTestEnvironment,
   sessionCodec as acpxSessionCodec,
   getConfigSchema as getAcpxConfigSchema,
+  listAcpxSkills,
+  syncAcpxSkills,
 } from "@paperclipai/adapter-acpx-local/server";
 import { agentConfigurationDoc as acpxAgentConfigurationDoc, models as acpxModels } from "@paperclipai/adapter-acpx-local";
 import {
@@ -165,6 +167,8 @@ const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
   execute: acpxExecute,
   testEnvironment: acpxTestEnvironment,
+  listSkills: listAcpxSkills,
+  syncSkills: syncAcpxSkills,
   sessionCodec: acpxSessionCodec,
   sessionManagement: getAdapterSessionManagement("acpx_local") ?? undefined,
   models: acpxModels,

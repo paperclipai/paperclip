@@ -202,6 +202,11 @@ describe("adapter routes", () => {
     const codexLocal = res.body.find((a: any) => a.type === "codex_local");
     expect(codexLocal).toBeDefined();
     expect(codexLocal.capabilities.supportsSkills).toBe(true);
+
+    // acpx_local exposes runtime-aware skill snapshots for Claude/Codex/custom ACP agents
+    const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
+    expect(acpxLocal).toBeDefined();
+    expect(acpxLocal.capabilities.supportsSkills).toBe(true);
   });
 
   it("uses the active adapter when resolving config schema for a paused builtin override", async () => {
