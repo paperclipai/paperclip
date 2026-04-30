@@ -4,7 +4,7 @@ author: blog-author
 ticket: KOE-23
 vendor_tag: openai
 content_type: article
-status: draft-for-review
+status: awaiting-g0
 reading_time_min: 6
 primary_query: "OpenAI on AWS Bedrock auth IAM tradeoffs"
 contrarian_angle: "Bedrock is not an OpenAI API drop-in — IAM/SigV4 replaces bearer tokens and your existing openai client will not work at all"

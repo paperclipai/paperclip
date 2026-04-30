@@ -11,7 +11,7 @@ learning_objectives:
 whats_new:
   - Anthropic rebranded Claude Code SDK to Claude Agent SDK (April 28, 2026)
   - Vercel shipped AI SDK 6 with the ToolLoopAgent abstraction
-status: draft-for-review
+status: awaiting-g0
 reading_time_min: 7
 sources:
   - https://www.anthropic.com/news/agent-capabilities-api

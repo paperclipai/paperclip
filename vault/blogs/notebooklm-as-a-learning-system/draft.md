@@ -4,7 +4,7 @@ author: blog-author
 ticket: KOE-30
 vendor_tag: google
 content_type: article
-status: draft-for-review
+status: awaiting-g0
 reading_time_min: 6
 primary_query: "notebooklm for students"
 contrarian_angle: "NotebookLM's classroom advantage isn't what it can generate — it's what it refuses to invent. Source-grounding makes it the only AI study tool teachers can actually trust."

@@ -5,7 +5,7 @@ agent_drafted_by: blog-author
 ticket: KOE-27
 vendor_tag: community
 content_type: article
-status: draft-for-review
+status: awaiting-g0
 reading_time_min: 7
 primary_query: "cursor 3.2 vs claude code agent workflow"
 contrarian_angle: "Cursor's background-agent harness survives IDE crashes because state lives server-side; Claude Code loops die with the shell session — but Claude Code's BYOS model means you own the loop-restart logic and budget cap."

@@ -5,7 +5,7 @@ agent_drafted_by: blog-author
 ticket: KOE-31
 vendor_tag: community
 content_type: article
-status: draft-for-review
+status: awaiting-g0
 reading_time_min: 6
 primary_query: "voice agent TTS latency benchmark 2026 Cartesia Sonic Kokoro GPT Realtime"
 contrarian_angle: "Cartesia's 40ms TTFA advantage over OpenAI TTS (200ms) is swamped by LLM inference time — the real latency win in 2026 is streaming architecture that interleaves generation and synthesis, not raw TTFA."

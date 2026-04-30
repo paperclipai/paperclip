@@ -4,7 +4,7 @@ author: blog-author
 ticket: KOE-35
 vendor_tag: community
 content_type: article
-status: draft-for-review
+status: awaiting-g0
 reading_time_min: 6
 primary_query: "Cloudflare Agents Week 2026 announcements explained"
 contrarian_angle: "The press-release read is '20 features.' The engineering read is: Cloudflare rebuilt every layer of the cloud stack — compute, memory, storage, networking, tooling — in one week. That is a platform reorientation, not a feature drop."
