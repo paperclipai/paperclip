@@ -35,6 +35,7 @@ const mockAdapterExecute = vi.hoisted(() =>
     summary: "Stale-queue invalidation test run.",
     provider: "test",
     model: "test-model",
+    resultJson: { summary: "Stale-queue invalidation test run." },
   })),
 );
 
