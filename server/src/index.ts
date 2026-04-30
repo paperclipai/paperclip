@@ -32,6 +32,8 @@ import {
   feedbackService,
   heartbeatService,
   instanceSettingsService,
+  issueService,
+  performStaleRunCleanup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -775,6 +777,16 @@ export async function startServer(): Promise<StartedServer> {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          }
+        })
+        .then(async () => {
+          const issuesSvc = issueService(db as any);
+          const cleaned = await performStaleRunCleanup(db as any, issuesSvc, { staleMinutes: 30 });
+          if (cleaned.forceFailed.length > 0) {
+            logger.warn(
+              { scanned: cleaned.scanned, forceFailedCount: cleaned.forceFailed.length },
+              "periodic stale-run cleanup completed",
+            );
           }
         })
         .catch((err) => {

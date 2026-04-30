@@ -5991,6 +5991,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
+        if (issueId && outcome === "succeeded") {
+          try {
+            await issuesSvc.recordIssueTaskOutcome(issueId, "success", {
+              actorAgentId: agent.id,
+              runId: livenessRun.id,
+            });
+          } catch (err) {
+            logger.warn({ err, runId: run.id, issueId }, "failed to record issue task outcome after success");
+          }
+        }
         await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
@@ -6075,6 +6085,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
 
+        if (issueId) {
+          try {
+            await issuesSvc.recordIssueTaskOutcome(issueId, "failure", {
+              actorAgentId: agent.id,
+              runId: livenessRun.id,
+            });
+          } catch (err) {
+            logger.warn({ err, runId, issueId }, "failed to record issue task outcome after adapter error");
+          }
+        }
+
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
           signal: null,
@@ -6138,6 +6159,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
+            const setupContext = parseObject(run.contextSnapshot);
+            const setupIssueId = readNonEmptyString(setupContext.issueId);
+            if (setupIssueId) {
+              try {
+                await issuesSvc.recordIssueTaskOutcome(setupIssueId, "failure", {
+                  actorAgentId: failedAgent?.id ?? null,
+                  runId: livenessRun.id,
+                });
+              } catch (err) {
+                logger.warn({ err, runId, issueId: setupIssueId }, "failed to record issue task outcome after setup failure");
+              }
+            }
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
