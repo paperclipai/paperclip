@@ -314,6 +314,38 @@ spec:
               PY
                 chown 1000:1000 "${CLAUDE_DIR}" "${HOOKS_DIR}" "${SETTINGS}" "${HOOKS_DIR}"/*.sh 2>/dev/null || true
               fi
+
+              # Seed a project-scope .mcp.json at $HOME (CWD for k8s Job pods is
+              # /paperclip by default — matches PAPERCLIP_HOME) so every claude
+              # session in a Job pod auto-loads the bundled paperclip MCP
+              # bridge (`@paperclipai/mcp-server`). The bridge exposes:
+              #   - paperclip's first-class entity tools (issues, agents, ...)
+              #   - all live plugin tools (Linear, Slack, Alertmanager, future
+              #     paperclip-plugin-github/figma) via /api/plugins/tools/execute
+              # Per-run isolation comes from PAPERCLIP_AGENT_ID / RUN_ID /
+              # COMPANY_ID / API_KEY which the adapter injects as Job env.
+              # Safe to overwrite each pod start: it's pure config, no runtime
+              # state. We deliberately don't merge with an existing file —
+              # operators add per-agent MCP servers via adapterConfig in
+              # paperclip-server, not by hand-editing this file.
+              MCP_FILE="${BASE}/.mcp.json"
+              MCP_BRIDGE_JS="/app/packages/mcp-server/dist/stdio.js"
+              if [ -f "${MCP_BRIDGE_JS}" ]; then
+                cat > "${MCP_FILE}" <<EOF
+              {
+                "mcpServers": {
+                  "paperclip": {
+                    "command": "node",
+                    "args": ["${MCP_BRIDGE_JS}"]
+                  }
+                }
+              }
+              EOF
+                chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
+                echo "seed: wrote ${MCP_FILE} with paperclip MCP bridge"
+              else
+                echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
+              fi
           env:
             {{- if .Values.secret.masterKey }}
             - name: PAPERCLIP_MASTER_KEY_SEED
