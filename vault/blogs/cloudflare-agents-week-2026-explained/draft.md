@@ -22,6 +22,36 @@ sources:
   - https://blog.cloudflare.com/artifacts-git-for-agents-beta/
   - https://blog.cloudflare.com/ai-search-agent-primitive/
   - https://blog.cloudflare.com/ai-platform/
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Managed OAuth for Access — Cloudflare Blog"
+    url: https://blog.cloudflare.com/managed-oauth-for-access/
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Project Think: The Agent SDK — Cloudflare Blog"
+    url: https://blog.cloudflare.com/project-think/
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Dynamic Workers — Cloudflare Blog"
+    url: https://blog.cloudflare.com/dynamic-workers/
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Agent Readiness — Cloudflare Blog"
+    url: https://blog.cloudflare.com/agent-readiness/
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Artifacts: Git for Agents Beta — Cloudflare Blog"
+    url: https://blog.cloudflare.com/artifacts-git-for-agents-beta/
+    retrieved: 2026-04-30
+  - n: 6
+    title: "AI Search Agent Primitive — Cloudflare Blog"
+    url: https://blog.cloudflare.com/ai-search-agent-primitive/
+    retrieved: 2026-04-30
+  - n: 7
+    title: "AI Platform — Cloudflare Blog"
+    url: https://blog.cloudflare.com/ai-platform/
+    retrieved: 2026-04-30
 ---
 
 # Cloudflare Agents Week 2026: every announcement explained
