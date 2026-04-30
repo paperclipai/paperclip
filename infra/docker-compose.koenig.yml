@@ -103,6 +103,30 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  cron-driver:
+    # Pokes Chief Engineering every 5 min so the agent dispatch cascade keeps flowing.
+    # Replaces the launchd plist that fails under macOS Sequoia TCC, and survives Mac reboots
+    # because compose has restart: unless-stopped.
+    image: python:3.12-slim
+    container_name: koenig-cron-driver
+    restart: unless-stopped
+    environment:
+      KOENIG_CRON_TICK_S: "300"
+      PAPERCLIP_HOST: "http://paperclip:3100"
+    env_file:
+      - ../.env.koenig
+    volumes:
+      - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts:/scripts:ro
+    command: ["python3", "/scripts/koenig-cron-driver.py"]
+    depends_on:
+      paperclip:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
 volumes:
   paperclip-pgdata:
     name: paperclip-pgdata

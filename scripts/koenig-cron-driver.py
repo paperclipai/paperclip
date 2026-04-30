@@ -41,7 +41,7 @@ LOG_DIR = REPO / "scripts" / ".logs"
 LOG_FILE = LOG_DIR / "koenig-cron-driver.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
-PAPERCLIP_HOST = "http://localhost:3100"
+PAPERCLIP_HOST = os.environ.get("PAPERCLIP_HOST", "http://localhost:3100")
 COMPANY_ID = "2a77f89b-33f0-4133-a20c-77ddaac5e744"
 CHIEF_ENGINEERING_ID = "b90788a0-d3de-42da-8e77-7dc8f7c01fd3"
 
@@ -92,6 +92,9 @@ def post(url: str, token: str, body: dict | None = None, timeout: float = 10) ->
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Paperclip enforces a hostname allowlist; "localhost" is always allowed,
+            # so spoof Host even when reaching the server via a docker service name.
+            "Host": "localhost:3100",
         },
     )
     try:
@@ -107,7 +110,10 @@ def heartbeat_freshness(token: str) -> str:
     """Return a 1-line summary of how many agents heartbeated in the last 10 min."""
     req = urllib.request.Request(
         f"{PAPERCLIP_HOST}/api/companies/{COMPANY_ID}/agents",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Host": "localhost:3100",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -142,10 +148,11 @@ def tick(token: str) -> None:
 
 
 def main() -> int:
-    env = parse_env_file(ENV_FILE)
-    token = env.get("PAPERCLIP_API_KEY")
+    # Prefer process env (set by docker compose env_file) over the on-disk .env.koenig
+    # so the script works inside containers without mounting the env file.
+    token = os.environ.get("PAPERCLIP_API_KEY") or parse_env_file(ENV_FILE).get("PAPERCLIP_API_KEY")
     if not token:
-        log("FATAL: PAPERCLIP_API_KEY not in .env.koenig")
+        log("FATAL: PAPERCLIP_API_KEY not in env or .env.koenig")
         return 1
     log(f"cron-driver up — poking {CHIEF_ENGINEERING_ID[:8]} every {TICK_INTERVAL_S}s")
     # Fire once immediately
