@@ -1,10 +1,11 @@
 ---
 phase: 50
 slug: work-card-editing-and-board-controls
-status: draft
+status: passed
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-04-30
+updated: 2026-04-30
 ---
 
 # Phase 50 — Validation Strategy
@@ -38,13 +39,13 @@ created: 2026-04-30
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 50-01-01 | 01 | 1 | BOARD-04 | T-50-01 | Cross-company and wrong-assignee edits remain rejected | shared/server unit-route | `pnpm exec vitest run packages/shared/src/rt2-daily-report.test.ts server/src/__tests__/rt2-daily-report-routes.test.ts` | ✅ / W0 extensions | ⬜ pending |
-| 50-01-02 | 01 | 1 | BOARD-04 | T-50-02 | Invalid quick-edit payloads are rejected by shared Zod validators | shared unit | `pnpm exec vitest run packages/shared/src/rt2-daily-report.test.ts` | ✅ / W0 extensions | ⬜ pending |
-| 50-02-01 | 02 | 2 | BOARD-04 | T-50-03 | Title, deliverable, base price, quality, and OKR edits route to canonical owners | server route | `pnpm exec vitest run server/src/__tests__/rt2-daily-report-routes.test.ts server/src/__tests__/rt2-task-routes.test.ts` | ✅ / W0 extensions | ⬜ pending |
-| 50-02-02 | 02 | 2 | BOARD-04 | T-50-04 | Daily lane/status edits still materialize activity log and wiki evidence | server route | `pnpm exec vitest run server/src/__tests__/rt2-daily-report-routes.test.ts` | ✅ / W0 extensions | ⬜ pending |
-| 50-03-01 | 03 | 3 | BOARD-04 | — | Quick edit controls stay board-context, Korean-labeled, and preserve failed drafts | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ / W0 extensions | ⬜ pending |
-| 50-03-02 | 03 | 3 | BOARD-05 | — | Five required filters, search, and view-only sort preserve lane grouping and persisted state | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ / W0 extensions | ⬜ pending |
-| 50-04-01 | 04 | 4 | BOARD-04, BOARD-05 | T-50-01..04 | Focused integration evidence plus typecheck pass before phase verification | integration | `pnpm typecheck && pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx server/src/__tests__/rt2-daily-report-routes.test.ts server/src/__tests__/rt2-task-routes.test.ts packages/shared/src/rt2-daily-report.test.ts` | ✅ / W0 extensions | ⬜ pending |
+| 50-01-01 | 01 | 1 | BOARD-04 | T-50-01 | Cross-company and wrong-assignee edits remain rejected | shared/server unit-route | `pnpm exec vitest run packages/shared/src/rt2-daily-report.test.ts server/src/__tests__/rt2-daily-report-routes.test.ts` | ✅ / W0 extensions | ✅ green |
+| 50-01-02 | 01 | 1 | BOARD-04 | T-50-02 | Invalid quick-edit payloads are rejected by shared Zod validators | shared unit | `pnpm exec vitest run packages/shared/src/rt2-daily-report.test.ts` | ✅ / W0 extensions | ✅ green |
+| 50-02-01 | 02 | 2 | BOARD-04 | T-50-03 | Title, deliverable, base price, quality, and OKR edits route to canonical owners | server route | `pnpm exec vitest run server/src/__tests__/rt2-daily-report-routes.test.ts server/src/__tests__/rt2-task-routes.test.ts` | ✅ / W0 extensions | ✅ green |
+| 50-02-02 | 02 | 2 | BOARD-04 | T-50-04 | Daily lane/status edits still materialize activity log and wiki evidence | server route | `pnpm exec vitest run server/src/__tests__/rt2-daily-report-routes.test.ts` | ✅ / W0 extensions | ✅ green |
+| 50-03-01 | 03 | 3 | BOARD-04 | — | Quick edit controls stay board-context, Korean-labeled, and preserve failed drafts | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ / W0 extensions | ✅ green |
+| 50-03-02 | 03 | 3 | BOARD-05 | — | Five required filters, search, and view-only sort preserve lane grouping and persisted state | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ / W0 extensions | ✅ green |
+| 50-04-01 | 04 | 4 | BOARD-04, BOARD-05 | T-50-01..04 | Focused integration evidence plus typecheck pass before phase verification | integration | `pnpm typecheck && pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx server/src/__tests__/rt2-daily-report-routes.test.ts server/src/__tests__/rt2-task-routes.test.ts packages/shared/src/rt2-daily-report.test.ts` | ✅ / W0 extensions | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -52,10 +53,10 @@ created: 2026-04-30
 
 ## Wave 0 Requirements
 
-- [ ] `packages/shared/src/rt2-daily-report.test.ts` — add/extend tests for enriched daily card fields and new quick-edit validators.
-- [ ] `server/src/__tests__/rt2-daily-report-routes.test.ts` — add tests for cohesive daily payload fields, lane/wiki preservation, and approval/quality proxy semantics.
-- [ ] `server/src/__tests__/rt2-task-routes.test.ts` — extend tests for reused quality metadata and deliverable/base-price conventions if those endpoints remain in the task/work-board route family.
-- [ ] `ui/src/components/Rt2DailyBoard.test.tsx` — add tests for quick edit affordance, Korean per-field save/failure feedback, five filters, search targets, and non-persisted sort order.
+- [x] `packages/shared/src/rt2-daily-report.test.ts` — enriched daily card fields and new quick-edit validators covered.
+- [x] `server/src/__tests__/rt2-daily-report-routes.test.ts` — cohesive daily payload fields, lane/wiki preservation, and authorization/ownership paths covered; Windows embedded Postgres guard may skip local execution unless explicitly enabled.
+- [x] `server/src/__tests__/rt2-task-routes.test.ts` — reused quality metadata and deliverable/base-price conventions covered where the route family owns them; Windows embedded Postgres guard may skip local execution unless explicitly enabled.
+- [x] `ui/src/components/Rt2DailyBoard.test.tsx` — quick edit affordance, Korean per-field feedback, five filters, search targets, and non-persisted sort order covered.
 
 ---
 
