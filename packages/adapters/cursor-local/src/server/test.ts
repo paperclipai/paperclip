@@ -21,6 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl } from "./parse.js";
+import { isDefaultCursorCommand, prepareCursorSandboxCommand } from "./remote-command.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -40,11 +41,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
@@ -98,12 +94,12 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "agent");
+  let command = asString(config.command, "agent");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target) ?? "remote environment"
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
     : null;
   const runId = `cursor-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -136,10 +132,21 @@ export async function testEnvironment(
   }
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = {};
+  let env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const sandboxCommand = await prepareCursorSandboxCommand({
+    runId,
+    target,
+    command,
+    cwd,
+    env,
+    timeoutSec: 45,
+    graceSec: 5,
+  });
+  command = sandboxCommand.command;
+  env = sandboxCommand.env;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
@@ -192,13 +199,13 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "cursor_cwd_invalid" && check.code !== "cursor_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "agent")) {
+    if (!isDefaultCursorCommand(command)) {
       checks.push({
         code: "cursor_hello_probe_skipped_custom_command",
         level: "info",
-        message: "Skipped hello probe because command is not `agent`.",
+        message: "Skipped hello probe because command is not a default Cursor CLI entrypoint.",
         detail: command,
-        hint: "Use the `agent` CLI command to run the automatic installation and auth probe.",
+        hint: "Use `agent` or `cursor-agent` to run the automatic installation and auth probe.",
       });
     } else {
       const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
