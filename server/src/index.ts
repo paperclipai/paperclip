@@ -772,7 +772,7 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      routineChecks?.stop();
+      await routineChecks?.stop();
 
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {

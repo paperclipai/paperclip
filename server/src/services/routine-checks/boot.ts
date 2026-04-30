@@ -38,7 +38,7 @@ export interface StartRoutineChecksArgs {
 }
 
 export interface RoutineChecksHandle {
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 export async function startRoutineChecks(
@@ -77,22 +77,26 @@ export async function startRoutineChecks(
     now: () => new Date(),
     logger: args.logger,
     webhook,
-  }).catch((err) => args.logger.error({ err: String(err) }, "routine-checks: catchUpAll failed"));
+  }).catch((err) => args.logger.error({ err }, "routine-checks: catchUpAll failed"));
 
+  let inFlight: Promise<void> = Promise.resolve();
   const interval = setInterval(() => {
-    void tickAll({
+    inFlight = tickAll({
       db: args.db,
       registry,
       now: () => new Date(),
       logger: args.logger,
       webhook,
-    }).catch((err) => args.logger.error({ err: String(err) }, "routine-checks: tickAll failed"));
+    }).catch((err) => args.logger.error({ err }, "routine-checks: tickAll failed"));
   }, TICK_INTERVAL_MS);
 
   // Don't keep the event loop alive on a clean shutdown.
   if (typeof interval.unref === "function") interval.unref();
 
   return {
-    stop: () => clearInterval(interval),
+    stop: async () => {
+      clearInterval(interval);
+      await inFlight; // wait for any in-flight tick to complete
+    },
   };
 }
