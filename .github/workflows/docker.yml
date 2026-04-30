@@ -73,6 +73,7 @@ jobs:
             type=raw,value=latest-k8s-vendored,enable={{is_default_branch}}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -88,3 +89,61 @@ jobs:
             ${{ steps.meta.outputs.tags }}
             ${{ steps.meta_blockcast.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Compute short sha
+        id: sha
+        run: echo "short=$(git rev-parse --short=8 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build-and-push
+    runs-on: self-hosted
+    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' && vars.BLOCKCAST_REGISTRY_HOST != '' }}
+    timeout-minutes: 15
+    concurrency:
+      # Serialize deploys to the same target so a fast-followup push doesn't
+      # race with an in-flight upgrade.
+      group: deploy-${{ vars.PAPERCLIP_HELM_RELEASE || 'paperclip' }}-${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute short sha
+        id: sha
+        run: echo "short=$(git rev-parse --short=8 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
+
+      # The self-hosted runner is expected to ship with kubectl + helm + a
+      # kubeconfig that has access to the target namespace. The pve* runners
+      # are inside the same network as the cluster API — no extra networking
+      # needed. To opt out, unset `vars.PAPERCLIP_CI_DEPLOY`.
+      - name: Verify tooling + cluster reach
+        env:
+          NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+        run: |
+          set -e
+          which helm kubectl
+          helm version --short
+          kubectl -n "$NS" get statefulset paperclip -o jsonpath='{.spec.replicas}{"\n"}'
+
+      # Use --set image.tag so the deployed tag tracks the just-built image
+      # without committing to values.blockcast.yaml. The committed values
+      # file remains the source of truth for non-CI deploys; CI runs are
+      # transparent in helm history (`helm get values paperclip` shows the
+      # override). Adjust by editing values.blockcast.yaml when you want
+      # the file to reflect the live tag.
+      - name: helm upgrade
+        env:
+          NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+          RELEASE: ${{ vars.PAPERCLIP_HELM_RELEASE || 'paperclip' }}
+          TAG: sha-${{ steps.sha.outputs.short }}-k8s-vendored
+        run: |
+          set -e
+          echo "rolling out ${TAG} to ${NS}/${RELEASE}"
+          helm upgrade "${RELEASE}" ./deploy/helm/paperclip \
+            -n "${NS}" \
+            -f deploy/helm/paperclip/values.blockcast.yaml \
+            --set image.tag="${TAG}" \
+            --wait --timeout 10m
+          helm -n "${NS}" list | head -3
+          kubectl -n "${NS}" get pod -l app.kubernetes.io/name=paperclip \
+            -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount
