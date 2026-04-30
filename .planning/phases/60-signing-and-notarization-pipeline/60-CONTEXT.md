@@ -32,7 +32,7 @@ This phase should not implement release channels, signed updater feeds, rollout/
 - **D-09:** Timestamping is mandatory evidence for Windows release artifacts. A signed installer without timestamp evidence remains a blocking failure.
 
 ### Operator-readable failure and audit output
-- **D-10:** The gate should write evidence under a dedicated planning evidence directory such as `.planning/native-signing-runs/<timestamp>/` with `summary.json` and `report.md`, following the existing release-host/runtime-confidence evidence pattern.
+- **D-10:** The gate should write evidence under timestamped run directories inside `.planning/native-signing-runs/`, with `summary.json` and `report.md`, following the existing release-host/runtime-confidence evidence pattern.
 - **D-11:** Failure output must group blockers by platform and check, include a stable code, cite the source evidence path, identify the owner where known, and suggest the next command/action. Reports should be readable without inspecting raw CI logs.
 - **D-12:** Secret values must be redacted or rejected. Documents and fixture manifests may contain secret references only, never raw Apple passwords, API keys, certificate private keys, keychain passwords, or updater private keys.
 
@@ -73,7 +73,7 @@ This phase should not implement release channels, signed updater feeds, rollout/
 ### Existing Release Evidence Assets
 - `package.json` - Current workspace scripts, release scripts, existing Phase 59 validation script, release-host/runtime-confidence scripts, and lockfile policy implications.
 - `.github/workflows/release.yml` - Current canary/stable verification and publication jobs that Phase 60 may gate.
-- `scripts/rt2-release-host-verify.mjs` - Existing release-host evidence harness and `.planning/release-host-runs/<timestamp>/` output pattern.
+- `scripts/rt2-release-host-verify.mjs` - Existing release-host evidence harness and timestamped `.planning/release-host-runs/` output pattern.
 - `scripts/rt2-release-host-verify.test.mjs` - Existing test style for release evidence scripts.
 - `scripts/rt2-runtime-confidence.mjs` - Existing runtime confidence aggregation and report pattern.
 - `scripts/rt2-runtime-confidence.test.mjs` - Existing tests for confidence report behavior.
@@ -110,7 +110,7 @@ This phase should not implement release channels, signed updater feeds, rollout/
 
 ### Established Patterns
 - Repo-local operational gates are Node `.mjs` scripts in `scripts/`, exposed through root `package.json`, and covered by direct Node assertion tests.
-- Evidence output convention is `.planning/<evidence-kind>/<timestamp>/summary.json` plus `report.md`.
+- Evidence output convention is a timestamped planning evidence directory containing `summary.json` plus `report.md`.
 - Release gates should fail closed with explicit blockers instead of silently publishing incomplete artifacts.
 - Real secrets are never committed; planning docs and test fixtures should use placeholders and secret references only.
 - Focused tests plus `pnpm typecheck` are the practical default on this Windows host. Full `pnpm test` may be expensive or affected by known Windows embedded Postgres caveats.

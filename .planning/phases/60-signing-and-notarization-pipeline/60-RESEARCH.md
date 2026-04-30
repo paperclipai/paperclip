@@ -12,7 +12,7 @@ What does planning need to know to implement the smallest safe signing/notarizat
 Phase 60 should add a deterministic native signing evidence gate, not a full native packaging scaffold. The repo already has strong release evidence patterns (`rt2-release-host-verify`, `rt2-runtime-confidence`, focused Node assertion tests, and Markdown operator docs). Phase 59 selected Tauri v2 and documented the credential inventory, but the repo still has no `apps/desktop` package and no real signing credentials. The safest Phase 60 implementation is therefore:
 
 1. Add a repo-local `rt2-native-signing-gate` script that validates structured macOS and Windows evidence manifests.
-2. Emit `.planning/native-signing-runs/<timestamp>/summary.json` and `report.md`.
+2. Emit `summary.json` and `report.md` under a timestamped run directory inside `.planning/native-signing-runs/`.
 3. Fail closed when macOS Developer ID/hardened runtime/notarization/stapling/Gatekeeper evidence or Windows trust path/signing/timestamp/install trust evidence is missing or failed.
 4. Add focused tests and package scripts.
 5. Update native/release docs so operators know how to provide evidence without committing secrets.
