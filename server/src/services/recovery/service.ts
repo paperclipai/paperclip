@@ -1363,70 +1363,89 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
-    const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-    if (existing) return existing;
+    // Retry loop tolerates two concurrency outcomes when many reconcile
+    // sweeps race for the same source issue: (a) the partial unique index
+    // catches the duplicate INSERT (23505), and (b) PostgreSQL kills one
+    // of the racing transactions with a deadlock (40P01) when
+    // index/parent/heap locks acquire in different orders. Either way the
+    // caller treats the winner's issue as the canonical recovery.
+    const MAX_ATTEMPTS = 5;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+      if (existing) return existing;
 
-    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
-    if (!ownerAgentId) return null;
+      const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+      if (!ownerAgentId) return null;
 
-    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
-    let recovery: Awaited<ReturnType<typeof issuesSvc.create>>;
-    try {
-      recovery = await issuesSvc.create(input.issue.companyId, {
-        title: `Recover stalled issue ${input.issue.identifier ?? input.issue.title}`,
-        description: buildStrandedIssueRecoveryDescription({
-          issue: input.issue,
-          latestRun: input.latestRun,
-          previousStatus: input.previousStatus,
-          prefix,
-        }),
-        status: "todo",
-        priority: input.issue.priority,
-        parentId: input.issue.id,
-        projectId: input.issue.projectId,
-        goalId: input.issue.goalId,
-        assigneeAgentId: ownerAgentId,
-        originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-        originId: input.issue.id,
-        originRunId: input.latestRun?.id ?? null,
-        originFingerprint: [
-          STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-          input.issue.companyId,
-          input.issue.id,
-          input.latestRun?.id ?? "no-run",
-        ].join(":"),
-        billingCode: input.issue.billingCode,
-        inheritExecutionWorkspaceFromIssueId: input.issue.id,
+      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+      let recovery: Awaited<ReturnType<typeof issuesSvc.create>>;
+      try {
+        recovery = await issuesSvc.create(input.issue.companyId, {
+          title: `Recover stalled issue ${input.issue.identifier ?? input.issue.title}`,
+          description: buildStrandedIssueRecoveryDescription({
+            issue: input.issue,
+            latestRun: input.latestRun,
+            previousStatus: input.previousStatus,
+            prefix,
+          }),
+          status: "todo",
+          priority: input.issue.priority,
+          parentId: input.issue.id,
+          projectId: input.issue.projectId,
+          goalId: input.issue.goalId,
+          assigneeAgentId: ownerAgentId,
+          originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+          originId: input.issue.id,
+          originRunId: input.latestRun?.id ?? null,
+          originFingerprint: [
+            STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+            input.issue.companyId,
+            input.issue.id,
+            input.latestRun?.id ?? "no-run",
+          ].join(":"),
+          billingCode: input.issue.billingCode,
+          inheritExecutionWorkspaceFromIssueId: input.issue.id,
+        });
+      } catch (error) {
+        lastError = error;
+        const code = (error as { code?: string })?.code;
+        const isRetryable = isUniqueStrandedIssueRecoveryConflict(error) || code === "40P01";
+        if (!isRetryable) throw error;
+        const raced = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+        if (raced) return raced;
+        if (attempt === MAX_ATTEMPTS - 1) break;
+        // Jittered backoff so concurrent retriers don't deadlock again on
+        // the same lock-acquisition order.
+        await new Promise((resolve) => setTimeout(resolve, 10 + Math.random() * 40));
+        continue;
+      }
+
+      await deps.enqueueWakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId: recovery.id,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: recovery.id,
+          taskId: recovery.id,
+          wakeReason: "issue_assigned",
+          source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+        },
       });
-    } catch (error) {
-      if (!isUniqueStrandedIssueRecoveryConflict(error)) throw error;
-      const raced = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-      if (!raced) throw error;
-      return raced;
+
+      return recovery;
     }
 
-    await deps.enqueueWakeup(ownerAgentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: {
-        issueId: recovery.id,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-      },
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: {
-        issueId: recovery.id,
-        taskId: recovery.id,
-        wakeReason: "issue_assigned",
-        source: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-        sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
-      },
-    });
-
-    return recovery;
+    throw lastError ?? new Error("ensureStrandedIssueRecoveryIssue: exhausted retries with no winner");
   }
 
   function buildRecoveryIssueInPlaceEscalationComment(input: {
@@ -1551,59 +1570,90 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
-      issue: input.issue,
-      previousStatus: input.previousStatus,
-      latestRun: input.latestRun,
-    });
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const nextBlockerIds = recoveryIssue
-      ? [...new Set([...blockerIds, recoveryIssue.id])]
-      : blockerIds;
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: nextBlockerIds,
-    });
-    if (!updated) return null;
+    // Serialize escalation per (company, source-issue) so concurrent
+    // reconcile sweeps don't fight over the same recovery-issue insert,
+    // blockedBy join rows, and source-issue UPDATE — those acquire locks
+    // in orders that PostgreSQL would otherwise resolve as deadlocks.
+    // The advisory lock is xact-scoped on this tx's connection; once we
+    // commit/return, waiting peers wake up and observe the committed
+    // escalation via the early-return guard below.
+    return await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${input.issue.companyId} || ':' || ${input.issue.id}, 0))`,
+      );
 
-    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
-    const recoveryLine = recoveryIssue
-      ? [
-        "",
-        `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
-        "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
-      ].join("\n")
-      : [
-        "",
-        "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
-        "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
-      ].join("\n");
+      // Re-read source issue under the lock; if a peer already escalated it
+      // and linked the recovery as a blocker, return without re-running the
+      // status update / comment / activity log.
+      const [fresh] = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .limit(1);
+      if (!fresh) return null;
 
-    await issuesSvc.addComment(input.issue.id, `${input.comment}${recoveryLine}`, {});
-
-    await logActivity(db, {
-      companyId: input.issue.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: null,
-      runId: null,
-      action: "issue.updated",
-      entityType: "issue",
-      entityId: input.issue.id,
-      details: {
-        identifier: input.issue.identifier,
-        status: "blocked",
+      const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
+        issue: fresh,
         previousStatus: input.previousStatus,
-        source: "recovery.reconcile_stranded_assigned_issue",
-        latestRunId: input.latestRun?.id ?? null,
-        latestRunStatus: input.latestRun?.status ?? null,
-        latestRunErrorCode: input.latestRun?.errorCode ?? null,
-        recoveryIssueId: recoveryIssue?.id ?? null,
-        blockerIssueIds: nextBlockerIds,
-      },
-    });
+        latestRun: input.latestRun,
+      });
+      const blockerIds = await existingUnresolvedBlockerIssueIds(fresh.companyId, fresh.id);
+      if (
+        recoveryIssue &&
+        fresh.status === "blocked" &&
+        blockerIds.includes(recoveryIssue.id)
+      ) {
+        // Idempotent fast-path: peer already finished escalation.
+        return fresh;
+      }
+      const nextBlockerIds = recoveryIssue
+        ? [...new Set([...blockerIds, recoveryIssue.id])]
+        : blockerIds;
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: nextBlockerIds,
+      });
+      if (!updated) return null;
 
-    return updated;
+      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+      const recoveryLine = recoveryIssue
+        ? [
+          "",
+          `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
+          "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
+        ].join("\n")
+        : [
+          "",
+          "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
+          "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
+        ].join("\n");
+
+      await issuesSvc.addComment(input.issue.id, `${input.comment}${recoveryLine}`, {});
+
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: "blocked",
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_stranded_assigned_issue",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          recoveryIssueId: recoveryIssue?.id ?? null,
+          blockerIssueIds: nextBlockerIds,
+        },
+      });
+
+      return updated;
+    });
   }
 
   async function reconcileStrandedAssignedIssues() {
