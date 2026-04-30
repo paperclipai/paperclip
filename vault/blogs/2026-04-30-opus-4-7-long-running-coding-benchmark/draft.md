@@ -1,11 +1,12 @@
 ---
 date: 2026-04-30
-author: blog-author
+author: koenig-academy
+agent_drafted_by: blog-author
 ticket: KOE-19
 vendor_tag: anthropic
 content_type: article
 status: awaiting-g0
-reading_time_min: 12
+reading_time_min: 6
 primary_query: "Claude Opus 4.7 long-running coding tasks"
 contrarian_angle: "The 3× production task gain is real — but a new tokenizer inflates long-session costs 35%, and context drift past step 100 remains unsolved by any of the published benchmarks"
 sources:
@@ -14,6 +15,28 @@ sources:
   - https://arxiv.org/abs/2307.03172
   - https://www.anthropic.com/news
   - https://www.swebench.com/
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Introducing Claude Opus 4.7 — Anthropic Announcement"
+    url: https://www.anthropic.com/news/claude-opus-4-7
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Claude Opus Model Card — Anthropic"
+    url: https://www.anthropic.com/claude/opus
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Lost in the Middle: How Language Models Use Long Contexts — arXiv"
+    url: https://arxiv.org/abs/2307.03172
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Anthropic News — Anthropic Blog"
+    url: https://www.anthropic.com/news
+    retrieved: 2026-04-30
+  - n: 5
+    title: "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
+    url: https://www.swebench.com/
+    retrieved: 2026-04-30
 whats_new:
   - Opus 4.7 resolves 3× more production coding tasks than 4.6 — but a tokenizer change silently raises long-session input costs by up to 35%
 learning_objectives:
@@ -23,7 +46,7 @@ learning_objectives:
 
 # Opus 4.7 resolves 3× more production coding tasks than 4.6 — here's the catch for 8-hour sessions
 
-**Claude Opus 4.7**, released by Anthropic on April 16, 2026, is the company's current flagship model.[4] Benchmarked against Opus 4.6 across coding, vision, and agentic tasks, it delivers a 70% task completion rate on CursorBench (vs. 58% for 4.6) and resolves 3× more production tickets in Rakuten's internal SWE-Bench evaluation.[1][5] For multi-step workflows — the category that matters for teams running overnight engineering agents — Notion reports a +14% improvement.[1] Pricing is unchanged at $5 per million input tokens and $25 per million output tokens.[2]
+**Claude Opus 4.7**, released by Anthropic on April 16, 2026, is the company's current flagship model.[4] It delivers a 70% task completion rate on CursorBench (vs. 58% for 4.6) and resolves 3× more production tickets in Rakuten's internal evaluation.[1] For multi-step workflows — the category that matters for teams running overnight engineering agents — Notion reports a +14% improvement.[1] Pricing is unchanged at $5 per million input tokens and $25 per million output tokens.[2]
 
 The headline numbers are the strongest Anthropic has published for a coding-focused release. The part that didn't make the announcement: a new tokenizer that inflates input token counts up to 1.35× on code-heavy prompts, and a context drift problem that no published Opus 4.7 benchmark directly measures.
 
@@ -31,7 +54,7 @@ The headline numbers are the strongest Anthropic has published for a coding-focu
 
 1. **Released April 16, 2026** — generally available, same pricing tier as Opus 4.6 ($5/M in, $25/M out)[1]
 2. **70% on CursorBench** vs. 58% for Opus 4.6 — 12-percentage-point gain on single-session task completion[2]
-3. **3× production task resolution** improvement over Opus 4.6 on Rakuten's internal SWE-Bench variant[1][5]
+3. **3× production task resolution** improvement over Opus 4.6 on Rakuten's internal evaluation[1]
 4. **File-system-based memory** for multi-session continuity — new in 4.7, allows the model to persist context across session boundaries[1]
 5. **Loop resistance and graceful error recovery** — reduces mid-task abandonment on tool failures[1]
 6. **Tokenizer change**: input token counts scale 1.0–1.35× vs. Opus 4.6 depending on content type; code-dense prompts hit the upper bound[1]
@@ -57,7 +80,7 @@ For a typical 8-hour engineering session, the practical impact:
 The compounding problem is prompt caching. Anthropic offers up to 90% cost reduction via cache hits.[2] But because cache keys are token-sensitive, a tokenizer change invalidates previously cached prompt prefixes. Teams that built their cost model on Opus 4.6 cache hit rates will see effective costs spike until prompts are re-optimized for the new tokenizer.
 
 ### Safety and Stability: Project Glasswing
-Opus 4.7 is the first model to fully integrate the safeguards developed under **Project Glasswing**, a multi-vendor initiative to secure critical software infrastructure.[1] In the context of long-running coding tasks, this manifests as a more robust "refusal boundary" for dangerous operations. If an agent tries to modify a sensitive security configuration in a way that introduces a known vulnerability (e.g., hardcoding a credential during a refactor), Opus 4.7 is significantly more likely to catch the error in its "thinking" phase and suggest a secure alternative.
+Opus 4.7 is the first model to fully integrate the safeguards developed under **Project Glasswing**, Anthropic's cybersecurity initiative that automatically detects and blocks high-risk cybersecurity uses.[1] In the context of long-running coding tasks, this manifests as a more robust "refusal boundary" for dangerous operations. If an agent tries to modify a sensitive security configuration in a way that introduces a known vulnerability (e.g., hardcoding a credential during a refactor), Opus 4.7 is significantly more likely to catch the error and suggest a secure alternative.
 
 While this adds friction to some edge-case workflows, it is a critical safety net for autonomous agents operating in production environments. Anthropic’s assessment rated Opus 4.7 as "largely well-aligned," showing lower rates of misaligned behavior during multi-step tasks than its predecessors.[2]
 
@@ -73,11 +96,11 @@ One of the most significant yet under-discussed upgrades in 4.7 is the jump to *
 
 Previously, an agent trying to debug a CSS alignment issue or a "pixel-perfect" design discrepancy often hallucinated the cause because it couldn't see the fine-grained details of a dense screenshot. Opus 4.7 can resolve small text elements, complex SVG paths, and overlapping z-index issues with 98.5% resolution in visual benchmarks.[2] For teams building autonomous "UI fix-it" agents, this means the model can now effectively "look" at the terminal output and the browser window simultaneously to identify where a build failed visually.
 
-## Extended Thinking: When to toggle reasoning depth
+## Adaptive thinking: When to let the model reason deeper
 
-Opus 4.7 introduces a toggleable **"Extended Thinking"** mode. For most standard refactors, this is overkill and adds unnecessary latency. However, for "long-running" tasks that involve complex architectural decisions—such as migrating a legacy monolith to a distributed microservices pattern—enabling Extended Thinking allows the model to "pre-reason" through the dependency graph before emitting its first tool call.
+Opus 4.7 introduces **Adaptive thinking technology**, which allows the model to dynamically adjust reasoning depth based on task complexity.[2] For most standard refactors, the model conserves tokens and responds quickly. For long-running tasks that involve complex architectural decisions — such as migrating a legacy monolith to a distributed microservices pattern — adaptive thinking allows the model to "pre-reason" through the dependency graph before emitting its first tool call.
 
-In our internal testing, tasks with Extended Thinking enabled showed a **15% reduction in backtrack loops**. The model spends more "time" (and tokens) in its internal thought trace, which results in more correct-on-the-first-try tool calls. If your agent is running an 8-hour ticket, the extra 30 seconds of thinking per step is a cheap insurance policy against a 20-minute loop where the model tries to fix a bug it introduced three steps prior.
+The trade-off is latency and token spend: the model consumes more tokens in its internal thought trace on harder problems, but this often results in more correct-on-the-first-try tool calls. If your agent is running an 8-hour ticket, the extra reasoning time per step is a cheap insurance policy against a 20-minute loop where the model tries to fix a bug it introduced three steps prior.
 
 ## Running the 200-step comparison
 
