@@ -1,6 +1,6 @@
 # Paperclip Routine Checks — Migration aus Hermes/Openclaw
 
-**Status:** Draft (rev 2 — addresses spec-review)
+**Status:** Draft (rev 3 — addresses spec-review)
 **Date:** 2026-04-30
 **Owner:** marco
 **Scope:** paperclip-Server, hermes-agent, openclaw workspace
@@ -136,13 +136,39 @@ Beim Boot des paperclip-Servers (oder nach längerer Downtime) iteriert der Runn
 
 Boot-Hook in `services/cron.ts` ruft `routineCheckRunner.catchUpAll()` einmalig nach Schedule-Registrierung.
 
+**Race-Schutz (Boot-Catch-up vs regulärer Tick):** Insert verwendet ON-CONFLICT-Strategie:
+
+```sql
+INSERT INTO routine_check_runs (check_name, scheduled_for, run_at, status, ...)
+VALUES ($1, $2, NOW(), 'running', ...)
+ON CONFLICT (check_name, scheduled_for) DO NOTHING
+RETURNING id
+```
+
+Runner führt Check-Logik nur aus wenn `RETURNING id` eine Row liefert (Insert hat geklappt). Bei 0 Rows → anderer Worker hat den Slot schon, skip. Verhindert dass Boot-Catch-up und regulärer Tick denselben `scheduled_for` doppelt verarbeiten.
+
 ### Notify-Dispatcher
 
-- `silent` → INSERT only
-- `threshold` → INSERT; wenn `status >= thresholdSeverity` POST an Hermes-Webhook (immer auch bei state-change ok→warn und warn→ok)
-- `telegram` → INSERT; wenn `findings > 0` ODER state-change POST an Hermes-Webhook
+Vor jedem Dispatch berechnet Runner `previousStatus`:
 
-**State-change-Recovery:** Wenn vorheriger Run `warn|error` war und aktueller `ok` → IMMER notify, damit Marco sieht "Drift weg". Recovery-Message hat Präfix `✅ recovery —`.
+```sql
+SELECT status FROM routine_check_runs
+ WHERE check_name = $1 AND id <> $current_id
+ ORDER BY scheduled_for DESC
+ LIMIT 1
+```
+
+`stateChange = previousStatus !== null && previousStatus !== currentStatus`.
+
+Channel-Regeln:
+
+- `silent` → INSERT only. **Ausnahme:** wenn `stateChange && (previousStatus IN ('warn','error') && currentStatus === 'ok')` → POST mit recovery-Präfix. (Stable-Status keine Notify, Recovery aus warn/error pflicht — sonst sieht Marco nie "Drift weg".)
+- `threshold` → INSERT. POST wenn `currentStatus >= thresholdSeverity` ODER `stateChange`. State-change in beide Richtungen (warn↔ok).
+- `telegram` → INSERT. POST wenn `findings > 0` ODER `stateChange`.
+
+**Klarstellung:** "silent" heißt "no notify on stable status (success oder Wiederholung)", nicht "no notify ever". State-change-Recovery ist Pflicht für alle Channels.
+
+**Recovery-Präfix:** Notify-Payload `summary` bekommt Präfix `✅ recovery — ` wenn `previousStatus IN ('warn','error') && currentStatus === 'ok'`.
 
 ### Webhook-Payload (paperclip → hermes)
 
@@ -155,9 +181,11 @@ Boot-Hook in `services/cron.ts` ruft `routineCheckRunner.catchUpAll()` einmalig 
   "summary": "HAPPYGANG: 3 cwd outside prefix, TechOps: clean",
   "content_hash": "sha256-of-summary+findings+top-3-examples",
   "scheduled_for": "2026-04-30T09:00:00+02:00",
-  "details_url": "http://localhost:<paperclip-ui-port>/checks/<run-id>"
+  "details_hint": "paperclip checks history workspace-drift-guard --limit 1"
 }
 ```
+
+**Kein `details_url`** bis UI-Findings-View Spec live ist. Dann Folge-PR ergänzt URL und Telegram-Template wird auf Link umgestellt.
 
 **Auth:** `Authorization: Bearer <PAPERCLIP_NOTIFY_TOKEN>` Pflicht. Hermes 401 bei Fehlen/Mismatch.
 
@@ -315,8 +343,12 @@ Da paperclip-Server nun Single-Point-of-Failure für 5 Routine-Checks ist, neuer
 ```bash
 # ~/.openclaw/workspace/scripts/paperclip-heartbeat-check.sh
 # Cron via LaunchAgent: alle 30 min
-# Query: SELECT max(run_at) FROM routine_check_runs WHERE check_name = 'subscription-shadow-sync'
-# Wenn max(run_at) < NOW() - INTERVAL '70 minutes' → Telegram-Alarm "paperclip-cron stuck"
+# Query: SELECT max(scheduled_for) FROM routine_check_runs WHERE check_name = 'subscription-shadow-sync'
+# Wenn max(scheduled_for) < NOW() - INTERVAL '90 minutes' → Telegram-Alarm "paperclip-cron stuck"
+#
+# scheduled_for (nicht run_at) damit Catch-up nach Restart Heartbeat-False-Positive vermeidet:
+# wenn Server 35min down war und dann Slot 09:00 catch-up um 09:35 läuft, ist
+# scheduled_for=09:00 (Soll), run_at=09:35 (Ist) — Heartbeat-Schwelle 90min vergibt 3 Schedule-Perioden
 ```
 
 Begründung: subscription-shadow-sync läuft alle 30min, also wenn 70min keine Row → Server tot oder Cron broken. Heartbeat in openclaw, nicht paperclip — sonst könnte ausgefallener paperclip nicht selber Alarm schlagen.
@@ -377,6 +409,8 @@ Coverage-Ziel: 80% pro Check, 100% notify-dispatcher (alarm-kritisch).
 | Heartbeat-Check `paperclip-heartbeat-check.sh` läuft alle 30min via LaunchAgent | `launchctl list \| grep paperclip-heartbeat` |
 | paperclip-Server LaunchAgent KeepAlive=true, RunAtLoad=true | `plutil -p ~/Library/LaunchAgents/de.marcoschmid.paperclip-server.plist` |
 | Catch-up: Server-Stop für 35min während scheduled-slot, nach Restart genau 1 catch-up-row in DB | scripted: `launchctl unload`, sleep 35m, `launchctl load`, query DB |
+| Race-Schutz: Catch-up + regulärer Tick auf gleichem Slot ergibt genau 1 row | concurrent runner-call mit gleichem `scheduled_for`, `SELECT count(*) WHERE scheduled_for=$1` → 1 |
+| State-change recovery `silent` Check: error→ok sendet Telegram mit `✅ recovery —` Präfix | DB-Manipulation: vorletzten run auf status=error, aktuellen auf ok → Mock-Telegram check |
 
 ## Risiken
 
@@ -387,7 +421,7 @@ Coverage-Ziel: 80% pro Check, 100% notify-dispatcher (alarm-kritisch).
 | DB-Migration kollidiert mit anderen Drizzle-Migrationen | Migration in eigenem Branch zuerst auf staging-DB, dann main; reservierter Migration-Slot vorab via `db:generate --review` |
 | Schedule-Drift (paperclip-Cron timing ≠ Hermes-Cron) | beide Schedules identisch übernommen; Verification 24h nach Cutover via DB-Query |
 | paperclip-DB-Schema-Drift bricht drift-guard SQL silent | Integration-Test exercises real schema; CI-Job blockt PR wenn referenzierte Spalten umbenannt werden ohne Spec-Update |
-| Hermes-SQLite-Dedupe-DB korrupt | bei Mismatch fallback: Telegram senden (false-positive duplicate ist OK, false-negative miss ist nicht OK) |
+| Hermes-SQLite-Dedupe-DB korrupt | Bei `sqlite3.DatabaseError` im Dedupe-Lookup: log error, Telegram trotzdem senden, dedupe-write skippen. False-positive Duplicate ist OK, false-negative Miss ist nicht OK. |
 | `PAPERCLIP_NOTIFY_TOKEN` leak via process-list/env-dump | Token aus `~/.paperclip/secrets/notify-token`, gelesen via fs (nicht ENV exportieren); Hermes-Side gleiches Pattern |
 
 ## Decisions (formerly Open Questions)
