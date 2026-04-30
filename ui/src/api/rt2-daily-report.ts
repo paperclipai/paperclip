@@ -39,22 +39,22 @@ export const rt2DailyReportApi = {
       `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}`,
       data,
     ),
-  updateCardTitle: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardTitle) =>
+  updateCardTitle: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardTitle & ListRt2DailyBoard) =>
     api.patch<Rt2DailyCardUpdateResponse>(
       `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/title`,
       data,
     ),
-  upsertCardDeliverable: (companyId: string, todoIssueId: string, data: UpsertRt2DailyCardDeliverable) =>
+  upsertCardDeliverable: (companyId: string, todoIssueId: string, data: UpsertRt2DailyCardDeliverable & ListRt2DailyBoard) =>
     api.put<Rt2DailyCardUpdateResponse>(
       `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/deliverable`,
       data,
     ),
-  updateCardQuality: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardQuality) =>
+  updateCardQuality: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardQuality & ListRt2DailyBoard) =>
     api.patch<Rt2DailyCardUpdateResponse>(
       `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/quality`,
       data,
     ),
-  updateCardOkr: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardOkr) =>
+  updateCardOkr: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardOkr & ListRt2DailyBoard) =>
     api.patch<Rt2DailyCardUpdateResponse>(
       `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/okr`,
       data,
