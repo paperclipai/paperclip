@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CheckStatus, NotifyChannel, ThresholdSeverity } from "./types.js";
+import type { CheckLogger, CheckStatus, NotifyChannel, ThresholdSeverity } from "./types.js";
 
 const SEVERITY_RANK: Record<CheckStatus, number> = { ok: 0, warn: 1, error: 2 };
 
@@ -15,8 +15,7 @@ export function shouldNotify(a: ShouldNotifyArgs): boolean {
   const stateChange = a.previousStatus !== null && a.previousStatus !== a.currentStatus;
   const recoveryFromBad =
     stateChange &&
-    a.previousStatus !== null &&
-    SEVERITY_RANK[a.previousStatus] > 0 &&
+    SEVERITY_RANK[a.previousStatus!] > 0 &&
     a.currentStatus === "ok";
 
   switch (a.channel) {
@@ -75,6 +74,7 @@ export interface PostWebhookArgs {
   token: string;
   payload: WebhookPayload;
   fetcher?: typeof fetch;
+  logger?: CheckLogger;
 }
 
 export async function postWebhook(a: PostWebhookArgs): Promise<boolean> {
@@ -88,8 +88,18 @@ export async function postWebhook(a: PostWebhookArgs): Promise<boolean> {
       },
       body: JSON.stringify(a.payload),
     });
+    if (!res.ok) {
+      a.logger?.warn(
+        { url: a.url, status: res.status, check: a.payload.check },
+        "postWebhook non-2xx response",
+      );
+    }
     return res.ok;
-  } catch {
+  } catch (err) {
+    a.logger?.error(
+      { url: a.url, check: a.payload.check, err: err instanceof Error ? err.message : String(err) },
+      "postWebhook failed",
+    );
     return false;
   }
 }

@@ -142,6 +142,36 @@ describe("postWebhook", () => {
     const body = JSON.parse(calls[0]!.init.body as string);
     expect(body.check).toBe("demo");
     expect(body.findings).toBe(1);
+    expect(body.status).toBe("warn");
+    expect(body.previous_status).toBe("ok");
+    expect(body.summary).toBe("x");
+    expect(body.content_hash).toBe("sha256-abc");
+    expect(body.scheduled_for).toBe("2026-04-30T09:00:00Z");
+    expect(body.details_hint).toBe("paperclip checks history demo --limit 1");
+  });
+
+  it("logs warn on non-2xx response", async () => {
+    const logs: any[] = [];
+    const logger = {
+      info: () => {},
+      warn: (obj: object | string, msg?: string) => logs.push({ level: "warn", obj, msg }),
+      error: () => {},
+    };
+    const fetcher: typeof fetch = async () => new Response("nope", { status: 401 });
+    await postWebhook({ url: "http://x", token: "t", payload: samplePayload(), fetcher, logger });
+    expect(logs.some((l) => l.level === "warn" && (l.obj as any).status === 401)).toBe(true);
+  });
+
+  it("logs error on network failure", async () => {
+    const logs: any[] = [];
+    const logger = {
+      info: () => {},
+      warn: () => {},
+      error: (obj: object | string, msg?: string) => logs.push({ level: "error", obj, msg }),
+    };
+    const fetcher: typeof fetch = async () => { throw new Error("connect refused"); };
+    await postWebhook({ url: "http://x", token: "t", payload: samplePayload(), fetcher, logger });
+    expect(logs.some((l) => l.level === "error" && String((l.obj as any).err).includes("connect refused"))).toBe(true);
   });
 
   it("returns false on non-2xx", async () => {
