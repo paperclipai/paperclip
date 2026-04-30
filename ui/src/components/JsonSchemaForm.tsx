@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -20,6 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { companiesApi } from "@/api/companies";
+import type { Company } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,6 +119,23 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Heading for an item in an array-of-objects field.
+ * Prefers the item's own `name` field, then `key`, then falls back to `Item N`.
+ * This lets plugin authors give resources human-readable headings (e.g. a
+ * mailbox row reads "Personal Mailbox" instead of "Item 1").
+ */
+export function itemHeading(item: unknown, index: number): string {
+  if (item && typeof item === "object") {
+    const obj = item as Record<string, unknown>;
+    const name = obj.name;
+    if (typeof name === "string" && name.trim().length > 0) return name;
+    const key = obj.key;
+    if (typeof key === "string" && key.trim().length > 0) return key;
+  }
+  return `Item ${index + 1}`;
 }
 
 /** Produce a sensible default value for a schema node. */
@@ -642,6 +661,151 @@ const StringField = React.memo(({
 
 StringField.displayName = "StringField";
 
+// Module-scoped companies cache so every CompanyMultiSelectField on a page
+// shares one fetch instead of calling /api/companies once per field.
+let companiesCache: Company[] | null = null;
+let companiesPromise: Promise<Company[]> | null = null;
+function loadCompaniesOnce(): Promise<Company[]> {
+  if (companiesCache) return Promise.resolve(companiesCache);
+  if (!companiesPromise) {
+    companiesPromise = companiesApi
+      .list()
+      .then((rows) => {
+        companiesCache = rows;
+        return rows;
+      })
+      .catch((err) => {
+        companiesPromise = null;
+        throw err;
+      });
+  }
+  return companiesPromise;
+}
+
+/**
+ * Multi-select picker for an array of company UUIDs. Triggered when the
+ * schema declares `items.format = "company-id"`. Renders a "Portfolio-wide"
+ * checkbox plus one checkbox per company. Stores `["*"]` for portfolio-wide
+ * or specific UUIDs otherwise.
+ */
+const CompanyMultiSelectField = React.memo(({
+  value,
+  onChange,
+  disabled,
+  label,
+  description,
+  error,
+  isRequired,
+}: {
+  value: unknown;
+  onChange: (val: unknown) => void;
+  disabled: boolean;
+  label: string;
+  description?: string;
+  error?: string;
+  isRequired?: boolean;
+}) => {
+  const selected: string[] = Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string")
+    : [];
+  const allSelected = selected.includes("*");
+  const [companies, setCompanies] = useState<Company[] | null>(companiesCache);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (companies) return;
+    let cancelled = false;
+    loadCompaniesOnce()
+      .then((rows) => {
+        if (!cancelled) setCompanies(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companies]);
+
+  const togglePortfolio = (checked: boolean) => {
+    onChange(checked ? ["*"] : []);
+  };
+
+  const toggleCompany = (companyId: string, checked: boolean) => {
+    const next = new Set(selected.filter((s) => s !== "*"));
+    if (checked) next.add(companyId);
+    else next.delete(companyId);
+    onChange(Array.from(next));
+  };
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
+      disabled={disabled}
+    >
+      <div className="space-y-2 rounded-md border p-3">
+        <div className="flex items-center space-x-2">
+          <Checkbox
+            id="company-multiselect-all"
+            checked={allSelected}
+            onCheckedChange={(c) => togglePortfolio(c === true)}
+            disabled={disabled}
+          />
+          <Label
+            htmlFor="company-multiselect-all"
+            className="cursor-pointer text-sm font-medium"
+          >
+            Portfolio-wide (every company)
+          </Label>
+        </div>
+        <div className="border-t pt-2">
+          {loadError ? (
+            <p className="text-xs text-destructive">
+              Failed to load companies: {loadError}
+            </p>
+          ) : !companies ? (
+            <p className="text-xs text-muted-foreground">Loading companies…</p>
+          ) : companies.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No companies configured yet.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {companies.map((c) => {
+                const checked = allSelected || selected.includes(c.id);
+                return (
+                  <div key={c.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`company-${c.id}`}
+                      checked={checked}
+                      onCheckedChange={(v) => toggleCompany(c.id, v === true)}
+                      disabled={disabled || allSelected}
+                    />
+                    <Label
+                      htmlFor={`company-${c.id}`}
+                      className={cn(
+                        "cursor-pointer text-sm",
+                        allSelected && "text-muted-foreground",
+                      )}
+                    >
+                      {c.name}
+                    </Label>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </FieldWrapper>
+  );
+});
+
+CompanyMultiSelectField.displayName = "CompanyMultiSelectField";
+
 /**
  * Specialized field for array values, handling dynamic addition and removal of items.
  */
@@ -667,6 +831,20 @@ const ArrayField = React.memo(({
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
   const isComplex = resolveType(itemSchema) === "object";
+
+  // Custom widget: array of company UUIDs → multi-select with company names.
+  if (itemSchema.format === "company-id") {
+    return (
+      <CompanyMultiSelectField
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        label={label}
+        description={propSchema.description}
+        error={error}
+      />
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -706,7 +884,7 @@ const ArrayField = React.memo(({
           >
             <div className="flex-1">
               <div className="mb-2 text-xs font-medium text-muted-foreground">
-                Item {index + 1}
+                {itemHeading(item, index)}
               </div>
               <FormField
                 propSchema={itemSchema}

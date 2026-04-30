@@ -1874,6 +1874,69 @@ export function pluginRoutes(
     }
   });
 
+  /**
+   * POST /api/plugins/:pluginId/reinstall
+   *
+   * Reinstall a plugin from its original source — re-reads the manifest from
+   * the package on disk (or npm) and reactivates the existing plugin row so
+   * any plugin-scoped state and config survive. This is the in-UI equivalent
+   * of running `paperclipai plugin uninstall <key>; paperclipai plugin install
+   * --local <path>` against a local-path plugin whose code has changed.
+   *
+   * Only works for plugins installed from a local path (`packagePath` set).
+   * Plugins installed from npm should use `/upgrade` to bump version.
+   *
+   * Response: `PluginRecord` (post-reinstall)
+   * Errors:
+   * - 404 if plugin not found
+   * - 400 if the plugin was not installed from a local path, or if the
+   *   reinstall pipeline (uninstall → reinstall) fails
+   */
+  router.post("/plugins/:pluginId/reinstall", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+    if (!plugin.packagePath) {
+      res.status(400).json({
+        error:
+          "Reinstall is only supported for plugins installed from a local path. Use /upgrade for npm-installed plugins.",
+      });
+      return;
+    }
+
+    const previousVersion = plugin.version;
+    try {
+      await lifecycle.unload(plugin.id, /* purge= */ false);
+      const discovered = await loader.installPlugin({ localPath: plugin.packagePath });
+      if (!discovered.manifest) {
+        res.status(500).json({ error: "Plugin reinstalled but manifest is missing" });
+        return;
+      }
+      await lifecycle.load(plugin.id);
+      const updated = await registry.getById(plugin.id);
+      await logPluginMutationActivity(req, "plugin.reinstalled", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        packagePath: plugin.packagePath,
+        previousVersion,
+        version: updated?.version ?? previousVersion,
+      });
+      publishGlobalLiveEvent({
+        type: "plugin.ui.updated",
+        payload: { pluginId: plugin.id, action: "reinstalled" },
+      });
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    }
+  });
+
   // ===========================================================================
   // Plugin configuration routes
   // ===========================================================================

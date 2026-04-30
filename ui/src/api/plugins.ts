@@ -276,6 +276,17 @@ export const pluginsApi = {
     api.post<{ ok: boolean }>(`/plugins/${pluginId}/upgrade`, version ? { version } : {}),
 
   /**
+   * Reinstall a local-path plugin in place. Re-reads the manifest from the
+   * package on disk and reactivates the existing plugin row, preserving
+   * plugin-scoped state and config. Use after rebuilding a plugin's source
+   * during development. Only valid for plugins installed from a local path.
+   *
+   * @param pluginId - UUID of the plugin to reinstall.
+   */
+  reinstall: (pluginId: string) =>
+    api.post<PluginRecord>(`/plugins/${pluginId}/reinstall`, {}),
+
+  /**
    * Returns normalized UI contribution declarations for ready plugins.
    * Used by the slot host runtime and launcher discovery surfaces.
    *
