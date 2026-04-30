@@ -372,22 +372,22 @@ metadata: expect.objectContaining({
 |---|-------|---------|---------------|
 | A1 | The current board payload is small enough for client-side filter/search/sort during Phase 50. [ASSUMED] | Summary, Architecture Patterns | If board payloads become large, planner must add server query parameters and indexes. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **What is the exact formal source for `승인 대기` on a daily card?**
+1. **RESOLVED — What is the exact formal source for `승인 대기` on a daily card?**
    - What we know: Daily cards derive `qualityStatus` from deliverable `reviewState`; separate approval/governance APIs exist. [VERIFIED: server/src/services/rt2-daily-report.ts; ui/src/api/approvals.ts; packages/shared/src/types/rt2-governance.ts]
    - What's unclear: No daily-card field currently ties a card to a pending approval id/status. [VERIFIED: packages/shared/src/types/rt2-daily-report.ts]
-   - Recommendation: Add explicit `approvalWaiting` only if a reliable join exists; otherwise use a conservative proxy such as pending review and document test wording. [VERIFIED: .planning/phases/50-work-card-editing-and-board-controls/50-CONTEXT.md]
+   - Resolution: Phase 50 will expose an `approvalWaiting`/approval-source field only when a reliable existing approval or review join is available; otherwise it will use the conservative documented proxy `qualityStatus === "pending_review"`/pending deliverable review for the `승인 대기` filter. Tests must name the proxy explicitly so the UI does not imply formal approval when only review is known. [VERIFIED: .planning/phases/50-work-card-editing-and-board-controls/50-CONTEXT.md]
 
-2. **Should OKR edit write `issues.goalId`, `rt2_v33_task_profiles.goalId`, or both?**
+2. **RESOLVED — Should OKR edit write `issues.goalId`, `rt2_v33_task_profiles.goalId`, or both?**
    - What we know: Daily board currently reads task profile goal and project fallback, while issue update supports `goalId`. [VERIFIED: server/src/services/rt2-daily-report.ts; server/src/services/issues.ts]
    - What's unclear: Phase context says task-level `goalId`/profile goal relation, which suggests planner should prefer `rt2_v33_task_profiles.goalId` for task OKR source. [VERIFIED: .planning/phases/50-work-card-editing-and-board-controls/50-CONTEXT.md; packages/db/src/schema/rt2_v33_task_profiles.ts]
-   - Recommendation: Plan one narrow service method that updates the task profile goal and, only if required by existing issue surfaces, synchronizes `issues.goalId` intentionally. [VERIFIED: codebase grep]
+   - Resolution: Phase 50 treats `rt2_v33_task_profiles.goalId` as the canonical direct task OKR source for the daily board. A narrow service method may intentionally synchronize `issues.goalId` only if required to keep existing issue surfaces consistent; accidental dual-write drift is disallowed. [VERIFIED: codebase grep]
 
-3. **Should deliverable quick edit target task-level or To-Do-level work products by default?**
+3. **RESOLVED — Should deliverable quick edit target task-level or To-Do-level work products by default?**
    - What we know: Daily summary merges task and todo deliverables and tracks `taskDeliverableCount`. [VERIFIED: server/src/services/rt2-daily-report.ts]
    - What's unclear: UI copy must make owner clear if both task and todo deliverables exist. [VERIFIED: .planning/phases/50-work-card-editing-and-board-controls/50-CONTEXT.md]
-   - Recommendation: Expose deliverable owner in payload and default edits to existing primary/first deliverable, with create-upsert scoped to the card's To-Do only if no deliverable exists. [ASSUMED]
+   - Resolution: The enriched payload must expose deliverable owner/source. Quick edit updates an existing primary/first RT2 deliverable when one exists and creates/upserts against the card's To-Do only when no deliverable exists. UI copy must show the owner/source when both task and To-Do deliverables are present. [ASSUMED]
 
 ## Environment Availability
 

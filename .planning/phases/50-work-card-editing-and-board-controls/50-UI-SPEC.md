@@ -1,7 +1,7 @@
 ---
 phase: 50
 slug: work-card-editing-and-board-controls
-status: draft
+status: approved
 shadcn_initialized: true
 preset: "new-york / neutral / radix / lucide / Tailwind CSS v4 variables"
 created: 2026-04-30
@@ -187,4 +187,4 @@ Korean-first product copy:
 - [ ] Dimension 5 Spacing: PASS
 - [ ] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved 2026-04-30 by gsd-ui-checker (`## UI-SPEC VERIFIED`, 6/6 dimensions PASS)
