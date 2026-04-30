@@ -9,6 +9,7 @@ description: >
   Trigger on any memory operation: saving facts, writing daily notes, creating
   entities, running weekly synthesis, recalling past context, or managing plans.
 roles: [all]
+publishTo: claude-public
 ---
 
 # PARA Memory Files

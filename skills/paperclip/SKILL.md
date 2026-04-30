@@ -8,6 +8,7 @@ description: >
   use for the actual domain work itself (writing code, research, etc.) — only for
   Paperclip coordination.
 roles: [all]
+publishTo: claude-public
 ---
 
 # Paperclip Skill

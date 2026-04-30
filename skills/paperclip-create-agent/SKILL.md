@@ -5,6 +5,7 @@ description: >
   to inspect adapter configuration options, compare existing agent configs,
   draft a new agent prompt/config, and submit a hire request.
 roles: [ceo, manager]
+publishTo: claude-public
 ---
 
 # Paperclip Create Agent Skill

@@ -5,6 +5,7 @@ description: >
   for TradingView-style price, volume, range, analyst, earnings, and news
   checks. TradingView itself is egress-blocked in this environment.
 roles: [analyst, trader]
+publishTo: claude-public
 ---
 
 # Market Data Browser Skill

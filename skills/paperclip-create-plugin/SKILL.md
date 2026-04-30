@@ -6,6 +6,7 @@ description: >
   authoring docs. Covers the supported worker/UI surface, route conventions,
   scaffold flow, and verification steps.
 roles: [cto, developer]
+publishTo: claude-public
 ---
 
 # Create a Paperclip Plugin
