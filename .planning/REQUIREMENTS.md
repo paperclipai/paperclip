@@ -7,10 +7,10 @@
 
 ### Identity
 
-- [ ] **IDENT-01**: 운영자는 앱 구동 직후 첫 화면, 상단/측면 navigation, workspace/header copy에서 RealTycoon2를 제품 정체성으로 인식할 수 있다.
-- [ ] **IDENT-02**: 운영자는 product-facing UI에서 Paperclip, Paper Company, Multica 등 legacy/control-plane 명칭을 보지 않고 RealTycoon2/Jarvis/업무 중심 용어만 볼 수 있다.
-- [ ] **IDENT-03**: 운영자는 onboarding, empty state, settings, error/help copy에서 한국어 기본 문구를 볼 수 있으며 영문 기본값은 내부 developer/debug surface에만 남는다.
-- [ ] **IDENT-04**: 운영자는 브라우저 title, favicon/brand mark, app shell loading/fallback state에서도 RealTycoon2 정체성을 확인할 수 있다.
+- [x] **IDENT-01**: 운영자는 앱 구동 직후 첫 화면, 상단/측면 navigation, workspace/header copy에서 RealTycoon2를 제품 정체성으로 인식할 수 있다.
+- [x] **IDENT-02**: 운영자는 product-facing UI에서 Paperclip, Paper Company, Multica 등 legacy/control-plane 명칭을 보지 않고 RealTycoon2/Jarvis/업무 중심 용어만 볼 수 있다.
+- [x] **IDENT-03**: 운영자는 onboarding, empty state, settings, error/help copy에서 한국어 기본 문구를 볼 수 있으며 영문 기본값은 내부 developer/debug surface에만 남는다.
+- [x] **IDENT-04**: 운영자는 브라우저 title, favicon/brand mark, app shell loading/fallback state에서도 RealTycoon2 정체성을 확인할 수 있다.
 
 ### Daily Work Board
 
@@ -60,10 +60,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| IDENT-01 | Phase 48 | Pending |
-| IDENT-02 | Phase 48 | Pending |
-| IDENT-03 | Phase 48 | Pending |
-| IDENT-04 | Phase 48 | Pending |
+| IDENT-01 | Phase 48 | Complete |
+| IDENT-02 | Phase 48 | Complete |
+| IDENT-03 | Phase 48 | Complete |
+| IDENT-04 | Phase 48 | Complete |
 | BOARD-01 | Phase 49 | Pending |
 | BOARD-02 | Phase 49 | Pending |
 | BOARD-03 | Phase 49 | Pending |
