@@ -27,6 +27,7 @@ export interface SandboxManagedRuntimeClient {
   makeDir(remotePath: string): Promise<void>;
   writeFile(remotePath: string, bytes: ArrayBuffer): Promise<void>;
   readFile(remotePath: string): Promise<Buffer | Uint8Array | ArrayBuffer>;
+  listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
   run(command: string, options: { timeoutMs: number }): Promise<void>;
 }
