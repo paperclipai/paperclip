@@ -51,16 +51,7 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WARM_HANDLE_IDLE_MS = 15 * 60 * 1000;
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
-type AcpxRuntimeSessionOptions = {
-  systemPrompt?: string | { append: string };
-  additionalRoots?: string[];
-};
-
-type AcpxRuntimeOptions = AcpRuntimeOptions & {
-  sessionOptions?: AcpxRuntimeSessionOptions;
-};
-
-type AcpxRuntimeFactory = (options: AcpxRuntimeOptions) => AcpRuntime;
+type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
 
 interface RuntimeCacheEntry {
   runtime: AcpRuntime;
@@ -94,7 +85,7 @@ interface AcpxPreparedRuntime {
   agentCommand: string | null;
   agentRegistry: AcpAgentRegistry;
   remoteExecutionIdentity: Record<string, unknown> | null;
-  sessionOptions: AcpxRuntimeSessionOptions | null;
+  skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
 }
 
@@ -159,23 +150,28 @@ async function ensureParentDir(target: string): Promise<void> {
 }
 
 async function ensureSymlink(target: string, source: string): Promise<void> {
+  const resolvedSource = path.resolve(source);
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await fs.symlink(resolvedSource, target);
     return;
   }
 
-  if (!existing.isSymbolicLink()) return;
+  if (!existing.isSymbolicLink()) {
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.symlink(resolvedSource, target);
+    return;
+  }
 
   const linkedPath = await fs.readlink(target).catch(() => null);
   if (!linkedPath) return;
 
   const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
+  if (resolvedLinkedPath === resolvedSource) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await fs.symlink(resolvedSource, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
@@ -282,8 +278,8 @@ async function prepareClaudeSkillRuntime(input: {
   config: Record<string, unknown>;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<{
-  sessionOptions: AcpxRuntimeSessionOptions | null;
   identity: Record<string, unknown>;
+  promptInstructions: string;
   commandNotes: string[];
 }> {
   const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
@@ -311,29 +307,26 @@ async function prepareClaudeSkillRuntime(input: {
   }
 
   const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
+  const promptInstructions = selectedSkills.length > 0
+    ? [
+        "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
+        `Skill root: ${skillsHome}`,
+        selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
+        "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
+      ].filter(Boolean).join("\n")
+    : "";
+
   return {
-    sessionOptions: selectedSkills.length > 0
-      ? {
-          additionalRoots: [bundleRoot],
-          systemPrompt: {
-            append: [
-              "Paperclip has mounted selected runtime skills for this ACPX Claude session.",
-              `Skill root: ${skillsHome}`,
-              selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
-              "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
-            ].filter(Boolean).join("\n"),
-          },
-        }
-      : null,
     identity: {
       mode: "claude",
       skillSetKey,
       desiredSkillNames,
       selectedSkills: selectedNames,
-      additionalRoots: selectedSkills.length > 0 ? [bundleRoot] : [],
+      skillRoot: selectedSkills.length > 0 ? skillsHome : null,
     },
+    promptInstructions,
     commandNotes: selectedSkills.length > 0
-      ? [`Mounted ${selectedSkills.length} Paperclip skill(s) for ACPX Claude via additional session roots.`]
+      ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
   };
 }
@@ -630,7 +623,7 @@ async function buildRuntime(input: {
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
 
-  let sessionOptions: AcpxRuntimeSessionOptions | null = null;
+  let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
   if (acpxAgent === "claude") {
@@ -639,7 +632,7 @@ async function buildRuntime(input: {
       config,
       onLog: input.ctx.onLog,
     });
-    sessionOptions = preparedSkills.sessionOptions;
+    skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else if (acpxAgent === "codex") {
@@ -687,7 +680,7 @@ async function buildRuntime(input: {
     nonInteractivePermissions,
     remoteExecutionIdentity,
     skillsIdentity,
-    sessionOptions,
+    skillPromptInstructions,
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -717,7 +710,7 @@ async function buildRuntime(input: {
     agentCommand,
     agentRegistry,
     remoteExecutionIdentity,
-    sessionOptions,
+      skillPromptInstructions,
     skillsIdentity: {
       ...skillsIdentity,
       commandNotes: skillCommandNotes,
@@ -947,14 +940,13 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     const canResume = isCompatibleSession(previousParams, prepared);
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
-    const runtimeOptions: AcpxRuntimeOptions = {
+    const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
-      ...(prepared.sessionOptions ? { sessionOptions: prepared.sessionOptions } : {}),
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
@@ -1029,6 +1021,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     }
     const sessionHandle = handle;
     const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession);
+    const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
     await emitAcpxLog(ctx, {
       type: "acpx.session",
       agent: prepared.acpxAgent,
@@ -1053,7 +1046,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           ...commandNotes,
         ],
         env: prepared.loggedEnv,
-        prompt,
+        prompt: runPrompt,
         promptMetrics,
         context: ctx.context,
       });
@@ -1074,24 +1067,24 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           void cancelActiveTurn?.(`Timed out after ${prepared.timeoutSec}s`).catch(() => {});
         }, timeoutMs);
       }
-      const terminal = await withProcessEnv(prepared.env, async () => {
-        const turn = runtime.startTurn({
+      const turn = await withProcessEnv(prepared.env, async () =>
+        runtime.startTurn({
           handle: sessionHandle,
-          text: prompt,
+          text: runPrompt,
           mode: "prompt",
           requestId: ctx.runId,
           timeoutMs,
           signal: controller?.signal,
-        });
-        cancelActiveTurn = async (reason: string) => {
-          await turn.cancel({ reason });
-        };
-        for await (const event of turn.events) {
-          if (event.type === "text_delta") textParts.push(event.text);
-          await emitRuntimeEvent(ctx, event);
-        }
-        return await turn.result;
-      });
+        }),
+      );
+      cancelActiveTurn = async (reason: string) => {
+        await turn.cancel({ reason });
+      };
+      for await (const event of turn.events) {
+        if (event.type === "text_delta") textParts.push(event.text);
+        await emitRuntimeEvent(ctx, event);
+      }
+      const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         warmHandles.delete(prepared.sessionKey);

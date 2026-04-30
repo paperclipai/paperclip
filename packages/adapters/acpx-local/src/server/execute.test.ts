@@ -20,6 +20,12 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+async function onlyChildDir(parent: string): Promise<string> {
+  const entries = await fs.readdir(parent);
+  expect(entries).toHaveLength(1);
+  return path.join(parent, entries[0]!);
+}
+
 async function createSkill(root: string, name: string, body = `---\nrequired: false\n---\n# ${name}\n`) {
   const skillDir = path.join(root, name);
   await fs.mkdir(skillDir, { recursive: true });
@@ -93,20 +99,21 @@ describe("acpx_local runtime skill isolation", () => {
     await fs.symlink(path.join(outsideRoot, "secret.txt"), path.join(skill.source, "leak.txt"));
     await fs.symlink(outsideRoot, path.join(skill.source, "leak-dir"));
 
-    const { runtimeOptions } = await runExecutor({
+    const stateDir = path.join(root, "state");
+    const { meta } = await runExecutor({
       agent: "claude",
-      stateDir: path.join(root, "state"),
+      stateDir,
       paperclipRuntimeSkills: [skill],
       paperclipSkillSync: { desiredSkills: [skill.key] },
     });
 
-    const sessionOptions = runtimeOptions[0]?.sessionOptions as { additionalRoots?: string[] } | undefined;
-    const mountedRoot = sessionOptions?.additionalRoots?.[0];
-    expect(mountedRoot).toBeTruthy();
-    const materializedSkill = path.join(mountedRoot!, ".claude", "skills", skill.runtimeName);
+    const mountedRoot = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const skillsHome = path.join(mountedRoot, ".claude", "skills");
+    const materializedSkill = path.join(skillsHome, skill.runtimeName);
     expect(await fs.readFile(path.join(materializedSkill, "SKILL.md"), "utf8")).toContain("# danger");
     expect(await pathExists(path.join(materializedSkill, "leak.txt"))).toBe(false);
     expect(await pathExists(path.join(materializedSkill, "leak-dir"))).toBe(false);
+    expect(String(meta[0]?.prompt ?? "")).toContain(`Skill root: ${skillsHome}`);
   });
 
   it.skipIf(process.platform === "win32")("revokes removed ACPX Codex skills and skips symlinked descendants", async () => {
@@ -163,5 +170,47 @@ describe("acpx_local runtime skill isolation", () => {
     });
 
     expect(await pathExists(path.join(skillsHome, legacy.runtimeName))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("replaces stale managed Codex auth files with source symlinks", async () => {
+    const root = await makeTempRoot();
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.mkdir(managedCodexHome, { recursive: true });
+    const sourceAuth = path.join(sourceCodexHome, "auth.json");
+    const managedAuth = path.join(managedCodexHome, "auth.json");
+    await fs.writeFile(sourceAuth, "{\"source\":true}", "utf8");
+    await fs.writeFile(managedAuth, "{\"stale\":true}", "utf8");
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    try {
+      process.env.CODEX_HOME = sourceCodexHome;
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      await runExecutor({
+        agent: "codex",
+        stateDir: path.join(root, "state"),
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    }
+
+    const authStat = await fs.lstat(managedAuth);
+    expect(authStat.isSymbolicLink()).toBe(true);
+    expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 });

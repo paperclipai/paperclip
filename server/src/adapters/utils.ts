@@ -12,26 +12,6 @@ type BuildInvocationEnvForLogsOptions = {
   resolvedCommand?: string | null;
   resolvedCommandEnvKey?: string;
 };
-const FALLBACK_REDACTED_LOG_VALUE = "***REDACTED***";
-const FALLBACK_COMMAND_CLI_SECRET_OPTION_RE =
-  /(\B-{1,2}(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\s+|=)(["']?))[^\s"'`]+(\2)/gi;
-const FALLBACK_COMMAND_ENV_SECRET_ASSIGNMENT_RE =
-  /(\b[A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|JWT)[A-Za-z0-9_]*\s*=\s*)[^\s"'`]+/gi;
-const FALLBACK_COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-const FALLBACK_COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const FALLBACK_COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
-const FALLBACK_COMMAND_JWT_RE =
-  /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
-
-function fallbackRedactCommandTextForLogs(command: string): string {
-  return command
-    .replace(FALLBACK_COMMAND_AUTHORIZATION_BEARER_RE, `$1${FALLBACK_REDACTED_LOG_VALUE}`)
-    .replace(FALLBACK_COMMAND_CLI_SECRET_OPTION_RE, `$1${FALLBACK_REDACTED_LOG_VALUE}$3`)
-    .replace(FALLBACK_COMMAND_ENV_SECRET_ASSIGNMENT_RE, `$1${FALLBACK_REDACTED_LOG_VALUE}`)
-    .replace(FALLBACK_COMMAND_OPENAI_KEY_RE, FALLBACK_REDACTED_LOG_VALUE)
-    .replace(FALLBACK_COMMAND_GITHUB_TOKEN_RE, FALLBACK_REDACTED_LOG_VALUE)
-    .replace(FALLBACK_COMMAND_JWT_RE, FALLBACK_REDACTED_LOG_VALUE);
-}
 
 export const runningProcesses: Map<string, { child: ChildProcess; graceSec: number; processGroupId: number | null }> =
   serverUtils.runningProcesses;
@@ -85,7 +65,7 @@ export function buildInvocationEnvForLogs(
   const resolvedCommand = options.resolvedCommand?.trim();
   if (resolvedCommand) {
     merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] =
-      fallbackRedactCommandTextForLogs(resolvedCommand);
+      serverUtils.redactCommandTextForLogs(resolvedCommand);
   }
 
   return redactEnvForLogs(merged);

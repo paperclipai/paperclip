@@ -418,18 +418,18 @@ describe("acpx_local execute", () => {
       }));
 
       expect(result.exitCode).toBe(0);
-      expect(runtime?.options.sessionOptions?.additionalRoots).toHaveLength(1);
-      const bundleRoot = runtime?.options.sessionOptions?.additionalRoots?.[0];
-      expect(bundleRoot).toContain(path.join("state", "runtime-skills", "claude"));
-      await expect(fs.lstat(path.join(bundleRoot!, ".claude", "skills", skill.runtimeName))).resolves.toMatchObject({});
-      expect(runtime?.options.sessionOptions?.systemPrompt).toMatchObject({
-        append: expect.stringContaining("Paperclip has mounted selected runtime skills"),
-      });
+      expect(runtime?.options).not.toHaveProperty("sessionOptions");
+      const skillRoot = result.sessionParams?.skills && typeof result.sessionParams.skills === "object"
+        ? (result.sessionParams.skills as { skillRoot?: string | null }).skillRoot
+        : null;
+      expect(skillRoot).toContain(path.join("state", "runtime-skills", "claude"));
+      await expect(fs.lstat(path.join(skillRoot!, skill.runtimeName))).resolves.toMatchObject({});
       expect(result.sessionParams?.skills).toMatchObject({
         mode: "claude",
         selectedSkills: [skill.runtimeName],
       });
-      expect((meta?.commandNotes as string[]).join("\n")).toContain("Mounted 1 Paperclip skill");
+      expect(String(meta?.prompt ?? "")).toContain(`Skill root: ${skillRoot}`);
+      expect((meta?.commandNotes as string[]).join("\n")).toContain("Materialized 1 Paperclip skill");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
