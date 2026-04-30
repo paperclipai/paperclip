@@ -8,7 +8,12 @@ export class Registry {
     if (this.checks.has(def.name)) {
       throw new Error(`Duplicate check name: ${def.name}`);
     }
-    parseCron(def.schedule); // throws on invalid
+    try {
+      parseCron(def.schedule);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Invalid schedule for "${def.name}": ${msg}`);
+    }
     this.checks.set(def.name, def);
   }
 
