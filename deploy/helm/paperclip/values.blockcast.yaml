@@ -101,8 +101,8 @@ rbac:
   create: true
 
 # Pin paperclip-0 to the dedicated paperclip worker (k8s-paperclip-1).
-# Spawned k8s-Job agent pods inherit this scheduling via the adapters'
-# `nodeSelector` / `tolerations` config.
+# Spawned k8s-Job agent pods inherit this scheduling from the parent pod by
+# default. Per-agent adapter config can still override it when needed.
 nodeSelector:
   workload: paperclip
 

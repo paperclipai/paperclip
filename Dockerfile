@@ -39,6 +39,40 @@ COPY patches/ patches/
 
 RUN pnpm install --frozen-lockfile
 
+FROM base AS vendor
+WORKDIR /vendor
+# Pinned commit SHAs for the kkroo forks of ccrotate + the two k8s-Job
+# adapters. Bump these together by pushing the fork branch and updating the
+# ARG. Public repos, so no auth required at clone time.
+#
+# Each repo's build → `pnpm pack` (or `npm pack`) produces the .tgz the
+# production stage installs. We never commit the tgz; it's reproduced on
+# every image build.
+ARG CCROTATE_REF=1ca257afa27928599eacaf4f88dc71e9febe1dfd
+ARG CLAUDE_K8S_REF=ea0a3ff788564abc399a0725edc5df6a5a721370
+ARG OPENCODE_K8S_REF=59371f2cf42484577041bc3416dd729da6f69ab0
+
+RUN git clone https://github.com/kkroo/ccrotate.git ccrotate \
+  && cd ccrotate && git checkout "${CCROTATE_REF}" \
+  && pnpm install --frozen-lockfile \
+  && pnpm run build \
+  && cd dist && npm pack \
+  && mv ccrotate-*.tgz /vendor/ccrotate.tgz
+
+RUN git clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k8s \
+  && cd claude-k8s && git checkout "${CLAUDE_K8S_REF}" \
+  && npm ci \
+  && npm run build \
+  && npm pack \
+  && mv paperclip-adapter-claude-k8s-*.tgz /vendor/paperclip-adapter-claude-k8s.tgz
+
+RUN git clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git opencode-k8s \
+  && cd opencode-k8s && git checkout "${OPENCODE_K8S_REF}" \
+  && pnpm install --frozen-lockfile \
+  && pnpm run build \
+  && pnpm pack \
+  && mv paperclip-adapter-opencode-k8s-*.tgz /vendor/paperclip-adapter-opencode-k8s.tgz
+
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
@@ -56,29 +90,19 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-# ccrotate is the per-account token rotator that the heartbeat ccrotate-tier-gate
-# (server/src/services/ccrotate-tier-gate.ts) shells out to. With HOME=/paperclip,
-# its profilesDir/claudeDir/configFile resolve into /paperclip/.ccrotate and
-# /paperclip/.claude on the shared RWX PVC, so a single `ccrotate refresh` from
-# inside this pod populates the gate's tier-cache in place.
-#
-# Vendored from ~/src/ccrotate@1.1.1-kkroo.1 (upstream somersby10ml/ccrotate +
-# kkroo patch). 1.1.0 added `--target codex`, `tier-cache` JSON output, and
-# `serviceTier` reporting that the gate depends on. 1.1.1-kkroo.1 fixes a
-# crash in `ccrotate next` when probing accounts whose profile lacks
-# credentials (e.g. cache says "no per-account data"): writeClaudeFiles
-# would receive accountData.credentials=undefined and throw "data argument
-# must be of type string..." — see lib/commands/next.js skip guard +
-# writeCredentials defensive check. Upgrade procedure:
-#   cd ~/src/ccrotate && npm run build && cd dist && npm pack
-#   mv ccrotate-<NEW>.tgz <kkroo>/vendor/
-#   bump COPY line below
-COPY vendor/ccrotate-1.1.1-kkroo.1.tgz /tmp/ccrotate.tgz
-# Vendored patched k8s adapter tarballs are installed into the image, not the
-# PVC. Keep exactly one tarball per adapter package under
-# vendor/paperclip-adapter-*.tgz; the wildcard avoids hardcoding version
-# numbers in this Dockerfile.
-COPY vendor/paperclip-adapter-*.tgz /tmp/paperclip-bundled-adapters/
+# ccrotate (per-account token rotator the heartbeat ccrotate-tier-gate at
+# server/src/services/ccrotate-tier-gate.ts shells out to) and the kkroo
+# forks of paperclip-adapter-claude-k8s / paperclip-adapter-opencode-k8s
+# are built from source in the `vendor` stage above and installed here.
+# Refresh procedure:
+#   1. push the relevant kkroo fork branch (kkroo/ccrotate#main,
+#      kkroo/paperclip-adapter-claude-k8s#master,
+#      kkroo/paperclip-adapter-opencode-k8s#master)
+#   2. bump the *_REF ARG in the `vendor` stage
+COPY --from=vendor /vendor/ccrotate.tgz /tmp/ccrotate.tgz
+RUN mkdir -p /tmp/paperclip-bundled-adapters
+COPY --from=vendor /vendor/paperclip-adapter-claude-k8s.tgz /tmp/paperclip-bundled-adapters/
+COPY --from=vendor /vendor/paperclip-adapter-opencode-k8s.tgz /tmp/paperclip-bundled-adapters/
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
   # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
