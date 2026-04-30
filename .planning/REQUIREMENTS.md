@@ -12,8 +12,8 @@ Requirements for `v3.0 Native Distribution Readiness`. v2.9 DRAFT/NATIVE/MSG/REV
 - [x] **DIST-01**: 운영자는 native shell packaging 후보와 platform capability 범위를 확인하고, macOS/Windows signing identity, certificate source, entitlement, updater key material을 release evidence로 관리할 수 있다. - Phase 59
 - [x] **DIST-02**: 운영자는 macOS release artifact가 Developer ID signing, hardened runtime, notarization submission, ticket stapling, Gatekeeper verification 상태를 통과했는지 pipeline에서 볼 수 있다. - Phase 60
 - [x] **DIST-03**: 운영자는 Windows MSIX/installer artifact가 Store re-signing, Azure Artifact Signing, OV/EV certificate, timestamping 중 선택된 trust path로 서명되고 install trust evidence를 남기는 것을 확인할 수 있다. - Phase 60
-- [ ] **DIST-04**: 운영자는 internal, beta, stable release channel을 분리하고 각 channel의 version, artifact URL, checksum, signature, rollout policy, rollback candidate를 관리할 수 있다.
-- [ ] **DIST-05**: 앱은 signed updater feed에서 version, URL, signature, notes metadata를 검증하고 download, install, relaunch, failure state를 운영자에게 보여줄 수 있다.
+- [x] **DIST-04**: 운영자는 internal, beta, stable release channel을 분리하고 각 channel의 version, artifact URL, checksum, signature, rollout policy, rollback candidate를 관리할 수 있다. - Phase 61
+- [x] **DIST-05**: 앱은 signed updater feed에서 version, URL, signature, notes metadata를 검증하고 download, install, relaunch, failure state를 운영자에게 보여줄 수 있다. - Phase 61
 - [ ] **DIST-06**: release gate는 unsigned, unnotarized, untrusted, timestamp missing, wrong channel, stale updater metadata, v2.9 capture regression failure를 배포 차단 사유로 표시한다.
 
 ### Resident Desktop
@@ -62,8 +62,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DIST-01 | Phase 59 | Complete |
 | DIST-02 | Phase 60 | Complete |
 | DIST-03 | Phase 60 | Complete |
-| DIST-04 | Phase 61 | Pending |
-| DIST-05 | Phase 61 | Pending |
+| DIST-04 | Phase 61 | Complete |
+| DIST-05 | Phase 61 | Complete |
 | DIST-06 | Phase 64 | Pending |
 | RES-01 | Phase 62 | Pending |
 | RES-02 | Phase 62 | Pending |
@@ -76,9 +76,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 - v3.0 requirements: 12 total
 - Mapped to phases: 12
 - Unmapped: 0
-- Complete: 3
-- Pending: 9
+- Complete: 5
+- Pending: 7
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after Phase 60 signing evidence gate completion*
+*Last updated: 2026-04-30 after Phase 61 release channel evidence gate completion*

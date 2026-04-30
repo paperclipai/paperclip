@@ -1,7 +1,7 @@
 ---
 phase: 61
 slug: release-channels-and-signed-updater
-status: draft
+status: approved
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-04-30
@@ -32,9 +32,9 @@ created: 2026-04-30
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 61-01-01 | 01 | 1 | DIST-04, DIST-05 | T-61-01 / T-61-02 / T-61-03 | Channel/updater manifests fail closed on missing metadata, blocked signing prerequisites, and raw private key material. | unit/CLI | `pnpm run test:release-channel-gate` | Wave 0 complete | pending |
-| 61-01-02 | 01 | 1 | DIST-04, DIST-05 | T-61-01 / T-61-04 | Operator docs expose exact command, manifest shape, output directory, and rollback policy. | docs/static | `pnpm run test:release-channel-gate` plus doc diff inspection | Wave 0 complete | pending |
-| 61-01-03 | 01 | 1 | DIST-04, DIST-05 | T-61-05 | Planning truth marks requirements complete only after verification evidence exists. | artifact review | `pnpm typecheck` plus planning diff inspection | Wave 0 complete | pending |
+| 61-01-01 | 01 | 1 | DIST-04, DIST-05 | T-61-01 / T-61-02 / T-61-03 | Channel/updater manifests fail closed on missing metadata, blocked signing prerequisites, and raw private key material. | unit/CLI | `pnpm run test:release-channel-gate` | Wave 0 complete | green |
+| 61-01-02 | 01 | 1 | DIST-04, DIST-05 | T-61-01 / T-61-04 | Operator docs expose exact command, manifest shape, output directory, and rollback policy. | docs/static | `pnpm run test:release-channel-gate` plus doc diff inspection | Wave 0 complete | green |
+| 61-01-03 | 01 | 1 | DIST-04, DIST-05 | T-61-05 | Planning truth marks requirements complete only after verification evidence exists. | artifact review | `pnpm typecheck` plus planning diff inspection | Wave 0 complete | green |
 
 ## Wave 0 Requirements
 
@@ -54,4 +54,4 @@ Existing infrastructure covers all phase requirements.
 - [x] No watch-mode flags.
 - [x] `nyquist_compliant: true` set in frontmatter.
 
-**Approval:** pending
+**Approval:** approved 2026-04-30

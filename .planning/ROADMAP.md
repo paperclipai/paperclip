@@ -12,7 +12,7 @@
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
-- [active] **v3.0 Native Distribution Readiness** - Phase 59-60 complete, Phase 61-64 planned
+- [active] **v3.0 Native Distribution Readiness** - Phase 59-61 complete, Phase 62-64 planned
 
 ## 완료됨
 
@@ -128,7 +128,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v3.0 Native Distribution Readiness (Phase 59-60 complete, Phase 61-64 planned)</summary>
+<summary>v3.0 Native Distribution Readiness (Phase 59-61 complete, Phase 62-64 planned)</summary>
 
 **Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
 
@@ -136,7 +136,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 |-------|------|--------------|--------|
 | 59 | Native Distribution Foundation | DIST-01 | Complete |
 | 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Complete |
-| 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Planned |
+| 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Complete |
 | 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
 | 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
 | 64 | v3.0 Distribution Gate and Capture Regression Closure | DIST-06 | Planned |
@@ -177,6 +177,8 @@ Success criteria:
 1. Each channel has version, artifact URL, checksum, signature, notes, rollout policy, and rollback candidate metadata.
 2. App update checks validate signed metadata before download/install/relaunch.
 3. Operators can see update progress, installed channel/build identity, and failure reason.
+
+Completion status: `passed` on 2026-04-30. Phase 61 added `scripts/rt2-release-channel-gate.mjs`, focused tests, package scripts, and operator docs so internal/beta/stable release channel manifests produce durable `summary.json`/`report.md` evidence and block on missing channel metadata, invalid updater signatures, checksum mismatch, missing rollback, failed signing prerequisites, or raw secret material.
 
 **Phase 62: Resident Tray and Global Shortcut**
 Goal: Resident tray/menubar app and OS-level global shortcut provide quick capture without bypassing v2.9 draft review semantics.
