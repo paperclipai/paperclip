@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "paperclip-plugin-linear";
-export const PLUGIN_VERSION = "0.9.1";
+export const PLUGIN_VERSION = "0.9.2";
 
 /** Linear project name used to bucket Paperclip goals as Linear issues. */
 export const GOALS_LINEAR_PROJECT_NAME = "Company Goals";

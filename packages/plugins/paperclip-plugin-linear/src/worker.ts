@@ -28,6 +28,7 @@ import {
 } from "./constants.js";
 import * as linear from "./linear.js";
 import * as sync from "./sync.js";
+import { extractLinearWorkspaceSlug, linkifyBareLinearIssueRefs } from "./markdown.js";
 
 function verifyLinearSignature(secret: string, rawBody: string, headerSig: string | string[] | undefined): boolean {
   const provided = Array.isArray(headerSig) ? headerSig[0] : headerSig;
@@ -1271,10 +1272,17 @@ async function handleWebhookEvent(
 
     const userName = (data.user as Record<string, unknown>)?.name as string ?? "Linear user";
 
+    // Bare `BLO-1234`-style refs in Linear text would otherwise be linkified
+    // by the UI to Paperclip's own `/issues/BLO-1234` — same identifier
+    // scheme, different issues. Wrap them as proper Linear links here so the
+    // UI rewrite skips them.
+    const workspaceSlug = extractLinearWorkspaceSlug(link.linearUrl);
+    const safeBody = linkifyBareLinearIssueRefs(commentBody, workspaceSlug);
+
     try {
       await ctx.issues.createComment(
         link.paperclipIssueId,
-        `**${userName}** (from Linear):\n\n${commentBody}`,
+        `**${userName}** (from Linear):\n\n${safeBody}`,
         link.paperclipCompanyId,
       );
 
