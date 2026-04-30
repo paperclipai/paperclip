@@ -251,6 +251,113 @@ async def poll_loop() -> None:
         await asyncio.sleep(TICK_SECONDS)
 
 
+async def telegram_poll_loop() -> None:
+    """Poll Telegram getUpdates for inbound /commands so we don't need a webhook URL."""
+    if not TG_API or not TELEGRAM_CHAT_ID:
+        log.info("telegram poll DISABLED (no token/chat_id)")
+        return
+    last_offset = 0
+    log.info("telegram getUpdates poll started")
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=35) as c:
+                r = await c.get(f"{TG_API}/getUpdates", params={"offset": last_offset + 1, "timeout": 30})
+                if r.status_code == 200:
+                    data = r.json() or {}
+                    for upd in data.get("result", []):
+                        last_offset = max(last_offset, upd.get("update_id", 0))
+                        msg = upd.get("message") or upd.get("edited_message") or {}
+                        chat_id = str((msg.get("chat") or {}).get("id", ""))
+                        if chat_id != TELEGRAM_CHAT_ID:
+                            continue
+                        text = (msg.get("text") or "").strip()
+                        if not text.startswith("/"):
+                            continue
+                        # Reuse webhook handler logic by faking a request body
+                        await _handle_command(text)
+        except Exception as e:
+            log.warning("telegram poll error: %s", e)
+            await asyncio.sleep(5)
+        # short pause before next long-poll
+        await asyncio.sleep(1)
+
+
+async def _handle_command(text: str) -> None:
+    """Shared command handler used by both the webhook and the polling loop."""
+    cmd, *rest = text[1:].split(maxsplit=1)
+    arg = rest[0] if rest else ""
+    if cmd == "status":
+        issues = await paperclip_fetch_issues()
+        by_status: dict[str, int] = {}
+        for t in issues:
+            by_status[t.get("status", "?")] = by_status.get(t.get("status", "?"), 0) + 1
+        await tg_send("Queue: " + " · ".join(f"{k}={v}" for k, v in sorted(by_status.items())))
+    elif cmd == "blocked":
+        items = await paperclip_fetch_issues(status="blocked")
+        if not items:
+            await tg_send("No blocked tickets.")
+        else:
+            lines = [f"🚫 Blocked ({len(items)}):"]
+            for t in items[:20]:
+                lines.append(f"  [{t.get('identifier')}] {(t.get('title') or '')[:60]}")
+            await tg_send("\n".join(lines))
+    elif cmd == "queue":
+        items = (await paperclip_fetch_issues(status="todo")) + (await paperclip_fetch_issues(status="in_progress"))
+        lines = [f"📋 Top of queue ({len(items)}):"]
+        for t in items[:15]:
+            lines.append(f"  [{t.get('identifier')}] {(t.get('title') or '')[:60]} · {t.get('status')}")
+        await tg_send("\n".join(lines))
+    elif cmd == "cancel" and arg:
+        ident = arg.strip().split()[0]
+        result = await paperclip_patch_issue(ident, {"status": "cancelled"})
+        await tg_send(f"{'✅ cancelled' if result else '❌ failed to cancel'} {ident}")
+    elif cmd == "priority" and arg:
+        parts = arg.strip().split()
+        if len(parts) >= 2:
+            ident, level = parts[0], parts[1].lower()
+            result = await paperclip_patch_issue(ident, {"priority": level})
+            await tg_send(f"{'✅' if result else '❌'} {ident} → {level}")
+        else:
+            await tg_send("Usage: /priority KOE-X low|medium|high|urgent")
+    elif cmd == "meeting" and arg:
+        url = arg.strip().split()[0]
+        async with httpx.AsyncClient(timeout=15) as c:
+            try:
+                r = await c.post("http://host.docker.internal:8200/meetings", json={"meeting_url": url, "source": "telegram"})
+                if 200 <= r.status_code < 300:
+                    await tg_send(f"🎙 Meeting bot dispatched → joining {url[:60]}")
+                else:
+                    await tg_send(f"❌ Bot dispatch failed: {r.status_code}")
+            except Exception as e:
+                await tg_send(f"❌ Meeting service unreachable: {e}")
+    elif cmd == "task" and arg:
+        title = arg.strip()
+        async with httpx.AsyncClient(timeout=10) as c:
+            try:
+                r = await c.post(
+                    f"{PAPERCLIP_BASE_URL}/api/companies/{COMPANY_ID}/issues",
+                    headers={"Authorization": f"Bearer {PAPERCLIP_BOARD_TOKEN}", "Content-Type": "application/json"},
+                    json={"title": title[:200], "priority": "medium", "description": f"Filed via Telegram by Vardaan.\n\n{title}"},
+                )
+                if 200 <= r.status_code < 300:
+                    j = r.json() or {}
+                    await tg_send(f"📋 Created {j.get('identifier')}: {title[:80]}")
+                else:
+                    await tg_send(f"❌ Failed: {r.status_code}")
+            except Exception as e:
+                await tg_send(f"❌ Paperclip unreachable: {e}")
+    elif cmd == "help":
+        await tg_send(
+            "*Commands:*\n"
+            "  /status — queue summary\n  /blocked — blocked tickets\n  /queue — top of todo+in_progress\n"
+            "  /cancel KOE-X — cancel a ticket\n  /priority KOE-X high — set priority\n"
+            "  /meeting <teams-url> — bot joins the meeting\n  /task <title> — file a Paperclip ticket\n"
+            "  /help — this menu"
+        )
+    else:
+        await tg_send(f"Unknown command: /{cmd}. Try /help.")
+
+
 # ─────────────────────── Telegram inbound (webhook) ───────────────────────
 
 @app.post("/telegram/webhook")
@@ -310,6 +417,39 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             await tg_send(f"(note posting not yet wired; would post to {ident}: {note_text[:80]})")
         else:
             await tg_send("Usage: /note KOE-X some text")
+    elif cmd == "meeting" and arg:
+        # Forward Teams meeting URL to meeting-attendee FastAPI service so the bot joins.
+        url = arg.strip().split()[0]
+        async with httpx.AsyncClient(timeout=15) as c:
+            try:
+                r = await c.post(
+                    "http://host.docker.internal:8200/meetings",
+                    json={"meeting_url": url, "source": "telegram"},
+                )
+                if 200 <= r.status_code < 300:
+                    bot_id = (r.json() or {}).get("bot_id", "?")
+                    await tg_send(f"🎙 Meeting bot dispatched → joining {url[:60]}\n  bot_id={bot_id}")
+                else:
+                    await tg_send(f"❌ Failed to dispatch bot: {r.status_code}\n{r.text[:200]}")
+            except Exception as e:
+                await tg_send(f"❌ Meeting service unreachable: {e}")
+    elif cmd == "task" and arg:
+        # Quick task creation — file a ticket directly from Telegram.
+        title = arg.strip()
+        async with httpx.AsyncClient(timeout=10) as c:
+            try:
+                r = await c.post(
+                    f"{PAPERCLIP_BASE_URL}/api/companies/{COMPANY_ID}/issues",
+                    headers={"Authorization": f"Bearer {PAPERCLIP_BOARD_TOKEN}", "Content-Type": "application/json"},
+                    json={"title": title[:200], "priority": "medium", "description": f"Filed via Telegram by Vardaan.\n\n{title}"},
+                )
+                if 200 <= r.status_code < 300:
+                    j = r.json() or {}
+                    await tg_send(f"📋 Created {j.get('identifier')}: {title[:80]}")
+                else:
+                    await tg_send(f"❌ Failed to create ticket: {r.status_code}")
+            except Exception as e:
+                await tg_send(f"❌ Paperclip unreachable: {e}")
     elif cmd == "help":
         await tg_send(
             "*Commands:*\n"
@@ -318,6 +458,8 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             "  /queue — top of todo+in_progress\n"
             "  /cancel KOE-X — cancel a ticket\n"
             "  /priority KOE-X high — set priority\n"
+            "  /meeting <teams-url> — bot joins the meeting\n"
+            "  /task <title> — file a Paperclip ticket\n"
             "  /note KOE-X text — add comment (TBD)\n"
             "  /pause /resume — toggle dispatch (TBD)\n"
             "  /help — this menu"
@@ -341,7 +483,8 @@ async def health() -> dict[str, Any]:
 @app.on_event("startup")
 async def on_startup() -> None:
     asyncio.create_task(poll_loop())
-    log.info("startup complete")
+    asyncio.create_task(telegram_poll_loop())
+    log.info("startup complete (paperclip poll + telegram poll)")
 
 
 if __name__ == "__main__":
