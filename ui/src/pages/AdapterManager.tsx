@@ -6,11 +6,11 @@
  */
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download } from "lucide-react";
+import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download, LogIn } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { adaptersApi } from "@/api/adapters";
-import type { AdapterInfo } from "@/api/adapters";
+import type { AdapterInfo, AdapterAuthResult, AdapterAuthStatusEntry } from "@/api/adapters";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -40,10 +40,12 @@ function AdapterRow({
   onRemove,
   onReload,
   onReinstall,
+  onSignIn,
   isToggling,
   isReloading,
   isReinstalling,
   overriddenBy,
+  authStatus,
   /** Custom tooltip for the power button when adapter is enabled. */
   toggleTitleEnabled,
   /** Custom tooltip for the power button when adapter is disabled. */
@@ -57,15 +59,23 @@ function AdapterRow({
   onRemove: (type: string) => void;
   onReload?: (type: string) => void;
   onReinstall?: (type: string) => void;
+  onSignIn?: (type: string) => void;
   isToggling: boolean;
   isReloading?: boolean;
   isReinstalling?: boolean;
   /** When set, shows an "Overridden by …" badge (used for builtin entries). */
   overriddenBy?: string;
+  /** Auth-status entry for this adapter, when known. Undefined = still loading. */
+  authStatus?: AdapterAuthStatusEntry;
   toggleTitleEnabled?: string;
   toggleTitleDisabled?: string;
   disabledBadgeLabel?: string;
 }) {
+  const showAuthBadge = authStatus?.supported && authStatus.status;
+  const loggedIn = showAuthBadge && authStatus.status?.loggedIn;
+  const authMethod = authStatus?.status?.method ?? null;
+  const authDetail = authStatus?.status?.detail ?? null;
+  const showSignInButton = authStatus?.supported && onSignIn;
   return (
     <li>
       <div className="flex items-center gap-4 px-4 py-3">
@@ -100,7 +110,27 @@ function AdapterRow({
                 {disabledBadgeLabel ?? "Hidden from menus"}
               </Badge>
             )}
+            {showAuthBadge && (
+              loggedIn ? (
+                <Badge
+                  variant="secondary"
+                  className="text-emerald-700 border-emerald-400 dark:text-emerald-400"
+                  title={authDetail ?? undefined}
+                >
+                  {authMethod ?? "Signed in"}
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="text-amber-600 border-amber-400">
+                  Sign-in required
+                </Badge>
+              )
+            )}
           </div>
+          {adapter.description && (
+            <p className="text-xs text-foreground/80 mt-1 leading-snug">
+              {adapter.description}
+            </p>
+          )}
           <p className="text-xs text-muted-foreground mt-0.5">
             {adapter.type}
             {adapter.packageName && adapter.packageName !== adapter.type && (
@@ -110,6 +140,17 @@ function AdapterRow({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {showSignInButton && (
+            <Button
+              variant="outline"
+              size="icon-sm"
+              className="h-8 w-8"
+              title={loggedIn ? "Re-authenticate" : "Sign in"}
+              onClick={() => onSignIn?.(adapter.type)}
+            >
+              <LogIn className={cn("h-4 w-4", !loggedIn && "text-amber-600")} />
+            </Button>
+          )}
           {onReinstall && (
             <Button
               variant="outline"
@@ -251,6 +292,78 @@ function ReinstallDialog({
   );
 }
 
+function AdapterLoginDialog({
+  adapterType,
+  open,
+  isPending,
+  result,
+  errorMessage,
+  onClose,
+}: {
+  adapterType: string | null;
+  open: boolean;
+  isPending: boolean;
+  result: AdapterAuthResult | null;
+  errorMessage: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Sign in to {adapterType}</DialogTitle>
+          <DialogDescription>
+            Paperclip is starting an interactive sign-in for the{" "}
+            <code className="text-xs bg-muted px-1 py-0.5 rounded">{adapterType}</code> adapter.
+            Complete sign-in in your browser, then close this dialog. Paperclip will pick up the new
+            credentials on the next run.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-md border bg-muted/40 px-4 py-3 text-sm space-y-2 min-h-20">
+          {isPending && (
+            <p className="text-muted-foreground">Starting login… this may take a few seconds.</p>
+          )}
+          {!isPending && result?.loginUrl && (
+            <div className="space-y-1">
+              <p className="text-foreground">Open this URL in your browser to complete sign-in:</p>
+              <a
+                href={result.loginUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-600 underline underline-offset-2 break-all dark:text-blue-400"
+              >
+                {result.loginUrl}
+              </a>
+            </div>
+          )}
+          {!isPending && result?.ok && !result.loginUrl && (
+            <p className="text-emerald-700 dark:text-emerald-400">Signed in successfully.</p>
+          )}
+          {!isPending && result && !result.ok && !result.loginUrl && (
+            <p className="text-destructive">{result.error ?? "Sign-in failed."}</p>
+          )}
+          {!isPending && errorMessage && !result && (
+            <p className="text-destructive">{errorMessage}</p>
+          )}
+          {!isPending && (result?.output || result?.error) && (
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer">Output</summary>
+              <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px]">{result.output || result.error}</pre>
+            </details>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={isPending}>
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function AdapterManager() {
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -263,6 +376,8 @@ export function AdapterManager() {
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [removeType, setRemoveType] = useState<string | null>(null);
   const [reinstallTarget, setReinstallTarget] = useState<AdapterInfo | null>(null);
+  const [signInTarget, setSignInTarget] = useState<string | null>(null);
+  const [signInResult, setSignInResult] = useState<AdapterAuthResult | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -277,8 +392,16 @@ export function AdapterManager() {
     queryFn: () => adaptersApi.list(),
   });
 
+  const { data: authStatusesData } = useQuery({
+    queryKey: queryKeys.adapters.authStatuses,
+    queryFn: () => adaptersApi.getAuthStatuses(),
+    refetchOnWindowFocus: true,
+  });
+  const authStatuses: Record<string, AdapterAuthStatusEntry> = authStatusesData?.statuses ?? {};
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.adapters.all });
+    queryClient.invalidateQueries({ queryKey: queryKeys.adapters.authStatuses });
   };
 
   const installMutation = useMutation({
@@ -367,6 +490,31 @@ export function AdapterManager() {
       pushToast({ title: "Reinstall failed", body: err.message, tone: "error" });
     },
   });
+
+  const signInMutation = useMutation({
+    mutationFn: (type: string) => adaptersApi.authenticate(type),
+    onSuccess: (data) => {
+      setSignInResult(data.result);
+      queryClient.invalidateQueries({ queryKey: queryKeys.adapters.authStatuses });
+    },
+    onError: () => {
+      setSignInResult(null);
+    },
+  });
+
+  const handleSignIn = (type: string) => {
+    setSignInTarget(type);
+    setSignInResult(null);
+    signInMutation.reset();
+    signInMutation.mutate(type);
+  };
+
+  const handleCloseSignIn = () => {
+    setSignInTarget(null);
+    setSignInResult(null);
+    signInMutation.reset();
+    queryClient.invalidateQueries({ queryKey: queryKeys.adapters.authStatuses });
+  };
 
   const builtinAdapters = (adapters ?? []).filter((a) => a.source === "builtin");
   const externalAdapters = (adapters ?? []).filter((a) => a.source === "external");
@@ -566,6 +714,8 @@ export function AdapterManager() {
                   onRemove={(type) => setRemoveType(type)}
                   onReload={(type) => reloadMutation.mutate(type)}
                   onReinstall={!adapter.isLocalPath ? (type) => setReinstallTarget(adapter) : undefined}
+                  onSignIn={authStatuses[adapter.type]?.supported ? handleSignIn : undefined}
+                  authStatus={authStatuses[adapter.type]}
                   isToggling={isBuiltinOverride ? overrideMutation.isPending : toggleMutation.isPending}
                   isReloading={reloadMutation.isPending}
                   isReinstalling={reinstallMutation.isPending}
@@ -597,6 +747,8 @@ export function AdapterManager() {
                 canRemove={false}
                 onToggle={(type, disabled) => toggleMutation.mutate({ type, disabled })}
                 onRemove={() => {}}
+                onSignIn={authStatuses[adapter.type]?.supported ? handleSignIn : undefined}
+                authStatus={authStatuses[adapter.type]}
                 isToggling={isMutating}
               />
             ))}
@@ -620,6 +772,7 @@ export function AdapterManager() {
                 canRemove={false}
                 onToggle={(type, disabled) => toggleMutation.mutate({ type, disabled })}
                 onRemove={() => {}}
+                authStatus={authStatuses[virtual.type]}
                 isToggling={isMutating}
                 overriddenBy={virtual.overridePaused ? undefined : virtual.overriddenBy}
               />
@@ -676,6 +829,17 @@ export function AdapterManager() {
           }
         }}
         onCancel={() => setReinstallTarget(null)}
+      />
+      {/* Adapter sign-in flow */}
+      <AdapterLoginDialog
+        adapterType={signInTarget}
+        open={signInTarget !== null}
+        isPending={signInMutation.isPending}
+        result={signInResult}
+        errorMessage={
+          signInMutation.error instanceof Error ? signInMutation.error.message : null
+        }
+        onClose={handleCloseSignIn}
       />
     </div>
   );

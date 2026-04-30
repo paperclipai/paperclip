@@ -4,6 +4,7 @@ import { testEnvironment } from "./test.js";
 
 export const httpAdapter: ServerAdapterModule = {
   type: "http",
+  description: "POSTs a webhook to an external agent runtime — for agents that live elsewhere (cloud function, dedicated server) and call back into Paperclip.",
   execute,
   testEnvironment,
   models: [],

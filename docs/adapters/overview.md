@@ -18,6 +18,7 @@ When a heartbeat fires, Paperclip:
 
 | Adapter | Type Key | Description |
 |---------|----------|-------------|
+| [Aider Local](/adapters/aider-local) | `aider_local` | Wraps the Aider CLI driven by a local Ollama model — fully on-device coding agent |
 | [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
 | [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |

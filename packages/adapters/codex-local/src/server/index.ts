@@ -1,7 +1,12 @@
-export { execute, ensureCodexSkillsInjected } from "./execute.js";
+export { execute, ensureCodexSkillsInjected, runCodexLogin } from "./execute.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
-export { parseCodexJsonl, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
+export {
+  detectCodexLoginRequired,
+  parseCodexJsonl,
+  isCodexTransientUpstreamError,
+  isCodexUnknownSessionError,
+} from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,

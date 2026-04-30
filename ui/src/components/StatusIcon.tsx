@@ -1,7 +1,11 @@
 import { useState } from "react";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
-import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
+import {
+  issueStatusIcon,
+  issueStatusIconDefault,
+  issueStatusDescription,
+} from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
@@ -9,6 +13,17 @@ const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "can
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Build the tooltip text shown on hover. Uses the human-readable description
+ * if we have one, falling back to just the prettified label. Format is
+ * "<Label> — <Description>" so the most important information is first.
+ */
+function statusTooltip(status: string, attentionLabel?: string): string {
+  const label = attentionLabel ?? statusLabel(status);
+  const description = issueStatusDescription[status];
+  return description ? `${label} — ${description}` : label;
 }
 
 interface StatusIconProps {
@@ -67,6 +82,9 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       : issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
+  const tooltipText = status === "blocked"
+    ? statusTooltip(status, blockedAttentionLabel(blockerAttention))
+    : statusTooltip(status);
   const blockerAttentionState = isCoveredBlocked
     ? "covered"
     : isStalledBlocked
@@ -83,7 +101,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       )}
       data-blocker-attention-state={blockerAttentionState}
       aria-label={ariaLabel}
-      title={ariaLabel}
+      title={tooltipText}
     >
       {isDone && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
@@ -109,20 +127,31 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
+      <PopoverContent className="w-72 p-1" align="start">
         {allStatuses.map((s) => (
           <Button
             key={s}
             variant="ghost"
             size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s === status && "bg-accent")}
+            className={cn(
+              "w-full justify-start gap-2 text-xs h-auto py-1.5",
+              s === status && "bg-accent",
+            )}
             onClick={() => {
               onChange(s);
               setOpen(false);
             }}
+            title={statusTooltip(s)}
           >
-            <StatusIcon status={s} />
-            {statusLabel(s)}
+            <StatusIcon status={s} className="mt-0.5" />
+            <span className="flex flex-col items-start text-left">
+              <span>{statusLabel(s)}</span>
+              {issueStatusDescription[s] && (
+                <span className="text-[10px] text-muted-foreground leading-tight">
+                  {issueStatusDescription[s]}
+                </span>
+              )}
+            </span>
           </Button>
         ))}
       </PopoverContent>

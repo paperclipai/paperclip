@@ -71,6 +71,8 @@ interface AdapterCapabilities {
 interface AdapterInfo {
   type: string;
   label: string;
+  /** Short one-liner describing what this adapter does, shown on the Adapters page. */
+  description?: string;
   source: "builtin" | "external";
   modelsCount: number;
   loaded: boolean;
@@ -127,6 +129,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
   return {
     type: adapter.type,
     label: adapter.type, // ServerAdapterModule doesn't have a separate "label" field; type serves as label
+    description: adapter.description,
     source: externalRecord ? "external" : "builtin",
     modelsCount: (adapter.models ?? []).length,
     loaded: true, // If it's in the registry, it's loaded
@@ -670,6 +673,61 @@ export function adapterRoutes() {
       return;
     }
     res.type("application/javascript").send(source);
+  });
+
+  // ── GET /api/adapters/auth-statuses ──────────────────────────────────────
+  // Batch query: per-adapter auth status for the Adapters settings page.
+  // Returns { statuses: { [type]: { supported, status } } }. `supported: false`
+  // means the adapter does not implement getAuthStatus (e.g. http, process).
+  router.get("/adapters/auth-statuses", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const adapters = listEnabledServerAdapters();
+    const entries = await Promise.all(
+      adapters.map(async (adapter) => {
+        if (!adapter.getAuthStatus) {
+          return [adapter.type, { supported: false, status: null }] as const;
+        }
+        try {
+          const status = await adapter.getAuthStatus();
+          return [adapter.type, { supported: true, status }] as const;
+        } catch (err) {
+          logger.warn(
+            { err, adapterType: adapter.type },
+            "adapter getAuthStatus threw — reporting as unsupported",
+          );
+          return [adapter.type, { supported: false, status: null }] as const;
+        }
+      }),
+    );
+    const statuses = Object.fromEntries(entries);
+    res.json({ statuses });
+  });
+
+  // ── POST /api/adapters/:type/authenticate ────────────────────────────────
+  // Trigger an interactive re-auth flow for a specific adapter (e.g. spawn
+  // `claude login`). Instance-admin only because it can spawn processes and
+  // modify the host user's credential store.
+  router.post("/adapters/:type/authenticate", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { type } = req.params;
+    const adapter = findActiveServerAdapter(type);
+    if (!adapter) {
+      res.status(404).json({ error: `Adapter "${type}" is not registered.` });
+      return;
+    }
+    if (!adapter.authenticate) {
+      res.status(405).json({ supported: false, result: null });
+      return;
+    }
+    try {
+      const result = await adapter.authenticate();
+      res.json({ supported: true, result });
+    } catch (err) {
+      logger.error({ err, adapterType: type }, "adapter authenticate threw");
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Authentication failed",
+      });
+    }
   });
 
   return router;

@@ -173,6 +173,9 @@ export function InstanceSettings() {
         <p className="text-sm text-muted-foreground">
           Agents with a timer heartbeat enabled across all of your companies.
         </p>
+        <p className="text-sm text-muted-foreground">
+          Each heartbeat, the agent wakes up, checks its work, does something useful, and exits — agents do not run continuously.
+        </p>
       </div>
 
       <div className="flex items-center gap-4 text-sm text-muted-foreground">

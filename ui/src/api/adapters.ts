@@ -14,6 +14,8 @@ export interface AdapterCapabilities {
 export interface AdapterInfo {
   type: string;
   label: string;
+  /** Short one-liner describing what the adapter does, shown on the Adapters page. */
+  description?: string;
   source: "builtin" | "external";
   modelsCount: number;
   loaded: boolean;
@@ -36,6 +38,24 @@ export interface AdapterInstallResult {
   packageName: string;
   version?: string;
   installedAt: string;
+}
+
+export interface AdapterAuthStatus {
+  loggedIn: boolean;
+  method?: string | null;
+  detail?: string | null;
+}
+
+export interface AdapterAuthResult {
+  ok: boolean;
+  loginUrl?: string | null;
+  output?: string;
+  error?: string;
+}
+
+export interface AdapterAuthStatusEntry {
+  supported: boolean;
+  status: AdapterAuthStatus | null;
 }
 
 export const adaptersApi = {
@@ -64,4 +84,12 @@ export const adaptersApi = {
   /** Reinstall an npm-sourced adapter (pulls latest from registry, then reloads). */
   reinstall: (type: string) =>
     api.post<{ type: string; version?: string; reinstalled: boolean }>(`/adapters/${type}/reinstall`, {}),
+
+  /** Batch query: per-adapter auth status (built-ins + external). */
+  getAuthStatuses: () =>
+    api.get<{ statuses: Record<string, AdapterAuthStatusEntry> }>("/adapters/auth-statuses"),
+
+  /** Trigger an interactive re-auth flow for an adapter (e.g. claude login). */
+  authenticate: (type: string) =>
+    api.post<{ supported: boolean; result: AdapterAuthResult | null }>(`/adapters/${type}/authenticate`, {}),
 };

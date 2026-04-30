@@ -172,5 +172,6 @@ export const queryKeys = {
   },
   adapters: {
     all: ["adapters"] as const,
+    authStatuses: ["adapters", "auth-statuses"] as const,
   },
 };

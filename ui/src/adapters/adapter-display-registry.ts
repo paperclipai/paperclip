@@ -10,6 +10,7 @@ import {
   Bot,
   Code,
   Gem,
+  HardDrive,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -52,6 +53,16 @@ export interface AdapterDisplayInfo {
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
+  aider_local: {
+    label: "Aider — coding agent",
+    description: "⚠️ Coding agents only. Edits code in response to prompts.",
+    icon: HardDrive,
+  },
+  ollama_local: {
+    label: "Ollama",
+    description: "Talk to a local Ollama model — for research, triage, status updates, and any non-coding agent",
+    icon: HardDrive,
+  },
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",

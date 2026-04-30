@@ -316,6 +316,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const retryOnTransientAuth = asBoolean(config.retryOnTransientAuth, true);
+  const transientAuthRetryDelayMs = Math.max(
+    0,
+    asNumber(config.transientAuthRetryDelayMs, 500),
+  );
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
@@ -748,7 +753,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
-    const initial = await runAttempt(sessionId ?? null);
+    let initial = await runAttempt(sessionId ?? null);
+
+    // Transient claude_auth_required retry: the Claude CLI can briefly surface a
+    // logged-out state (token cache miss, clock skew during a refresh, etc.) that
+    // clears on the very next invocation. One automatic retry disambiguates a
+    // transient glitch from a persistent logout. If the second attempt also
+    // reports claude_auth_required, we surface the failure unmodified — no mask.
+    if (
+      retryOnTransientAuth &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      detectClaudeLoginRequired({
+        parsed: initial.parsed,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+      }).requiresLogin
+    ) {
+      const jitter = Math.floor(Math.random() * Math.max(1, Math.round(transientAuthRetryDelayMs / 2)));
+      const delayMs = transientAuthRetryDelayMs + jitter;
+      await onLog(
+        "stdout",
+        `[paperclip] Claude reported claude_auth_required; retrying once after ${delayMs}ms to distinguish a transient auth glitch from a persistent logout.\n`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      initial = await runAttempt(sessionId ?? null);
+      const stillRequiresLogin = detectClaudeLoginRequired({
+        parsed: initial.parsed,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+      }).requiresLogin;
+      await onLog(
+        "stdout",
+        `[paperclip] claude_auth_required retry result: ${
+          stillRequiresLogin ? "still requires login (surfacing as persistent failure)" : "recovered"
+        }.\n`,
+      );
+    }
+
     if (
       sessionId &&
       !initial.proc.timedOut &&

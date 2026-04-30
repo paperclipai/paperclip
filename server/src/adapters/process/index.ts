@@ -4,6 +4,7 @@ import { testEnvironment } from "./test.js";
 
 export const processAdapter: ServerAdapterModule = {
   type: "process",
+  description: "Executes an arbitrary shell command — escape hatch for cron-like jobs, custom scripts, or wrapping tools that don't fit a real adapter yet.",
   execute,
   testEnvironment,
   models: [],

@@ -304,8 +304,37 @@ export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }
 
+// ---------------------------------------------------------------------------
+// Adapter authentication — instance-level "Sign in" surface for local CLI adapters
+// ---------------------------------------------------------------------------
+
+export interface AdapterAuthStatus {
+  loggedIn: boolean;
+  /** Short label for the UI badge: "API key", "Claude Pro", "GitHub Copilot", etc. */
+  method?: string | null;
+  /** Optional human-readable detail (subscription tier, account hint, etc.). */
+  detail?: string | null;
+}
+
+export interface AdapterAuthResult {
+  ok: boolean;
+  /** URL the user opens in a browser to complete authentication, when applicable. */
+  loginUrl?: string | null;
+  /** Captured stdout/stderr from the auth subprocess, surfaced for debugging. */
+  output?: string;
+  /** Short user-facing reason when `ok` is false. */
+  error?: string;
+}
+
 export interface ServerAdapterModule {
   type: string;
+  /**
+   * Short one-line description shown on the Adapters settings page so users
+   * can tell at a glance what each adapter does. Aim for under ~80 chars and
+   * lead with the verb ("Runs Claude Code CLI locally", "Webhook to external
+   * agents"). Falls back to the type slug when omitted.
+   */
+  description?: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
@@ -350,6 +379,22 @@ export interface ServerAdapterModule {
    * resolved inside this method — the caller receives a fully hydrated schema.
    */
   getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
+
+  /**
+   * Optional: report whether the adapter is currently authenticated and how.
+   * Returning `null` signals "auth concept not applicable" (e.g. http, process,
+   * env-var-only adapters with no interactive flow). The UI uses presence/absence
+   * of this method to decide whether to show an auth status badge.
+   */
+  getAuthStatus?: () => Promise<AdapterAuthStatus | null>;
+
+  /**
+   * Optional: trigger an interactive re-auth flow for the adapter, instance-wide.
+   * For subprocess-login adapters (claude, codex), this typically spawns
+   * `<cli> login` and returns the URL printed to stderr/stdout so the UI can
+   * point the user to a browser to complete sign-in.
+   */
+  authenticate?: () => Promise<AdapterAuthResult>;
 
   // ---------------------------------------------------------------------------
   // Adapter capability flags

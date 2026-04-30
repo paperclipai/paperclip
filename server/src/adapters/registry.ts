@@ -1,5 +1,29 @@
+import { randomUUID } from "node:crypto";
+import type { AdapterAgent, AdapterAuthResult, AdapterAuthStatus } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
+import {
+  execute as aiderExecute,
+  testEnvironment as aiderTestEnvironment,
+  sessionCodec as aiderSessionCodec,
+  readAiderAuthStatus,
+} from "@paperclipai/adapter-aider-local/server";
+import {
+  agentConfigurationDoc as aiderAgentConfigurationDoc,
+  models as aiderModels,
+  DEFAULT_AIDER_LOCAL_OLLAMA_BASE_URL,
+} from "@paperclipai/adapter-aider-local";
+import {
+  execute as ollamaExecute,
+  testEnvironment as ollamaTestEnvironment,
+  sessionCodec as ollamaSessionCodec,
+  readOllamaAuthStatus,
+} from "@paperclipai/adapter-ollama-local/server";
+import {
+  agentConfigurationDoc as ollamaAgentConfigurationDoc,
+  models as ollamaModels,
+  DEFAULT_OLLAMA_LOCAL_BASE_URL,
+} from "@paperclipai/adapter-ollama-local";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -8,6 +32,8 @@ import {
   testEnvironment as claudeTestEnvironment,
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
+  readClaudeAuthStatus,
+  runClaudeLogin,
 } from "@paperclipai/adapter-claude-local/server";
 import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
 import {
@@ -17,6 +43,8 @@ import {
   testEnvironment as codexTestEnvironment,
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
+  readCodexAuthInfo,
+  runCodexLogin,
 } from "@paperclipai/adapter-codex-local/server";
 import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
 import {
@@ -117,8 +145,69 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+// Synthetic adapter-instance agent context used when running an interactive
+// login subprocess (`<cli> login`) from the Adapters page. The login flow
+// doesn't depend on a real agent — it just needs a runtime config so the CLI
+// binary can be located and spawned with the OS user's default config dir.
+function instanceLoginAgent(adapterType: string): AdapterAgent {
+  return {
+    id: "instance-login",
+    companyId: "",
+    name: "Adapter login",
+    adapterType,
+    adapterConfig: {},
+  };
+}
+
+function clipOutput(stdout: string, stderr: string): string {
+  const combined = [stdout, stderr].filter((s) => s && s.length > 0).join("\n");
+  if (combined.length <= 4000) return combined;
+  return `${combined.slice(0, 2000)}\n…\n${combined.slice(-1500)}`;
+}
+
+async function claudeGetAuthStatus(): Promise<AdapterAuthStatus | null> {
+  const status = await readClaudeAuthStatus();
+  if (!status) return null;
+  const method =
+    status.authMethod === "claude.ai"
+      ? status.subscriptionType
+        ? `Claude (${status.subscriptionType})`
+        : "Claude subscription"
+      : status.authMethod === "apiKey"
+        ? "API key"
+        : status.authMethod ?? null;
+  return {
+    loggedIn: status.loggedIn,
+    method,
+    detail: status.subscriptionType ?? null,
+  };
+}
+
+async function claudeAuthenticate(): Promise<AdapterAuthResult> {
+  try {
+    const result = await runClaudeLogin({
+      runId: `adapter-login-claude-${randomUUID()}`,
+      agent: instanceLoginAgent("claude_local"),
+      config: {},
+    });
+    const ok = !result.timedOut && (result.exitCode ?? 0) === 0;
+    return {
+      ok,
+      loginUrl: result.loginUrl ?? null,
+      output: clipOutput(result.stdout, result.stderr),
+      error: ok ? undefined : result.timedOut ? "claude login timed out" : `claude login exited with code ${result.exitCode}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  description: "Spawns the Claude Code CLI locally — Anthropic's coding agent on your machine using your Claude subscription or API key.",
   execute: claudeExecute,
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
@@ -133,10 +222,52 @@ const claudeLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
+  getAuthStatus: claudeGetAuthStatus,
+  authenticate: claudeAuthenticate,
 };
+
+async function codexGetAuthStatus(): Promise<AdapterAuthStatus | null> {
+  try {
+    const info = await readCodexAuthInfo();
+    if (!info) {
+      return { loggedIn: false, method: null, detail: null };
+    }
+    const method = info.planType ? `ChatGPT (${info.planType})` : "ChatGPT";
+    return {
+      loggedIn: true,
+      method,
+      detail: info.email ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function codexAuthenticate(): Promise<AdapterAuthResult> {
+  try {
+    const result = await runCodexLogin({
+      runId: `adapter-login-codex-${randomUUID()}`,
+      agent: instanceLoginAgent("codex_local"),
+      config: {},
+    });
+    const ok = !result.timedOut && (result.exitCode ?? 0) === 0;
+    return {
+      ok,
+      loginUrl: result.loginUrl ?? null,
+      output: clipOutput(result.stdout, result.stderr),
+      error: ok ? undefined : result.timedOut ? "codex login timed out" : `codex login exited with code ${result.exitCode}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  description: "Spawns the OpenAI Codex CLI locally — coding agent backed by ChatGPT subscription or OpenAI API key.",
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   listSkills: listCodexSkills,
@@ -152,10 +283,13 @@ const codexLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getQuotaWindows: codexGetQuotaWindows,
+  getAuthStatus: codexGetAuthStatus,
+  authenticate: codexAuthenticate,
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  description: "Runs Cursor in background-agent mode — Cursor's hosted coding agent triggered locally.",
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -173,6 +307,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  description: "Spawns the Gemini CLI locally — Google's coding agent driven by a Gemini API key.",
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   listSkills: listGeminiSkills,
@@ -187,8 +322,67 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
+async function aiderGetAuthStatus(): Promise<AdapterAuthStatus | null> {
+  const status = await readAiderAuthStatus(DEFAULT_AIDER_LOCAL_OLLAMA_BASE_URL);
+  return {
+    loggedIn: status.loggedIn,
+    method: status.loggedIn
+      ? `${status.authMethod} (${status.modelsCount} model${status.modelsCount === 1 ? "" : "s"})`
+      : status.authMethod,
+    detail: status.loggedIn
+      ? `Reachable at ${status.baseUrl}`
+      : `Not reachable at ${status.baseUrl}`,
+  };
+}
+
+const aiderLocalAdapter: ServerAdapterModule = {
+  type: "aider_local",
+  description: "⚠️ Coding agent only. Wraps the Aider CLI to edit code with a local Ollama model. Aider treats every prompt as a file-edit task — DO NOT use for triage, scheduling, research, or any non-coding agent. For those use ollama_local.",
+  execute: aiderExecute,
+  testEnvironment: aiderTestEnvironment,
+  sessionCodec: aiderSessionCodec,
+  sessionManagement: getAdapterSessionManagement("aider_local") ?? undefined,
+  models: aiderModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: aiderAgentConfigurationDoc,
+  getAuthStatus: aiderGetAuthStatus,
+  // No authenticate() — Ollama is unauthenticated. The Adapters page hides the
+  // sign-in button when authenticate is undefined, leaving just the auth-status
+  // badge so users still see whether the runtime is reachable.
+};
+
+async function ollamaGetAuthStatus(): Promise<AdapterAuthStatus | null> {
+  const status = await readOllamaAuthStatus(DEFAULT_OLLAMA_LOCAL_BASE_URL);
+  return {
+    loggedIn: status.loggedIn,
+    method: status.loggedIn
+      ? `${status.authMethod} (${status.modelsCount} model${status.modelsCount === 1 ? "" : "s"})`
+      : status.authMethod,
+    detail: status.loggedIn ? `Reachable at ${status.baseUrl}` : `Not reachable at ${status.baseUrl}`,
+  };
+}
+
+const ollamaLocalAdapter: ServerAdapterModule = {
+  type: "ollama_local",
+  description: "Talks to a local Ollama model directly. For thinking-class agents — research, triage, status updates, scheduling, decision-making. No code editing, no tools — just inference + reply. Auto-pulls the model on first run.",
+  execute: ollamaExecute,
+  testEnvironment: ollamaTestEnvironment,
+  sessionCodec: ollamaSessionCodec,
+  sessionManagement: getAdapterSessionManagement("ollama_local") ?? undefined,
+  models: ollamaModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: ollamaAgentConfigurationDoc,
+  getAuthStatus: ollamaGetAuthStatus,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
+  description: "Bridges to an OpenClaw gateway endpoint — fan agent runs out to a remote OpenClaw cluster.",
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
@@ -200,6 +394,7 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  description: "Spawns the OpenCode CLI locally — multi-provider coding agent (`provider/model` selection covers Anthropic, OpenAI, Ollama, etc.).",
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
@@ -217,6 +412,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
 
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  description: "Runs an embedded Pi agent locally — Paperclip's reference agent runtime for testing and demos.",
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,
@@ -238,6 +434,7 @@ const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["exec
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
+  description: "Spawns the Hermes CLI locally — third-party agent runtime (`hermes-paperclip-adapter` package) with its own auth and model selection.",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
     if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
@@ -311,8 +508,10 @@ const pausedOverrides = new Set<string>();
 
 function registerBuiltInAdapters() {
   for (const adapter of [
+    aiderLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    ollamaLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,

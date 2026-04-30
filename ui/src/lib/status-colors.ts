@@ -6,6 +6,25 @@
  */
 
 // ---------------------------------------------------------------------------
+// Issue status descriptions
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable description of what each issue status means in Paperclip.
+ * Surfaced in tooltips on every status pill and in the disclosure panel at the
+ * bottom of the issues list. Keep these short — they need to fit in a tooltip.
+ */
+export const issueStatusDescription: Record<string, string> = {
+  backlog: "Captured but not yet prioritized. Triage later or move to Todo when ready to work.",
+  todo: "Prioritized and ready for an agent to pick up.",
+  in_progress: "An agent is actively working on it. Heartbeats may fire on this issue.",
+  in_review: "Agent finished its work; awaits human review. Mark Done if good, or comment to reopen.",
+  done: "Resolved and confirmed.",
+  blocked: "Cannot proceed — waiting on a dependency, decision, or external input. Won't wake until unblocked.",
+  cancelled: "No longer relevant. Won't be worked on.",
+};
+
+// ---------------------------------------------------------------------------
 // Issue status colors
 // ---------------------------------------------------------------------------
 

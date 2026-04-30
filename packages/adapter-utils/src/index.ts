@@ -25,6 +25,8 @@ export type {
   ConfigFieldOption,
   ConfigFieldSchema,
   AdapterConfigSchema,
+  AdapterAuthStatus,
+  AdapterAuthResult,
   ServerAdapterModule,
   QuotaWindow,
   ProviderQuotaResult,
