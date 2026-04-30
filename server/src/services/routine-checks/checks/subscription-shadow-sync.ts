@@ -1,6 +1,13 @@
 import { sql } from "drizzle-orm";
 import type { CheckCtx, CheckDef, CheckResult } from "../types.js";
 
+function extractRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const wrapped = result as { rows?: unknown };
+  if (Array.isArray(wrapped?.rows)) return wrapped.rows as T[];
+  return [];
+}
+
 const COMPANIES = ["HAPPYGANG", "TechOps Marco"] as const;
 
 interface UtilizationRow {
@@ -12,13 +19,14 @@ interface UtilizationRow {
 
 async function run(ctx: CheckCtx): Promise<CheckResult> {
   const p95 = Number.parseInt(process.env.PAPERCLIP_SHADOW_SYNC_P95 ?? "50", 10);
+  const anchor = ctx.now().toISOString();
 
   try {
     // 1) Insert shadow events for billing_type='subscription_included' from current month
     //    that lack a matching subscription_shadow_v1 entry.
     const inserted = await ctx.db.execute(sql`
       WITH month_start AS (
-        SELECT date_trunc('month', NOW() AT TIME ZONE 'UTC') AS mstart
+        SELECT date_trunc('month', ${anchor}::timestamptz AT TIME ZONE 'UTC') AS mstart
       ), src AS (
         SELECT ce.*
           FROM cost_events ce
@@ -50,12 +58,12 @@ async function run(ctx: CheckCtx): Promise<CheckResult> {
         m.company_id, m.agent_id, m.issue_id, m.project_id, m.goal_id,
         m.shadow_code, m.provider, m.model,
         0, 0, 0,
-        m.shadow_cents, m.occurred_at, NOW(),
+        m.shadow_cents, m.occurred_at, ${anchor}::timestamptz,
         m.heartbeat_run_id, 'internal_budget', 'subscription_shadow_v1'
       FROM missing m
       RETURNING id
     `);
-    const insertedCount = Array.isArray(inserted) ? inserted.length : 0;
+    const insertedCount = extractRows<{ id: string }>(inserted).length;
 
     // 2) Per-company utilization
     const companyList = sql.join(
@@ -64,7 +72,7 @@ async function run(ctx: CheckCtx): Promise<CheckResult> {
     );
     const utilRows = await ctx.db.execute(sql`
       WITH month_start AS (
-        SELECT date_trunc('month', NOW() AT TIME ZONE 'UTC') AS mstart
+        SELECT date_trunc('month', ${anchor}::timestamptz AT TIME ZONE 'UTC') AS mstart
       ), spend AS (
         SELECT ce.company_id, COALESCE(SUM(ce.cost_cents), 0)::int AS spent_cents
           FROM cost_events ce
@@ -85,14 +93,12 @@ async function run(ctx: CheckCtx): Promise<CheckResult> {
        ORDER BY c.name
     `);
 
-    const utilization: UtilizationRow[] = (
-      utilRows as unknown as Array<{
-        company: string;
-        used: number;
-        limit: number;
-        utilization_pct: number | null;
-      }>
-    ).map((r) => ({
+    const utilization: UtilizationRow[] = extractRows<{
+      company: string;
+      used: number;
+      limit: number;
+      utilization_pct: number | null;
+    }>(utilRows).map((r) => ({
       company: r.company,
       used: Number(r.used),
       limit: Number(r.limit),

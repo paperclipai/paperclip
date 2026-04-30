@@ -160,7 +160,9 @@ describeDb("subscription-shadow-sync", () => {
     await makeCompany("TechOps Marco");
     const agent = await makeAgent(happy);
     const lastMonth = new Date();
-    lastMonth.setMonth(lastMonth.getMonth() - 2);
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    lastMonth.setDate(1);
+    lastMonth.setHours(0, 0, 0, 0);
     await db.insert(costEvents).values({
       companyId: happy,
       agentId: agent,
@@ -271,6 +273,28 @@ describeDb("subscription-shadow-sync", () => {
     const techops = util.find((u) => u.company === "TechOps Marco");
     expect(techops!.used).toBe(0);
     expect(techops!.limit).toBe(500_00);
+  });
+
+  it("uses default P95=50 when ENV is unset (no spike at small insert volume)", async () => {
+    // Ensure ENV is not set
+    delete process.env.PAPERCLIP_SHADOW_SYNC_P95;
+
+    const happy = await makeCompany("HAPPYGANG");
+    await makeCompany("TechOps Marco");
+    const agent = await makeAgent(happy);
+    // Insert 10 source events — well below 50*3=150 threshold
+    for (let i = 0; i < 10; i++) {
+      await db.insert(costEvents).values({
+        companyId: happy, agentId: agent,
+        provider: "anthropic", model: "claude-opus", biller: "anthropic", billingType: "subscription_included",
+        inputTokens: 1_000, outputTokens: 0, costCents: 0,
+        occurredAt: new Date(),
+      });
+    }
+    const r = await subscriptionShadowSync.run({ db, fs: fsStub, logger: noopLogger, now: () => new Date() });
+    expect((r.payload as any).inserted_shadow_events).toBe(10);
+    expect((r.payload as any).spike).toBe(false);
+    expect(r.status).toBe("ok");
   });
 
   it("returns error status when DB query fails", async () => {
