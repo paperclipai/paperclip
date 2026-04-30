@@ -485,14 +485,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      // VOG-330: on local Windows, wrap opencode spawn so the cmd.exe session
-      // and any subprocess opencode-cli forks (curl/bash/etc.) inherit UTF-8
-      // codepage 65001. Without this, the default ANSI codepage (936/GBK on
-      // zh-CN systems) corrupts Chinese output written to stdout/stderr —
-      // POSIX `LANG=en_US.UTF-8` env vars don't apply to Windows-native
-      // processes that read GetConsoleOutputCP().
-      const { command: spawnCommand, args: spawnArgs } = wrapWindowsUtf8(command, args, executionTargetIsRemote);
-      const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, spawnCommand, spawnArgs, {
+      // VOG-330: on local Windows we used to wrap opencode spawn through
+      // `cmd.exe /D /S /C "chcp 65001 >nul && <cmd> <args>"` to force UTF-8
+      // codepage 65001 for Chinese stdout. But cmd.exe + Node's CRT-style
+      // arg escaping fight on quoting (cmd doesn't understand `\"`) and the
+      // wrapped command name ends up unrecognized. VOG-341 fix: skip the
+      // wrap on Windows and rely on the per-agent UTF-8 env (LANG/LC_ALL/
+      // PYTHONIOENCODING/PYTHONUTF8) plus opencode-cli's own internal
+      // codepage handling. If Chinese stdout shows up GBK-mangled in the
+      // future, revisit by writing a `.bat` launcher with chcp + exec rather
+      // than cmd /S /C wrapping (which is unreliable under Node spawn).
+      const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
         cwd,
         env: preparedRuntimeConfig.env,
         stdin: prompt,

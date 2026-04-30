@@ -81,6 +81,11 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  // VOG-341 — when true, pass args verbatim to the Windows process (no Node-side
+  // backslash-escape quoting). Required for cmd.exe /S /C invocations that
+  // already follow cmd.exe's doubled-quote escaping rule. Ignored on non-Windows
+  // and on remote (sandbox/SSH) targets.
+  windowsVerbatimArguments?: boolean;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -275,6 +280,10 @@ export async function runAdapterExecutionTargetProcess(
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+    // VOG-341 — propagate verbatim flag end-to-end so adapters that
+    // pre-quote their args for cmd.exe (e.g. opencode-local Windows wrap)
+    // can opt out of Node's CRT-style escaping at the spawn() boundary.
+    windowsVerbatimArguments: options.windowsVerbatimArguments,
   });
 }
 

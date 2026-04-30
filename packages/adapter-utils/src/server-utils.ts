@@ -1669,6 +1669,13 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    // VOG-341 — when true, pass args to CreateProcess verbatim (no Node CRT
+    // backslash-escaping of `"`). Required when the spawned binary is cmd.exe
+    // and our args already follow cmd.exe's `""`-escape rule (e.g. the
+    // wrapWindowsUtf8 helper in opencode-local). Without this, cmd.exe sees
+    // `\"path\"` instead of `"path"` and reports `'"...exe"' is not recognized`.
+    // Ignored on non-Windows and on remote (sandbox/SSH) targets.
+    windowsVerbatimArguments?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -1705,6 +1712,14 @@ export async function runChildProcess(
           detached: process.platform !== "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          // VOG-341 — propagate verbatim flag to CreateProcess so callers that
+          // pre-format Windows command lines (e.g. cmd.exe /S /C wrappers using
+          // cmd's `""`-doubled quoting rule) don't have Node's MSVCRT-style
+          // re-escaping turn `"C:\path\exe"` into `\"C:\path\exe\"`, which
+          // cmd.exe reports as: `'"C:\path\exe"' is not recognized`.
+          // Ignored on non-Windows; only honoured for the local-process case.
+          windowsVerbatimArguments:
+            process.platform === "win32" && opts.windowsVerbatimArguments === true,
         }) as ChildProcessWithEvents;
         // VOG-330: decode stdout/stderr as UTF-8 at the stream level so multi-byte
         // characters that straddle chunk boundaries are joined correctly instead
