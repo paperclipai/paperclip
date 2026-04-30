@@ -1390,6 +1390,12 @@ const issueListSelect = {
       )
     END
   `,
+  descriptionTruncated: sql<boolean>`
+    CASE
+      WHEN ${issues.description} IS NULL THEN false
+      ELSE octet_length(convert_to(${issues.description}, current_setting('server_encoding'))) > ${ISSUE_LIST_DESCRIPTION_MAX_BYTES}
+    END
+  `,
   status: issues.status,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,

@@ -247,6 +247,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  descriptionTruncated?: boolean;
   status: IssueStatus;
   priority: IssuePriority;
   assigneeAgentId: string | null;
