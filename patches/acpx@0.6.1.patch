@@ -1,0 +1,78 @@
+diff --git a/dist/prompt-turn-BY5SwU1F.js b/dist/prompt-turn-BY5SwU1F.js
+index d33480bfb84637da2ac6f37c57a713b5a3eefc06..cc44e2c05c4c8a186ac82708988e877c4eea2949 100644
+--- a/dist/prompt-turn-BY5SwU1F.js
++++ b/dist/prompt-turn-BY5SwU1F.js
+@@ -1487,6 +1487,7 @@ function buildClaudeCodeOptionsMeta(options) {
+ 	const systemPrompt = options.systemPrompt;
+ 	if (typeof systemPrompt === "string" && systemPrompt.length > 0) meta.systemPrompt = systemPrompt;
+ 	else if (systemPrompt && typeof systemPrompt === "object" && typeof systemPrompt.append === "string" && systemPrompt.append.length > 0) meta.systemPrompt = { append: systemPrompt.append };
++	if (Array.isArray(options.additionalRoots) && options.additionalRoots.length > 0) meta.additionalRoots = [...options.additionalRoots];
+ 	if (Object.keys(meta).length === 0) return;
+ 	return meta;
+ }
+@@ -2199,9 +2200,11 @@ var AcpClient = class {
+ 		const sessionCwd = await resolveAgentSessionCwd(cwd, this.options.agentCommand);
+ 		let result;
+ 		try {
++			const additionalRoots = this.options.sessionOptions?.additionalRoots;
+ 			const createPromise = this.runConnectionRequest(() => connection.newSession({
+ 				cwd: sessionCwd,
+ 				mcpServers: this.options.mcpServers ?? [],
++				...Array.isArray(additionalRoots) && additionalRoots.length > 0 ? { additionalDirectories: [...additionalRoots] } : {},
+ 				_meta: buildClaudeCodeOptionsMeta(this.options.sessionOptions)
+ 			}));
+ 			result = claudeAcp ? await withTimeout(createPromise, resolveClaudeAcpSessionCreateTimeoutMs()) : await createPromise;
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index 70ae9080be0215d9529a6c49edc5e7f2c8109457..3bf425f1105d796268aec0ccb8688a0d865c228e 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -57,6 +57,15 @@ type AcpRuntimeDoctorReport = {
+   installCommand?: string;
+   details?: string[];
+ };
++type AcpRuntimeSessionOptions = {
++  model?: string;
++  allowedTools?: string[];
++  maxTurns?: number;
++  systemPrompt?: string | {
++    append: string;
++  };
++  additionalRoots?: string[];
++};
+ type AcpRuntimeEvent = {
+   type: "text_delta";
+   text: string;
+@@ -174,6 +183,7 @@ type AcpRuntimeOptions = {
+   nonInteractivePermissions?: NonInteractivePermissionPolicy;
+   timeoutMs?: number;
+   probeAgent?: string;
++  sessionOptions?: AcpRuntimeSessionOptions;
+   verbose?: boolean;
+ };
+ type AcpFileSessionStoreOptions = {
+diff --git a/dist/runtime.js b/dist/runtime.js
+index f1d58d1ac4c80502f7b011d9c9189979308b1b2b..cf89f70450d39a978fee572080df36ba894f5bf5 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -525,7 +525,8 @@ var AcpRuntimeManager = class {
+ 			mcpServers: [...this.options.mcpServers ?? []],
+ 			permissionMode: this.options.permissionMode,
+ 			nonInteractivePermissions: this.options.nonInteractivePermissions,
+-			verbose: this.options.verbose
++			verbose: this.options.verbose,
++			sessionOptions: this.options.sessionOptions
+ 		});
+ 		let keepClientOpen = false;
+ 		try {
+diff --git a/dist/types-CVBeQyi3.d.ts b/dist/types-CVBeQyi3.d.ts
+index 9c696047665a154d3587295e60bd53dd7f50fe76..d5aa15eaa72e46b0f7b1fe22f7b2eeb85771285b 100644
+--- a/dist/types-CVBeQyi3.d.ts
++++ b/dist/types-CVBeQyi3.d.ts
+@@ -53,6 +53,7 @@ type AcpClientOptions = {
+     systemPrompt?: string | {
+       append: string;
+     };
++    additionalRoots?: string[];
+   };
+   onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
+   onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;

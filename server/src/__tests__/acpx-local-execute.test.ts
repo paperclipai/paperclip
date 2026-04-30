@@ -14,6 +14,12 @@ import type {
 } from "acpx/runtime";
 
 type LogEntry = { stream: "stdout" | "stderr"; chunk: string };
+type TestAcpRuntimeOptions = AcpRuntimeOptions & {
+  sessionOptions?: {
+    systemPrompt?: string | { append: string };
+    additionalRoots?: string[];
+  };
+};
 
 class FakeRuntime implements AcpRuntime {
   ensureInputs: Array<{ sessionKey: string; agent: string; mode: "persistent" | "oneshot"; cwd?: string; resumeSessionId?: string }> = [];
@@ -27,7 +33,7 @@ class FakeRuntime implements AcpRuntime {
   nextEnsureError: Error | null = null;
 
   constructor(
-    readonly options: AcpRuntimeOptions,
+    readonly options: TestAcpRuntimeOptions,
     readonly events: AcpRuntimeEvent[] = [
       { type: "status", text: "thinking", tag: "agent_thought_chunk" },
       { type: "text_delta", text: "hello ", stream: "output", tag: "agent_message_chunk" },
@@ -111,6 +117,24 @@ class FakeRuntime implements AcpRuntime {
   async close(input: { handle: AcpRuntimeHandle; reason: string; discardPersistentState?: boolean }) {
     this.closeInputs.push(input);
   }
+}
+
+async function createRuntimeSkill(root: string, input: {
+  key?: string;
+  runtimeName?: string;
+  body?: string;
+}) {
+  const runtimeName = input.runtimeName ?? "paperclip-test-skill";
+  const key = input.key ?? `company/${runtimeName}`;
+  const source = path.join(root, "skills", runtimeName);
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\nrequired: false\n---\nUse the test skill.\n", "utf8");
+  return {
+    key,
+    runtimeName,
+    source,
+    required: false,
+  };
 }
 
 function parseStdoutLogs(logs: LogEntry[]) {
@@ -359,6 +383,186 @@ describe("acpx_local execute", () => {
         category: "protocol",
         acpCode: "ACP_SESSION_INIT_FAILED",
       });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes selected skills for ACPX Claude and passes public session metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-claude-skills-"));
+    try {
+      const skill = await createRuntimeSkill(root, {});
+      let runtime: FakeRuntime | null = null;
+      let meta: Record<string, unknown> | null = null;
+      const execute = createAcpxLocalExecutor({
+        createRuntime: (options) => {
+          runtime = new FakeRuntime(options);
+          return runtime;
+        },
+      });
+
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "claude",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: {
+            desiredSkills: [skill.key],
+          },
+        },
+        onMeta: async (payload) => {
+          meta = payload as Record<string, unknown>;
+        },
+      }));
+
+      expect(result.exitCode).toBe(0);
+      expect(runtime?.options.sessionOptions?.additionalRoots).toHaveLength(1);
+      const bundleRoot = runtime?.options.sessionOptions?.additionalRoots?.[0];
+      expect(bundleRoot).toContain(path.join("state", "runtime-skills", "claude"));
+      await expect(fs.lstat(path.join(bundleRoot!, ".claude", "skills", skill.runtimeName))).resolves.toMatchObject({});
+      expect(runtime?.options.sessionOptions?.systemPrompt).toMatchObject({
+        append: expect.stringContaining("Paperclip has mounted selected runtime skills"),
+      });
+      expect(result.sessionParams?.skills).toMatchObject({
+        mode: "claude",
+        selectedSkills: [skill.runtimeName],
+      });
+      expect((meta?.commandNotes as string[]).join("\n")).toContain("Mounted 1 Paperclip skill");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("includes skill content in the ACPX Claude session fingerprint", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-claude-fingerprint-"));
+    try {
+      const skill = await createRuntimeSkill(root, { body: "---\nrequired: false\n---\nFirst version.\n" });
+      const runtimes: FakeRuntime[] = [];
+      const execute = createAcpxLocalExecutor({
+        createRuntime: (options) => {
+          const runtime = new FakeRuntime(options);
+          runtimes.push(runtime);
+          return runtime;
+        },
+      });
+      const context = buildContext(root, {
+        config: {
+          agent: "claude",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: {
+            desiredSkills: [skill.key],
+          },
+        },
+      });
+
+      const first = await execute(context);
+      await fs.writeFile(path.join(skill.source, "SKILL.md"), "---\nrequired: false\n---\nSecond version.\n", "utf8");
+      const second = await execute({
+        ...context,
+        runtime: {
+          sessionId: first.sessionId ?? null,
+          sessionParams: first.sessionParams ?? null,
+          sessionDisplayId: first.sessionDisplayId ?? null,
+          taskKey: "PAP-1",
+        },
+      });
+
+      expect(second.sessionParams?.configFingerprint).not.toBe(first.sessionParams?.configFingerprint);
+      expect(runtimes.at(-1)?.ensureInputs.at(-1)?.resumeSessionId).toBeUndefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes selected skills into the effective ACPX Codex CODEX_HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-codex-skills-"));
+    try {
+      const skill = await createRuntimeSkill(root, {});
+      const codexHome = path.join(root, "codex-home");
+      let runtime: FakeRuntime | null = null;
+      let meta: Record<string, unknown> | null = null;
+      const execute = createAcpxLocalExecutor({
+        createRuntime: (options) => {
+          runtime = new FakeRuntime(options);
+          return runtime;
+        },
+      });
+
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "codex",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          env: { CODEX_HOME: codexHome },
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: {
+            desiredSkills: [skill.key],
+          },
+        },
+        onMeta: async (payload) => {
+          meta = payload as Record<string, unknown>;
+        },
+      }));
+
+      expect(result.exitCode).toBe(0);
+      await expect(fs.lstat(path.join(codexHome, "skills", skill.runtimeName))).resolves.toMatchObject({});
+      const wrapperPath = runtime?.options.agentRegistry.resolve("codex");
+      await expect(fs.readFile(wrapperPath!, "utf8")).resolves.toContain(`export CODEX_HOME='${codexHome}'`);
+      expect((meta?.env as Record<string, string>).CODEX_HOME).toBe(codexHome);
+      expect(result.sessionParams?.skills).toMatchObject({
+        mode: "codex",
+        codexHome,
+        selectedSkills: [skill.runtimeName],
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps ACPX custom skill selection tracked without runtime materialization", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-custom-skills-"));
+    try {
+      const skill = await createRuntimeSkill(root, {});
+      let runtime: FakeRuntime | null = null;
+      let meta: Record<string, unknown> | null = null;
+      const execute = createAcpxLocalExecutor({
+        createRuntime: (options) => {
+          runtime = new FakeRuntime(options);
+          return runtime;
+        },
+      });
+
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "custom",
+          agentCommand: "custom-acp",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: {
+            desiredSkills: [skill.key],
+          },
+        },
+        onMeta: async (payload) => {
+          meta = payload as Record<string, unknown>;
+        },
+      }));
+
+      expect(result.exitCode).toBe(0);
+      expect(runtime?.options.sessionOptions).toBeUndefined();
+      await expect(fs.lstat(path.join(root, "state", "runtime-skills"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(result.sessionParams?.skills).toMatchObject({
+        mode: "custom_unsupported",
+        desiredSkillNames: [skill.key],
+      });
+      expect((meta?.commandNotes as string[]).join("\n")).toContain("tracked only");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

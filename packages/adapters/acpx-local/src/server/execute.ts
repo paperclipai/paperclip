@@ -13,12 +13,16 @@ import {
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
   ensureAbsoluteDirectory,
+  ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   joinPromptSections,
   parseObject,
+  readPaperclipRuntimeSkillEntries,
   renderPaperclipWakePrompt,
   renderTemplate,
+  resolvePaperclipDesiredSkillNames,
   stringifyPaperclipWakePayload,
+  type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
@@ -46,7 +50,16 @@ import {
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WARM_HANDLE_IDLE_MS = 15 * 60 * 1000;
 
-type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
+type AcpxRuntimeSessionOptions = {
+  systemPrompt?: string | { append: string };
+  additionalRoots?: string[];
+};
+
+type AcpxRuntimeOptions = AcpRuntimeOptions & {
+  sessionOptions?: AcpxRuntimeSessionOptions;
+};
+
+type AcpxRuntimeFactory = (options: AcpxRuntimeOptions) => AcpRuntime;
 
 interface RuntimeCacheEntry {
   runtime: AcpRuntime;
@@ -80,6 +93,8 @@ interface AcpxPreparedRuntime {
   agentCommand: string | null;
   agentRegistry: AcpAgentRegistry;
   remoteExecutionIdentity: Record<string, unknown> | null;
+  sessionOptions: AcpxRuntimeSessionOptions | null;
+  skillsIdentity: Record<string, unknown>;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -110,6 +125,10 @@ function defaultStateDir(companyId: string, agentId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "acpx-local", "agents", agentId);
 }
 
+function resolveManagedCodexHomeDir(companyId: string): string {
+  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
+}
+
 function packageRootDir(): string {
   return path.resolve(__moduleDir, "../..");
 }
@@ -128,6 +147,255 @@ function resolveBuiltInAgentCommand(agent: string): string | null {
 function normalizeAgent(config: Record<string, unknown>): string {
   const agent = asString(config.agent, DEFAULT_ACPX_LOCAL_AGENT).trim();
   return agent || DEFAULT_ACPX_LOCAL_AGENT;
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  return fs.access(candidate).then(() => true).catch(() => false);
+}
+
+async function ensureParentDir(target: string): Promise<void> {
+  await fs.mkdir(path.dirname(target), { recursive: true });
+}
+
+async function ensureSymlink(target: string, source: string): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) {
+    await ensureParentDir(target);
+    await fs.symlink(source, target);
+    return;
+  }
+
+  if (!existing.isSymbolicLink()) return;
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return;
+
+  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+  if (resolvedLinkedPath === source) return;
+
+  await fs.unlink(target);
+  await fs.symlink(source, target);
+}
+
+async function ensureCopiedFile(target: string, source: string): Promise<void> {
+  if (await pathExists(target)) return;
+  await ensureParentDir(target);
+  await fs.copyFile(source, target);
+}
+
+async function prepareManagedCodexHome(input: {
+  companyId: string;
+  sourceHome: string;
+  targetHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<string> {
+  const { sourceHome, targetHome, onLog } = input;
+  if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
+
+  await fs.mkdir(targetHome, { recursive: true });
+
+  const authJson = path.join(sourceHome, "auth.json");
+  if (await pathExists(authJson)) await ensureSymlink(path.join(targetHome, "auth.json"), authJson);
+
+  for (const name of ["config.json", "config.toml", "instructions.md"]) {
+    const source = path.join(sourceHome, name);
+    if (await pathExists(source)) await ensureCopiedFile(path.join(targetHome, name), source);
+  }
+
+  await onLog(
+    "stdout",
+    `[paperclip] Using Paperclip-managed ACPX Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+  );
+  return targetHome;
+}
+
+async function hashPathContents(
+  candidate: string,
+  hash: ReturnType<typeof createHash>,
+  relativePath: string,
+  seenDirectories: Set<string>,
+): Promise<void> {
+  const stat = await fs.lstat(candidate);
+
+  if (stat.isSymbolicLink()) {
+    hash.update(`symlink:${relativePath}\n`);
+    const resolved = await fs.realpath(candidate).catch(() => null);
+    if (!resolved) {
+      hash.update("missing\n");
+      return;
+    }
+    await hashPathContents(resolved, hash, relativePath, seenDirectories);
+    return;
+  }
+
+  if (stat.isDirectory()) {
+    const realDir = await fs.realpath(candidate).catch(() => candidate);
+    hash.update(`dir:${relativePath}\n`);
+    if (seenDirectories.has(realDir)) {
+      hash.update("loop\n");
+      return;
+    }
+    seenDirectories.add(realDir);
+    const entries = await fs.readdir(candidate, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const childRelativePath = relativePath.length > 0 ? `${relativePath}/${entry.name}` : entry.name;
+      await hashPathContents(path.join(candidate, entry.name), hash, childRelativePath, seenDirectories);
+    }
+    return;
+  }
+
+  if (stat.isFile()) {
+    hash.update(`file:${relativePath}\n`);
+    hash.update(await fs.readFile(candidate));
+    hash.update("\n");
+    return;
+  }
+
+  hash.update(`other:${relativePath}:${stat.mode}\n`);
+}
+
+async function buildSkillSetKey(input: {
+  skills: PaperclipSkillEntry[];
+  label: string;
+}): Promise<string> {
+  const hash = createHash("sha256");
+  hash.update(`paperclip-acpx-${input.label}-skills:v1\n`);
+  const sorted = [...input.skills].sort((left, right) => left.runtimeName.localeCompare(right.runtimeName));
+  for (const entry of sorted) {
+    hash.update(`skill:${entry.key}:${entry.runtimeName}\n`);
+    await hashPathContents(entry.source, hash, entry.runtimeName, new Set<string>());
+  }
+  return hash.digest("hex");
+}
+
+async function resolveSelectedRuntimeSkills(
+  config: Record<string, unknown>,
+): Promise<{ allSkills: PaperclipSkillEntry[]; selectedSkills: PaperclipSkillEntry[]; desiredSkillNames: string[] }> {
+  const allSkills = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills);
+  const desiredSet = new Set(desiredSkillNames);
+  return {
+    allSkills,
+    selectedSkills: allSkills.filter((entry) => desiredSet.has(entry.key)),
+    desiredSkillNames,
+  };
+}
+
+async function prepareClaudeSkillRuntime(input: {
+  stateDir: string;
+  config: Record<string, unknown>;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<{
+  sessionOptions: AcpxRuntimeSessionOptions | null;
+  identity: Record<string, unknown>;
+  commandNotes: string[];
+}> {
+  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
+  const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
+  const skillsHome = path.join(bundleRoot, ".claude", "skills");
+  await fs.mkdir(skillsHome, { recursive: true });
+
+  for (const entry of selectedSkills) {
+    const target = path.join(skillsHome, entry.runtimeName);
+    try {
+      await ensurePaperclipSkillSymlink(entry.source, target);
+    } catch (err) {
+      await input.onLog(
+        "stderr",
+        `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
+  return {
+    sessionOptions: selectedSkills.length > 0
+      ? {
+          additionalRoots: [bundleRoot],
+          systemPrompt: {
+            append: [
+              "Paperclip has mounted selected runtime skills for this ACPX Claude session.",
+              `Skill root: ${skillsHome}`,
+              selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
+              "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
+            ].filter(Boolean).join("\n"),
+          },
+        }
+      : null,
+    identity: {
+      mode: "claude",
+      skillSetKey,
+      desiredSkillNames,
+      selectedSkills: selectedNames,
+      additionalRoots: selectedSkills.length > 0 ? [bundleRoot] : [],
+    },
+    commandNotes: selectedSkills.length > 0
+      ? [`Mounted ${selectedSkills.length} Paperclip skill(s) for ACPX Claude via additional session roots.`]
+      : [],
+  };
+}
+
+async function prepareCodexSkillRuntime(input: {
+  companyId: string;
+  config: Record<string, unknown>;
+  env: Record<string, string>;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
+  const envConfig = parseObject(input.config.env);
+  const configuredCodexHome =
+    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
+      ? path.resolve(envConfig.CODEX_HOME.trim())
+      : null;
+  const sourceCodexHome =
+    typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
+      ? path.resolve(process.env.CODEX_HOME.trim())
+      : path.join(os.homedir(), ".codex");
+  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
+  const effectiveCodexHome = configuredCodexHome ??
+    await prepareManagedCodexHome({
+      companyId: input.companyId,
+      sourceHome: sourceCodexHome,
+      targetHome: managedCodexHome,
+      onLog: input.onLog,
+    });
+  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
+  const skillsHome = path.join(effectiveCodexHome, "skills");
+  await fs.mkdir(skillsHome, { recursive: true });
+
+  for (const entry of selectedSkills) {
+    const target = path.join(skillsHome, entry.runtimeName);
+    try {
+      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      if (result !== "skipped") {
+        await input.onLog(
+          "stdout",
+          `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} ACPX Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
+        );
+      }
+    } catch (err) {
+      await input.onLog(
+        "stderr",
+        `[paperclip] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  input.env.CODEX_HOME = effectiveCodexHome;
+
+  return {
+    identity: {
+      mode: "codex",
+      skillSetKey,
+      desiredSkillNames,
+      selectedSkills: selectedSkills.map((entry) => entry.runtimeName).sort(),
+      codexHome: effectiveCodexHome,
+      skillsHome,
+    },
+    commandNotes: [`Prepared ACPX Codex skill home at ${skillsHome}.`],
+  };
 }
 
 function normalizeMode(config: Record<string, unknown>): "persistent" | "oneshot" {
@@ -177,6 +445,7 @@ function buildSessionParams(input: {
     mode: prepared.mode,
     stateDir: prepared.stateDir,
     configFingerprint: prepared.fingerprint,
+    skills: prepared.skillsIdentity,
     ...(prepared.workspaceId ? { workspaceId: prepared.workspaceId } : {}),
     ...(prepared.workspaceRepoUrl ? { repoUrl: prepared.workspaceRepoUrl } : {}),
     ...(prepared.workspaceRepoRef ? { repoRef: prepared.workspaceRepoRef } : {}),
@@ -284,6 +553,35 @@ async function buildRuntime(input: {
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
 
+  let sessionOptions: AcpxRuntimeSessionOptions | null = null;
+  let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
+  const skillCommandNotes: string[] = [];
+  if (acpxAgent === "claude") {
+    const preparedSkills = await prepareClaudeSkillRuntime({
+      stateDir,
+      config,
+      onLog: input.ctx.onLog,
+    });
+    sessionOptions = preparedSkills.sessionOptions;
+    skillsIdentity = preparedSkills.identity;
+    skillCommandNotes.push(...preparedSkills.commandNotes);
+  } else if (acpxAgent === "codex") {
+    const preparedSkills = await prepareCodexSkillRuntime({
+      companyId: agent.companyId,
+      config,
+      env,
+      onLog: input.ctx.onLog,
+    });
+    skillsIdentity = preparedSkills.identity;
+    skillCommandNotes.push(...preparedSkills.commandNotes);
+  } else {
+    const desired = resolvePaperclipDesiredSkillNames(config, await readPaperclipRuntimeSkillEntries(config, __moduleDir));
+    skillsIdentity = { mode: "custom_unsupported", desiredSkillNames: desired };
+    if (desired.length > 0) {
+      skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
+    }
+  }
+
   const configuredCommand = asString(config.agentCommand, "").trim();
   const builtInCommand = resolveBuiltInAgentCommand(acpxAgent);
   const agentCommand = configuredCommand || builtInCommand || null;
@@ -311,6 +609,8 @@ async function buildRuntime(input: {
     permissionMode,
     nonInteractivePermissions,
     remoteExecutionIdentity,
+    skillsIdentity,
+    sessionOptions,
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -340,6 +640,11 @@ async function buildRuntime(input: {
     agentCommand,
     agentRegistry,
     remoteExecutionIdentity,
+    sessionOptions,
+    skillsIdentity: {
+      ...skillsIdentity,
+      commandNotes: skillCommandNotes,
+    },
   };
 }
 
@@ -565,13 +870,14 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     const canResume = isCompatibleSession(previousParams, prepared);
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
-    const runtimeOptions: AcpRuntimeOptions = {
+    const runtimeOptions: AcpxRuntimeOptions = {
       cwd: prepared.cwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
+      ...(prepared.sessionOptions ? { sessionOptions: prepared.sessionOptions } : {}),
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
@@ -664,6 +970,9 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         commandNotes: [
           `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
           `Effective ACPX permission mode: ${prepared.permissionMode}.`,
+          ...(Array.isArray(prepared.skillsIdentity.commandNotes)
+            ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
+            : []),
           ...commandNotes,
         ],
         env: prepared.loggedEnv,
