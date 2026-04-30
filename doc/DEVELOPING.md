@@ -421,7 +421,9 @@ If you set `DATABASE_URL`, the server will use that instead of embedded PostgreS
 
 ## Automatic DB Backups
 
-Paperclip can run automatic DB backups on a timer. Defaults:
+Paperclip can run automatic logical database backups on a timer. These backups cover
+non-system database schemas, including migration history and plugin-owned database
+schemas. Defaults:
 
 - enabled
 - every 60 minutes
@@ -448,6 +450,10 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+
+DB backups are not full instance filesystem backups. For full local disaster
+recovery, also back up local storage files and the local encrypted secrets key if
+those providers are enabled.
 
 ## Secrets in Dev
 
