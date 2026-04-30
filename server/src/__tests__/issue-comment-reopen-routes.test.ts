@@ -480,7 +480,10 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("rejects non-assignee agent POST comments on closed issues", async () => {
+  // ANKA-364: non-assignee agents may post comments (append-only evidence) but must NOT
+  // implicitly reopen a closed issue. Implicit reopen is restricted to human board comments
+  // by shouldImplicitlyMoveCommentedIssueToTodo; agent comments stay communicative.
+  it("accepts non-assignee agent POST comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -503,10 +506,13 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "hello",
+      expect.objectContaining({ agentId: "33333333-3333-4333-8333-333333333333" }),
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -875,7 +881,10 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "restart someone else's work", resume: true });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    // ANKA-364 dropped the generic mutation guard from POST /comments, so non-assignee resume
+    // intent is now caught one layer down by assertExplicitResumeIntentAllowed, whose message
+    // more accurately describes the action that was rejected.
+    expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();

@@ -358,7 +358,6 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
-    ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "blocked" })],
     [
       "document upsert",
       (app: express.Express) =>
@@ -439,7 +438,6 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
-    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
   ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
@@ -451,6 +449,82 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  // ANKA-364: comments are append-only evidence and must be writable by any same-company agent,
+  // even when the issue is assigned to (and checked out by) someone else. The AGENTS.md
+  // mention-wake protocol depends on this channel for stranded triage notes. Mutating endpoints
+  // (PATCH, checkout) keep their assignee-only guards — they are covered by the rejection cases
+  // above and the dedicated checkout test below.
+  describe("non-assignee comment posting (ANKA-364)", () => {
+    it.each([
+      ["in_progress", "the issue is checked out by the owner"],
+      ["in_review", "a reviewer holds the issue"],
+      ["todo", "the issue is queued for the assignee"],
+      ["blocked", "the issue is waiting on a blocker"],
+      ["done", "the issue is closed"],
+    ])(
+      "allows a same-company peer to POST a comment when status is %s (%s)",
+      async (status) => {
+        mockIssueService.getById.mockResolvedValue(
+          makeIssue({ status, assigneeAgentId: ownerAgentId }),
+        );
+
+        const res = await request(await createApp(peerActor()))
+          .post(`/api/issues/${issueId}/comments`)
+          .send({ body: "evidence from mention-wake" });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(201);
+        expect(mockIssueService.addComment).toHaveBeenCalledWith(
+          issueId,
+          "evidence from mention-wake",
+          expect.objectContaining({ agentId: peerAgentId }),
+        );
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      },
+    );
+
+    it("still rejects peer PATCH on the same in_review issue", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+      );
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ title: "should be blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("still rejects peer POST /checkout on the same in_review issue", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+      );
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/checkout`)
+        .send({
+          agentId: ownerAgentId,
+          expectedStatuses: ["in_review"],
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent can only checkout as itself");
+    });
+
+    it("rejects cross-company agent comments via assertCompanyAccess", async () => {
+      const res = await request(
+        await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })),
+      )
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "wrong tenant" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
