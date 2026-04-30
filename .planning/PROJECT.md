@@ -14,11 +14,27 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX
 
-**현재 마일스톤:** 다음 마일스톤 계획 전
+**현재 마일스톤:** v2.9 Native Capture and Draft Reliability
 
 **최근 완료:** v2.8은 RealTycoon2 product identity, Korean-first daily work board, card quick edit/controls, One-Liner board review, supporting evidence rail, identity regression gate를 완료했다. Audit은 requirements 15/15, phases 6/6, integration 5/5, flows 5/5로 `passed`다.
 
-**현재 진행:** v2.8 요구사항 파일은 archive되었고 다음 마일스톤은 `$gsd-new-milestone`에서 fresh requirements로 시작해야 한다.
+**현재 진행:** v2.9는 v2.8에서 완성한 daily work board와 One-Liner review flow를 web 밖의 빠른 입력 표면으로 확장한다. 단, native/app-store 배포 자체보다 저장 가능한 draft revision, 검수 신뢰성, source별 audit evidence를 먼저 닫는다.
+
+## Current Milestone: v2.9 Native Capture and Draft Reliability
+
+**Goal:** One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 안정화하고, native/mobile/messaging quick capture entry가 같은 검수 루프로 들어오게 만든다.
+
+**Target features:**
+- One-Liner/mobile/native/messaging inbound draft를 저장, 수정, 보류, 승인, 반려, 재검토할 수 있는 persistent draft revision flow를 만든다.
+- Native/mobile-friendly quick capture entry가 회사 연결, 인증 상태, local queue/retry 상태를 보여주며 보드 검수함으로 안전하게 전달되게 한다.
+- Slack/Teams/webhook capture source 설정과 signed inbound draft health를 operator가 확인할 수 있게 한다.
+- Board review inbox와 reliability report에서 source, duplicate, failure, retry, promotion latency를 볼 수 있게 한다.
+
+**Deferred from this milestone:**
+- Full app-store signing/updater/notarization pipeline.
+- Cross-company federation full apply.
+- Autonomous Jarvis apply without approval.
+- Public/open company capture marketplace.
 
 ## 최근 마일스톤: v2.8 RealTycoon2 Product Identity and Daily Work UX
 
@@ -149,12 +165,12 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- [ ] 다음 마일스톤 요구사항 정의. `$gsd-new-milestone`에서 새 `REQUIREMENTS.md`를 생성한다.
+- [ ] v2.9 Native Capture and Draft Reliability 요구사항 13개. Phase 54-58 planned.
 
 ### 범위 밖
 
 - backend/data platform greenfield rewrite. 작동 중인 server, db, auth, approval, audit invariant를 보존한다.
-- web One-Liner와 operator loop가 내부 사용에서 안정화되기 전 native mobile app distribution.
+- full app-store native distribution. v2.9는 lightweight native/mobile capture entry와 draft reliability를 먼저 검증한다.
 - trusted company ecosystem 밖의 public/open marketplace.
 - v2.5 이후 cross-company knowledge federation은 trusted company ecosystem 밖이므로 제외한다.
 - v2.5 이후 autonomous knowledge rewrites는 approval-first contradiction review가 안정화된 뒤 다룬다.
@@ -201,7 +217,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-다음 마일스톤은 fresh requirements로 다시 정의한다. 후보 축은 v2.8에서 deferred한 federation preview, native distribution, approval-first Jarvis autonomy hardening, 또는 persistent capture draft revision 중 하나를 선택해야 한다.
+v2.9는 Native Capture and Draft Reliability다. 원 개발계획의 friction-zero capture 약속을 따라 web board에서 안정화된 One-Liner flow를 persistent draft revision, native/mobile quick capture, Slack/Teams/webhook inbound, source별 review operations로 확장한다.
 
 ## Evolution
 
@@ -221,4 +237,4 @@ v2.0-v2.2에서 완료한 것:
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-30 after v2.8 milestone completion*
+*마지막 업데이트: 2026-04-30 after v2.9 milestone initialization*
