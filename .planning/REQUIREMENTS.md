@@ -83,4 +83,4 @@
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after v2.8 milestone initialization*
+*Last updated: 2026-04-30 after Phase 50 Plan 02 contract-layer completion; BOARD-04 and BOARD-05 remain pending until server/UI behavior lands*

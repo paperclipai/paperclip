@@ -236,7 +236,7 @@ Success criteria:
 | 47. Runtime Confidence Operations Surface | v2.7 | 1/1 | Complete | 2026-04-30 |
 | 48. RT2 Identity and Korean Shell | v2.8 | 3/3 | Complete | 2026-04-30 |
 | 49. Daily Work Kanban Core | v2.8 | 1/1 | Complete | 2026-04-30 |
-| 50. Work Card Editing and Board Controls | v2.8 | 1/4 | In Progress | - |
+| 50. Work Card Editing and Board Controls | v2.8 | 2/4 | In Progress | - |
 | 51. One-Liner to Board Capture Flow | v2.8 | 0/1 | Planned | - |
 | 52. Supporting Surfaces and Identity Regression Gate | v2.8 | 0/1 | Planned | - |
 
@@ -269,4 +269,4 @@ Success criteria:
 - [v2.7 milestone audit](milestones/v2.7-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-30, Phase 50 Plan 01 completed*
+*마지막 업데이트: 2026-04-30, Phase 50 Plan 02 completed*
