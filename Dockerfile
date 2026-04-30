@@ -81,7 +81,7 @@ COPY vendor/ccrotate-1.1.0.tgz /tmp/ccrotate.tgz
 #   are still provisioning.
 # Bundled here so a fresh PVC bootstrap (seed init container) doesn't have to
 # fetch from npm registry — the public 0.2.1 / 0.1.38 lack the kkroo patches.
-COPY vendor/paperclip-adapter-claude-k8s-0.2.1-kkroo.4.tgz /tmp/paperclip-adapter-claude-k8s.tgz
+COPY vendor/paperclip-adapter-claude-k8s-0.2.1-kkroo.5.tgz /tmp/paperclip-adapter-claude-k8s.tgz
 COPY vendor/paperclip-adapter-opencode-k8s-0.1.38-kkroo.2.tgz /tmp/paperclip-adapter-opencode-k8s.tgz
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
