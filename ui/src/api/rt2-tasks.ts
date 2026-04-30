@@ -140,7 +140,7 @@ export type Rt2InboundDraftResponse = {
   };
 };
 
-export type Rt2InboundDraftSource = "slack" | "teams" | "webhook" | "mobile" | "native";
+export type Rt2InboundDraftSource = "web" | "floating" | "voice" | "slack" | "teams" | "webhook" | "mobile" | "native";
 
 export const rt2TasksApi = {
   listByProject: (companyId: string, projectId: string) =>

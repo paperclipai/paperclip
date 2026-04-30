@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import type { Rt2DailyBoard as Rt2DailyBoardData } from "@paperclipai/shared";
+import type { Rt2CaptureQueue, Rt2DailyBoard as Rt2DailyBoardData } from "@paperclipai/shared";
 
 vi.mock("@/components/ui/button", () => ({
   Button: ({
@@ -141,11 +141,102 @@ describe("Rt2DailyBoard", () => {
           pendingTodoIssueId={props.pendingTodoIssueId ?? null}
           failedTodoIssueId={props.failedTodoIssueId ?? null}
           onSaveCard={props.onSaveCard ?? onSaveCard}
+          captureQueue={props.captureQueue ?? null}
+          pendingCaptureDraftId={props.pendingCaptureDraftId ?? null}
+          onPromoteCaptureDraft={props.onPromoteCaptureDraft}
+          onFailCaptureDraft={props.onFailCaptureDraft}
         />,
       );
     });
 
     return { container, root, onSaveCard, board };
+  }
+
+  function buildCaptureQueue(): Rt2CaptureQueue {
+    return {
+      companyId: "company-1",
+      sources: [],
+      summary: {
+        reviewRequired: 1,
+        duplicate: 1,
+        permissionBlocked: 0,
+        failed: 0,
+        promoted: 0,
+      },
+      drafts: [
+        {
+          id: "draft-1",
+          companyId: "company-1",
+          source: "web",
+          channel: "daily-work:project-1",
+          externalUserId: null,
+          rawText: "task: 제안서 검수; deliverable: 검수 메모; price: 120000",
+          parsedDraft: {
+            taskTitle: "제안서 검수",
+            todoTitle: "가격표 확인",
+            deliverableTitle: "검수 메모",
+            basePrice: 120000,
+            taskMode: "solo",
+            capacity: 1,
+          },
+          status: "review_required",
+          promotionTarget: null,
+          promotedIssueId: null,
+          promotedWorkProductId: null,
+          duplicateOfDraftId: null,
+          failureCode: null,
+          failureMessage: null,
+          permissionStatus: "allowed",
+          sourceEvidence: {
+            sourceInstallationId: null,
+            installationState: "not_installed",
+            signingStatus: "unsigned",
+            eventId: "evt-web-1",
+            eventTimestamp: "2026-04-30T00:00:00.000Z",
+            reasonCode: null,
+          },
+          semanticContext: [],
+          duplicateWarning: null,
+          auditTrail: [],
+          createdAt: new Date("2026-04-30T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-30T00:00:00.000Z"),
+        },
+        {
+          id: "draft-2",
+          companyId: "company-1",
+          source: "native",
+          channel: "mobile",
+          externalUserId: "user-native",
+          rawText: "task: 제안서 검수; deliverable: 검수 메모; price: 120000",
+          parsedDraft: {
+            taskTitle: "제안서 검수",
+            deliverableTitle: "검수 메모",
+            basePrice: 120000,
+          },
+          status: "duplicate",
+          promotionTarget: null,
+          promotedIssueId: null,
+          promotedWorkProductId: null,
+          duplicateOfDraftId: "draft-1",
+          failureCode: null,
+          failureMessage: null,
+          permissionStatus: "allowed",
+          sourceEvidence: {
+            sourceInstallationId: null,
+            installationState: "not_installed",
+            signingStatus: "unsigned",
+            eventId: "evt-native-1",
+            eventTimestamp: "2026-04-30T00:01:00.000Z",
+            reasonCode: null,
+          },
+          semanticContext: [],
+          duplicateWarning: "Potential duplicate of capture draft draft-1",
+          auditTrail: [],
+          createdAt: new Date("2026-04-30T00:01:00.000Z"),
+          updatedAt: new Date("2026-04-30T00:01:00.000Z"),
+        },
+      ],
+    };
   }
 
   function buildDragEvent(type: string, dataTransfer: { getData: (type: string) => string; setData: (type: string, value: string) => void; effectAllowed?: string }) {
@@ -474,6 +565,37 @@ describe("Rt2DailyBoard", () => {
     expect(container.textContent).toContain("완료에 조건과 맞는 카드가 없습니다.");
     expect(container.textContent).toContain("조건에 맞는 카드가 없습니다");
     expect(container.textContent).toContain("필터나 검색어를 줄이면 다른 업무 카드를 볼 수 있습니다.");
+
+    act(() => root.unmount());
+  });
+
+  it("shows One-Liner capture drafts with duplicate warning and source evidence from the board", () => {
+    const onPromoteCaptureDraft = vi.fn();
+    const onFailCaptureDraft = vi.fn();
+    const { container, root } = renderBoard({
+      captureQueue: buildCaptureQueue(),
+      onPromoteCaptureDraft,
+      onFailCaptureDraft,
+    });
+
+    expect(container.textContent).toContain("One-Liner 보드 검수함");
+    expect(container.textContent).toContain("검수 필요 1");
+    expect(container.textContent).toContain("중복 의심 1");
+    expect(container.textContent).toContain("제안서 검수");
+    expect(container.textContent).toContain("검수 메모");
+    expect(container.textContent).toContain("evt-web-1");
+    expect(container.textContent).toContain("Potential duplicate of capture draft draft-1");
+
+    const approveButtons = Array.from(container.querySelectorAll("button")).filter((button) => button.textContent?.includes("Task로 승인"));
+    const holdButtons = Array.from(container.querySelectorAll("button")).filter((button) => button.textContent?.includes("보류"));
+
+    act(() => {
+      approveButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      holdButtons[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onPromoteCaptureDraft).toHaveBeenCalledWith("draft-1");
+    expect(onFailCaptureDraft).toHaveBeenCalledWith("draft-2", "중복 초안으로 보류");
 
     act(() => root.unmount());
   });

@@ -7,6 +7,7 @@ import { Rt2DailyBoard } from "../../components/Rt2DailyBoard";
 import { authApi } from "../../api/auth";
 import { projectsApi } from "../../api/projects";
 import { rt2DailyReportApi } from "../../api/rt2-daily-report";
+import { rt2TasksApi } from "../../api/rt2-tasks";
 import { useBreadcrumbs } from "../../context/BreadcrumbContext";
 import { useCompany } from "../../context/CompanyContext";
 import { useDialog } from "../../context/DialogContext";
@@ -68,6 +69,11 @@ export function DailyWorkPage() {
     queryFn: () => rt2DailyReportApi.getBoard(selectedCompanyId!, selectedProjectId, reportDate),
     enabled: Boolean(selectedCompanyId && selectedProjectId && currentUserId),
   });
+  const captureQueue = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.rt2Tasks.captureQueue(selectedCompanyId) : ["rt2-capture-queue-disabled"],
+    queryFn: () => rt2TasksApi.listCaptureQueue(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && currentUserId),
+  });
 
   const saveCard = useMutation({
     mutationFn: ({
@@ -88,6 +94,43 @@ export function DailyWorkPage() {
     onError: (_error, variables) => {
       setFailedTodoIssueId(variables.todoIssueId);
       queryClient.invalidateQueries({ queryKey: boardQueryKey });
+    },
+  });
+  const promoteCaptureDraft = useMutation({
+    mutationFn: (draftId: string) =>
+      rt2TasksApi.promoteCaptureDraft(selectedCompanyId!, draftId, {
+        target: "task",
+        projectId: selectedProjectId,
+        goalId: null,
+        taskMode: "solo",
+        capacity: 1,
+        priority: "medium",
+      }),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: boardQueryKey });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      if (selectedProjectId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.listByProject(selectedCompanyId, selectedProjectId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(selectedCompanyId, selectedProjectId) });
+      }
+    },
+    onError: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+      }
+    },
+  });
+  const failCaptureDraft = useMutation({
+    mutationFn: ({ draftId, reason }: { draftId: string; reason: string }) =>
+      rt2TasksApi.failCaptureDraft(selectedCompanyId!, draftId, {
+        failureCode: "duplicate",
+        failureMessage: reason,
+      }),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
     },
   });
 
@@ -164,6 +207,10 @@ export function DailyWorkPage() {
           pendingTodoIssueId={saveCard.isPending ? saveCard.variables?.todoIssueId ?? null : null}
           failedTodoIssueId={failedTodoIssueId}
           onSaveCard={(todoIssueId, data) => saveCard.mutate({ todoIssueId, data })}
+          captureQueue={captureQueue.data ?? null}
+          pendingCaptureDraftId={promoteCaptureDraft.isPending ? promoteCaptureDraft.variables ?? null : null}
+          onPromoteCaptureDraft={(draftId) => promoteCaptureDraft.mutate(draftId)}
+          onFailCaptureDraft={(draftId, reason) => failCaptureDraft.mutate({ draftId, reason })}
         />
       ) : (
         <EmptyState icon={SquareChartGantt} message="오늘 표시할 일일 업무 카드가 없습니다." />

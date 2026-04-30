@@ -149,7 +149,7 @@ export interface Rt2BoardOverview {
   };
 }
 
-export type Rt2CaptureDraftSource = "slack" | "teams" | "webhook" | "mobile" | "native";
+export type Rt2CaptureDraftSource = "web" | "floating" | "voice" | "slack" | "teams" | "webhook" | "mobile" | "native";
 export type Rt2CaptureDraftStatus = "review_required" | "duplicate" | "permission_blocked" | "failed" | "promoted" | "discarded";
 export type Rt2CaptureSourceInstallationState = "not_installed" | "installed" | "blocked" | "stale" | "error";
 export type Rt2CaptureSourceSigningStatus = "unsigned" | "signed" | "invalid" | "missing" | "stale";

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   Rt2BoardQualityStatus,
+  Rt2CaptureDraftSummary,
+  Rt2CaptureQueue,
   Rt2DailyBoard as Rt2DailyBoardData,
   Rt2DailyLane,
   Rt2DailyReportCard,
@@ -90,11 +92,19 @@ export function Rt2DailyBoard({
   pendingTodoIssueId,
   failedTodoIssueId = null,
   onSaveCard,
+  captureQueue = null,
+  pendingCaptureDraftId = null,
+  onPromoteCaptureDraft,
+  onFailCaptureDraft,
 }: {
   board: Rt2DailyBoardData;
   pendingTodoIssueId: string | null;
   failedTodoIssueId?: string | null;
   onSaveCard: (todoIssueId: string, data: UpsertRt2DailyReportCard) => void;
+  captureQueue?: Rt2CaptureQueue | null;
+  pendingCaptureDraftId?: string | null;
+  onPromoteCaptureDraft?: (draftId: string) => void;
+  onFailCaptureDraft?: (draftId: string, reason: string) => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, CardDraft>>(() => buildDrafts(board));
   const [quickDrafts, setQuickDrafts] = useState<Record<string, QuickDraft>>(() => buildQuickDrafts(board));
@@ -251,6 +261,14 @@ export function Rt2DailyBoard({
       </aside>
 
       <main className="space-y-4">
+        {captureQueue ? (
+          <CaptureReviewInbox
+            queue={captureQueue}
+            pendingDraftId={pendingCaptureDraftId}
+            onPromoteDraft={onPromoteCaptureDraft}
+            onFailDraft={onFailCaptureDraft}
+          />
+        ) : null}
         <div className="rounded-lg border border-border bg-card/80 p-3">
           <div className="flex flex-wrap items-center gap-2">
             {FILTERS.map((filter) => (
@@ -646,6 +664,189 @@ function cardMatchesFilters(
   const query = searchText.trim().toLocaleLowerCase();
   if (!query) return true;
   return cardSearchText(card, traceGoalByTodoId).toLocaleLowerCase().includes(query);
+}
+
+function CaptureReviewInbox({
+  queue,
+  pendingDraftId,
+  onPromoteDraft,
+  onFailDraft,
+}: {
+  queue: Rt2CaptureQueue;
+  pendingDraftId: string | null;
+  onPromoteDraft?: (draftId: string) => void;
+  onFailDraft?: (draftId: string, reason: string) => void;
+}) {
+  const activeDrafts = queue.drafts.filter((draft) =>
+    draft.status === "review_required" || draft.status === "duplicate" || draft.status === "permission_blocked" || draft.status === "failed",
+  );
+
+  return (
+    <section className="rounded-lg border border-border bg-card/80 p-4" aria-label="One-Liner 보드 검수함">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">One-Liner 보드 검수함</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            새 업무 기록과 모바일/native 입력을 보드에 올리기 전에 중복과 출처 근거를 확인합니다.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-md border border-border px-2 py-1">검수 필요 {queue.summary.reviewRequired}</span>
+          <span className="rounded-md border border-border px-2 py-1">중복 의심 {queue.summary.duplicate}</span>
+          <span className="rounded-md border border-border px-2 py-1">차단 {queue.summary.permissionBlocked}</span>
+        </div>
+      </div>
+
+      {activeDrafts.length === 0 ? (
+        <p className="mt-3 rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+          검수할 One-Liner 초안이 없습니다.
+        </p>
+      ) : (
+        <div className="mt-3 grid gap-3">
+          {activeDrafts.slice(0, 6).map((draft) => (
+            <CaptureDraftCard
+              key={draft.id}
+              draft={draft}
+              pending={pendingDraftId === draft.id}
+              onPromoteDraft={onPromoteDraft}
+              onFailDraft={onFailDraft}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CaptureDraftCard({
+  draft,
+  pending,
+  onPromoteDraft,
+  onFailDraft,
+}: {
+  draft: Rt2CaptureDraftSummary;
+  pending: boolean;
+  onPromoteDraft?: (draftId: string) => void;
+  onFailDraft?: (draftId: string, reason: string) => void;
+}) {
+  const parsed = normalizeParsedDraft(draft.parsedDraft);
+  const sourceEvidence = draft.sourceEvidence;
+
+  return (
+    <article className="rounded-md border border-border bg-background px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-md bg-muted px-2 py-1 text-xs font-medium">{captureStatusLabel(draft.status)}</span>
+            <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">{captureSourceLabel(draft.source)}</span>
+            {draft.duplicateWarning ? (
+              <span className="rounded-md border border-amber-300/70 px-2 py-1 text-xs text-amber-700 dark:text-amber-200">
+                중복 의심
+              </span>
+            ) : null}
+          </div>
+          <h4 className="mt-2 truncate text-sm font-medium">{parsed.taskTitle || draft.rawText}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            산출물 {parsed.deliverableTitle || "검토 필요"} · 기준가 {parsed.basePrice == null ? "검토 필요" : `${parsed.basePrice.toLocaleString()} Gold`}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            disabled={pending || draft.status !== "review_required" || !onPromoteDraft}
+            onClick={() => onPromoteDraft?.(draft.id)}
+          >
+            {pending ? "승인 중..." : "Task로 승인"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending || !onFailDraft}
+            onClick={() => onFailDraft?.(draft.id, draft.status === "duplicate" ? "중복 초안으로 보류" : "보드 검수에서 보류")}
+          >
+            보류
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+        <div className="rounded-md bg-muted/40 px-2 py-2">
+          <span className="font-medium text-foreground">업무 유형</span> {parsed.taskMode || "solo"} · 처리 용량 {parsed.capacity || 1}
+        </div>
+        <div className="rounded-md bg-muted/40 px-2 py-2">
+          <span className="font-medium text-foreground">To-Do</span> {parsed.todoTitle || "Task 제목과 동일"}
+        </div>
+        <div className="rounded-md bg-muted/40 px-2 py-2">
+          <span className="font-medium text-foreground">출처 근거</span>{" "}
+          {sourceEvidence?.eventId ?? draft.channel ?? draft.externalUserId ?? "보드 입력"}
+        </div>
+        <div className="rounded-md bg-muted/40 px-2 py-2">
+          <span className="font-medium text-foreground">권한/서명</span>{" "}
+          {draft.permissionStatus} · {sourceEvidence?.signingStatus ?? "unsigned"}
+        </div>
+      </div>
+
+      {draft.duplicateWarning ? (
+        <p className="mt-2 rounded-md border border-amber-300/70 bg-amber-50 px-2 py-2 text-xs text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+          {draft.duplicateWarning}
+        </p>
+      ) : null}
+      {draft.semanticContext.length > 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          관련 지식 근거 {draft.semanticContext.length}개가 연결되어 있습니다.
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function normalizeParsedDraft(value: Record<string, unknown>) {
+  return {
+    taskTitle: typeof value.taskTitle === "string" ? value.taskTitle : "",
+    todoTitle: typeof value.todoTitle === "string" ? value.todoTitle : "",
+    deliverableTitle: typeof value.deliverableTitle === "string" ? value.deliverableTitle : "",
+    basePrice: typeof value.basePrice === "number" ? value.basePrice : null,
+    taskMode: typeof value.taskMode === "string" ? value.taskMode : "solo",
+    capacity: typeof value.capacity === "number" ? value.capacity : 1,
+  };
+}
+
+function captureStatusLabel(status: Rt2CaptureDraftSummary["status"]) {
+  switch (status) {
+    case "review_required":
+      return "검수 필요";
+    case "duplicate":
+      return "중복 의심";
+    case "permission_blocked":
+      return "권한 확인 필요";
+    case "failed":
+      return "처리 실패";
+    case "promoted":
+      return "보드에 추가됨";
+    case "discarded":
+      return "보류됨";
+  }
+}
+
+function captureSourceLabel(source: Rt2CaptureDraftSummary["source"]) {
+  switch (source) {
+    case "web":
+      return "Web";
+    case "floating":
+      return "빠른 기록";
+    case "voice":
+      return "음성";
+    case "mobile":
+      return "Mobile";
+    case "native":
+      return "Native";
+    case "slack":
+      return "Slack";
+    case "teams":
+      return "Teams";
+    case "webhook":
+      return "Webhook";
+  }
 }
 
 function cardSearchText(card: Rt2DailyReportCard, traceGoalByTodoId: Map<string, string>) {

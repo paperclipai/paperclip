@@ -4,10 +4,9 @@ import { ExternalLink, Mic, MicOff, Send, Sparkles, SquarePen, X } from "lucide-
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "@/lib/router";
 import { projectsApi } from "../api/projects";
-import { rt2TasksApi, type Rt2TaskCreateResponse } from "../api/rt2-tasks";
+import { rt2TasksApi, type Rt2InboundDraftResponse } from "../api/rt2-tasks";
 import { useCompany } from "../context/CompanyContext";
 import {
-  buildOneLinerTaskDescription,
   parseOneLinerInput,
   type OneLinerDraft,
 } from "../lib/one-liner-draft";
@@ -63,6 +62,18 @@ function emptyDraft(rawInput: string): OneLinerDraft {
   };
 }
 
+function buildReviewedOneLinerText(draft: OneLinerDraft) {
+  return [
+    `task: ${draft.taskTitle.trim()}`,
+    draft.todoTitle.trim() ? `todo: ${draft.todoTitle.trim()}` : null,
+    `deliverable: ${draft.deliverableTitle.trim()}`,
+    `price: ${draft.basePrice ?? 0}`,
+    `mode: ${draft.taskMode}`,
+    `capacity: ${draft.capacity}`,
+    draft.dailyLog.trim() ? `daily: ${draft.dailyLog.trim()}` : null,
+  ].filter(Boolean).join("; ");
+}
+
 export function FloatingOneLinerCapture({
   open,
   onOpenChange,
@@ -77,7 +88,7 @@ export function FloatingOneLinerCapture({
   const [rawInput, setRawInput] = useState("");
   const [draft, setDraft] = useState<OneLinerDraft | null>(null);
   const [draftGenerated, setDraftGenerated] = useState(false);
-  const [created, setCreated] = useState<Rt2TaskCreateResponse | null>(null);
+  const [createdDraft, setCreatedDraft] = useState<Rt2InboundDraftResponse | null>(null);
   const [voiceState, setVoiceState] = useState<"idle" | "listening" | "unsupported" | "error">("idle");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -113,31 +124,21 @@ export function FloatingOneLinerCapture({
     window.localStorage.setItem(`${PROJECT_STORAGE_KEY}:${selectedCompanyId}`, projectId);
   }, [projectId, selectedCompanyId]);
 
-  const createTask = useMutation({
+  const createDraft = useMutation({
     mutationFn: async (reviewedDraft: OneLinerDraft) => {
-      if (!selectedCompanyId || !projectId) {
-        throw new Error("Company and project context are required.");
+      if (!selectedCompanyId) {
+        throw new Error("Company context is required.");
       }
-      return rt2TasksApi.create(selectedCompanyId, {
-        projectId,
-        goalId: null,
-        title: reviewedDraft.taskTitle.trim(),
-        description: buildOneLinerTaskDescription(reviewedDraft),
-        priority: "medium",
-        taskMode: reviewedDraft.taskMode,
-        capacity: reviewedDraft.capacity,
-        deliverables: [
-          {
-            title: reviewedDraft.deliverableTitle.trim(),
-            type: "document",
-            basePrice: reviewedDraft.basePrice ?? 0,
-          },
-        ],
+      return rt2TasksApi.createInboundDraft(selectedCompanyId, {
+        source: voiceState === "listening" ? "voice" : "floating",
+        channel: projectId ? `daily-work:${projectId}` : "daily-work",
+        text: buildReviewedOneLinerText(reviewedDraft),
       });
     },
     onSuccess: (result) => {
       if (!selectedCompanyId) return;
-      setCreated(result);
+      setCreatedDraft(result);
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
       if (projectId) {
@@ -160,7 +161,7 @@ export function FloatingOneLinerCapture({
 
   function updateRawInput(value: string) {
     setRawInput(value);
-    setCreated(null);
+    setCreatedDraft(null);
     if (draftGenerated) {
       setDraft(emptyDraft(value));
     }
@@ -169,7 +170,7 @@ export function FloatingOneLinerCapture({
   function generateDraft(value = rawInput) {
     setDraft(parseOneLinerInput(value));
     setDraftGenerated(true);
-    setCreated(null);
+    setCreatedDraft(null);
   }
 
   function toggleVoice() {
@@ -328,39 +329,37 @@ export function FloatingOneLinerCapture({
                 <Button
                   type="button"
                   className="w-full"
-                  disabled={!draftReady || createTask.isPending}
-                  onClick={() => createTask.mutate(draft)}
+                  disabled={!draftReady || createDraft.isPending}
+                  onClick={() => createDraft.mutate(draft)}
                 >
                   <Send className="mr-2 h-4 w-4" />
-                  {createTask.isPending ? "Committing..." : "Commit and Show Reward"}
+                  {createDraft.isPending ? "검수함에 보내는 중..." : "보드 검수함에 보내기"}
                 </Button>
               </div>
             ) : null}
 
-            {created ? (
+            {createdDraft ? (
               <div className="rounded-md border border-emerald-300/70 bg-emerald-50 px-3 py-3 text-sm text-emerald-950 dark:border-emerald-800/70 dark:bg-emerald-950/30 dark:text-emerald-100">
-                <div className="font-medium">Task created</div>
+                <div className="font-medium">보드 검수함에 초안을 보냈습니다</div>
                 <div className="mt-1 text-xs">
-                  {created.deliverables[0]?.title ?? "Deliverable"} · {created.rewardEvidence.earnedGold} gold ·{" "}
-                  {created.rewardEvidence.xp} XP
+                  {createdDraft.draft.taskTitle} · {createdDraft.inbound.status === "duplicate" ? "중복 의심" : "검수 필요"}
                 </div>
-                <p className="mt-2 text-xs leading-5">{created.rewardEvidence.rationale}</p>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   className="mt-3 bg-background/80"
-                  onClick={() => navigate(`/issues/${created.issueId}`)}
+                  onClick={() => navigate("/daily-work")}
                 >
                   <ExternalLink className="mr-2 h-4 w-4" />
-                  Open task
+                  일일 업무 보드에서 검수
                 </Button>
               </div>
             ) : null}
 
-            {createTask.isError ? (
+            {createDraft.isError ? (
               <p className="text-sm text-destructive">
-                {createTask.error instanceof Error ? createTask.error.message : "Failed to commit draft"}
+                {createDraft.error instanceof Error ? createDraft.error.message : "업무 초안 등록에 실패했습니다."}
               </p>
             ) : null}
           </div>

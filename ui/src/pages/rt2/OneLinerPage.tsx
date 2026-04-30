@@ -7,10 +7,9 @@ import { EmptyState } from "../../components/EmptyState";
 import { useBreadcrumbs } from "../../context/BreadcrumbContext";
 import { useCompany } from "../../context/CompanyContext";
 import { projectsApi } from "../../api/projects";
-import { rt2TasksApi, type Rt2TaskCreateResponse } from "../../api/rt2-tasks";
+import { rt2TasksApi, type Rt2InboundDraftResponse } from "../../api/rt2-tasks";
 import { queryKeys } from "../../lib/queryKeys";
 import {
-  buildOneLinerTaskDescription,
   parseOneLinerInput,
   type OneLinerDraft,
 } from "../../lib/one-liner-draft";
@@ -58,11 +57,24 @@ const QUICK_ROUTES: QuickRoute[] = [
 const PROJECT_STORAGE_KEY = "paperclip.rt2.one-liner.project";
 
 const CAPTURE_ENTRYPOINTS = [
+  { source: "web", label: "Web", route: "POST /api/companies/:companyId/rt2/one-liner/inbound-draft" },
   { source: "slack", label: "Slack", route: "POST /api/companies/:companyId/rt2/one-liner/inbound-draft" },
   { source: "teams", label: "Teams", route: "POST /api/companies/:companyId/rt2/one-liner/inbound-draft" },
   { source: "mobile", label: "Mobile", route: "POST /api/companies/:companyId/rt2/one-liner/inbound-draft" },
   { source: "native", label: "Native", route: "POST /api/companies/:companyId/rt2/one-liner/inbound-draft" },
 ] as const;
+
+function buildReviewedOneLinerText(draft: OneLinerDraft) {
+  return [
+    `task: ${draft.taskTitle.trim()}`,
+    draft.todoTitle.trim() ? `todo: ${draft.todoTitle.trim()}` : null,
+    `deliverable: ${draft.deliverableTitle.trim()}`,
+    `price: ${draft.basePrice ?? 0}`,
+    `mode: ${draft.taskMode}`,
+    `capacity: ${draft.capacity}`,
+    draft.dailyLog.trim() ? `daily: ${draft.dailyLog.trim()}` : null,
+  ].filter(Boolean).join("; ");
+}
 
 function createEmptyDraft(rawInput: string): OneLinerDraft {
   return {
@@ -87,7 +99,7 @@ export function OneLinerPage() {
   const [rawInput, setRawInput] = useState("");
   const [draft, setDraft] = useState<OneLinerDraft | null>(null);
   const [draftGenerated, setDraftGenerated] = useState(false);
-  const [created, setCreated] = useState<Rt2TaskCreateResponse | null>(null);
+  const [createdDraft, setCreatedDraft] = useState<Rt2InboundDraftResponse | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "일일 업무 기록" }]);
@@ -131,32 +143,22 @@ export function OneLinerPage() {
     window.localStorage.setItem(`${PROJECT_STORAGE_KEY}:${selectedCompanyId}`, projectId);
   }, [projectId, selectedCompanyId]);
 
-  const createTask = useMutation({
+  const createDraft = useMutation({
     mutationFn: async (reviewedDraft: OneLinerDraft) => {
-      if (!selectedCompanyId || !projectId) {
-        throw new Error("Company and project context are required.");
+      if (!selectedCompanyId) {
+        throw new Error("Company context is required.");
       }
 
-      return rt2TasksApi.create(selectedCompanyId, {
-        projectId,
-        goalId: null,
-        title: reviewedDraft.taskTitle.trim(),
-        description: buildOneLinerTaskDescription(reviewedDraft),
-        priority: "medium",
-        taskMode: reviewedDraft.taskMode,
-        capacity: reviewedDraft.capacity,
-        deliverables: [
-          {
-            title: reviewedDraft.deliverableTitle.trim(),
-            type: "document",
-            basePrice: reviewedDraft.basePrice ?? 0,
-          },
-        ],
+      return rt2TasksApi.createInboundDraft(selectedCompanyId, {
+        source: "web",
+        channel: projectId ? `daily-work:${projectId}` : "daily-work",
+        text: buildReviewedOneLinerText(reviewedDraft),
       });
     },
     onSuccess: (result) => {
       if (!selectedCompanyId) return;
-      setCreated(result);
+      setCreatedDraft(result);
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
       if (projectId) {
@@ -230,7 +232,7 @@ export function OneLinerPage() {
             value={rawInput}
             onChange={(event) => {
               setRawInput(event.target.value);
-              setCreated(null);
+              setCreatedDraft(null);
               if (!draftGenerated) return;
               setDraft(createEmptyDraft(event.target.value));
             }}
@@ -243,7 +245,7 @@ export function OneLinerPage() {
               onClick={() => {
                 setDraft(parseOneLinerInput(rawInput));
                 setDraftGenerated(true);
-                setCreated(null);
+                setCreatedDraft(null);
               }}
             >
               초안 만들기
@@ -452,32 +454,30 @@ export function OneLinerPage() {
                 등록하면 RealTycoon2 업무 보드에 Task와 산출물 근거가 함께 남습니다.
               </p>
               <Button
-                disabled={!draftReady || createTask.isPending}
-                onClick={() => createTask.mutate(draft)}
+                disabled={!draftReady || createDraft.isPending}
+                onClick={() => createDraft.mutate(draft)}
               >
-                {createTask.isPending ? "등록 중..." : "업무 보드에 등록"}
+                {createDraft.isPending ? "검수함에 보내는 중..." : "보드 검수함에 보내기"}
               </Button>
             </div>
-            {createTask.isError ? (
+            {createDraft.isError ? (
               <p className="text-sm text-destructive">
-                {createTask.error instanceof Error ? createTask.error.message : "업무 등록에 실패했습니다."}
+                {createDraft.error instanceof Error ? createDraft.error.message : "업무 초안 등록에 실패했습니다."}
               </p>
             ) : null}
-            {created ? (
+            {createdDraft ? (
               <div className="rounded-lg border border-emerald-300/70 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-800/70 dark:bg-emerald-950/30 dark:text-emerald-100">
-                <div className="font-medium">Task, 산출물, 보상 근거를 만들었습니다</div>
+                <div className="font-medium">보드 검수함에 초안을 보냈습니다</div>
                 <p className="mt-1 text-xs leading-5">
-                  {created.deliverables[0]?.title ?? "Deliverable"} · {created.rewardEvidence.earnedGold} gold ·{" "}
-                  {created.rewardEvidence.xp} XP · {created.rewardEvidence.settlementState}
+                  {createdDraft.draft.taskTitle} · {createdDraft.inbound.status === "duplicate" ? "중복 의심" : "검수 필요"}
                 </p>
-                <p className="mt-2 text-xs leading-5">{created.rewardEvidence.rationale}</p>
                 <Button
                   className="mt-3"
                   variant="outline"
                   size="sm"
-                  onClick={() => navigate(`/issues/${created.issueId}`)}
+                  onClick={() => navigate("/daily-work")}
                 >
-                  생성된 업무 열기
+                  일일 업무 보드에서 검수
                 </Button>
               </div>
             ) : null}

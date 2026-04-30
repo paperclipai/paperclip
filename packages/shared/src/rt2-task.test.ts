@@ -84,8 +84,8 @@ describe("RT2 task shared contracts", () => {
     });
   });
 
-  it("accepts messenger, mobile, and native One-Liner inbound sources", () => {
-    for (const source of ["slack", "teams", "webhook", "mobile", "native"] as const) {
+  it("accepts web, floating, voice, messenger, mobile, and native One-Liner inbound sources", () => {
+    for (const source of ["web", "floating", "voice", "slack", "teams", "webhook", "mobile", "native"] as const) {
       expect(createOneLinerInboundDraftSchema.parse({
         source,
         text: "task: Capture field note; deliverable: note; price: 1000",

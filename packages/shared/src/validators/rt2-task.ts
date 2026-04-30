@@ -36,7 +36,7 @@ export const createRt2TaskSchema = z.object({
 
 export type CreateRt2Task = z.infer<typeof createRt2TaskSchema>;
 
-export const oneLinerInboundDraftSourceSchema = z.enum(["slack", "teams", "webhook", "mobile", "native"]);
+export const oneLinerInboundDraftSourceSchema = z.enum(["web", "floating", "voice", "slack", "teams", "webhook", "mobile", "native"]);
 export const rt2CaptureSourceInstallationStateSchema = z.enum(["not_installed", "installed", "blocked", "stale", "error"]);
 export const rt2CaptureSourceSigningStatusSchema = z.enum(["unsigned", "signed", "invalid", "missing", "stale"]);
 

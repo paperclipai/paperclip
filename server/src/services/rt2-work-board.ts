@@ -17,6 +17,7 @@ import {
   type CreateRt2BoardAttachment,
   type CreateRt2BoardChecklistItem,
   type PromoteRt2CaptureDraft,
+  type Rt2CaptureDraftSource,
   type UpsertRt2CaptureSource,
   type UpdateRt2BoardCard,
   type UpdateRt2BoardChecklistItem,
@@ -34,6 +35,9 @@ type CaptureRow = typeof rt2CaptureDrafts.$inferSelect;
 type CaptureSourceRow = typeof rt2CaptureSources.$inferSelect;
 
 const CAPTURE_SOURCE_LABELS = {
+  web: "Web",
+  floating: "빠른 기록",
+  voice: "음성",
   slack: "Slack",
   teams: "Teams",
   webhook: "Webhook",
@@ -84,7 +88,7 @@ function toCaptureSource(row: CaptureSourceRow) {
   return {
     id: row.id,
     companyId: row.companyId,
-    source: row.source as "slack" | "teams" | "webhook" | "mobile" | "native",
+    source: row.source as Rt2CaptureDraftSource,
     label: row.label,
     installationState: row.installationState as "not_installed" | "installed" | "blocked" | "stale" | "error",
     signingStatus: row.signingStatus as "unsigned" | "signed" | "invalid" | "missing" | "stale",
@@ -140,7 +144,7 @@ function toCaptureDraft(row: CaptureRow) {
   return {
     id: row.id,
     companyId: row.companyId,
-    source: row.source as "slack" | "teams" | "webhook" | "mobile" | "native",
+    source: row.source as Rt2CaptureDraftSource,
     channel: row.channel ?? null,
     externalUserId: row.externalUserId ?? null,
     rawText: row.rawText,
