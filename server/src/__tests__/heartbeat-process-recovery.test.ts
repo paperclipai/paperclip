@@ -466,6 +466,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function seedAdapterInvokeEvent(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+  }) {
+    await db.insert(heartbeatRunEvents).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      runId: input.runId,
+      seq: 1,
+      eventType: "adapter.invoke",
+      stream: "system",
+      level: "info",
+      message: "adapter invocation",
+      payload: {},
+    });
+  }
+
   async function seedStrandedIssueFixture(input: {
     status: "todo" | "in_progress";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
@@ -838,12 +856,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not reap external-lifecycle adapter runs that have no local pid", async () => {
-    const { runId } = await seedRunFixture({
+    const { companyId, agentId, runId } = await seedRunFixture({
       adapterType: "claude_k8s",
       processPid: null,
       processGroupId: null,
       includeIssue: false,
     });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
     const heartbeat = heartbeatService(db);
 
     const startupResult = await heartbeat.reapOrphanedRuns();
@@ -858,12 +877,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not reap opencode_k8s runs with no local pid", async () => {
-    const { runId } = await seedRunFixture({
+    const { companyId, agentId, runId } = await seedRunFixture({
       adapterType: "opencode_k8s",
       processPid: null,
       processGroupId: null,
       includeIssue: false,
     });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -872,6 +892,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.errorCode).toBeNull();
+  });
+
+  it("retries external-lifecycle runs claimed before adapter invocation", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("before external adapter invocation");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {

@@ -3866,6 +3866,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function hasAdapterInvocationEvent(runId: string) {
+    const row = await db
+      .select({ id: heartbeatRunEvents.id })
+      .from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "adapter.invoke")))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row !== null;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -4530,14 +4540,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // External-lifecycle adapters (k8s Jobs etc.) manage their own run
-      // completion via cluster-side reconciliation. Skip the local-process
-      // reaper for them: it has no PID/PGID to check, never updates the run
-      // row's updatedAt, and would otherwise mis-mark in-flight Jobs as
-      // process_lost after the staleness window even though the Job is alive
-      // and producing output. Also covers the startup reap path (no stale
-      // gate), which would otherwise kill running Jobs on every controlplane
-      // restart.
-      if (hasExternalLifecycle(adapterType)) continue;
+      // completion once adapter invocation has actually started. A claimed
+      // run with no adapter.invoke event has no known external Job yet, so it
+      // must stay eligible for startup/periodic recovery.
+      const externalLifecycleRun = hasExternalLifecycle(adapterType);
+      const externalLifecycleStarted = externalLifecycleRun
+        ? await hasAdapterInvocationEvent(run.id)
+        : false;
+      const externalLifecyclePreAdapter = externalLifecycleRun && !externalLifecycleStarted;
+      if (externalLifecycleRun && externalLifecycleStarted) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -4579,8 +4590,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const shouldRetry =
+        (
+          tracksLocalChild &&
+          (!!run.processPid || !!run.processGroupId) &&
+          (run.processLossRetryCount ?? 0) < 1
+        ) ||
+        (externalLifecyclePreAdapter && (run.processLossRetryCount ?? 0) < 1);
+      const baseMessage = externalLifecyclePreAdapter
+        ? "Process lost before external adapter invocation -- server may have restarted"
+        : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -4625,6 +4644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(externalLifecyclePreAdapter ? { externalLifecyclePreAdapter: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -4879,6 +4899,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
       return;
     }
+
+    const runningAgentAtSetup = await db
+      .update(agents)
+      .set({ status: "running", updatedAt: new Date() })
+      .where(eq(agents.id, agent.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (runningAgentAtSetup) {
+      publishLiveEvent({
+        companyId: runningAgentAtSetup.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: runningAgentAtSetup.id,
+          status: runningAgentAtSetup.status,
+          outcome: "running",
+        },
+      });
+    }
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "run setup started",
+    });
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
@@ -5456,7 +5500,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskKey,
     };
 
-    let seq = 1;
+    let seq = await nextRunEventSeq(run.id);
     let handle: RunLogHandle | null = null;
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
@@ -6088,7 +6132,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (failedRun) {
             // Emit a run-log event so the failure is visible in the run timeline,
             // consistent with what the inner catch block does for adapter failures.
-            await appendRunEvent(failedRun, 1, {
+            await appendRunEvent(failedRun, await nextRunEventSeq(failedRun.id), {
               eventType: "error",
               stream: "system",
               level: "error",
