@@ -289,6 +289,8 @@ If you're asked to make a plan, _do not mark the issue as done_. Re-assign the i
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, and wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
 
+> **`request_confirmation` requires a board/user approver** — another agent cannot accept it. For agent-to-agent plan review (e.g. a subordinate asking their manager to approve a plan), use **comment + reassign** instead: post a comment summarising the plan and reassign the issue to the reviewing agent. This leaves no orphaned `pending` interaction on the thread.
+
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 Recommended API flow:
