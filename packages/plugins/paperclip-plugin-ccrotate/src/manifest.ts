@@ -56,6 +56,16 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
     },
   ],
+  ui: {
+    slots: [
+      {
+        type: "settingsPage",
+        id: "ccrotate-pools",
+        displayName: "ccrotate Pools",
+        exportName: "CcrotatePoolsPage",
+      },
+    ],
+  },
 };
 
 export default manifest;
