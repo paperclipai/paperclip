@@ -637,13 +637,14 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: runtimeListenHost,
     port: listenPort,
   });
+  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
+    preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
   process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
@@ -682,6 +683,7 @@ export async function startServer(): Promise<StartedServer> {
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
+          reconciled.assignmentDispatched > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.escalated > 0
@@ -702,6 +704,12 @@ export async function startServer(): Promise<StartedServer> {
         const scanned = await heartbeat.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+        }
+      })
+      .then(async () => {
+        const reviewed = await heartbeat.reconcileProductivityReviews();
+        if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+          logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })
       .catch((err) => {
@@ -740,6 +748,7 @@ export async function startServer(): Promise<StartedServer> {
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
           if (
             promotion.promoted > 0 ||
+            reconciled.assignmentDispatched > 0 ||
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
             reconciled.escalated > 0
@@ -760,6 +769,12 @@ export async function startServer(): Promise<StartedServer> {
           const scanned = await heartbeat.scanSilentActiveRuns();
           if (scanned.created > 0 || scanned.escalated > 0) {
             logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+          }
+        })
+        .then(async () => {
+          const reviewed = await heartbeat.reconcileProductivityReviews();
+          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
         })
         .catch((err) => {

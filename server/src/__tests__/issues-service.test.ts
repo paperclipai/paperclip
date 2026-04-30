@@ -24,7 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { clampIssueListLimit, ISSUE_LIST_MAX_LIMIT, issueService } from "../services/issues.ts";
-import { buildProjectMentionHref } from "@paperclipai/shared";
+import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1451,6 +1451,56 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       }),
     ]);
   });
+
+  it("clamps helper-created child requestDepth to the safe maximum", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const goalId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Ship child helpers",
+      level: "task",
+      status: "active",
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      requestDepth: MAX_ISSUE_REQUEST_DEPTH,
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child helper",
+      status: "todo",
+      requestDepth: MAX_ISSUE_REQUEST_DEPTH + 100,
+    });
+
+    expect(child.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
 });
 
 describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {
@@ -2064,6 +2114,109 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspacePreference).toBe("reuse_existing");
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
+    });
+  });
+
+  it("syncs reused execution workspace config when issue workspace settings are updated", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+      metadata: {
+        config: {
+          environmentId: "env-old",
+          provisionCommand: "bash ./scripts/provision-old.sh",
+          teardownCommand: "bash ./scripts/teardown-old.sh",
+          workspaceRuntime: { profile: "old" },
+        },
+      },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Recovery issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: "env-old",
+        workspaceStrategy: {
+          type: "git_worktree",
+          provisionCommand: "bash ./scripts/provision-old.sh",
+          teardownCommand: "bash ./scripts/teardown-old.sh",
+        },
+        workspaceRuntime: { profile: "old" },
+      },
+    });
+
+    await svc.update(issueId, {
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: "env-new",
+        workspaceStrategy: {
+          type: "cloud_sandbox",
+          provisionCommand: "bash ./scripts/provision-new.sh",
+          teardownCommand: "bash ./scripts/teardown-new.sh",
+        },
+        workspaceRuntime: { profile: "new" },
+      },
+    });
+
+    const workspace = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(workspace?.metadata).toEqual({
+      config: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision-new.sh",
+        teardownCommand: "bash ./scripts/teardown-new.sh",
+        cleanupCommand: null,
+        workspaceRuntime: { profile: "new" },
+        desiredState: null,
+        serviceStates: null,
+      },
     });
   });
 });

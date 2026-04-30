@@ -134,6 +134,9 @@ vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
     openNewIssue: vi.fn(),
   }),
+  useDialogActions: () => ({
+    openNewIssue: vi.fn(),
+  }),
 }));
 
 vi.mock("../context/PanelContext", () => ({
@@ -824,8 +827,10 @@ describe("IssueDetail", () => {
         reason: "active_child",
         unresolvedBlockerCount: 1,
         coveredBlockerCount: 1,
+        stalledBlockerCount: 0,
         attentionBlockerCount: 0,
         sampleBlockerIdentifier: "PAP-2",
+        sampleStalledBlockerIdentifier: null,
       },
     }));
 

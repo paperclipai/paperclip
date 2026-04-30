@@ -13,7 +13,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
@@ -77,6 +77,7 @@ import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
+import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -108,6 +109,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Eye,
   EyeOff,
   Hexagon,
   ListTree,
@@ -551,12 +553,14 @@ type IssueDetailChatTabProps = {
   issueStatus: Issue["status"];
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
+  blockerAttention: Issue["blockerAttention"] | null;
   comments: IssueDetailComment[];
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
   interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
   onLoadOlderComments: () => void;
+  onRefreshLatestComments: () => Promise<unknown> | void;
   composerRef: Ref<IssueChatComposerHandle>;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
@@ -603,12 +607,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueStatus,
   executionRunId,
   blockedBy,
+  blockerAttention,
   comments,
   locallyQueuedCommentRunIds,
   interactions,
   hasOlderComments,
   commentsLoadingOlder,
   onLoadOlderComments,
+  onRefreshLatestComments,
   composerRef,
   feedbackVotes,
   feedbackDataSharingPreference,
@@ -797,6 +803,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
         blockedBy={blockedBy ?? []}
+        blockerAttention={blockerAttention}
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
@@ -832,6 +839,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
           : undefined}
         onImageClick={onImageClick}
+        onRefreshLatestComments={onRefreshLatestComments}
       />
     </div>
   );
@@ -1020,7 +1028,7 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue } = useDialog();
+  const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -1087,6 +1095,7 @@ export function IssueDetail() {
     isFetchingNextPage: commentsLoadingOlder,
     hasNextPage: hasOlderComments,
     fetchNextPage: fetchOlderComments,
+    refetch: refetchComments,
   } = useInfiniteQuery({
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: ({ pageParam }) =>
@@ -2551,6 +2560,13 @@ export function IssueDetail() {
   const loadOlderComments = useCallback(() => {
     void fetchOlderComments();
   }, [fetchOlderComments]);
+  const refetchLatestComments = useCallback(async () => {
+    // Refetch the entire infinite-query (page 0 first), so any comments that
+    // arrived after the initial load — including ones live updates may have
+    // missed during reconnects — are present before we scroll the user to
+    // the absolute newest.
+    await refetchComments();
+  }, [refetchComments]);
   useEffect(() => {
     if (!shouldPrefetchOlderComments) return;
     void fetchOlderComments();
@@ -2902,6 +2918,20 @@ export function IssueDetail() {
               Routine
             </Link>
           )}
+
+          {issue.productivityReview ? (
+            <ProductivityReviewBadge review={issue.productivityReview} />
+          ) : null}
+
+          {issue.originKind === "issue_productivity_review" ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
+              title="This task is a productivity review."
+            >
+              <Eye className="h-3 w-3" />
+              Productivity review
+            </span>
+          ) : null}
 
           {issue.projectId ? (
             <Link
@@ -3392,12 +3422,14 @@ export function IssueDetail() {
               issueStatus={issue.status}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}
+              blockerAttention={issue.blockerAttention ?? null}
               comments={threadComments}
               locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
               interactions={interactions}
               hasOlderComments={hasOlderComments}
               commentsLoadingOlder={commentsLoadingOlder}
               onLoadOlderComments={loadOlderComments}
+              onRefreshLatestComments={refetchLatestComments}
               composerRef={commentComposerRef}
               feedbackVotes={feedbackVotes}
               feedbackDataSharingPreference={feedbackDataSharingPreference}

@@ -5,6 +5,7 @@ import {
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_PRIORITIES,
+  clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
@@ -123,6 +124,12 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
+const issueRequestDepthInputSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .transform((value) => clampIssueRequestDepth(value));
+
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -136,7 +143,7 @@ export const createIssueSchema = z.object({
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
-  requestDepth: z.number().int().nonnegative().optional().default(0),
+  requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
@@ -168,6 +175,7 @@ export const createIssueLabelSchema = z.object({
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
+  requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),

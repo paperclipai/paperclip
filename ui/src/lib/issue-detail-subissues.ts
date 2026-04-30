@@ -21,8 +21,10 @@ export function shouldRenderRichSubIssuesSection(childIssuesLoading: boolean, ch
   return childIssuesLoading || childIssueCount > 0;
 }
 
+const MIN_CHILD_ISSUES_FOR_PROGRESS_SUMMARY = 2;
+
 export function shouldRenderSubIssueProgressSummary(enabled: boolean | undefined, childIssueCount: number): boolean {
-  return enabled === true && childIssueCount > 0;
+  return enabled === true && childIssueCount >= MIN_CHILD_ISSUES_FOR_PROGRESS_SUMMARY;
 }
 
 export function buildSubIssueProgressSummary(issues: Issue[]): SubIssueProgressSummary {

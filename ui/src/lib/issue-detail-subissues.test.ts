@@ -39,8 +39,9 @@ describe("shouldRenderRichSubIssuesSection", () => {
 });
 
 describe("shouldRenderSubIssueProgressSummary", () => {
-  it("requires both the opt-in flag and child issues", () => {
-    expect(shouldRenderSubIssueProgressSummary(true, 1)).toBe(true);
+  it("requires both the opt-in flag and multiple child issues", () => {
+    expect(shouldRenderSubIssueProgressSummary(true, 2)).toBe(true);
+    expect(shouldRenderSubIssueProgressSummary(true, 1)).toBe(false);
     expect(shouldRenderSubIssueProgressSummary(false, 1)).toBe(false);
     expect(shouldRenderSubIssueProgressSummary(true, 0)).toBe(false);
   });

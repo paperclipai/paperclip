@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import {
   adapterExecutionTargetUsesManagedHome,
+  resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetShellCommand,
 } from "./execution-target.js";
 
@@ -157,5 +158,51 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         strictHostKeyChecking: true,
       },
     })).toBe(false);
+  });
+});
+
+describe("resolveAdapterExecutionTargetCwd", () => {
+  const sshTarget = {
+    kind: "remote" as const,
+    transport: "ssh" as const,
+    remoteCwd: "/srv/paperclip/workspace",
+    spec: {
+      host: "ssh.example.test",
+      port: 22,
+      username: "ssh-user",
+      remoteCwd: "/srv/paperclip/workspace",
+      remoteWorkspacePath: "/srv/paperclip/workspace",
+      privateKey: null,
+      knownHosts: null,
+      strictHostKeyChecking: true,
+    },
+  };
+
+  it("falls back to the remote cwd when no adapter cwd is configured", () => {
+    expect(resolveAdapterExecutionTargetCwd(sshTarget, "", "/Users/host/repo/server")).toBe(
+      "/srv/paperclip/workspace",
+    );
+    expect(resolveAdapterExecutionTargetCwd(sshTarget, "   ", "/Users/host/repo/server")).toBe(
+      "/srv/paperclip/workspace",
+    );
+    expect(resolveAdapterExecutionTargetCwd(sshTarget, null, "/Users/host/repo/server")).toBe(
+      "/srv/paperclip/workspace",
+    );
+  });
+
+  it("preserves an explicit adapter cwd when one is configured", () => {
+    expect(
+      resolveAdapterExecutionTargetCwd(
+        sshTarget,
+        "/srv/paperclip/custom-agent-dir",
+        "/Users/host/repo/server",
+      ),
+    ).toBe("/srv/paperclip/custom-agent-dir");
+  });
+
+  it("keeps the local fallback cwd for local targets", () => {
+    expect(resolveAdapterExecutionTargetCwd(null, "", "/Users/host/repo/server")).toBe(
+      "/Users/host/repo/server",
+    );
   });
 });
