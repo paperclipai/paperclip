@@ -345,6 +345,22 @@ export interface PluginWorkerManager {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
   ): Promise<HostToWorkerMethods[M][1]>;
+
+  /**
+   * Subscribe to worker lifecycle events (crash, restart) after
+   * construction. Useful when the listener needs a reference to a
+   * collaborator that is built after the manager (e.g. host-service
+   * cleanup, which depends on the lifecycle manager that itself
+   * depends on this manager).
+   *
+   * Listeners apply to all workers, both already running and started
+   * later. Returns an unsubscribe function.
+   *
+   * Optional in the interface so test stubs need not implement it.
+   */
+  addWorkerEventListener?(
+    listener: (event: PluginWorkerLifecycleEvent) => void,
+  ): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,20 +1192,30 @@ export function createPluginWorkerHandle(
 // ---------------------------------------------------------------------------
 
 /**
+ * Lifecycle event payload emitted to listeners registered via
+ * `onWorkerEvent` or `addWorkerEventListener`.
+ */
+export interface PluginWorkerLifecycleEvent {
+  type: "plugin.worker.crashed" | "plugin.worker.restarted";
+  pluginId: string;
+  code?: number | null;
+  signal?: string | null;
+  willRestart?: boolean;
+}
+
+/**
  * Options for creating a PluginWorkerManager.
  */
 export interface PluginWorkerManagerOptions {
   /**
    * Optional callback invoked when a worker emits a lifecycle event
    * (crash, restart). Used by the server to publish global live events.
+   *
+   * For post-construction registration (e.g. wiring host-service cleanup
+   * to a manager that may have been injected from outside), prefer
+   * `PluginWorkerManager.addWorkerEventListener` instead.
    */
-  onWorkerEvent?: (event: {
-    type: "plugin.worker.crashed" | "plugin.worker.restarted";
-    pluginId: string;
-    code?: number | null;
-    signal?: string | null;
-    willRestart?: boolean;
-  }) => void;
+  onWorkerEvent?: (event: PluginWorkerLifecycleEvent) => void;
 }
 
 /**
@@ -1225,6 +1251,28 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  /**
+   * Worker-event listeners. Construction-time `onWorkerEvent` is registered
+   * as the first entry; later entries can be added via
+   * `addWorkerEventListener`. A list (rather than a single callback) makes
+   * the wiring composable and the registration order independent.
+   */
+  const workerEventListeners: Array<(event: PluginWorkerLifecycleEvent) => void> = [];
+  if (managerOptions?.onWorkerEvent) {
+    workerEventListeners.push(managerOptions.onWorkerEvent);
+  }
+  const fanOutWorkerEvent = (event: PluginWorkerLifecycleEvent) => {
+    for (const listener of workerEventListeners) {
+      try {
+        listener(event);
+      } catch (err) {
+        log.warn(
+          { pluginId: event.pluginId, eventType: event.type, err: err instanceof Error ? err.message : String(err) },
+          "worker event listener threw",
+        );
+      }
+    }
+  };
 
   return {
     async startWorker(
@@ -1248,29 +1296,28 @@ export function createPluginWorkerManager(
       const handle = createPluginWorkerHandle(pluginId, options);
       workers.set(pluginId, handle);
 
-      // Subscribe to crash/ready events for live event forwarding
-      if (managerOptions?.onWorkerEvent) {
-        const notify = managerOptions.onWorkerEvent;
-        handle.on("crash", (payload) => {
-          notify({
-            type: "plugin.worker.crashed",
+      // Forward crash/ready events to all registered listeners. The fan-out
+      // reads `workerEventListeners` at delivery time, so listeners added
+      // after the worker started still receive events from this handle.
+      handle.on("crash", (payload) => {
+        fanOutWorkerEvent({
+          type: "plugin.worker.crashed",
+          pluginId: payload.pluginId,
+          code: payload.code,
+          signal: payload.signal,
+          willRestart: payload.willRestart,
+        });
+      });
+      handle.on("ready", (payload) => {
+        // Only emit restarted if this was a crash recovery (totalCrashes > 0)
+        const diag = handle.diagnostics();
+        if (diag.totalCrashes > 0) {
+          fanOutWorkerEvent({
+            type: "plugin.worker.restarted",
             pluginId: payload.pluginId,
-            code: payload.code,
-            signal: payload.signal,
-            willRestart: payload.willRestart,
           });
-        });
-        handle.on("ready", (payload) => {
-          // Only emit restarted if this was a crash recovery (totalCrashes > 0)
-          const diag = handle.diagnostics();
-          if (diag.totalCrashes > 0) {
-            notify({
-              type: "plugin.worker.restarted",
-              pluginId: payload.pluginId,
-            });
-          }
-        });
-      }
+        }
+      });
 
       log.info({ pluginId }, "starting plugin worker");
 
@@ -1340,6 +1387,14 @@ export function createPluginWorkerManager(
         );
       }
       return handle.call(method, params, timeoutMs);
+    },
+
+    addWorkerEventListener(listener) {
+      workerEventListeners.push(listener);
+      return () => {
+        const idx = workerEventListeners.indexOf(listener);
+        if (idx !== -1) workerEventListeners.splice(idx, 1);
+      };
     },
   };
 }
