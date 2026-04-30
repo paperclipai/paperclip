@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import React, { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
@@ -28,7 +28,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { billingTypeDisplayName, cn, estimateApiEquivalentCents, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { SubscriptionEstimate } from "../components/SubscriptionEstimate";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -76,7 +77,7 @@ function MetricTile({
 }: {
   label: string;
   value: string;
-  subtitle: string;
+  subtitle: React.ReactNode;
   icon: ComponentType<{ className?: string }>;
 }) {
   return (
@@ -519,6 +520,31 @@ export function Costs() {
       0,
     );
 
+  const subscriptionTotals = useMemo(() => {
+    const rows = spendData?.byAgent ?? [];
+    const inputTokens = rows.reduce((s, r) => s + r.subscriptionInputTokens, 0);
+    const cachedInputTokens = rows.reduce((s, r) => s + r.subscriptionCachedInputTokens, 0);
+    const outputTokens = rows.reduce((s, r) => s + r.subscriptionOutputTokens, 0);
+    const estimatedCents = estimateApiEquivalentCents(inputTokens, cachedInputTokens, outputTokens);
+    return { inputTokens, cachedInputTokens, outputTokens, estimatedCents };
+  }, [spendData?.byAgent]);
+
+  const providerSubscriptionTotals = useMemo(() => {
+    const rows = providerData ?? [];
+    const inputTokens = rows.reduce((s, r) => s + r.subscriptionInputTokens, 0);
+    const cachedInputTokens = rows.reduce((s, r) => s + r.subscriptionCachedInputTokens, 0);
+    const outputTokens = rows.reduce((s, r) => s + r.subscriptionOutputTokens, 0);
+    return { inputTokens, cachedInputTokens, outputTokens };
+  }, [providerData]);
+
+  const billerSubscriptionTotals = useMemo(() => {
+    const rows = billerData ?? [];
+    const inputTokens = rows.reduce((s, r) => s + r.subscriptionInputTokens, 0);
+    const cachedInputTokens = rows.reduce((s, r) => s + r.subscriptionCachedInputTokens, 0);
+    const outputTokens = rows.reduce((s, r) => s + r.subscriptionOutputTokens, 0);
+    return { inputTokens, cachedInputTokens, outputTokens };
+  }, [billerData]);
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -583,7 +609,18 @@ export function Costs() {
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={
+                <span className="flex flex-wrap items-center gap-1.5">
+                  <span>{formatTokens(inferenceTokenTotal)} tokens across request-scoped events</span>
+                  {subscriptionTotals.estimatedCents > 0 ? (
+                    <SubscriptionEstimate
+                      inputTokens={subscriptionTotals.inputTokens}
+                      cachedInputTokens={subscriptionTotals.cachedInputTokens}
+                      outputTokens={subscriptionTotals.outputTokens}
+                    />
+                  ) : null}
+                </span>
+              }
               icon={DollarSign}
             />
             <MetricTile
@@ -745,7 +782,16 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCents(row.costCents)}</div>
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <div className="font-medium">{formatCents(row.costCents)}</div>
+                                  {row.subscriptionInputTokens + row.subscriptionCachedInputTokens + row.subscriptionOutputTokens > 0 ? (
+                                    <SubscriptionEstimate
+                                      inputTokens={row.subscriptionInputTokens}
+                                      cachedInputTokens={row.subscriptionCachedInputTokens}
+                                      outputTokens={row.subscriptionOutputTokens}
+                                    />
+                                  ) : null}
+                                </div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -953,6 +999,18 @@ export function Costs() {
             <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
           ) : (
             <>
+              {providerSubscriptionTotals.inputTokens + providerSubscriptionTotals.cachedInputTokens + providerSubscriptionTotals.outputTokens > 0 ? (
+                <div className="flex items-center gap-2 rounded-sm border border-border bg-muted px-4 py-2.5 text-sm text-muted-foreground">
+                  <span className="font-medium">Subscription usage:</span>
+                  <span>{formatTokens(providerSubscriptionTotals.inputTokens + providerSubscriptionTotals.cachedInputTokens + providerSubscriptionTotals.outputTokens)} tokens via Claude subscription —</span>
+                  <SubscriptionEstimate
+                    inputTokens={providerSubscriptionTotals.inputTokens}
+                    cachedInputTokens={providerSubscriptionTotals.cachedInputTokens}
+                    outputTokens={providerSubscriptionTotals.outputTokens}
+                  />
+                  <span>API-equivalent if billed directly</span>
+                </div>
+              ) : null}
               <Tabs value={effectiveProvider} onValueChange={setActiveProvider}>
                 <PageTabBar items={providerTabItems} value={effectiveProvider} />
 
@@ -1008,6 +1066,18 @@ export function Costs() {
             <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
           ) : (
             <>
+              {billerSubscriptionTotals.inputTokens + billerSubscriptionTotals.cachedInputTokens + billerSubscriptionTotals.outputTokens > 0 ? (
+                <div className="flex items-center gap-2 rounded-sm border border-border bg-muted px-4 py-2.5 text-sm text-muted-foreground">
+                  <span className="font-medium">Subscription usage:</span>
+                  <span>{formatTokens(billerSubscriptionTotals.inputTokens + billerSubscriptionTotals.cachedInputTokens + billerSubscriptionTotals.outputTokens)} tokens via Claude subscription —</span>
+                  <SubscriptionEstimate
+                    inputTokens={billerSubscriptionTotals.inputTokens}
+                    cachedInputTokens={billerSubscriptionTotals.cachedInputTokens}
+                    outputTokens={billerSubscriptionTotals.outputTokens}
+                  />
+                  <span>API-equivalent if billed directly</span>
+                </div>
+              ) : null}
               <Tabs value={effectiveBiller} onValueChange={setActiveBiller}>
                 <PageTabBar items={billerTabItems} value={effectiveBiller} />
 

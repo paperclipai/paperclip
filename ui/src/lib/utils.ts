@@ -54,6 +54,26 @@ export function relativeTime(date: Date | string): string {
   return formatDate(date);
 }
 
+// Cents per million tokens for API-equivalent cost estimation (subscription runs show $0 actual cost)
+const MODEL_PRICING: Record<string, { input: number; cacheRead: number; output: number }> = {
+  "claude-sonnet-4-6": { input: 300, cacheRead: 30, output: 1500 },
+  "claude-opus-4-7":   { input: 1500, cacheRead: 150, output: 7500 },
+  "claude-haiku-4-5":  { input: 25, cacheRead: 3, output: 125 },
+};
+const DEFAULT_PRICING = { input: 300, cacheRead: 30, output: 1500 };
+
+export function estimateApiEquivalentCents(
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  model?: string | null,
+): number {
+  const pricing = (model && MODEL_PRICING[model]) ? MODEL_PRICING[model] : DEFAULT_PRICING;
+  return Math.round(
+    (inputTokens * pricing.input + cachedInputTokens * pricing.cacheRead + outputTokens * pricing.output) / 1_000_000,
+  );
+}
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

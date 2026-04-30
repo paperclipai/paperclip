@@ -1,9 +1,10 @@
 import { readConfigFile } from "./config-file.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import path, { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
+import { resolveRepoRoot } from "./utils/repo-root.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import {
   AUTH_BASE_URL_MODES,
@@ -314,12 +315,20 @@ export function loadConfig(): Config {
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
     secretsProvider,
     secretsStrictMode,
-    secretsMasterKeyFilePath:
-      resolveHomeAwarePath(
+    secretsMasterKeyFilePath: (() => {
+      const raw =
         process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
-          fileSecrets?.localEncrypted.keyFilePath ??
-          resolveDefaultSecretsKeyFilePath(),
-      ),
+        fileSecrets?.localEncrypted.keyFilePath ??
+        resolveDefaultSecretsKeyFilePath();
+      // Resolve relative keyFilePath from config.json against the config file's
+      // own directory, not process.cwd() — otherwise server/ subdir start causes
+      // ".paperclip/secrets/master.key" to resolve to "server/.paperclip/..." which
+      // doesn't exist and auto-generates a wrong key, breaking decryption.
+      if (!path.isAbsolute(raw) && !raw.startsWith("~")) {
+        return path.resolve(resolveRepoRoot(), raw);
+      }
+      return resolveHomeAwarePath(raw);
+    })(),
     storageProvider,
     storageLocalDiskBaseDir,
     storageS3Bucket,

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from "n
 import path from "node:path";
 import type { SecretProviderModule, StoredSecretVersionMaterial } from "./types.js";
 import { badRequest } from "../errors.js";
+import { resolveRepoRoot } from "../utils/repo-root.js";
 
 interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
   scheme: "local_encrypted_v1";
@@ -14,7 +15,7 @@ interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
 function resolveMasterKeyFilePath() {
   const fromEnv = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   if (fromEnv && fromEnv.trim().length > 0) return path.resolve(fromEnv.trim());
-  return path.resolve(process.cwd(), "data/secrets/master.key");
+  return path.resolve(resolveRepoRoot(), ".paperclip/secrets/master.key");
 }
 
 function decodeMasterKey(raw: string): Buffer | null {

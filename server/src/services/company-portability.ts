@@ -66,6 +66,7 @@ import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
+import { resolveRepoRoot } from "../utils/repo-root.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -1949,7 +1950,7 @@ function applySelectedFilesToSource(source: ResolvedSource, selectedFiles?: stri
 async function resolveBundledSkillsCommit() {
   if (!bundledSkillsCommitPromise) {
     bundledSkillsCommitPromise = execFileAsync("git", ["rev-parse", "HEAD"], {
-      cwd: process.cwd(),
+      cwd: resolveRepoRoot(),
       encoding: "utf8",
     })
       .then(({ stdout }) => stdout.trim() || null)

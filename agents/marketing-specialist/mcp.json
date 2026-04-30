@@ -1,0 +1,59 @@
+{
+  "mcpServers": {
+    "sharepoint": {
+      "command": "node",
+      "args": ["./packages/mcp-sharepoint/dist/stdio.js"],
+      "env": {
+        "SHAREPOINT_TENANT_ID": "${SHAREPOINT_TENANT_ID}",
+        "SHAREPOINT_CLIENT_ID": "${SHAREPOINT_CLIENT_ID}",
+        "SHAREPOINT_CLIENT_SECRET": "${SHAREPOINT_CLIENT_SECRET}",
+        "SHAREPOINT_SITE_URL": "${SHAREPOINT_SITE_URL}"
+      }
+    },
+    "outlook": {
+      "command": "node",
+      "args": ["./packages/mcp-outlook/dist/stdio.js"],
+      "env": {
+        "OUTLOOK_TENANT_ID": "${SHAREPOINT_TENANT_ID}",
+        "OUTLOOK_CLIENT_ID": "${OUTLOOK_CLIENT_ID}",
+        "OUTLOOK_CLIENT_SECRET": "${OUTLOOK_CLIENT_SECRET}",
+        "OUTLOOK_MAILBOX": "${OUTLOOK_MAILBOX}"
+      }
+    },
+    "duckduckgo": {
+      "command": "npx",
+      "args": ["-y", "duckduckgo-mcp-server"]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@tokenizin/mcp-fetch"]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--browser", "chromium", "--headless"]
+    },
+    "hunter": {
+      "command": "node",
+      "args": ["./packages/mcp-hunter/dist/stdio.js"],
+      "env": {
+        "HUNTER_API_KEY": "${HUNTER_API_KEY}"
+      }
+    },
+    "apify": {
+      "command": "npx",
+      "args": ["-y", "@apify/actors-mcp-server"],
+      "env": {
+        "APIFY_TOKEN": "${APIFY_API_KEY}"
+      }
+    },
+    "teams": {
+      "command": "node",
+      "args": ["./packages/mcp-teams/dist/stdio.js"],
+      "env": {
+        "TEAMS_TENANT_ID": "${SHAREPOINT_TENANT_ID}",
+        "TEAMS_CLIENT_ID": "${OUTLOOK_CLIENT_ID}",
+        "TEAMS_CLIENT_SECRET": "${OUTLOOK_CLIENT_SECRET}"
+      }
+    }
+  }
+}
