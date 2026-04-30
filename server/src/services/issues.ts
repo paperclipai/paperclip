@@ -3454,7 +3454,7 @@ export function issueService(db: Db) {
       }
       const provenanceBindingChanged =
         requestedExecutionProvenance !== undefined
-        || inheritExecutionWorkspaceFromIssueId !== undefined
+        || Boolean(inheritExecutionWorkspaceFromIssueId)
         || issueData.executionWorkspaceId !== undefined
         || issueData.executionWorkspacePreference !== undefined
         || issueData.executionWorkspaceSettings !== undefined;

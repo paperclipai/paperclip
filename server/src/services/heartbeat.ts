@@ -1833,7 +1833,7 @@ async function buildPaperclipWakePayload(input: {
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
   const executionProvenance = issueSummary?.executionProvenance ?? null;
-  const executionProvenanceReadiness = issueSummary?.id
+  const executionProvenanceReadiness = issueSummary?.id && issueSummary.executionProvenance
     ? await issueService(input.db).getExecutionProvenanceReadiness(issueSummary.id)
     : null;
 
