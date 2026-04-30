@@ -2,7 +2,7 @@
 
 **Status:** Phase 59 foundation contract  
 **Requirement:** DIST-01  
-**Last updated:** 2026-04-30
+**Last updated:** 2026-05-01
 
 이 문서는 RealTycoon2 v3.0 native distribution 작업의 기준선이다. Phase 59는 native app을 구현하지 않는다. 대신 downstream Phase 60-64가 signing, updater, tray, shortcut, push, release gate를 구현할 때 따라야 할 shell 선택, package layout, platform boundary, credential inventory, regression gate를 확정한다.
 
@@ -363,6 +363,132 @@ Required pass conditions:
 - Native capture handoff must create persistent drafts, require review, and must not auto-apply or auto-promote.
 - Raw private keys, passwords, provider tokens, and other sensitive values are rejected. Use secret references only.
 
+## Phase 63 Push Notification Evidence Gate
+
+Phase 63 adds a deterministic Mobile/Web Push/APNs evidence gate:
+
+```sh
+pnpm run rt2:push-notification-gate -- --manifest path/to/push-notification-evidence.json
+```
+
+The gate validates company/user/device-scoped subscriptions, minimal review payloads, delivery/retry evidence, invalid token handling, click-through evidence, and capture reliability metrics. It writes durable evidence under `.planning/native-push-runs/`:
+
+- `summary.json` - machine-readable pass/blocker status, registration/signal/delivery/click counts, reliability metrics, and blocker codes
+- `report.md` - operator-readable registration, signal, delivery, click, capture reliability, blocker, and passed-check tables
+
+The command exits non-zero when push loop evidence is incomplete. It does not send provider notifications, add native dependencies, or require APNs/Web Push credentials in the repo.
+
+### Push Notification Manifest Shape
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-01T00:00:00.000Z",
+  "registrations": [
+    {
+      "id": "reg-web-1",
+      "companyId": "company-1",
+      "userId": "user-1",
+      "externalUserId": "operator-1",
+      "deviceId": "device-pwa-1",
+      "provider": "web_push",
+      "platform": "pwa",
+      "registrationState": "active",
+      "endpointHost": "push.example.test",
+      "endpointHash": "sha256:web-endpoint-hash",
+      "publicKeyRef": "vapid-public:current",
+      "permission": { "state": "granted", "evidence": "browser notification permission granted" }
+    },
+    {
+      "id": "reg-apns-1",
+      "companyId": "company-1",
+      "userId": "user-1",
+      "externalUserId": "operator-1",
+      "deviceId": "device-ios-1",
+      "provider": "apns",
+      "platform": "ios",
+      "registrationState": "active",
+      "tokenHash": "sha256:apns-token-hash",
+      "topic": "com.isens.realtycoon2",
+      "environment": "sandbox",
+      "permission": { "state": "granted", "evidence": "APNs remote notification permission granted" }
+    }
+  ],
+  "signals": [
+    {
+      "id": "signal-approval-1",
+      "type": "approval_waiting",
+      "companyId": "company-1",
+      "eventId": "evt-approval-1",
+      "eventTimestamp": "2026-05-01T00:00:00.000Z",
+      "target": {
+        "type": "capture_draft",
+        "id": "draft-1",
+        "route": "/companies/company-1/rt2/capture-drafts/draft-1"
+      },
+      "payload": {
+        "signalType": "approval_waiting",
+        "companyId": "company-1",
+        "targetType": "capture_draft",
+        "targetId": "draft-1",
+        "route": "/companies/company-1/rt2/capture-drafts/draft-1",
+        "eventId": "evt-approval-1",
+        "eventTimestamp": "2026-05-01T00:00:00.000Z",
+        "title": "RealTycoon2",
+        "body": "Review is waiting."
+      }
+    }
+  ],
+  "deliveries": [
+    {
+      "id": "delivery-web-1",
+      "signalId": "signal-approval-1",
+      "registrationId": "reg-web-1",
+      "provider": "web_push",
+      "status": "delivered",
+      "attemptCount": 1,
+      "lastAttemptAt": "2026-05-01T00:00:05.000Z",
+      "evidence": "push service accepted and client displayed notification"
+    }
+  ],
+  "clicks": [
+    {
+      "id": "click-web-1",
+      "deliveryId": "delivery-web-1",
+      "signalId": "signal-approval-1",
+      "registrationId": "reg-web-1",
+      "clickedAt": "2026-05-01T00:00:20.000Z",
+      "route": "/companies/company-1/rt2/capture-drafts/draft-1",
+      "reachedTarget": true,
+      "target": { "type": "capture_draft", "id": "draft-1" },
+      "evidence": "service worker notificationclick opened capture review route"
+    }
+  ],
+  "captureReliability": {
+    "reportPath": "/companies/company-1/rt2/capture-drafts/reliability-report",
+    "metrics": {
+      "permissionDenied": 0,
+      "tokenInvalid": 0,
+      "deliveryFailures": 0,
+      "retryCount": 1,
+      "clickThroughCount": 1
+    },
+    "evidence": "push metrics are represented beside capture reliability report"
+  }
+}
+```
+
+Required pass conditions:
+
+- Registrations include company, user, device, provider, platform, registration state, permission evidence, and provider-specific token hash or endpoint hash. Raw provider tokens are rejected.
+- Non-active, revoked, invalid, expired, failed, or permission-denied registrations include a reason and still block delivery readiness until remediated.
+- Signals are limited to `approval_waiting`, `failed_sync`, and `review_requested`.
+- Payloads contain only minimal routing/event metadata and safe notification labels. Raw task text, draft content, descriptions, tokens, passwords, and private key material are rejected.
+- Targets deep-link to capture draft, work board, or review routes. Push must not deep-link to auto-promote or auto-apply routes.
+- Delivery evidence includes provider, attempt count, status, timestamp, failure code when failed, retry decision when failed or retry-scheduled, and invalid-token revocation handling.
+- Click-through evidence confirms the notification/deep link reached the original review target route.
+- Capture reliability evidence includes permission denied, invalid token, delivery failure, retry, and click-through metrics.
+
 ## Updater Key Material
 
 Updater signing is separate from OS code signing.
@@ -451,6 +577,10 @@ Documents may contain only placeholders and secret references, for example:
 - `doc/RELEASE-HOST-VERIFICATION.md`
 - `scripts/rt2-resident-surface-gate.mjs`
 - `scripts/rt2-resident-surface-gate.test.mjs`
+- `scripts/rt2-push-notification-gate.mjs`
+- `scripts/rt2-push-notification-gate.test.mjs`
+- `.planning/phases/63-mobile-push-notification-loop/63-CONTEXT.md`
+- `.planning/phases/63-mobile-push-notification-loop/63-RESEARCH.md`
 
 ## External Official References
 
@@ -461,6 +591,10 @@ Documents may contain only placeholders and secret references, for example:
 - Tauri Global Shortcut: `https://v2.tauri.app/reference/javascript/global-shortcut/`
 - Tauri Notifications: `https://v2.tauri.app/plugin/notification/`
 - Tauri Deep Linking: `https://tauri.app/ko/plugin/deep-linking/`
+- MDN Push API: `https://developer.mozilla.org/en-US/docs/Web/API/Push_API`
+- MDN notificationclick: `https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerGlobalScope/notificationclick_event`
+- Apple UserNotifications: `https://developer.apple.com/documentation/usernotifications`
+- APNs Provider API: `https://developer.apple.com/documentation/usernotifications/setting-up-a-remote-notification-server/sending-notification-requests-to-apns`
 - Electron autoUpdater: `https://www.electronjs.org/docs/latest/api/auto-updater`
 - Electron Code Signing: `https://www.electronjs.org/docs/latest/tutorial/code-signing`
 
@@ -468,11 +602,8 @@ Documents may contain only placeholders and secret references, for example:
 
 Next phase:
 
-- Phase 60 should implement signing/notarization/trust evidence using this inventory.
+- Phase 64 should enforce final distribution and v2.9 regression gates using the Phase 60-63 evidence summaries.
 
 Later phases:
 
-- Phase 61 implements channels and signed updater feed.
-- Phase 62 implements resident tray and global shortcut.
-- Phase 63 implements mobile push loop.
-- Phase 64 enforces final distribution and v2.9 regression gates.
+- No additional v3.0 native distribution phases are defined after Phase 64.

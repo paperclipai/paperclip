@@ -12,7 +12,7 @@
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
-- [active] **v3.0 Native Distribution Readiness** - Phase 59-62 complete, Phase 63-64 planned
+- [active] **v3.0 Native Distribution Readiness** - Phase 59-63 complete, Phase 64 planned
 
 ## 완료됨
 
@@ -113,7 +113,7 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.0 Native Distribution Readiness가 시작됐다. v2.9 capture reliability는 shipped baseline으로 고정하고, 이번 milestone은 signed native distribution pipeline, release channel/updater, resident tray/global shortcut, mobile push notification을 운영 가능한 배포 표면으로 만든다.
+v3.0 Native Distribution Readiness가 진행 중이다. v2.9 capture reliability는 shipped baseline으로 고정하고, 이번 milestone은 signed native distribution pipeline, release channel/updater, resident tray/global shortcut, mobile push notification을 운영 가능한 배포 표면으로 만들었다. 남은 Phase 64는 이 evidence gate들을 final distribution gate와 regression closure로 묶는다.
 
 <details>
 <summary>v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 (Phase 44-47) - 2026-04-30 완료</summary>
@@ -128,7 +128,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v3.0 Native Distribution Readiness (Phase 59-62 complete, Phase 63-64 planned)</summary>
+<summary>v3.0 Native Distribution Readiness (Phase 59-63 complete, Phase 64 planned)</summary>
 
 **Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
 
@@ -138,7 +138,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 | 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Complete |
 | 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Complete |
 | 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Complete |
-| 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
+| 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Complete |
 | 64 | v3.0 Distribution Gate and Capture Regression Closure | DIST-06 | Planned |
 
 ### Reference Constraints
@@ -197,6 +197,8 @@ Success criteria:
 1. Device push subscriptions/tokens are scoped by company, user, device, provider, and revocation state.
 2. Push payloads stay minimal and deep-link to approval waiting, failed sync, or review requested targets.
 3. Delivery, retry, token invalid, permission denied, and click-through metrics appear in reliability evidence.
+
+Completion status: `passed` on 2026-05-01. Phase 63 added `scripts/rt2-push-notification-gate.mjs`, focused tests, package scripts, and operator docs so Mobile/Web Push/APNs evidence manifests produce durable `summary.json`/`report.md` evidence and block on missing subscription scope, inactive registration reasons, unsafe payload fields, invalid deep links, delivery retry gaps, invalid-token handling gaps, missing click-through evidence, missing capture reliability metrics, or raw secret material.
 
 **Phase 64: v3.0 Distribution Gate and Capture Regression Closure**
 Goal: Distribution readiness is accepted only when signing/updater/resident/push gates pass and v2.9 capture reliability has not regressed.
@@ -404,7 +406,7 @@ Success criteria:
 | 60. Signing and Notarization Pipeline | v3.0 | 1/1 | Complete | 2026-04-30 |
 | 61. Release Channels and Signed Updater | v3.0 | 1/1 | Complete | 2026-04-30 |
 | 62. Resident Tray and Global Shortcut | v3.0 | 1/1 | Complete | 2026-04-30 |
-| 63. Mobile Push Notification Loop | v3.0 | 0/1 | Planned | - |
+| 63. Mobile Push Notification Loop | v3.0 | 1/1 | Complete | 2026-05-01 |
 | 64. v3.0 Distribution Gate and Capture Regression Closure | v3.0 | 0/1 | Planned | - |
 
 ## Archive

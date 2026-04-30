@@ -154,6 +154,36 @@ The command returns a non-zero exit code when resident surface evidence is incom
 - Native capture handoff: source is `native`, channels include `native:tray` and `native:global-shortcut`, route is `/companies/:companyId/rt2/one-liner/inbound-draft`, and capture creates a reviewed persistent draft without auto-apply or auto-promote.
 - Secret hygiene: raw private keys, passwords, provider tokens, and sensitive fields that are not secret references are rejected.
 
+## Push Notification Gate
+
+Phase 63 adds a separate Mobile/Web Push/APNs evidence gate:
+
+```sh
+pnpm run rt2:push-notification-gate -- --manifest path/to/push-notification-evidence.json
+```
+
+This gate validates the push loop before push notifications can be treated as release-ready. It writes:
+
+```text
+.planning/native-push-runs/<timestamp>/
+```
+
+Each run writes:
+
+- `summary.json` - machine-readable status, registration/signal/delivery/click counts, reliability metrics, blocker counts, and passed checks
+- `report.md` - operator-readable registration, signal, delivery, click, capture reliability, blocker, and passed-check tables
+
+The command returns a non-zero exit code when push loop evidence is incomplete. Required checks include:
+
+- Registrations: company ID, user identity, device ID, provider, platform, registration state, permission evidence, and provider-specific endpoint/token hash.
+- Subscription lifecycle: revoked, invalid, expired, failed, or permission-denied registrations must include an explicit reason and block readiness until remediated.
+- Signals: only `approval_waiting`, `failed_sync`, and `review_requested` are accepted.
+- Payloads: minimal route/event metadata only, with sensitive task content and raw secrets rejected.
+- Targets: deep-link to capture draft, work board, or review routes; auto-apply and auto-promote targets are blocked.
+- Delivery evidence: provider status, attempt count, timestamp, failure code, retry decision, and invalid-token revocation handling.
+- Click-through evidence: notification clicks must reach the original target route.
+- Capture reliability: permission denied, token invalid, delivery failure, retry, and click-through metrics must appear in reliability evidence.
+
 ## Runtime Confidence Report
 
 Phase 47 adds a consolidated runtime confidence report that consumes release-host evidence and the milestone artifact gate:

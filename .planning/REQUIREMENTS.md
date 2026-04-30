@@ -24,9 +24,9 @@ Requirements for `v3.0 Native Distribution Readiness`. v2.9 DRAFT/NATIVE/MSG/REV
 
 ### Mobile Push
 
-- [ ] **PUSH-01**: 운영자는 web/mobile/PWA/native device push subscription 또는 APNs/Web Push token을 company, user, device scope로 등록, 해지, rotate할 수 있다.
-- [ ] **PUSH-02**: 서버는 approval waiting, failed sync, review requested 같은 RT2 work signal을 최소 payload push로 전달하고 notification click/deep link가 board review target으로 돌아가게 한다.
-- [ ] **PUSH-03**: 운영자는 push permission denied, token invalid, delivery failure, retry, click-through metric을 capture reliability report와 release gate evidence에서 확인할 수 있다.
+- [x] **PUSH-01**: 운영자는 web/mobile/PWA/native device push subscription 또는 APNs/Web Push token을 company, user, device scope로 등록, 해지, rotate할 수 있다. - Phase 63
+- [x] **PUSH-02**: 서버는 approval waiting, failed sync, review requested 같은 RT2 work signal을 최소 payload push로 전달하고 notification click/deep link가 board review target으로 돌아가게 한다. - Phase 63
+- [x] **PUSH-03**: 운영자는 push permission denied, token invalid, delivery failure, retry, click-through metric을 capture reliability report와 release gate evidence에서 확인할 수 있다. - Phase 63
 
 ## Future Requirements
 
@@ -68,17 +68,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RES-01 | Phase 62 | Complete |
 | RES-02 | Phase 62 | Complete |
 | RES-03 | Phase 62 | Complete |
-| PUSH-01 | Phase 63 | Pending |
-| PUSH-02 | Phase 63 | Pending |
-| PUSH-03 | Phase 63 | Pending |
+| PUSH-01 | Phase 63 | Complete |
+| PUSH-02 | Phase 63 | Complete |
+| PUSH-03 | Phase 63 | Complete |
 
 **Coverage:**
 - v3.0 requirements: 12 total
 - Mapped to phases: 12
 - Unmapped: 0
-- Complete: 8
-- Pending: 4
+- Complete: 11
+- Pending: 1
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after Phase 62 resident surface evidence gate completion*
+*Last updated: 2026-05-01 after Phase 63 push notification evidence gate completion*
