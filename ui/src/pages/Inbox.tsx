@@ -84,8 +84,10 @@ import {
   Inbox as InboxIcon,
   AlertTriangle,
   Check,
+  ChevronDown,
   ChevronRight,
   Layers,
+  LoaderCircle,
   XCircle,
   X,
   RotateCcw,
@@ -2603,16 +2605,24 @@ export function Inbox() {
               })()}
             </div>
             {hasMoreInboxIssues && (
-              <div className="mt-3 flex justify-center">
+              <div className="mt-2 flex items-center gap-3 px-1 text-muted-foreground">
+                <div className="h-px flex-1 bg-border" />
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
+                  variant="ghost"
+                  size="xs"
+                  className="h-7 shrink-0 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
                   onClick={loadMoreInboxIssues}
                   disabled={isLoadingMoreInboxIssues}
                 >
-                  {isLoadingMoreInboxIssues ? "Loading..." : `Load ${INBOX_ISSUE_PAGE_SIZE} more`}
+                  {isLoadingMoreInboxIssues ? (
+                    <LoaderCircle className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3" />
+                  )}
+                  {isLoadingMoreInboxIssues ? "Loading" : `Load ${INBOX_ISSUE_PAGE_SIZE} more`}
                 </Button>
+                <div className="h-px flex-1 bg-border" />
               </div>
             )}
           </div>
