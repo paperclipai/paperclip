@@ -1,0 +1,29 @@
+# Koenig-specific ignores (added on top of upstream Paperclip .gitignore).
+# Source-of-truth: append the relevant lines to the main .gitignore on commit.
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Obsidian working files (keep config but not workspace state)
+vault/.obsidian/workspace.json
+vault/.obsidian/workspace-mobile.json
+vault/.obsidian/cache
+vault/.trash/
+
+# Watchdog runtime
+watchdog/.state/
+watchdog/*.log
+
+# Langfuse local data
+observability/postgres-data/
+observability/clickhouse-data/
+
+# Paperclip session DB backups (kept outside git)
+scripts/backups/
+
+# OS
+.DS_Store

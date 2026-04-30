@@ -1,0 +1,50 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/vault",
+        "/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/companies",
+        "/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/docs",
+        "/Users/vardaankoenig/Documents/Paperclip/learnovaBeast"
+      ],
+      "enabled": true
+    },
+    "tavily": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@mcptools/mcp-tavily"
+      ],
+      "environment": {
+        "TAVILY_API_KEY": "{env:TAVILY_API_KEY}"
+      },
+      "enabled": true
+    },
+    "fetch": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "mcp-server-fetch"
+      ],
+      "enabled": true
+    },
+    "github": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "environment": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{env:GH_TOKEN}"
+      },
+      "enabled": true
+    }
+  }
+}

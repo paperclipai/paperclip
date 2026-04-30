@@ -1,0 +1,42 @@
+{
+  "_comment": "Project-level MCP server config for Claude Code agents in this repo. All claude_local Paperclip agents whose cwd is this repo (or a child) inherit these servers. Per-agent path discipline is enforced via SOUL/skill instructions.",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/vault",
+        "/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/companies",
+        "/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/docs",
+        "/Users/vardaankoenig/Documents/Paperclip/learnovaBeast"
+      ]
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GH_TOKEN}"
+      }
+    },
+    "tavily": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@mcptools/mcp-tavily"
+      ],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ]
+    }
+  }
+}

@@ -56,3 +56,34 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+.env.koenig
+.vercel
+
+# Vault runtime content (agent narrative output) — only structure is committed
+vault/research/**/*.md
+vault/blogs/**/*.md
+vault/courses/**/*.md
+vault/decisions/**/*.md
+vault/retrospectives/**/*.md
+vault/_index/**/*.md
+vault/_audit/**/*.md
+vault/marketing/**/*.md
+!vault/research/.gitkeep
+!vault/blogs/.gitkeep
+!vault/courses/.gitkeep
+!vault/decisions/.gitkeep
+!vault/retrospectives/.gitkeep
+!vault/_index/.gitkeep
+!vault/_audit/.gitkeep
+!vault/marketing/.gitkeep
+
+# Runtime logs from launchd jobs
+infra/launchd/.logs/
+
+# Observability runtime data (Langfuse Docker volumes)
+observability/clickhouse-data/
+observability/postgres-data/
+observability/minio-data/
+observability/redis-data/
+observability/open-notebook/surreal_data/
+observability/open-notebook/notebook_data/
