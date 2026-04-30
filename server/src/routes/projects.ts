@@ -13,8 +13,8 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import { conflict, forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -31,8 +31,12 @@ import {
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { environmentService } from "../services/environments.js";
+import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -40,6 +44,22 @@ export function projectRoutes(db: Db) {
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const environmentsSvc = environmentService(db);
+
+  async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
+    if (environmentId === undefined || environmentId === null) return;
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: ["local", "ssh", "sandbox"],
+    });
+  }
+
+  function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
+    if (!policy || typeof policy !== "object" || !("environmentId" in policy)) {
+      return undefined;
+    }
+    const environmentId = (policy as { environmentId?: unknown }).environmentId;
+    return typeof environmentId === "string" || environmentId === null ? environmentId : undefined;
+  }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -103,6 +123,10 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    await assertProjectEnvironmentSelection(
+      companyId,
+      readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
+    );
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       [
@@ -164,6 +188,10 @@ export function projectRoutes(db: Db) {
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
+    );
+    await assertProjectEnvironmentSelection(
+      existing.companyId,
+      readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),
     );
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
@@ -317,6 +345,15 @@ export function projectRoutes(db: Db) {
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
       return;
+    }
+
+    const isSharedWorkspace = Boolean(workspace.sharedWorkspaceKey);
+    if (
+      req.actor.type === "agent"
+      && isSharedWorkspace
+      && SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS.has(action)
+    ) {
+      throw forbidden("Missing permission to manage workspace runtime services");
     }
 
     await assertCanManageProjectWorkspaceRuntimeServices(db, req, {
@@ -522,9 +559,9 @@ export function projectRoutes(db: Db) {
           stderr,
           system:
             action === "stop"
-              ? "Stopped project workspace runtime services.\n"
+              ? "Stopped project workspace runtime services.\nThis does not pause issue work or held wake scheduling."
               : action === "restart"
-                ? "Restarted project workspace runtime services.\n"
+                ? "Restarted project workspace runtime services.\nThis does not pause issue work or held wake scheduling."
                 : "Started project workspace runtime services.\n",
           metadata: {
             runtimeServiceCount,

@@ -14,10 +14,16 @@ import { accessService, logActivity, routineService } from "../services/index.js
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
-export function routineRoutes(db: Db) {
+export function routineRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
-  const svc = routineService(db);
+  const svc = routineService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const access = accessService(db);
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
@@ -277,7 +283,10 @@ export function routineRoutes(db: Db) {
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
-    const run = await svc.runRoutine(routine.id, req.body);
+    const run = await svc.runRoutine(routine.id, req.body, {
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+    });
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: routine.companyId,

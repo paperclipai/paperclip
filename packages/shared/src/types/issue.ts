@@ -116,6 +116,43 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  terminalBlockers?: IssueRelationIssueSummary[];
+}
+
+export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
+
+export type IssueBlockerAttentionReason =
+  | "active_child"
+  | "active_dependency"
+  | "stalled_review"
+  | "attention_required"
+  | null;
+
+export interface IssueBlockerAttention {
+  state: IssueBlockerAttentionState;
+  reason: IssueBlockerAttentionReason;
+  unresolvedBlockerCount: number;
+  coveredBlockerCount: number;
+  stalledBlockerCount: number;
+  attentionBlockerCount: number;
+  sampleBlockerIdentifier: string | null;
+  sampleStalledBlockerIdentifier: string | null;
+}
+
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus;
+  priority: IssuePriority;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IssueRelation {
@@ -168,6 +205,10 @@ export interface IssueExecutionPolicy {
   stages: IssueExecutionStage[];
 }
 
+export interface IssueReviewRequest {
+  instructions: string;
+}
+
 export interface IssueExecutionState {
   status: IssueExecutionStateStatus;
   currentStageId: string | null;
@@ -175,6 +216,7 @@ export interface IssueExecutionState {
   currentStageType: IssueExecutionStageType | null;
   currentParticipant: IssueExecutionStagePrincipal | null;
   returnAssignee: IssueExecutionStagePrincipal | null;
+  reviewRequest: IssueReviewRequest | null;
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
@@ -237,6 +279,8 @@ export interface Issue {
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
+  productivityReview?: IssueProductivityReview | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -262,6 +306,7 @@ export interface IssueComment {
   authorAgentId: string | null;
   authorUserId: string | null;
   body: string;
+  followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -341,6 +386,8 @@ export interface AskUserQuestionsAnswer {
 export interface AskUserQuestionsResult {
   version: 1;
   answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
   summaryMarkdown?: string | null;
 }
 

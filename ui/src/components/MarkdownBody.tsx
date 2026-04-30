@@ -1,14 +1,14 @@
-import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
+import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Github } from "lucide-react";
+import { Check, Copy, ExternalLink, Github } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
+import { Link } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { Link } from "@/lib/router";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
@@ -29,11 +29,9 @@ let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = nul
 
 function MarkdownIssueLink({
   issuePathId,
-  href,
   children,
 }: {
   issuePathId: string;
-  href: string;
   children: ReactNode;
 }) {
   const { data } = useQuery({
@@ -42,14 +40,23 @@ function MarkdownIssueLink({
     staleTime: 60_000,
   });
 
+  const identifier = data?.identifier ?? issuePathId;
+  const title = data?.title ?? identifier;
+  const status = data?.status;
+  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+
   return (
     <Link
-      to={href}
-      className="inline-flex items-center gap-1 align-baseline font-medium"
+      to={`/issues/${identifier}`}
       data-mention-kind="issue"
+      className="paperclip-markdown-issue-ref"
+      title={title}
+      aria-label={issueLabel}
     >
-      {data ? <StatusIcon status={data.status} className="h-3.5 w-3.5" /> : null}
-      <span>{children}</span>
+      {status ? (
+        <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
+      ) : null}
+      {children}
     </Link>
   );
 }
@@ -124,6 +131,133 @@ function isExternalHttpUrl(href: string | null | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function renderLinkBody(
+  children: ReactNode,
+  leadingIcon: ReactNode,
+  trailingIcon: ReactNode,
+): ReactNode {
+  if (!leadingIcon && !trailingIcon) return children;
+
+  // React-markdown can pass arrays/elements for styled link text; the nowrap
+  // splitting below is intentionally limited to plain text links.
+  if (typeof children === "string" && children.length > 0) {
+    if (children.length === 1) {
+      return (
+        <span style={{ whiteSpace: "nowrap" }}>
+          {leadingIcon}
+          {children}
+          {trailingIcon}
+        </span>
+      );
+    }
+    const first = children[0];
+    const last = children[children.length - 1];
+    const middle = children.slice(1, -1);
+    return (
+      <>
+        {leadingIcon ? (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {leadingIcon}
+            {first}
+          </span>
+        ) : first}
+        {middle}
+        {trailingIcon ? (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {last}
+            {trailingIcon}
+          </span>
+        ) : last}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {leadingIcon}
+      {children}
+      {trailingIcon}
+    </>
+  );
+}
+
+function CodeBlock({
+  children,
+  preProps,
+}: {
+  children: ReactNode;
+  preProps: React.HTMLAttributes<HTMLPreElement>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const preRef = useRef<HTMLPreElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const handleCopy = useCallback(async () => {
+    const text = preRef.current?.innerText ?? flattenText(children);
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        try {
+          textarea.select();
+          const success = document.execCommand("copy");
+          if (!success) throw new Error("execCommand copy failed");
+        } finally {
+          document.body.removeChild(textarea);
+        }
+      }
+      setFailed(false);
+      setCopied(true);
+    } catch {
+      setFailed(true);
+      setCopied(true);
+    }
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setCopied(false);
+      setFailed(false);
+    }, 1500);
+  }, [children]);
+
+  const label = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
+
+  return (
+    <div className="paperclip-markdown-codeblock">
+      <pre
+        {...preProps}
+        ref={preRef}
+        style={mergeScrollableBlockStyle(preProps.style as React.CSSProperties | undefined)}
+      >
+        {children}
+      </pre>
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label="Copy code"
+        title={label}
+        className="paperclip-markdown-codeblock-copy"
+        data-copied={copied || undefined}
+        data-failed={failed || undefined}
+      >
+        {copied && !failed ? (
+          <Check aria-hidden="true" className="h-3.5 w-3.5" />
+        ) : (
+          <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+        )}
+        <span className="paperclip-markdown-codeblock-copy-label">{label}</span>
+      </button>
+    </div>
+  );
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
@@ -229,7 +363,7 @@ export function MarkdownBody({
       if (mermaidSource) {
         return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
       }
-      return <pre {...preProps} style={mergeScrollableBlockStyle(preProps.style as React.CSSProperties | undefined)}>{preChildren}</pre>;
+      return <CodeBlock preProps={preProps}>{preChildren}</CodeBlock>;
     },
     code: ({ node: _node, style: codeStyle, children: codeChildren, ...codeProps }) => (
       <code {...codeProps} style={mergeWrapStyle(codeStyle as React.CSSProperties | undefined)}>
@@ -240,7 +374,7 @@ export function MarkdownBody({
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
             {linkChildren}
           </MarkdownIssueLink>
         );
@@ -274,6 +408,12 @@ export function MarkdownBody({
       }
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
+      const leadingIcon = isGitHubLink ? (
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+      ) : null;
+      const trailingIcon = isExternal && !isGitHubLink ? (
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+      ) : null;
       return (
         <a
           href={href}
@@ -282,8 +422,7 @@ export function MarkdownBody({
             : { rel: "noreferrer" })}
           style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
         >
-          {isGitHubLink ? <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" /> : null}
-          {linkChildren}
+          {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
         </a>
       );
     },

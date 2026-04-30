@@ -605,6 +605,37 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("labels pause-caused cancelled runs as paused by board", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-paused",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          resultJson: { stopReason: "paused" },
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-paused", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-paused",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      chainOfThoughtLabel: "Paused by board after 1 minute",
+      runStatus: "cancelled",
+    });
+  });
+
   it("can keep succeeded runs without transcript output for embedded run feeds", () => {
     const messages = buildIssueChatMessages({
       comments: [],

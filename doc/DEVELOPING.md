@@ -43,6 +43,8 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
@@ -112,6 +114,8 @@ pnpm test:release-smoke
 ```
 
 These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
+
+For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 ## One-Command Local Run
 
@@ -193,6 +197,8 @@ For `codex_local`, Paperclip also manages a per-company Codex home under the ins
 - `~/.paperclip/instances/default/companies/<company-id>/codex-home`
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
+
+Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
 ## Worktree-local Instances
 
@@ -415,7 +421,9 @@ If you set `DATABASE_URL`, the server will use that instead of embedded PostgreS
 
 ## Automatic DB Backups
 
-Paperclip can run automatic DB backups on a timer. Defaults:
+Paperclip can run automatic logical database backups on a timer. These backups cover
+non-system database schemas, including migration history and plugin-owned database
+schemas. Defaults:
 
 - enabled
 - every 60 minutes
@@ -442,6 +450,10 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+
+DB backups are not full instance filesystem backups. For full local disaster
+recovery, also back up local storage files and the local encrypted secrets key if
+those providers are enabled.
 
 ## Secrets in Dev
 

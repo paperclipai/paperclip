@@ -13,7 +13,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
@@ -51,6 +51,7 @@ import {
   matchesIssueRef,
   mergeIssueComments,
   removeIssueCommentFromPages,
+  shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
   upsertIssueCommentInPages,
   type IssueCommentReassignment,
@@ -65,6 +66,7 @@ import { IssueChatThread, type IssueChatComposerHandle } from "../components/Iss
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueProperties } from "../components/IssueProperties";
@@ -75,6 +77,7 @@ import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
+import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -85,9 +88,19 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
+import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import {
   Activity as ActivityIcon,
@@ -96,17 +109,21 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Eye,
   EyeOff,
   Hexagon,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
+  PauseCircle,
   Paperclip,
+  PlayCircle,
   Plus,
   Repeat,
   SlidersHorizontal,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import {
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -122,6 +139,7 @@ import {
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
   type SuggestTasksInteraction,
+  type IssueTreeControlMode,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
@@ -132,10 +150,33 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   interruptedRunId?: string | null;
   queueState?: "queued";
   queueTargetRunId?: string | null;
+  queueReason?: "hold" | "active_run" | "other";
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
+const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
+const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
+  pause: "Pause subtree",
+  resume: "Resume subtree",
+  cancel: "Cancel subtree",
+  restore: "Restore subtree",
+};
+const TREE_CONTROL_MODE_HELP_TEXT: Record<IssueTreeControlMode, string> = {
+  pause: "Pause active execution in this issue subtree until an explicit resume.",
+  resume: "Release the active subtree pause hold so held work can continue.",
+  cancel: "Cancel non-terminal issues in this subtree and stop queued/running work where possible.",
+  restore: "Restore issues cancelled by this subtree operation so work can resume.",
+};
+
+function treeControlPreviewErrorCopy(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 403) return "Only board users can preview subtree controls.";
+    if (error.status === 409) return "Preview is stale because subtree hold state changed. Retry to refresh.";
+    if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
+  }
+  return error instanceof Error ? error.message : "Unable to load preview.";
+}
 
 function resolveRunningIssueRun(
   activeRun: ActiveRunForIssue | null | undefined,
@@ -345,7 +386,7 @@ function IssueDetailLoadingState({
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {headerSeed ? (
             <>
-              <StatusIcon status={headerSeed.status} />
+              <StatusIcon status={headerSeed.status} blockerAttention={headerSeed.blockerAttention} />
               <PriorityIcon priority={headerSeed.priority} />
               {identifier ? (
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
@@ -512,12 +553,14 @@ type IssueDetailChatTabProps = {
   issueStatus: Issue["status"];
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
+  blockerAttention: Issue["blockerAttention"] | null;
   comments: IssueDetailComment[];
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
   interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
   onLoadOlderComments: () => void;
+  onRefreshLatestComments: () => Promise<unknown> | void;
   composerRef: Ref<IssueChatComposerHandle>;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
@@ -532,6 +575,8 @@ type IssueDetailChatTabProps = {
   suggestedAssigneeValue: string;
   mentions: MentionOption[];
   composerDisabledReason: string | null;
+  composerHint: string | null;
+  queuedCommentReason: "hold" | "active_run" | "other";
   onVote: (
     commentId: string,
     vote: "up" | "down",
@@ -539,7 +584,7 @@ type IssueDetailChatTabProps = {
   ) => Promise<void>;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
-  onAttachImage: (file: File) => Promise<void>;
+  onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string) => Promise<void>;
   onCancelQueued: (commentId: string) => void;
   interruptingQueuedRunId: string | null;
@@ -562,12 +607,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueStatus,
   executionRunId,
   blockedBy,
+  blockerAttention,
   comments,
   locallyQueuedCommentRunIds,
   interactions,
   hasOlderComments,
   commentsLoadingOlder,
   onLoadOlderComments,
+  onRefreshLatestComments,
   composerRef,
   feedbackVotes,
   feedbackDataSharingPreference,
@@ -582,6 +629,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   suggestedAssigneeValue,
   mentions,
   composerDisabledReason,
+  composerHint,
+  queuedCommentReason,
   onVote,
   onAdd,
   onImageUpload,
@@ -651,6 +700,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
     const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
     const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
+    const followUpCommentIds = new Set<string>();
     const agentIdByRunId = new Map<string, string>();
 
     for (const run of resolvedLinkedRuns) {
@@ -669,10 +719,22 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         interruptedRunId,
       });
     }
+    for (const evt of resolvedActivity) {
+      if (evt.action !== "issue.comment_added") continue;
+      const details = evt.details ?? {};
+      const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
+      if (!commentId) continue;
+      if (details["followUpRequested"] === true || details["resumeIntent"] === true) {
+        followUpCommentIds.add(commentId);
+      }
+    }
 
     return comments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
       const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
+      if (followUpCommentIds.has(comment.id)) {
+        nextComment.followUpRequested = true;
+      }
       const queuedTargetRunId = locallyQueuedCommentRunIds.get(comment.id) ?? null;
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(nextComment, {
         queuedTargetRunId,
@@ -695,11 +757,20 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           ...nextComment,
           queueState: "queued" as const,
           queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueReason: queuedCommentReason,
         };
       }
       return nextComment;
     });
-  }, [comments, liveRunIds, locallyQueuedCommentRunIds, resolvedActivity, resolvedLinkedRuns, runningIssueRun]);
+  }, [
+    comments,
+    liveRunIds,
+    locallyQueuedCommentRunIds,
+    queuedCommentReason,
+    resolvedActivity,
+    resolvedLinkedRuns,
+    runningIssueRun,
+  ]);
   const timelineEvents = useMemo(
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
@@ -732,6 +803,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
         blockedBy={blockedBy ?? []}
+        blockerAttention={blockerAttention}
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
@@ -746,6 +818,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         suggestedAssigneeValue={suggestedAssigneeValue}
         mentions={mentions}
         composerDisabledReason={composerDisabledReason}
+        composerHint={composerHint}
         onVote={onVote}
         onAdd={onAdd}
         imageUploadHandler={onImageUpload}
@@ -766,6 +839,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
           : undefined}
         onImageClick={onImageClick}
+        onRefreshLatestComments={onRefreshLatestComments}
       />
     </div>
   );
@@ -773,6 +847,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
 
 type IssueDetailActivityTabProps = {
   issueId: string;
+  companyId: string;
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: Map<string, Agent>;
@@ -786,6 +861,7 @@ type IssueDetailActivityTabProps = {
 
 function IssueDetailActivityTab({
   issueId,
+  companyId,
   issueStatus,
   childIssues,
   agentMap,
@@ -877,6 +953,7 @@ function IssueDetailActivityTab({
       <div className="mb-3">
         <IssueRunLedger
           issueId={issueId}
+          companyId={companyId}
           issueStatus={issueStatus}
           childIssues={childIssues}
           agentMap={agentMap}
@@ -951,7 +1028,7 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue } = useDialog();
+  const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -974,6 +1051,11 @@ export function IssueDetail() {
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
+  const [treeControlOpen, setTreeControlOpen] = useState(false);
+  const [treeControlMode, setTreeControlMode] = useState<IssueTreeControlMode>("pause");
+  const [treeControlReason, setTreeControlReason] = useState("");
+  const [treeControlWakeAgentsOnResume, setTreeControlWakeAgentsOnResume] = useState(false);
+  const [treeControlCancelConfirmed, setTreeControlCancelConfirmed] = useState(false);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const [locallyQueuedCommentRunIds, setLocallyQueuedCommentRunIds] = useState<Map<string, string>>(() => new Map());
   const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] = useState(0);
@@ -1013,6 +1095,7 @@ export function IssueDetail() {
     isFetchingNextPage: commentsLoadingOlder,
     hasNextPage: hasOlderComments,
     fetchNextPage: fetchOlderComments,
+    refetch: refetchComments,
   } = useInfiniteQuery({
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: ({ pageParam }) =>
@@ -1030,6 +1113,18 @@ export function IssueDetail() {
   const comments = useMemo(
     () => flattenIssueCommentPages(commentPages?.pages),
     [commentPages?.pages],
+  );
+  const shouldPrefetchOlderComments = useMemo(
+    () =>
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: detailTab,
+        hasOlderComments: hasOlderComments ?? false,
+        loadedCommentCount: comments.length,
+        initialPageLoading: commentsLoading,
+        olderPageLoading: commentsLoadingOlder,
+        autoLoadLimit: ISSUE_COMMENT_AUTOLOAD_LIMIT,
+      }),
+    [comments.length, commentsLoading, commentsLoadingOlder, detailTab, hasOlderComments],
   );
   const { data: interactions = [] } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
@@ -1077,9 +1172,9 @@ export function IssueDetail() {
   const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
     queryKey:
       issue?.id && resolvedCompanyId
-        ? queryKeys.issues.listByParent(resolvedCompanyId, issue.id)
+        ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
         : ["issues", "parent", "pending"],
-    queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.id }),
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { descendantOf: issue!.id, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.id,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
@@ -1113,6 +1208,16 @@ export function IssueDetail() {
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    enabled: !!session?.user?.id,
+    retry: false,
+  });
+  const canManageTreeControl = Boolean(
+    selectedCompanyId
+    && boardAccess?.companyIds?.includes(selectedCompanyId),
+  );
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -1146,6 +1251,54 @@ export function IssueDetail() {
     [issuePluginDetailSlots],
   );
   const activePluginTab = issuePluginTabItems.find((item) => item.value === detailTab) ?? null;
+  const {
+    data: treeControlPreview,
+    isFetching: treeControlPreviewLoading,
+    error: treeControlPreviewError,
+    refetch: refetchTreeControlPreview,
+  } = useQuery({
+    queryKey: [
+      "issues",
+      "tree-control-preview",
+      issueId ?? "pending",
+      treeControlMode,
+    ],
+    queryFn: () =>
+      issuesApi.previewTreeControl(issueId!, {
+        mode: treeControlMode,
+        releasePolicy: {
+          strategy: "manual",
+        },
+      }),
+    enabled: treeControlOpen && !!issueId && canManageTreeControl,
+    staleTime: 0,
+    retry: false,
+  });
+  const { data: treeControlState } = useQuery({
+    queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
+    queryFn: () => issuesApi.getTreeControlState(issueId!),
+    enabled: !!issueId && canManageTreeControl,
+    retry: false,
+  });
+  const { data: activeRootPauseHolds = [] } = useQuery({
+    queryKey: ["issues", "tree-holds", issueId ?? "pending", "active-pause-with-members"],
+    queryFn: () =>
+      issuesApi.listTreeHolds(issueId!, {
+        status: "active",
+        mode: "pause",
+        includeMembers: true,
+      }),
+    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true,
+  });
+  const { data: activeCancelHolds = [] } = useQuery({
+    queryKey: ["issues", "tree-holds", issueId ?? "pending", "active-cancel"],
+    queryFn: () =>
+      issuesApi.listTreeHolds(issueId!, {
+        status: "active",
+        mode: "cancel",
+      }),
+    enabled: !!issueId && canManageTreeControl,
+  });
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -1173,8 +1326,11 @@ export function IssueDetail() {
     [issue?.project, issue?.projectId, orderedProjects],
   );
   const childIssues = useMemo(
-    () => [...rawChildIssues].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
-    [rawChildIssues],
+    () => {
+      const descendants = issue?.id ? filterIssueDescendants(issue.id, rawChildIssues) : rawChildIssues;
+      return [...descendants].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    },
+    [issue?.id, rawChildIssues],
   );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(companyLiveRuns), [companyLiveRuns]);
   const issuePanelKey = useMemo(
@@ -1382,6 +1538,81 @@ export function IssueDetail() {
       if (selectedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       }
+    },
+  });
+  const executeTreeControl = useMutation({
+    mutationFn: async () => {
+      if (treeControlMode === "resume") {
+        const pauseHoldId = treeControlState?.activePauseHold?.holdId;
+        if (!pauseHoldId) {
+          throw new Error("No active subtree pause hold is available to resume.");
+        }
+        const releasedHold = await issuesApi.releaseTreeHold(issueId!, pauseHoldId, {
+          reason: treeControlReason.trim() || null,
+          metadata: {
+            wakeAgents: treeControlWakeAgentsOnResume,
+          },
+        });
+        return { kind: "release" as const, hold: releasedHold };
+      }
+      const created = await issuesApi.createTreeHold(issueId!, {
+        mode: treeControlMode,
+        reason: treeControlReason.trim() || null,
+        releasePolicy: {
+          strategy: "manual",
+          ...(treeControlMode === "pause" ? { note: "full_pause" } : {}),
+        },
+        ...(treeControlMode === "restore"
+          ? { metadata: { wakeAgents: treeControlWakeAgentsOnResume } }
+          : {}),
+      });
+      return { kind: "create" as const, hold: created.hold, preview: created.preview };
+    },
+    onSuccess: async (result) => {
+      const modeLabel = TREE_CONTROL_MODE_LABEL[result.hold.mode];
+      const cancelCount = result.preview?.totals.activeRuns ?? 0;
+      pushToast({
+        title: result.kind === "release"
+          ? "Subtree resumed"
+          : result.hold.mode === "pause"
+            ? "Subtree paused"
+            : `${modeLabel} applied`,
+        body: result.kind === "release"
+          ? (result.hold.releaseReason?.trim() || "Active subtree pause released.")
+          : result.hold.mode === "pause"
+            ? `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+            : result.hold.reason?.trim()
+              ? result.hold.reason
+              : "Subtree control applied.",
+      });
+      setTreeControlOpen(false);
+      setTreeControlReason("");
+      setTreeControlWakeAgentsOnResume(false);
+      setTreeControlCancelConfirmed(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) }),
+        queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueId ?? "pending"] }),
+        queryClient.invalidateQueries({ queryKey: ["issues", "tree-holds", issueId ?? "pending"] }),
+        queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-preview", issueId ?? "pending"] }),
+      ]);
+      if (selectedCompanyId) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) }),
+          ...(issue?.id
+            ? [queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(selectedCompanyId, issue.id) })]
+            : []),
+        ]);
+      }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to apply subtree control",
+        body: err instanceof Error ? err.message : "Please try again.",
+        tone: "error",
+      });
     },
   });
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
@@ -2329,6 +2560,17 @@ export function IssueDetail() {
   const loadOlderComments = useCallback(() => {
     void fetchOlderComments();
   }, [fetchOlderComments]);
+  const refetchLatestComments = useCallback(async () => {
+    // Refetch the entire infinite-query (page 0 first), so any comments that
+    // arrived after the initial load — including ones live updates may have
+    // missed during reconnects — are present before we scroll the user to
+    // the absolute newest.
+    await refetchComments();
+  }, [refetchComments]);
+  useEffect(() => {
+    if (!shouldPrefetchOlderComments) return;
+    void fetchOlderComments();
+  }, [fetchOlderComments, shouldPrefetchOlderComments]);
   const handleCommentVote = useCallback(async (commentId: string, vote: "up" | "down", options?: { allowSharing?: boolean; reason?: string }) => {
     await feedbackVoteMutation.mutateAsync({
       targetType: "issue_comment",
@@ -2351,7 +2593,7 @@ export function IssueDetail() {
     return attachment.contentPath;
   }, [uploadAttachment]);
   const handleCommentAttachImage = useCallback(async (file: File) => {
-    await uploadAttachment.mutateAsync(file);
+    return uploadAttachment.mutateAsync(file);
   }, [uploadAttachment]);
   const handleInterruptQueuedRun = useCallback(async (runId: string) => {
     await interruptQueuedComment.mutateAsync(runId);
@@ -2371,6 +2613,60 @@ export function IssueDetail() {
   ) => {
     await answerInteraction.mutateAsync({ interaction, answers });
   }, [answerInteraction]);
+
+  const treePreviewAffectedIssues = useMemo(
+    () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
+    [treeControlPreview],
+  );
+  const treePreviewDisplayIssues = useMemo(
+    () => {
+      const previewIssues = treeControlPreview?.issues ?? [];
+      if (treeControlMode !== "pause") {
+        return previewIssues.filter((candidate) => !candidate.skipped);
+      }
+      return previewIssues.filter((candidate) => !candidate.skipped || candidate.skipReason === "terminal_status");
+    },
+    [treeControlMode, treeControlPreview],
+  );
+  const activePauseHold = treeControlState?.activePauseHold ?? null;
+  const activeRootPauseHoldsForDisplay = useMemo(
+    () => activePauseHold?.isRoot === true ? activeRootPauseHolds : [],
+    [activePauseHold?.isRoot, activeRootPauseHolds],
+  );
+  const heldIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const hold of activeRootPauseHoldsForDisplay) {
+      for (const member of hold.members ?? []) {
+        if (member.skipped) continue;
+        ids.add(member.issueId);
+      }
+    }
+    return ids;
+  }, [activeRootPauseHoldsForDisplay]);
+  const mutedChildIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const child of childIssues) {
+      if (heldIssueIds.has(child.id)) ids.add(child.id);
+    }
+    return ids;
+  }, [childIssues, heldIssueIds]);
+  const childPauseBadgeById = useMemo(() => {
+    const badges = new Map<string, string>();
+    for (const child of childIssues) {
+      if (!heldIssueIds.has(child.id)) continue;
+      badges.set(child.id, "Paused");
+    }
+    return badges;
+  }, [childIssues, heldIssueIds]);
+  const activePauseHoldRoot = useMemo(() => {
+    if (!activePauseHold) return null;
+    if (activePauseHold.rootIssueId === issue?.id) return issue ?? null;
+    return issue?.ancestors?.find((ancestor) => ancestor.id === activePauseHold.rootIssueId) ?? null;
+  }, [activePauseHold, issue]);
+  const activeRootPauseHold = useMemo(
+    () => activeRootPauseHoldsForDisplay.find((hold) => hold.id === activePauseHold?.holdId) ?? null,
+    [activePauseHold?.holdId, activeRootPauseHoldsForDisplay],
+  );
 
   if (isLoading) return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
@@ -2408,6 +2704,55 @@ export function IssueDetail() {
   };
 
   const hasAttachments = attachmentList.length > 0;
+  const treePreviewWarnings = treeControlPreview?.warnings ?? [];
+  const heldDescendantCount = activeRootPauseHold?.members?.filter((member) => member.depth > 0 && !member.skipped).length
+    ?? Math.max(heldIssueIds.size - 1, 0);
+  const canShowSubtreeControls = canManageTreeControl && childIssues.length > 0;
+  const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
+  const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
+  const previewAffectedIssueCount = treePreviewAffectedIssues.length;
+  const previewAffectedAgentCount = treeControlPreview?.totals.affectedAgents ?? 0;
+  const treeControlPrimaryButtonLabel =
+    treeControlMode === "pause"
+      ? "Pause and stop work"
+      : treeControlMode === "cancel"
+        ? `Cancel ${previewAffectedIssueCount} issues`
+      : treeControlMode === "restore"
+          ? `Restore ${previewAffectedIssueCount} issues`
+          : "Resume subtree";
+  const treePreviewAffectedIssueRows = treePreviewDisplayIssues.map((candidate) => ({
+    candidate,
+    issue: {
+      ...issue,
+      id: candidate.id,
+      identifier: candidate.identifier,
+      title: candidate.title,
+      status: candidate.status,
+      parentId: candidate.parentId,
+      assigneeAgentId: candidate.assigneeAgentId,
+      assigneeUserId: candidate.assigneeUserId,
+      executionRunId: candidate.activeRun?.id ?? null,
+    } satisfies Issue,
+  }));
+  const treePreviewAffectedAgentRows = (treeControlPreview?.affectedAgents ?? [])
+    .map((previewAgent) => ({
+      ...previewAgent,
+      agent: agentMap.get(previewAgent.agentId) ?? null,
+    }))
+    .sort((a, b) => (a.agent?.name ?? a.agentId).localeCompare(b.agent?.name ?? b.agentId));
+  const pausedComposerHint = activePauseHold
+    ? (
+      issue.assigneeAgentId
+        ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
+        : "Assign an agent to wake them for triage while the subtree remains paused."
+    )
+    : null;
+  const composerHint = pausedComposerHint;
+  const queuedCommentReason: "hold" | "active_run" | "other" = "active_run";
+  const canApplyTreeControl =
+    Boolean(treeControlPreview)
+    && !treeControlPreviewLoading
+    && (treeControlMode !== "cancel" || treeControlCancelConfirmed);
   const attachmentUploadButton = (
     <>
       <input
@@ -2473,11 +2818,79 @@ export function IssueDetail() {
           This issue is hidden
         </div>
       )}
+      {activePauseHold && (
+        <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+          {activePauseHold.isRoot ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">Subtree pause is active.</span>
+                <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
+                  Root and descendant execution is held until resume. Human comments can still wake assignees for triage.
+                </span>
+              </div>
+              <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
+                {heldDescendantCount} descendant{heldDescendantCount === 1 ? "" : "s"} held
+                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+              </div>
+              {canShowSubtreeControls ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(true);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    Resume subtree
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(true);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    View affected ({heldDescendantCount})
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => {
+                      setTreeControlMode("cancel");
+                      setTreeControlCancelConfirmed(false);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    Cancel subtree...
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="text-xs">
+              This issue is paused by ancestor{" "}
+              {activePauseHoldRoot?.identifier ? (
+                <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
+                  {activePauseHoldRoot.identifier}
+                </Link>
+              ) : (
+                activePauseHold.rootIssueId.slice(0, 8)
+              )}
+              . Resume from the root issue to deliver deferred work.
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-3">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
+            blockerAttention={issue.blockerAttention}
             onChange={(status) => updateIssue.mutate({ status })}
           />
           <PriorityIcon
@@ -2505,6 +2918,20 @@ export function IssueDetail() {
               Routine
             </Link>
           )}
+
+          {issue.productivityReview ? (
+            <ProductivityReviewBadge review={issue.productivityReview} />
+          ) : null}
+
+          {issue.originKind === "issue_productivity_review" ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
+              title="This task is a productivity review."
+            >
+              <Eye className="h-3 w-3" />
+              Productivity review
+            </span>
+          ) : null}
 
           {issue.projectId ? (
             <Link
@@ -2601,11 +3028,80 @@ export function IssueDetail() {
 
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="shrink-0">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="shrink-0"
+                  aria-label="More issue actions"
+                  title="More issue actions"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setMoreOpen(true);
+                    }
+                  }}
+                >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
+            <PopoverContent className="w-52 p-1" align="end">
+              {canShowSubtreeControls ? (
+                <>
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                    onClick={() => {
+                      setTreeControlMode("pause");
+                      setTreeControlCancelConfirmed(false);
+                      setTreeControlOpen(true);
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <PauseCircle className="h-3 w-3" />
+                    Pause subtree...
+                  </button>
+                  {canResumeSubtree ? (
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      onClick={() => {
+                        setTreeControlMode("resume");
+                        setTreeControlWakeAgentsOnResume(true);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <PlayCircle className="h-3 w-3" />
+                      Resume subtree
+                    </button>
+                  ) : null}
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    onClick={() => {
+                      setTreeControlMode("cancel");
+                      setTreeControlCancelConfirmed(false);
+                      setTreeControlOpen(true);
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <XCircle className="h-3 w-3" />
+                    Cancel subtree...
+                  </button>
+                  {canRestoreSubtree ? (
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      onClick={() => {
+                        setTreeControlMode("restore");
+                        setTreeControlWakeAgentsOnResume(false);
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <Repeat className="h-3 w-3" />
+                      Restore subtree...
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {
@@ -2638,6 +3134,7 @@ export function IssueDetail() {
           className="text-[15px] leading-7 text-foreground"
           placeholder="Add a description..."
           multiline
+          foldable
           mentions={mentionOptions}
           imageUploadHandler={async (file) => {
             const attachment = await uploadAttachment.mutateAsync(file);
@@ -2701,12 +3198,17 @@ export function IssueDetail() {
             agents={agents}
             projects={projects}
             liveIssueIds={liveIssueIds}
+            mutedIssueIds={mutedChildIssueIds}
+            issueBadgeById={childPauseBadgeById}
             projectId={issue.projectId ?? undefined}
             viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
             issueLinkState={resolvedIssueDetailState ?? location.state}
-            searchFilters={{ parentId: issue.id }}
+            searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
+            searchWithinLoadedIssues
             baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
             createIssueLabel="Sub-issue"
+            defaultSortField="workflow"
+            showProgressSummary
             onUpdateIssue={handleChildIssueUpdate}
           />
         </div>
@@ -2920,12 +3422,14 @@ export function IssueDetail() {
               issueStatus={issue.status}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}
+              blockerAttention={issue.blockerAttention ?? null}
               comments={threadComments}
               locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
               interactions={interactions}
               hasOlderComments={hasOlderComments}
               commentsLoadingOlder={commentsLoadingOlder}
               onLoadOlderComments={loadOlderComments}
+              onRefreshLatestComments={refetchLatestComments}
               composerRef={commentComposerRef}
               feedbackVotes={feedbackVotes}
               feedbackDataSharingPreference={feedbackDataSharingPreference}
@@ -2940,6 +3444,8 @@ export function IssueDetail() {
               suggestedAssigneeValue={suggestedAssigneeValue}
               mentions={mentionOptions}
               composerDisabledReason={commentComposerDisabledReason}
+              composerHint={composerHint}
+              queuedCommentReason={queuedCommentReason}
               onVote={handleCommentVote}
               onAdd={handleChatAdd}
               onImageUpload={handleCommentImageUpload}
@@ -2959,6 +3465,7 @@ export function IssueDetail() {
           {detailTab === "activity" ? (
             <IssueDetailActivityTab
               issueId={issue.id}
+              companyId={issue.companyId}
               issueStatus={issue.status}
               childIssues={childIssues}
               agentMap={agentMap}
@@ -2993,6 +3500,157 @@ export function IssueDetail() {
           </TabsContent>
         )}
       </Tabs>
+
+      <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
+          <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
+            <DialogTitle>{TREE_CONTROL_MODE_LABEL[treeControlMode]}</DialogTitle>
+            <DialogDescription>
+              {TREE_CONTROL_MODE_HELP_TEXT[treeControlMode]}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
+            {treeControlMode === "cancel" ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                Cancelling a subtree is destructive. Non-terminal issues will be marked cancelled, and running or queued work will be interrupted where possible.
+              </div>
+            ) : null}
+
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">
+                Reason (optional)
+              </label>
+              <Textarea
+                value={treeControlReason}
+                onChange={(event) => setTreeControlReason(event.target.value)}
+                placeholder="Explain why this subtree control is being applied..."
+                className="min-h-[88px]"
+              />
+            </div>
+
+            {(treeControlMode === "resume" || treeControlMode === "restore") ? (
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    disabled={previewAffectedAgentCount === 0}
+                    checked={treeControlWakeAgentsOnResume}
+                    onChange={(event) => setTreeControlWakeAgentsOnResume(event.target.checked)}
+                  />
+                  <span>
+                    <span className="block font-medium">Wake affected agents ({previewAffectedAgentCount})</span>
+                    <span className="text-xs text-muted-foreground">
+                      {previewAffectedAgentCount === 0
+                        ? "No assigned agents are eligible to wake from this preview."
+                        : "Wake assigned agents after this operation completes."}
+                    </span>
+                  </span>
+                </label>
+                {treeControlWakeAgentsOnResume && treePreviewAffectedAgentRows.length > 0 ? (
+                  <div className="max-h-32 space-y-1 overflow-y-auto overscroll-contain">
+                    {treePreviewAffectedAgentRows.map(({ agentId, agent }) => (
+                      <div key={agentId} className="flex items-center gap-2 rounded-sm px-1 py-1 text-sm hover:bg-accent/50">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-background">
+                          <AgentIcon icon={agent?.icon} className="h-3.5 w-3.5 text-muted-foreground" />
+                        </span>
+                        <span className="min-w-0 flex-1 truncate">{agent?.name ?? agentId.slice(0, 8)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {treeControlMode === "cancel" ? (
+              <label className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={treeControlCancelConfirmed}
+                  onChange={(event) => setTreeControlCancelConfirmed(event.target.checked)}
+                />
+                <span>I understand this will cancel {previewAffectedIssueCount} issues.</span>
+              </label>
+            ) : null}
+
+            <div className="space-y-2">
+              {treeControlPreviewLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-3 w-full" />
+                  <Skeleton className="h-3 w-4/5" />
+                  <Skeleton className="h-3 w-2/3" />
+                </div>
+              ) : treeControlPreviewError ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-destructive">{treeControlPreviewErrorCopy(treeControlPreviewError)}</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void refetchTreeControlPreview();
+                    }}
+                  >
+                    Retry preview
+                  </Button>
+                </div>
+              ) : treeControlPreview ? (
+                <div className="space-y-2">
+                  {treePreviewWarnings.length > 0 ? (
+                    <div className="space-y-1">
+                      {treePreviewWarnings.map((warning) => (
+                        <p key={warning.code} className="text-xs text-amber-700 dark:text-amber-300">
+                          {warning.message}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                  {treePreviewAffectedIssueRows.length > 0 ? (
+                    <div className="max-h-56 overflow-y-auto overscroll-contain">
+                      {treePreviewAffectedIssueRows.map(({ candidate, issue: previewIssue }) => (
+                        <div key={candidate.id} style={candidate.depth > 0 ? { paddingLeft: `${Math.min(candidate.depth, 6) * 14}px` } : undefined}>
+                          <Link
+                            to={createIssueDetailPath(candidate.identifier ?? candidate.id)}
+                            issuePrefetch={previewIssue}
+                            className={cn(
+                              "group flex items-start gap-2 border-b border-border py-2 pl-1 pr-2 text-sm no-underline text-inherit transition-colors last:border-b-0 hover:bg-accent/50 sm:items-center",
+                              candidate.skipped && "opacity-60",
+                            )}
+                          >
+                            <StatusIcon status={candidate.status} />
+                            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                              {candidate.identifier ?? candidate.id.slice(0, 8)}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
+                            {candidate.skipped && candidate.skipReason === "terminal_status" ? (
+                              <span className="shrink-0 text-xs text-muted-foreground">Complete</span>
+                            ) : null}
+                          </Link>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">Preview unavailable.</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter className="border-t border-border/60 bg-background px-6 py-4">
+            <Button variant="outline" onClick={() => setTreeControlOpen(false)} disabled={executeTreeControl.isPending}>
+              Close
+            </Button>
+            <Button
+              onClick={() => executeTreeControl.mutate()}
+              disabled={executeTreeControl.isPending || !canApplyTreeControl}
+              variant={treeControlMode === "cancel" ? "destructive" : "default"}
+            >
+              {executeTreeControl.isPending ? "Applying..." : treeControlPrimaryButtonLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>

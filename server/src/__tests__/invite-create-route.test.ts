@@ -113,7 +113,7 @@ describe("POST /companies/:companyId/invites", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     logActivityMock.mockReset();
   });
 

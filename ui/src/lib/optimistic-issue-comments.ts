@@ -150,6 +150,60 @@ export function getNextIssueCommentPageParam(
   return lastPage[lastPage.length - 1]?.id;
 }
 
+function getNextPageCursor<T extends { id: string }>(
+  lastPage: ReadonlyArray<T> | undefined,
+  pageSize: number,
+): string | undefined {
+  if (!lastPage || lastPage.length < pageSize) return undefined;
+  return lastPage[lastPage.length - 1]?.id;
+}
+
+export async function loadRemainingIssueCommentPages<T extends { id: string }>(params: {
+  pages: ReadonlyArray<ReadonlyArray<T>> | undefined;
+  pageParams: ReadonlyArray<string | null> | undefined;
+  pageSize: number;
+  fetchPage: (afterCommentId: string) => Promise<ReadonlyArray<T>>;
+}): Promise<{ pages: T[][]; pageParams: Array<string | null> }> {
+  const pages = (params.pages ?? []).map((page) => [...page]);
+  const pageParams = params.pageParams
+    ? [...params.pageParams].slice(0, pages.length)
+    : pages.map(() => null);
+
+  while (pageParams.length < pages.length) {
+    pageParams.push(null);
+  }
+
+  if (params.pageSize <= 0) return { pages, pageParams };
+
+  let cursor = getNextPageCursor(pages[pages.length - 1], params.pageSize);
+  const seenCursors = new Set<string>();
+  while (cursor && !seenCursors.has(cursor)) {
+    seenCursors.add(cursor);
+    const nextPage = [...await params.fetchPage(cursor)];
+    pages.push(nextPage);
+    pageParams.push(cursor);
+
+    cursor = getNextPageCursor(nextPage, params.pageSize);
+  }
+
+  return { pages, pageParams };
+}
+
+export function shouldAutoloadOlderIssueComments(params: {
+  activeDetailTab: string;
+  hasOlderComments: boolean;
+  loadedCommentCount: number;
+  initialPageLoading: boolean;
+  olderPageLoading: boolean;
+  autoLoadLimit: number;
+}) {
+  if (params.activeDetailTab !== "chat") return false;
+  if (!params.hasOlderComments) return false;
+  if (params.initialPageLoading || params.olderPageLoading) return false;
+  if (params.loadedCommentCount === 0) return false;
+  return params.loadedCommentCount < params.autoLoadLimit;
+}
+
 export function upsertIssueComment(
   comments: IssueComment[] | undefined,
   nextComment: IssueComment,

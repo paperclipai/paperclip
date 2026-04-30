@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from "react";
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
@@ -269,6 +269,111 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   return "shared_workspace";
 }
 
+const IssueTitleTextarea = memo(function IssueTitleTextarea({
+  value,
+  pending,
+  assigneeValue,
+  projectId,
+  descriptionEditorRef,
+  assigneeSelectorRef,
+  projectSelectorRef,
+  onChange,
+}: {
+  value: string;
+  pending: boolean;
+  assigneeValue: string;
+  projectId: string;
+  descriptionEditorRef: RefObject<MarkdownEditorRef | null>;
+  assigneeSelectorRef: RefObject<HTMLButtonElement | null>;
+  projectSelectorRef: RefObject<HTMLButtonElement | null>;
+  onChange: (value: string) => void;
+}) {
+  const [draftValue, setDraftValue] = useState(value);
+
+  useEffect(() => {
+    setDraftValue(value);
+  }, [value]);
+
+  return (
+    <textarea
+      className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
+      placeholder="Issue title"
+      rows={1}
+      value={draftValue}
+      onChange={(e) => {
+        const nextValue = e.target.value;
+        setDraftValue(nextValue);
+        onChange(nextValue);
+        e.target.style.height = "auto";
+        e.target.style.height = `${e.target.scrollHeight}px`;
+      }}
+      readOnly={pending}
+      onKeyDown={(e) => {
+        if (
+          e.key === "Enter" &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.nativeEvent.isComposing
+        ) {
+          e.preventDefault();
+          descriptionEditorRef.current?.focus();
+        }
+        if (e.key === "Tab" && !e.shiftKey) {
+          e.preventDefault();
+          if (assigneeValue) {
+            if (projectId) {
+              descriptionEditorRef.current?.focus();
+            } else {
+              projectSelectorRef.current?.focus();
+            }
+          } else {
+            assigneeSelectorRef.current?.focus();
+          }
+        }
+      }}
+      autoFocus
+    />
+  );
+});
+
+const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
+  value,
+  expanded,
+  mentions,
+  descriptionEditorRef,
+  imageUploadHandler,
+  onChange,
+}: {
+  value: string;
+  expanded: boolean;
+  mentions: MentionOption[];
+  descriptionEditorRef: RefObject<MarkdownEditorRef | null>;
+  imageUploadHandler: (file: File) => Promise<string>;
+  onChange: (value: string) => void;
+}) {
+  const [draftValue, setDraftValue] = useState(value);
+
+  useEffect(() => {
+    setDraftValue(value);
+  }, [value]);
+
+  return (
+    <MarkdownEditor
+      ref={descriptionEditorRef}
+      value={draftValue}
+      onChange={(nextValue) => {
+        setDraftValue(nextValue);
+        onChange(nextValue);
+      }}
+      placeholder="Add description..."
+      bordered={false}
+      mentions={mentions}
+      contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+      imageUploadHandler={imageUploadHandler}
+    />
+  );
+});
+
 function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | undefined) {
   if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
     return mode;
@@ -286,6 +391,10 @@ export function NewIssueDialog() {
   const { pushToast } = useToastActions();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const titleRef = useRef("");
+  const descriptionRef = useRef("");
+  const [titleHasText, setTitleHasText] = useState(false);
+  const [draftHasText, setDraftHasText] = useState(false);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
@@ -308,6 +417,7 @@ export function NewIssueDialog() {
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
+  const initializationKeyRef = useRef<string | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -463,6 +573,10 @@ export function NewIssueDialog() {
       return assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
     },
   });
+  const uploadDescriptionImageHandler = useCallback(async (file: File) => {
+    const asset = await uploadDescriptionImage.mutateAsync(file);
+    return asset.contentPath;
+  }, [uploadDescriptionImage.mutateAsync]);
 
   // Debounced draft saving
   const scheduleSave = useCallback(
@@ -475,12 +589,22 @@ export function NewIssueDialog() {
     [],
   );
 
-  // Save draft on meaningful changes
-  useEffect(() => {
+  const setIssueText = useCallback((nextTitle: string, nextDescription: string) => {
+    titleRef.current = nextTitle;
+    descriptionRef.current = nextDescription;
+    setTitle(nextTitle);
+    setDescription(nextDescription);
+    setTitleHasText(nextTitle.trim().length > 0);
+    setDraftHasText(nextTitle.trim().length > 0 || nextDescription.trim().length > 0);
+  }, []);
+
+  const queueDraftSave = useCallback((overrides: { title?: string; description?: string } = {}) => {
     if (!newIssueOpen) return;
+    const nextTitle = overrides.title ?? titleRef.current;
+    const nextDescription = overrides.description ?? descriptionRef.current;
     scheduleSave({
-      title,
-      description,
+      title: nextTitle,
+      description: nextDescription,
       status,
       priority,
       assigneeValue,
@@ -495,8 +619,43 @@ export function NewIssueDialog() {
       selectedExecutionWorkspaceId,
     });
   }, [
-    title,
-    description,
+    newIssueOpen,
+    scheduleSave,
+    status,
+    priority,
+    assigneeValue,
+    reviewerValue,
+    approverValue,
+    projectId,
+    projectWorkspaceId,
+    assigneeModelOverride,
+    assigneeThinkingEffort,
+    assigneeChrome,
+    executionWorkspaceMode,
+    selectedExecutionWorkspaceId,
+  ]);
+
+  const handleTitleChange = useCallback((nextTitle: string) => {
+    titleRef.current = nextTitle;
+    const nextTitleHasText = nextTitle.trim().length > 0;
+    const nextDraftHasText = nextTitleHasText || descriptionRef.current.trim().length > 0;
+    setTitleHasText((current) => current === nextTitleHasText ? current : nextTitleHasText);
+    setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
+    queueDraftSave({ title: nextTitle });
+  }, [queueDraftSave]);
+
+  const handleDescriptionChange = useCallback((nextDescription: string) => {
+    descriptionRef.current = nextDescription;
+    const nextDraftHasText = titleRef.current.trim().length > 0 || nextDescription.trim().length > 0;
+    setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
+    queueDraftSave({ description: nextDescription });
+  }, [queueDraftSave]);
+
+  // Save draft on meaningful changes
+  useEffect(() => {
+    if (!newIssueOpen) return;
+    queueDraftSave();
+  }, [
     status,
     priority,
     assigneeValue,
@@ -510,12 +669,18 @@ export function NewIssueDialog() {
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
     newIssueOpen,
-    scheduleSave,
+    queueDraftSave,
   ]);
 
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
-    if (!newIssueOpen) return;
+    if (!newIssueOpen) {
+      initializationKeyRef.current = null;
+      return;
+    }
+    const initializationKey = `${selectedCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
+    if (initializationKeyRef.current === initializationKey) return;
+    initializationKeyRef.current = initializationKey;
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
 
@@ -523,13 +688,13 @@ export function NewIssueDialog() {
     if (newIssueDefaults.parentId) {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
         ?? defaultProjectWorkspaceIdForProject(defaultProject);
       const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
         ? "reuse_existing"
         : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
-      setTitle(newIssueDefaults.title ?? "");
-      setDescription(newIssueDefaults.description ?? "");
+      setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
@@ -540,10 +705,11 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
+        ? defaultProjectId || null
+        : null;
     } else if (newIssueDefaults.title) {
-      setTitle(newIssueDefaults.title);
-      setDescription(newIssueDefaults.description ?? "");
+      setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -560,12 +726,11 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+      executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
-      setTitle(draft.title);
-      setDescription(draft.description);
+      setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
       setAssigneeValue(
@@ -587,10 +752,13 @@ export function NewIssueDialog() {
           ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
+      executionWorkspaceDefaultProjectId.current = draft.projectWorkspaceId || restoredProject
+        ? restoredProjectId || null
+        : null;
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      setIssueText("", "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
@@ -605,9 +773,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+      executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
     }
-  }, [newIssueOpen, newIssueDefaults, orderedProjects]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects, selectedCompanyId, setIssueText]);
 
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
@@ -637,8 +805,7 @@ export function NewIssueDialog() {
   }, []);
 
   function reset() {
-    setTitle("");
-    setDescription("");
+    setIssueText("", "");
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
@@ -660,6 +827,7 @@ export function NewIssueDialog() {
     setIsFileDragOver(false);
     setCompanyOpen(false);
     executionWorkspaceDefaultProjectId.current = null;
+    initializationKeyRef.current = null;
   }
 
   function handleCompanyChange(companyId: string) {
@@ -687,7 +855,9 @@ export function NewIssueDialog() {
   }
 
   function handleSubmit() {
-    if (!effectiveCompanyId || !title.trim() || createIssue.isPending) return;
+    const currentTitle = titleRef.current.trim();
+    const currentDescription = descriptionRef.current.trim();
+    if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -716,8 +886,8 @@ export function NewIssueDialog() {
     createIssue.mutate({
       companyId: effectiveCompanyId,
       stagedFiles,
-      title: title.trim(),
-      description: description.trim() || undefined,
+      title: currentTitle,
+      description: currentDescription || undefined,
       status,
       priority: priority || "medium",
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
@@ -806,7 +976,7 @@ export function NewIssueDialog() {
     setStagedFiles((current) => current.filter((file) => file.id !== id));
   }
 
-  const hasDraft = title.trim().length > 0 || description.trim().length > 0 || stagedFiles.length > 0;
+  const hasDraft = draftHasText || stagedFiles.length > 0;
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = selectedAssigneeAgentId
@@ -884,7 +1054,7 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
-  const savedDraft = loadDraft();
+  const savedDraft = useMemo(() => newIssueOpen ? loadDraft() : null, [newIssueOpen]);
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
@@ -903,7 +1073,12 @@ export function NewIssueDialog() {
   }, [orderedProjects]);
 
   useEffect(() => {
-    if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
+    if (
+      !newIssueOpen ||
+      !projectId ||
+      selectedExecutionWorkspaceId ||
+      executionWorkspaceDefaultProjectId.current === projectId
+    ) {
       return;
     }
     const project = orderedProjects.find((entry) => entry.id === projectId);
@@ -912,7 +1087,7 @@ export function NewIssueDialog() {
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
     setSelectedExecutionWorkspaceId("");
-  }, [newIssueOpen, orderedProjects, projectId]);
+  }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorkspaceId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]
@@ -1056,42 +1231,15 @@ export function NewIssueDialog() {
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           {/* Title */}
           <div className="px-4 pt-4 pb-2">
-            <textarea
-            className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-            placeholder="Issue title"
-            rows={1}
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = `${e.target.scrollHeight}px`;
-            }}
-            readOnly={createIssue.isPending}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                !e.metaKey &&
-                !e.ctrlKey &&
-                !e.nativeEvent.isComposing
-              ) {
-                e.preventDefault();
-                descriptionEditorRef.current?.focus();
-              }
-              if (e.key === "Tab" && !e.shiftKey) {
-                e.preventDefault();
-                if (assigneeValue) {
-                  // Assignee already set — skip to project or description
-                  if (projectId) {
-                    descriptionEditorRef.current?.focus();
-                  } else {
-                    projectSelectorRef.current?.focus();
-                  }
-                } else {
-                  assigneeSelectorRef.current?.focus();
-                }
-              }
-            }}
-            autoFocus
+            <IssueTitleTextarea
+              value={title}
+              pending={createIssue.isPending}
+              assigneeValue={assigneeValue}
+              projectId={projectId}
+              descriptionEditorRef={descriptionEditorRef}
+              assigneeSelectorRef={assigneeSelectorRef}
+              projectSelectorRef={projectSelectorRef}
+              onChange={handleTitleChange}
             />
           </div>
 
@@ -1466,18 +1614,13 @@ export function NewIssueDialog() {
                 isFileDragOver && "bg-accent/20",
               )}
             >
-              <MarkdownEditor
-                ref={descriptionEditorRef}
+              <IssueDescriptionEditor
                 value={description}
-                onChange={setDescription}
-                placeholder="Add description..."
-                bordered={false}
+                expanded={expanded}
                 mentions={mentionOptions}
-                contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-                imageUploadHandler={async (file) => {
-                  const asset = await uploadDescriptionImage.mutateAsync(file);
-                  return asset.contentPath;
-                }}
+                descriptionEditorRef={descriptionEditorRef}
+                imageUploadHandler={uploadDescriptionImageHandler}
+                onChange={handleDescriptionChange}
               />
             </div>
             {stagedFiles.length > 0 ? (
@@ -1682,7 +1825,7 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-[8.5rem] disabled:opacity-100"
-              disabled={!title.trim() || createIssue.isPending}
+              disabled={!titleHasText || createIssue.isPending}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >
