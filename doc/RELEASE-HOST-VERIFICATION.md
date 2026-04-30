@@ -123,6 +123,37 @@ The command returns a non-zero exit code when release channel or updater metadat
 
 The `signature` field must contain the generated `.sig` file contents. A path, URL, or secret reference is a blocker because Tauri updater metadata expects signature content in the feed.
 
+## Resident Surface Gate
+
+Phase 62 adds a separate resident tray/menubar and global shortcut gate:
+
+```sh
+pnpm run rt2:resident-surface-gate -- --manifest path/to/resident-surface-evidence.json
+```
+
+This gate validates the native resident surface before tray or shortcut behavior can be treated as release-ready. It writes:
+
+```text
+.planning/native-resident-runs/<timestamp>/
+```
+
+Each run writes:
+
+- `summary.json` - machine-readable status, installed/update state, tray status, shortcut lifecycle, capture handoff, blocker counts, and passed checks
+- `report.md` - operator-readable tray status, shortcut state, capture handoff, blocker table, and passed-check table
+
+The command returns a non-zero exit code when resident surface evidence is incomplete. Required checks include:
+
+- Installed state: channel, version, and build ID.
+- Update state: one of `idle`, `checking`, `available`, `downloading`, `downloaded`, `installing`, `relaunch_required`, `failed`, or `rolled_back`.
+- Tray status: quick capture availability, queue/sync state, auth state, company state, release channel, build identity, update lifecycle state, and macOS/Windows evidence.
+- Tray identity match: tray release channel, build identity, and update state match the top-level installed/update state.
+- Shortcut lifecycle: accelerator, registration, conflict, permission, focus behavior, unregister support, change support, and macOS/Windows evidence.
+- Shortcut readiness: registration is `registered`, conflict is `none`, and permission is `granted`; blocked states require explicit reasons and still fail.
+- Shortcut privacy: capture is explicit-input-only and does not implicitly read clipboard, selected text, screen, window title, or foreground app context.
+- Native capture handoff: source is `native`, channels include `native:tray` and `native:global-shortcut`, route is `/companies/:companyId/rt2/one-liner/inbound-draft`, and capture creates a reviewed persistent draft without auto-apply or auto-promote.
+- Secret hygiene: raw private keys, passwords, provider tokens, and sensitive fields that are not secret references are rejected.
+
 ## Runtime Confidence Report
 
 Phase 47 adds a consolidated runtime confidence report that consumes release-host evidence and the milestone artifact gate:

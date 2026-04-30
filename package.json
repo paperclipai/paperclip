@@ -57,7 +57,9 @@
     "rt2:native-signing-gate": "node scripts/rt2-native-signing-gate.mjs",
     "test:native-signing-gate": "node scripts/rt2-native-signing-gate.test.mjs",
     "rt2:release-channel-gate": "node scripts/rt2-release-channel-gate.mjs",
-    "test:release-channel-gate": "node scripts/rt2-release-channel-gate.test.mjs"
+    "test:release-channel-gate": "node scripts/rt2-release-channel-gate.test.mjs",
+    "rt2:resident-surface-gate": "node scripts/rt2-resident-surface-gate.mjs",
+    "test:resident-surface-gate": "node scripts/rt2-resident-surface-gate.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

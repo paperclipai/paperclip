@@ -266,6 +266,102 @@ Required pass conditions:
 
 Supported rollout strategies are `all`, `percentage`, and `paused`. Percentage rollout requires a numeric `percentage` between 0 and 100. Rollback candidate metadata is mandatory for every channel before the feed can pass.
 
+## Phase 62 Resident Surface Evidence Gate
+
+Phase 62 adds a deterministic resident tray/menubar and global shortcut evidence gate:
+
+```sh
+pnpm run rt2:resident-surface-gate -- --manifest path/to/resident-surface-evidence.json
+```
+
+The gate validates the resident native surface contract and writes durable evidence under `.planning/native-resident-runs/`:
+
+- `summary.json` - machine-readable pass/blocker status, installed/update state, tray status, shortcut lifecycle, capture handoff, blocker counts, and passed checks
+- `report.md` - operator-readable tray status, shortcut state, capture handoff, blocker table, and passed-check table
+
+The command exits non-zero when tray/menu bar status, global shortcut lifecycle, privacy, or capture handoff evidence is incomplete.
+
+### Resident Surface Manifest Shape
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-30T00:00:00.000Z",
+  "installed": {
+    "channel": "beta",
+    "version": "2026.430.0",
+    "buildId": "beta-2026.430.0-current"
+  },
+  "updateState": {
+    "state": "available",
+    "checkedAt": "2026-04-30T00:00:00.000Z",
+    "latestChannel": "beta",
+    "latestVersion": "2026.430.0",
+    "failureReason": null
+  },
+  "tray": {
+    "quickCapture": {
+      "state": "available",
+      "entrypoint": "native:tray",
+      "evidence": "tray menu opens quick capture without applying content"
+    },
+    "queue": { "state": "queued", "pending": 1, "failed": 0, "lastSyncAt": null },
+    "auth": { "state": "authenticated", "externalUserId": "operator-1" },
+    "company": { "state": "connected", "companyId": "company-1", "companyName": "iSens Corp" },
+    "releaseChannel": "beta",
+    "buildIdentity": "beta-2026.430.0-current",
+    "updateState": "available",
+    "statusLabel": "RealTycoon2 beta 2026.430.0 - update available",
+    "platforms": {
+      "macos": { "supported": true, "evidence": "macOS menu bar status evidence" },
+      "windows": { "supported": true, "evidence": "Windows tray status evidence" }
+    }
+  },
+  "shortcut": {
+    "accelerator": "CommandOrControl+Shift+Space",
+    "registration": { "state": "registered", "reason": null },
+    "conflict": { "state": "none", "reason": null },
+    "permission": { "state": "granted", "reason": null },
+    "focus": { "behavior": "open_or_focus_capture", "target": "quick_capture" },
+    "privacy": {
+      "explicitInputOnly": true,
+      "readsClipboard": false,
+      "readsSelectedText": false,
+      "readsScreen": false,
+      "readsWindowTitle": false,
+      "readsForegroundApp": false
+    },
+    "unregister": { "supported": true, "evidence": "shortcut unregister evidence" },
+    "change": { "supported": true, "evidence": "shortcut change evidence" },
+    "platforms": {
+      "macos": { "supported": true, "evidence": "macOS shortcut lifecycle evidence" },
+      "windows": { "supported": true, "evidence": "Windows shortcut lifecycle evidence" }
+    }
+  },
+  "captureHandoff": {
+    "source": "native",
+    "channels": ["native:tray", "native:global-shortcut"],
+    "route": "/companies/:companyId/rt2/one-liner/inbound-draft",
+    "createsPersistentDraft": true,
+    "requiresReview": true,
+    "autoApply": false,
+    "autoPromote": false,
+    "eventFields": ["eventId", "eventTimestamp", "externalUserId"]
+  }
+}
+```
+
+Required pass conditions:
+
+- Tray status exposes quick capture availability, queue/sync state, auth state, company state, release channel, build identity, update lifecycle state, and per-platform macOS/Windows evidence.
+- Tray `releaseChannel`, `buildIdentity`, and `updateState` match the top-level installed/update state.
+- Global shortcut evidence includes accelerator, registration, conflict, permission, focus behavior, unregister support, change support, and per-platform macOS/Windows evidence.
+- Shortcut registration must be `registered`, conflict must be `none`, and permission must be `granted`; blocked states require an explicit reason and still fail the gate.
+- Shortcut privacy must be explicit-input-only and must not read clipboard, selected text, screen, window title, or foreground app context implicitly.
+- Native capture handoff must use `source: native`, channels `native:tray` and `native:global-shortcut`, and route `/companies/:companyId/rt2/one-liner/inbound-draft`.
+- Native capture handoff must create persistent drafts, require review, and must not auto-apply or auto-promote.
+- Raw private keys, passwords, provider tokens, and other sensitive values are rejected. Use secret references only.
+
 ## Updater Key Material
 
 Updater signing is separate from OS code signing.
@@ -352,6 +448,8 @@ Documents may contain only placeholders and secret references, for example:
 - `doc/PUBLISHING.md`
 - `doc/RELEASE-AUTOMATION-SETUP.md`
 - `doc/RELEASE-HOST-VERIFICATION.md`
+- `scripts/rt2-resident-surface-gate.mjs`
+- `scripts/rt2-resident-surface-gate.test.mjs`
 
 ## External Official References
 
