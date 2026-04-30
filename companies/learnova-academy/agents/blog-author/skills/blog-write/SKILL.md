@@ -2,54 +2,72 @@
 
 ## When to use
 
-After the blog draft is complete, before submitting to Content Reviewer.
+After the blog draft is complete and before submitting to Content Reviewer.
+
+## Trigger logic (end of draft)
+
+At the **end of every drafting run**, before handing off to Content Reviewer, check the
+draft's frontmatter for image sentinels:
+
+```bash
+DRAFT_PATH="vault/blogs/<slug>/draft.md"   # adjust to actual path
+
+HERO_LINE=$(awk '/^---/{n++; if(n==2)exit} n==1 && /^hero_image:/' "$DRAFT_PATH")
+
+if echo "$HERO_LINE" | grep -q 'auto:flux' || [ -z "$HERO_LINE" ]; then
+  # Trigger image-gen in frontmatter-wired mode
+  IMAGE_GEN_NEEDED=true
+fi
+```
+
+If `IMAGE_GEN_NEEDED=true`, call the company-level `image-gen` skill with:
+
+```
+draft_path = <absolute path to draft.md>
+```
+
+The image-gen skill handles everything: prompt derivation, FLUX generation, R2 upload,
+and frontmatter rewrite. You do not need to call it per-slot or pass explicit prompts.
+
+### Do not call image-gen when
+
+- `hero_image` is already a structured object (`url:`, `alt:`, `prompt:` fields present)
+- The draft is a correction/minor edit and images are unchanged
 
 ## Image slots
 
-Identify **1 hero** image and **1–2 inline** images placed at major H2 section boundaries that benefit from visual illustration.
+image-gen will populate **1 hero** image and, if budget allows, **1–2 inline** images
+at major H2 section boundaries. You do not need to pre-populate sentinel values —
+simply omit `hero_image` from the frontmatter and image-gen will detect the absence.
 
-## Calling the image-gen skill
+If you want to explicitly request generation (e.g. to force a regen), set:
 
-Use the company-level `image-gen` skill in `companies/learnova-academy/skills/image-gen/`.
+```yaml
+hero_image: auto:flux
+```
+
+## Slot specs (for reference only — image-gen enforces these internally)
 
 | Slot | `aspect` | `quality` |
 |------|----------|-----------|
 | Hero | `16:9` | `standard` |
 | Inline | `3:2` | `standard` |
 
-## Hero prompt style
+## Hero prompt style (for reference — image-gen derives this automatically)
 
-> "clean editorial illustration, [topic], muted teal and amber palette, no text, no logos, 16:9, WebP"
+> "clean editorial illustration, [title], muted teal and amber palette, no text, no logos, 16:9, WebP"
 
-Maximum 150 characters. Do not include brand names, faces, or logos.
+Maximum 150 characters. No brand names, faces, or logos.
 
 ## Budget cap
 
-3 images × $0.04 = **$0.12 per task maximum**. Stop at 3 even if more slots exist.
+3 images × $0.04 = **$0.12 per task maximum**. image-gen enforces this; stop if it
+reports budget exceeded.
 
-## Writing results into frontmatter
+## Post image-gen checklist (before submitting draft)
 
-After generation, write the resulting URLs into draft frontmatter:
-
-```yaml
-hero_image:
-  url: https://...
-  alt: "One-sentence description of the image for screen readers"
-  prompt: "The prompt used (≤150 chars)"
-
-inline_images:
-  - after_heading: "Exact H2 heading text where image should appear"
-    url: https://...
-    alt: "Description"
-    caption: "Optional caption shown below image"
-```
-
-The `after_heading` value must match the H2 heading text exactly (case-sensitive) so the renderer can inject the image in the right position.
-
-## Checklist before submitting draft
-
-- [ ] `hero_image` set (url + alt + prompt)
-- [ ] 1–2 `inline_images` entries at meaningful H2 boundaries
+- [ ] `hero_image` is a structured object (url + alt + prompt) — not `auto:flux` or absent
+- [ ] 1–2 `inline_images` entries present at meaningful H2 boundaries (if budget allowed)
 - [ ] Total images ≤ 3
 - [ ] All alts are descriptive (not "image of…")
 - [ ] Budget used ≤ $0.12
