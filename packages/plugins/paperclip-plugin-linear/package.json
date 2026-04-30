@@ -1,6 +1,6 @@
 {
   "name": "@kkroo/paperclip-plugin-linear",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "Paperclip plugin: bidirectional Linear issue sync with OAuth, webhooks, and import",
   "license": "MIT",
   "type": "module",

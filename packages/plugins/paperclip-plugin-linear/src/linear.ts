@@ -566,6 +566,33 @@ export async function getTeams(
   return data.teams.nodes;
 }
 
+export interface LinearOrganization {
+  id: string;
+  /** Workspace url-key (e.g. `blockcast`) — the slug in `https://linear.app/<urlKey>/...`. */
+  urlKey: string;
+  name: string;
+}
+
+/**
+ * Fetch the workspace ("organization") this OAuth token is connected to.
+ * The `urlKey` is what we persist so we can build correct issue URLs at
+ * webhook ingest time without re-parsing every Linear url ourselves.
+ */
+export async function getOrganization(
+  fetch: LinearFetch,
+  token: string,
+): Promise<LinearOrganization | null> {
+  const data = await gql<{
+    organization: LinearOrganization | null;
+  }>(fetch, token, `
+    query GetOrganization {
+      organization { id urlKey name }
+    }
+  `);
+
+  return data.organization ?? null;
+}
+
 /**
  * Create a new Linear team. `key` must be 1-5 uppercase letters/digits
  * (e.g. "LUC", "ENG2"). Linear will reject duplicates in the workspace.

@@ -107,6 +107,37 @@ async function getCompanyId(ctx: PluginContext): Promise<string | null> {
 }
 
 /**
+ * Resolve the Linear workspace url-key (e.g. `blockcast`) for linkifying bare
+ * BLO-N refs at ingest. Prefers the value cached at OAuth-connect time; falls
+ * back to parsing any candidate Linear URL the caller already has on hand
+ * (webhook payload `data.url`, an existing `link.linearUrl`, etc.). Returns
+ * null only when nothing is available — the linkifier degrades gracefully.
+ */
+async function resolveLinearWorkspaceSlug(
+  ctx: PluginContext,
+  ...candidates: Array<string | null | undefined>
+): Promise<string | null> {
+  const cached = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: STATE_KEYS.workspaceUrlKey,
+  });
+  if (typeof cached === "string" && cached.length > 0) return cached;
+  for (const c of candidates) {
+    const slug = extractLinearWorkspaceSlug(c);
+    if (slug) {
+      // Self-heal: backfill the cache so subsequent calls skip the URL parse.
+      // Best-effort — failures to write are silent (next call will retry).
+      ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.workspaceUrlKey },
+        slug,
+      ).catch(() => undefined);
+      return slug;
+    }
+  }
+  return null;
+}
+
+/**
  * Resolve a Linear assignee's email to a Paperclip user id, with caching.
  *
  * Lazy-on-first-need: looks up `ctx.users.findByEmail` on first call for a
@@ -246,6 +277,22 @@ const plugin = definePlugin({
             { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamKey },
             team.key,
           );
+        }
+
+        // Cache the workspace url-key (e.g. "blockcast") so the comment/
+        // description linkifier can build full Linear urls without parsing
+        // every link.linearUrl. Best-effort — failure here just leaves the
+        // linkifier in its slug-less fallback mode.
+        try {
+          const org = await linear.getOrganization(ctx.http.fetch.bind(ctx.http), token);
+          if (org?.urlKey) {
+            await ctx.state.set(
+              { scopeKind: "instance", stateKey: STATE_KEYS.workspaceUrlKey },
+              org.urlKey,
+            );
+          }
+        } catch (err) {
+          ctx.logger.warn(`Failed to cache Linear workspace url-key: ${err}`);
         }
 
         // Mark as connected
@@ -1195,10 +1242,24 @@ async function handleWebhookEvent(
         const assigneeRecord = (data.assignee as { email?: string | null } | null | undefined) ?? null;
         const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, assigneeRecord?.email);
 
+        // Linear webhook payloads include `url` for Issue events. Prefer that
+        // (workspace-prefixed) over the slug-less form we used to construct
+        // ourselves — the slug-less form leaves the link record without
+        // enough context for downstream linkifiers to build correct urls.
+        const dataUrl = (data.url as string | null | undefined) ?? null;
+        const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, dataUrl);
+        const rawDescription = (data.description as string | null | undefined) ?? null;
+        // Same bug class as comment ingest: bare BLO-N in a Linear-side
+        // description would otherwise mis-route via paperclip's UI linkifier
+        // to paperclip's own /issues/<id>.
+        const description = rawDescription
+          ? linkifyBareLinearIssueRefs(rawDescription, workspaceSlug)
+          : undefined;
+
         const created = await ctx.issues.create({
           companyId,
           title: (data.title as string) ?? "Untitled",
-          description: (data.description as string | null) ?? undefined,
+          description,
           priority: priority as "critical" | "high" | "medium" | "low",
           originKind: "plugin:paperclip-plugin-linear",
           originId: linearIssueId,
@@ -1211,9 +1272,7 @@ async function handleWebhookEvent(
           }, companyId);
         }
 
-        const url = identifier
-          ? `https://linear.app/issue/${identifier}`
-          : "";
+        const url = dataUrl ?? (identifier ? `https://linear.app/issue/${identifier}` : "");
 
         // Mark as created-from-Linear BEFORE createLink so the issue.created
         // event handler (which fires from ctx.issues.create above) can skip it.
@@ -1276,7 +1335,7 @@ async function handleWebhookEvent(
     // by the UI to Paperclip's own `/issues/BLO-1234` — same identifier
     // scheme, different issues. Wrap them as proper Linear links here so the
     // UI rewrite skips them.
-    const workspaceSlug = extractLinearWorkspaceSlug(link.linearUrl);
+    const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, link.linearUrl);
     const safeBody = linkifyBareLinearIssueRefs(commentBody, workspaceSlug);
 
     try {

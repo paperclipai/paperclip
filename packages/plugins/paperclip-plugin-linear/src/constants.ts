@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "paperclip-plugin-linear";
-export const PLUGIN_VERSION = "0.9.2";
+export const PLUGIN_VERSION = "0.9.3";
 
 /** Linear project name used to bucket Paperclip goals as Linear issues. */
 export const GOALS_LINEAR_PROJECT_NAME = "Company Goals";
@@ -58,6 +58,10 @@ export const STATE_KEYS = {
   clientSecretRef: "client-secret-ref",
   oauthTeamId: "oauth-team-id",
   oauthTeamKey: "oauth-team-key",
+  /** Workspace url-key (e.g. `blockcast`) used to build full Linear issue urls
+   * when linkifying bare BLO-N refs at comment/description ingest. Cached at
+   * OAuth connect time so we don't have to parse every link.linearUrl. */
+  workspaceUrlKey: "workspace-url-key",
   companyId: "company-id",
   serverUrl: "server-url",
   connected: "connected",
