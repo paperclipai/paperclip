@@ -12,7 +12,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "Visualize Claude Code and Codex accounts snapped by ccrotate. Persists the latest export to plugin state so Job pods can re-import it on preRun.",
   author: "kkroo",
   categories: ["automation", "connector"],
-  capabilities: ["api.routes.register", "instance.settings.register"],
+  capabilities: [
+    "api.routes.register",
+    "instance.settings.register",
+    "plugin.state.read",
+    "plugin.state.write",
+  ],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
