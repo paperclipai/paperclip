@@ -132,6 +132,41 @@ ending in `_url` is ignored.
 - The bearer token is kept in worker memory only — never written to plugin
   state, never logged.
 
+### Bearer rotation in a Kubernetes deployment
+
+In a typical onprem-k8s deployment the bearer value lives in three places
+that all have to move together. Skipping any one of them strands a stale
+copy that either fails auth or drifts silently. Use this order to avoid a
+gap where Alertmanager presents the new value but the plugin still verifies
+the old one (or vice versa):
+
+1. Generate the new bearer (`openssl rand -base64 32`).
+2. Patch the K8s `Secret` Alertmanager mounts as `credentials_file`. In
+   the Blockcast/onprem-k8s layout this is
+   `monitoring/alertmanager-receivers` key `bearer-token`. AM picks up the
+   change automatically on its next config reload (`POST /-/reload` if
+   you want to force it).
+3. Rotate the paperclip secret-store entry referenced by
+   `webhookTokenRef`. Use the secrets REST API
+   (`POST /api/companies/:companyId/secrets/:secretId/rotate`) or, if you
+   have direct DB access and the `local_encrypted` master key, append a
+   new `company_secret_versions` row and bump
+   `company_secrets.latest_version`. Plugin worker re-resolves on next
+   webhook delivery — no restart needed.
+4. (Defense in depth) Patch the second K8s `Secret`
+   `paperclip/paperclip-alertmanager-webhook-token` so the env-driven
+   `autoConfigureAlertmanagerFromEnv` bootstrap helper can re-seed a
+   fresh deploy. Holds the same value as step 2; keep them in lockstep.
+5. Verify with a synthetic AM webhook delivery:
+   ```sh
+   kubectl -n paperclip exec paperclip-0 -- wget -qS -O- \
+     --header="Authorization: Bearer $NEW_TOKEN" \
+     --header="Content-Type: application/json" \
+     --post-data='{"version":"4","status":"firing","alerts":[{"status":"firing","labels":{"alertname":"BearerRotationProbe","severity":"info"},"annotations":{},"startsAt":"...","endsAt":"0001-01-01T00:00:00Z","fingerprint":"rotation-probe-1"}]}' \
+     http://127.0.0.1:3100/api/plugins/paperclip-plugin-alertmanager/webhooks/alertmanager
+   ```
+   Expect `HTTP 200` with `{"status":"success"}`.
+
 ## Build and test
 
 ```sh
