@@ -634,12 +634,18 @@ function invalidateHeartbeatQueries(
 type ThrottleSlot = { lastFired: number; trailingTimer: ReturnType<typeof setTimeout> | null };
 const invalidationThrottleSlots = new Map<string, ThrottleSlot>();
 const INVALIDATION_THROTTLE_MS = 1500;
+// issues.list refetch is the bandwidth heavyweight (~226 KB/response on a busy
+// company). At the 1500 ms cadence it saturates a thin VPN link and stalls
+// every other concurrent fetch (issue detail open, agent detail, etc.).
+// Bumping the window to 5000 ms keeps the inbox live but cuts background draw
+// to ~45 KB/s during sustained agent activity.
+const INVALIDATION_THROTTLE_MS_LIST = 5000;
 
-function throttledInvalidate(key: string, run: () => void) {
+function throttledInvalidate(key: string, run: () => void, windowMs: number = INVALIDATION_THROTTLE_MS) {
   const slot: ThrottleSlot = invalidationThrottleSlots.get(key) ?? { lastFired: 0, trailingTimer: null };
   const now = Date.now();
   const elapsed = now - slot.lastFired;
-  if (elapsed >= INVALIDATION_THROTTLE_MS) {
+  if (elapsed >= windowMs) {
     slot.lastFired = now;
     if (slot.trailingTimer) {
       clearTimeout(slot.trailingTimer);
@@ -653,7 +659,7 @@ function throttledInvalidate(key: string, run: () => void) {
       slot.trailingTimer = null;
       invalidationThrottleSlots.set(key, slot);
       run();
-    }, INVALIDATION_THROTTLE_MS - elapsed);
+    }, windowMs - elapsed);
     invalidationThrottleSlots.set(key, slot);
   }
 }
@@ -683,7 +689,7 @@ function invalidateActivityQueries(
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
-    });
+    }, INVALIDATION_THROTTLE_MS_LIST);
     if (entityId) {
       const details = readRecord(payload.details);
       const selfCommentActivity =
