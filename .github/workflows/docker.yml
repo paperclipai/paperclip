@@ -79,6 +79,16 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # Skip SBOM + provenance attestations. v6 adds them by default,
+          # which makes the registry serve an OCI image index with
+          # attestation-manifest entries containing very small blobs (550–750
+          # bytes). The blockcast cluster's containerd sometimes EOFs on
+          # those (`short read: expected 750 bytes but got 0`), causing
+          # ImagePullBackOff after a deploy. Plain image manifests pull
+          # cleanly. Re-enable once the registry / containerd path can
+          # reliably serve attestation manifests.
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # When the blockcast vars/secrets are wired, push to BOTH registries
