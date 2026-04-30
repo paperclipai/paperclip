@@ -8,6 +8,8 @@ import {
   createRt2TaskSchema,
   createRt2TodoSchema,
   enqueueRt2ExecutionSchema,
+  reviseRt2CaptureDraftSchema,
+  transitionRt2CaptureDraftSchema,
 } from "./index.js";
 
 describe("RT2 task shared contracts", () => {
@@ -94,5 +96,48 @@ describe("RT2 task shared contracts", () => {
         text: "task: Capture field note; deliverable: note; price: 1000",
       });
     }
+  });
+
+  it("validates persisted capture draft revision and transition payloads", () => {
+    expect(reviseRt2CaptureDraftSchema.parse({
+      snapshot: {
+        taskTitle: "제안서 검수",
+        todoTitle: "가격표 확인",
+        deliverableTitle: "검수 메모",
+        deliverableType: "document",
+        basePrice: 120000,
+        taskMode: "solo",
+        capacity: 1,
+        qualityHint: "검토 대기",
+        okrCandidate: "매출 KPI",
+      },
+      changeSummary: "가격 힌트 수정",
+    })).toEqual(expect.objectContaining({
+      snapshot: expect.objectContaining({
+        taskTitle: "제안서 검수",
+        deliverableTitle: "검수 메모",
+        basePrice: 120000,
+      }),
+      changeSummary: "가격 힌트 수정",
+    }));
+
+    expect(() => reviseRt2CaptureDraftSchema.parse({
+      snapshot: {
+        taskTitle: "",
+        deliverableTitle: "검수 메모",
+      },
+    })).toThrow();
+
+    expect(transitionRt2CaptureDraftSchema.parse({
+      action: "hold",
+      reason: "중복 여부 확인 필요",
+    })).toEqual({
+      action: "hold",
+      reason: "중복 여부 확인 필요",
+    });
+    expect(transitionRt2CaptureDraftSchema.parse({ action: "mark_review_required" })).toEqual({
+      action: "mark_review_required",
+    });
+    expect(() => transitionRt2CaptureDraftSchema.parse({ action: "reject" })).toThrow();
   });
 });

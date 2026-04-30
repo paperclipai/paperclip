@@ -1,10 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   issueWorkProducts,
   issues,
   rt2CaptureDrafts,
+  rt2CaptureDraftRevisions,
   rt2CaptureSources,
   rt2WorkBoardAttachments,
   rt2WorkBoardCards,
@@ -17,7 +18,9 @@ import {
   type CreateRt2BoardAttachment,
   type CreateRt2BoardChecklistItem,
   type PromoteRt2CaptureDraft,
+  type ReviseRt2CaptureDraft,
   type Rt2CaptureDraftSource,
+  type TransitionRt2CaptureDraft,
   type UpsertRt2CaptureSource,
   type UpdateRt2BoardCard,
   type UpdateRt2BoardChecklistItem,
@@ -32,6 +35,7 @@ type ChecklistRow = typeof rt2WorkBoardChecklistItems.$inferSelect;
 type AttachmentRow = typeof rt2WorkBoardAttachments.$inferSelect;
 type CardRow = typeof rt2WorkBoardCards.$inferSelect;
 type CaptureRow = typeof rt2CaptureDrafts.$inferSelect;
+type CaptureRevisionRow = typeof rt2CaptureDraftRevisions.$inferSelect;
 type CaptureSourceRow = typeof rt2CaptureSources.$inferSelect;
 
 const CAPTURE_SOURCE_LABELS = {
@@ -140,7 +144,57 @@ function toAttachment(row: AttachmentRow) {
   };
 }
 
-function toCaptureDraft(row: CaptureRow) {
+function revisionSnapshotFromParsed(parsed: ReturnType<typeof parseOneLinerInput>) {
+  return {
+    taskTitle: parsed.taskTitle,
+    todoTitle: parsed.todoTitle,
+    deliverableTitle: parsed.deliverableTitle,
+    deliverableType: "document",
+    basePrice: parsed.basePrice ?? 0,
+    taskMode: parsed.taskMode,
+    capacity: parsed.capacity,
+    qualityHint: null,
+    goalId: null,
+    okrCandidate: null,
+    sourceEvidenceNote: null,
+    operatorNote: parsed.dailyLog || null,
+  };
+}
+
+function normalizeRevisionSnapshot(value: Record<string, unknown>, fallbackText = "") {
+  const parsed = parseOneLinerInput(fallbackText || String(value.taskTitle ?? ""));
+  return {
+    rawInput: fallbackText || parsed.rawInput,
+    taskTitle: typeof value.taskTitle === "string" && value.taskTitle.trim() ? value.taskTitle.trim() : parsed.taskTitle,
+    todoTitle: typeof value.todoTitle === "string" ? value.todoTitle.trim() : parsed.todoTitle,
+    deliverableTitle: typeof value.deliverableTitle === "string" && value.deliverableTitle.trim() ? value.deliverableTitle.trim() : parsed.deliverableTitle,
+    basePrice: typeof value.basePrice === "number" ? value.basePrice : parsed.basePrice,
+    taskMode: value.taskMode === "collab" ? "collab" as const : "solo" as const,
+    capacity: typeof value.capacity === "number" && value.capacity > 0 ? Math.trunc(value.capacity) : parsed.capacity,
+    dailyLog: typeof value.operatorNote === "string" ? value.operatorNote : parsed.dailyLog,
+    warnings: parsed.warnings,
+    deliverableType: value.deliverableType === "artifact" ? "artifact" as const : "document" as const,
+    goalId: typeof value.goalId === "string" && value.goalId ? value.goalId : null,
+    qualityHint: typeof value.qualityHint === "string" ? value.qualityHint : null,
+    okrCandidate: typeof value.okrCandidate === "string" ? value.okrCandidate : null,
+    sourceEvidenceNote: typeof value.sourceEvidenceNote === "string" ? value.sourceEvidenceNote : null,
+  };
+}
+
+function toCaptureRevision(row: CaptureRevisionRow) {
+  return {
+    id: row.id,
+    draftId: row.draftId,
+    companyId: row.companyId,
+    revisionNumber: row.revisionNumber,
+    snapshot: row.snapshot as Record<string, unknown>,
+    changeSummary: row.changeSummary ?? null,
+    createdByUserId: row.createdByUserId ?? null,
+    createdAt: row.createdAt,
+  };
+}
+
+function toCaptureDraft(row: CaptureRow, latestRevision: CaptureRevisionRow | null = null) {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -180,6 +234,7 @@ function toCaptureDraft(row: CaptureRow) {
     }>,
     duplicateWarning: row.duplicateWarning ?? null,
     auditTrail: row.auditTrail ?? [],
+    latestRevision: latestRevision ? toCaptureRevision(latestRevision) : null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -242,6 +297,30 @@ export function rt2WorkBoardService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) throw notFound("RT2 capture draft not found");
     return row;
+  }
+
+  async function getLatestRevision(draftId: string) {
+    return db
+      .select()
+      .from(rt2CaptureDraftRevisions)
+      .where(eq(rt2CaptureDraftRevisions.draftId, draftId))
+      .orderBy(desc(rt2CaptureDraftRevisions.revisionNumber))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getLatestRevisionMap(draftIds: string[]) {
+    const map = new Map<string, CaptureRevisionRow>();
+    if (draftIds.length === 0) return map;
+    const rows = await db
+      .select()
+      .from(rt2CaptureDraftRevisions)
+      .where(inArray(rt2CaptureDraftRevisions.draftId, draftIds))
+      .orderBy(desc(rt2CaptureDraftRevisions.revisionNumber));
+    for (const row of rows) {
+      if (!map.has(row.draftId)) map.set(row.draftId, row);
+    }
+    return map;
   }
 
   async function listCaptureSources(companyId: string) {
@@ -555,6 +634,17 @@ export function rt2WorkBoardService(db: Db) {
           }],
         })
         .returning();
+      const [revision] = await db
+        .insert(rt2CaptureDraftRevisions)
+        .values({
+          draftId: row.id,
+          companyId,
+          revisionNumber: 1,
+          snapshot: revisionSnapshotFromParsed(parsed),
+          changeSummary: "Initial capture parse",
+          createdByUserId: actorUserId,
+        })
+        .returning();
       if (captureSource) {
         await db
           .update(rt2CaptureSources)
@@ -567,7 +657,7 @@ export function rt2WorkBoardService(db: Db) {
           })
           .where(eq(rt2CaptureSources.id, captureSource.id));
       }
-      return toCaptureDraft(row);
+      return toCaptureDraft(row, revision);
     },
 
     listCaptureQueue: async (companyId: string) => {
@@ -580,7 +670,8 @@ export function rt2WorkBoardService(db: Db) {
         .orderBy(desc(rt2CaptureDrafts.createdAt))
           .limit(80),
       ]);
-      const drafts = rows.map(toCaptureDraft);
+      const latestRevisions = await getLatestRevisionMap(rows.map((row) => row.id));
+      const drafts = rows.map((row) => toCaptureDraft(row, latestRevisions.get(row.id) ?? null));
       return {
         companyId,
         sources,
@@ -595,25 +686,106 @@ export function rt2WorkBoardService(db: Db) {
       };
     },
 
+    getCaptureDraftDetail: async (companyId: string, draftId: string) => {
+      const row = await getCaptureRow(companyId, draftId);
+      const revisions = await db
+        .select()
+        .from(rt2CaptureDraftRevisions)
+        .where(and(eq(rt2CaptureDraftRevisions.companyId, companyId), eq(rt2CaptureDraftRevisions.draftId, draftId)))
+        .orderBy(asc(rt2CaptureDraftRevisions.revisionNumber));
+      const latest = revisions[revisions.length - 1] ?? null;
+      return {
+        ...toCaptureDraft(row, latest),
+        revisions: revisions.map(toCaptureRevision),
+      };
+    },
+
+    reviseCaptureDraft: async (companyId: string, draftId: string, actorUserId: string, input: ReviseRt2CaptureDraft) => {
+      const row = await getCaptureRow(companyId, draftId);
+      if (["promoted", "rejected", "discarded"].includes(row.status)) {
+        throw conflict("RT2_CAPTURE_DRAFT_CLOSED");
+      }
+      const latest = await getLatestRevision(draftId);
+      const nextRevisionNumber = (latest?.revisionNumber ?? 0) + 1;
+      const [revision] = await db
+        .insert(rt2CaptureDraftRevisions)
+        .values({
+          draftId,
+          companyId,
+          revisionNumber: nextRevisionNumber,
+          snapshot: input.snapshot as unknown as Record<string, unknown>,
+          changeSummary: input.changeSummary ?? "Operator revised draft",
+          createdByUserId: actorUserId,
+        })
+        .returning();
+      const [updated] = await db
+        .update(rt2CaptureDrafts)
+        .set({
+          parsedDraft: input.snapshot as unknown as Record<string, unknown>,
+          status: row.status === "review_required" || row.status === "revision_requested" || row.status === "on_hold" ? "revised" : row.status,
+          updatedAt: new Date(),
+          auditTrail: appendAudit(row, "revised", actorUserId, {
+            revisionId: revision.id,
+            revisionNumber: revision.revisionNumber,
+            changeSummary: input.changeSummary ?? null,
+          }),
+        })
+        .where(eq(rt2CaptureDrafts.id, row.id))
+        .returning();
+      return toCaptureDraft(updated, revision);
+    },
+
+    transitionCaptureDraft: async (companyId: string, draftId: string, actorUserId: string, input: TransitionRt2CaptureDraft) => {
+      const row = await getCaptureRow(companyId, draftId);
+      const latest = await getLatestRevision(draftId);
+      const nextStatus =
+        input.action === "hold"
+          ? "on_hold"
+          : input.action === "reject"
+            ? "rejected"
+            : input.action === "request_revision"
+              ? "revision_requested"
+              : "review_required";
+      const [updated] = await db
+        .update(rt2CaptureDrafts)
+        .set({
+          status: nextStatus,
+          failureCode: input.action === "reject" ? "operator_rejected" : row.failureCode,
+          failureMessage: input.reason ?? row.failureMessage,
+          reviewedByUserId: actorUserId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+          auditTrail: appendAudit(row, input.action, actorUserId, {
+            reason: input.reason ?? null,
+            revisionId: latest?.id ?? null,
+            revisionNumber: latest?.revisionNumber ?? null,
+          }),
+        })
+        .where(eq(rt2CaptureDrafts.id, row.id))
+        .returning();
+      return toCaptureDraft(updated, latest);
+    },
+
     promoteCaptureDraft: async (companyId: string, draftId: string, actorUserId: string, input: PromoteRt2CaptureDraft) => {
       const row = await getCaptureRow(companyId, draftId);
-      if (row.status !== "review_required") {
+      if (!["review_required", "revised", "revision_requested"].includes(row.status)) {
         throw conflict("RT2_CAPTURE_DRAFT_NOT_PROMOTABLE");
       }
-      const draft = parseOneLinerInput(row.rawText);
+      const latest = await getLatestRevision(draftId);
+      const draft = normalizeRevisionSnapshot((latest?.snapshot as Record<string, unknown> | undefined) ?? row.parsedDraft, row.rawText);
       let promotedIssueId: string | null = null;
       let promotedWorkProductId: string | null = null;
 
       if (input.target === "task") {
         const issue = await tasks.createTask(companyId, actorUserId, {
           projectId: input.projectId,
-          goalId: input.goalId ?? null,
+          goalId: input.goalId ?? draft.goalId ?? null,
           title: draft.taskTitle,
           description: buildOneLinerTaskDescription(draft),
           priority: input.priority,
           taskMode: input.taskMode,
           capacity: input.capacity,
-          deliverables: [{ title: draft.deliverableTitle, type: "document", basePrice: draft.basePrice ?? 0 }],
+          deliverables: [{ title: draft.deliverableTitle, type: draft.deliverableType, basePrice: draft.basePrice ?? 0 }],
         });
         promotedIssueId = issue.id;
       } else if (input.target === "todo") {
@@ -622,14 +794,14 @@ export function rt2WorkBoardService(db: Db) {
           title: draft.todoTitle || draft.taskTitle,
           description: buildOneLinerTaskDescription(draft),
           assigneeUserId: input.assigneeUserId,
-          deliverables: [{ title: draft.deliverableTitle, type: "document", basePrice: draft.basePrice ?? 0 }],
+          deliverables: [{ title: draft.deliverableTitle, type: draft.deliverableType, basePrice: draft.basePrice ?? 0 }],
         });
         promotedIssueId = todo.id;
       } else {
         const targetIssue = await assertIssue(companyId, input.issueId);
         const workProduct = await workProducts.createForIssue(input.issueId, companyId, {
           projectId: targetIssue.projectId,
-          type: "document",
+          type: draft.deliverableType,
           provider: "custom",
           title: draft.deliverableTitle,
           status: "draft",
@@ -640,11 +812,13 @@ export function rt2WorkBoardService(db: Db) {
           metadata: {
             rt2Deliverable: true,
             rt2State: "defined",
-            rt2Type: "document",
+            rt2Type: draft.deliverableType,
             rt2Owner: targetIssue.parentId ? "todo" : "task",
             rt2Required: true,
             rt2BasePrice: draft.basePrice ?? 0,
             captureDraftId: draftId,
+            captureDraftRevisionId: latest?.id ?? null,
+            captureDraftRevisionNumber: latest?.revisionNumber ?? null,
           },
         });
         promotedIssueId = input.issueId;
@@ -665,17 +839,20 @@ export function rt2WorkBoardService(db: Db) {
             target: input.target,
             promotedIssueId,
             promotedWorkProductId,
+            revisionId: latest?.id ?? null,
+            revisionNumber: latest?.revisionNumber ?? null,
             sourceEvidence: row.sourceEvidence ?? null,
             semanticCitationIds: ((row.semanticContext ?? []) as Array<{ id?: string }>).map((item) => item.id).filter(Boolean),
           }),
         })
         .where(eq(rt2CaptureDrafts.id, row.id))
         .returning();
-      return toCaptureDraft(updated);
+      return toCaptureDraft(updated, latest);
     },
 
     failCaptureDraft: async (companyId: string, draftId: string, actorUserId: string, input: { failureCode: string; failureMessage: string }) => {
       const row = await getCaptureRow(companyId, draftId);
+      const latest = await getLatestRevision(draftId);
       const [updated] = await db
         .update(rt2CaptureDrafts)
         .set({
@@ -689,7 +866,7 @@ export function rt2WorkBoardService(db: Db) {
         })
         .where(eq(rt2CaptureDrafts.id, row.id))
         .returning();
-      return toCaptureDraft(updated);
+      return toCaptureDraft(updated, latest);
     },
   };
 }

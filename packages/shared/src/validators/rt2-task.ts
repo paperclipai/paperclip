@@ -65,6 +65,43 @@ export const createOneLinerInboundDraftSchema = z.object({
 
 export type CreateOneLinerInboundDraft = z.infer<typeof createOneLinerInboundDraftSchema>;
 
+export const rt2CaptureDraftRevisionSnapshotSchema = z.object({
+  taskTitle: z.string().trim().min(1).max(300),
+  todoTitle: z.string().trim().max(300).optional().default(""),
+  deliverableTitle: z.string().trim().min(1).max(300),
+  deliverableType: rt2DeliverableKindSchema.default("document"),
+  basePrice: z.number().int().min(0).nullable().optional(),
+  taskMode: rt2TaskModeSchema.default("solo"),
+  capacity: z.number().int().min(1).default(1),
+  qualityHint: z.string().trim().max(120).nullable().optional(),
+  goalId: z.string().uuid().nullable().optional(),
+  okrCandidate: z.string().trim().max(300).nullable().optional(),
+  sourceEvidenceNote: z.string().trim().max(1000).nullable().optional(),
+  operatorNote: z.string().trim().max(1000).nullable().optional(),
+}).strict();
+
+export const reviseRt2CaptureDraftSchema = z.object({
+  snapshot: rt2CaptureDraftRevisionSnapshotSchema,
+  changeSummary: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+
+export type ReviseRt2CaptureDraft = z.infer<typeof reviseRt2CaptureDraftSchema>;
+
+export const transitionRt2CaptureDraftSchema = z.object({
+  action: z.enum(["hold", "reject", "request_revision", "mark_review_required"]),
+  reason: z.string().trim().min(1).max(1000).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.action !== "mark_review_required" && !value.reason) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "reason is required for hold, reject, and request_revision",
+      path: ["reason"],
+    });
+  }
+});
+
+export type TransitionRt2CaptureDraft = z.infer<typeof transitionRt2CaptureDraftSchema>;
+
 export const rt2BoardQualityStatusSchema = z.enum(["none", "pending_review", "reviewed", "needs_work"]);
 
 export const updateRt2BoardCardSchema = z.object({

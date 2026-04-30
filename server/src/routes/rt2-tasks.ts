@@ -14,8 +14,10 @@ import {
   failRt2ExecutionSchema,
   failRt2CaptureDraftSchema,
   promoteRt2CaptureDraftSchema,
+  reviseRt2CaptureDraftSchema,
   reorderRt2BoardChecklistSchema,
   startRt2ExecutionSchema,
+  transitionRt2CaptureDraftSchema,
   updateRt2BoardCardSchema,
   updateRt2BoardChecklistItemSchema,
   updateRt2TaskCapacitySchema,
@@ -222,6 +224,57 @@ export function rt2TaskRoutes(db: Db) {
     res.json(await boardSvc.listCaptureQueue(companyId));
   });
 
+  router.get("/companies/:companyId/rt2/capture-drafts/:draftId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoardActor(req);
+    res.json(await boardSvc.getCaptureDraftDetail(companyId, req.params.draftId as string));
+  });
+
+  router.post("/companies/:companyId/rt2/capture-drafts/:draftId/revisions", validate(reviseRt2CaptureDraftSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    const draft = await boardSvc.reviseCaptureDraft(companyId, req.params.draftId as string, actorUserId, req.body);
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: actorUserId,
+      action: "rt2.capture.draft_revised",
+      entityType: "capture_draft",
+      entityId: draft.id,
+      details: {
+        revisionId: draft.latestRevision?.id ?? null,
+        revisionNumber: draft.latestRevision?.revisionNumber ?? null,
+        changeSummary: draft.latestRevision?.changeSummary ?? null,
+      },
+    });
+    res.status(201).json(draft);
+  });
+
+  router.post("/companies/:companyId/rt2/capture-drafts/:draftId/transition", validate(transitionRt2CaptureDraftSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = assertBoardActor(req);
+    const draft = await boardSvc.transitionCaptureDraft(companyId, req.params.draftId as string, actorUserId, req.body);
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: actorUserId,
+      action: "rt2.capture.draft_transitioned",
+      entityType: "capture_draft",
+      entityId: draft.id,
+      details: {
+        action: req.body.action,
+        reason: req.body.reason ?? null,
+        status: draft.status,
+        revisionId: draft.latestRevision?.id ?? null,
+        revisionNumber: draft.latestRevision?.revisionNumber ?? null,
+      },
+    });
+    res.json(draft);
+  });
+
   router.post("/companies/:companyId/rt2/capture-drafts/:draftId/promote", validate(promoteRt2CaptureDraftSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -234,7 +287,13 @@ export function rt2TaskRoutes(db: Db) {
       action: "rt2.capture.draft_promoted",
       entityType: "capture_draft",
       entityId: draft.id,
-      details: { target: draft.promotionTarget, promotedIssueId: draft.promotedIssueId, promotedWorkProductId: draft.promotedWorkProductId },
+      details: {
+        target: draft.promotionTarget,
+        promotedIssueId: draft.promotedIssueId,
+        promotedWorkProductId: draft.promotedWorkProductId,
+        revisionId: draft.latestRevision?.id ?? null,
+        revisionNumber: draft.latestRevision?.revisionNumber ?? null,
+      },
     });
     res.json(draft);
   });

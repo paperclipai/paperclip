@@ -13,6 +13,7 @@ import {
   projects,
   rt2V33DomainEvents,
   rt2V33ExecutionAttempts,
+  rt2CaptureDraftRevisions,
   rt2V33ProjectorEvents,
   rt2V33ProjectorState,
   rt2V33TaskParticipants,
@@ -344,6 +345,123 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     });
   });
 
+  it("persists capture draft revisions and promotes the latest reviewed snapshot", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+
+    const created = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "web",
+        channel: "daily-work",
+        text: "task: Original title; todo: Original todo; deliverable: Original memo; price: 90000",
+      })
+      .expect(201);
+
+    const draftId = created.body.inbound.id as string;
+    expect(created.body.inbound).toEqual(expect.objectContaining({
+      status: "review_required",
+    }));
+
+    const initialRevisions = await db
+      .select()
+      .from(rt2CaptureDraftRevisions)
+      .where(eq(rt2CaptureDraftRevisions.draftId, draftId));
+    expect(initialRevisions).toHaveLength(1);
+    expect(initialRevisions[0]).toEqual(expect.objectContaining({
+      revisionNumber: 1,
+      snapshot: expect.objectContaining({
+        taskTitle: "Original title",
+        deliverableTitle: "Original memo",
+      }),
+    }));
+
+    const revised = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${draftId}/revisions`)
+      .send({
+        snapshot: {
+          taskTitle: "Reviewed title",
+          todoTitle: "Reviewed todo",
+          deliverableTitle: "Reviewed memo",
+          deliverableType: "artifact",
+          basePrice: 125000,
+          taskMode: "collab",
+          capacity: 2,
+          qualityHint: "검토 대기",
+          okrCandidate: "매출 KPI",
+          operatorNote: "운영자가 수정함",
+        },
+        changeSummary: "운영자 검수 수정",
+      })
+      .expect(201);
+
+    expect(revised.body).toEqual(expect.objectContaining({
+      status: "revised",
+      latestRevision: expect.objectContaining({
+        revisionNumber: 2,
+        changeSummary: "운영자 검수 수정",
+      }),
+    }));
+
+    const detail = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${draftId}`)
+      .expect(200);
+    expect(detail.body.revisions).toHaveLength(2);
+    expect(detail.body.latestRevision.snapshot).toEqual(expect.objectContaining({
+      taskTitle: "Reviewed title",
+      deliverableTitle: "Reviewed memo",
+      basePrice: 125000,
+    }));
+
+    const held = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${draftId}/transition`)
+      .send({ action: "hold", reason: "중복 여부 확인" })
+      .expect(200);
+    expect(held.body.status).toBe("on_hold");
+
+    const reopened = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${draftId}/transition`)
+      .send({ action: "mark_review_required" })
+      .expect(200);
+    expect(reopened.body.status).toBe("review_required");
+
+    const promoted = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${draftId}/promote`)
+      .send({
+        target: "task",
+        projectId: fixture.projectId,
+        taskMode: "solo",
+        capacity: 1,
+        priority: "medium",
+      })
+      .expect(200);
+
+    expect(promoted.body).toEqual(expect.objectContaining({
+      status: "promoted",
+      latestRevision: expect.objectContaining({ revisionNumber: 2 }),
+    }));
+
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, promoted.body.promotedIssueId));
+    expect(issue).toEqual(expect.objectContaining({
+      title: "Reviewed title",
+    }));
+
+    const products = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, promoted.body.promotedIssueId));
+    expect(products[0]).toEqual(expect.objectContaining({
+      title: "Reviewed memo",
+      type: "artifact",
+      metadata: expect.objectContaining({
+        rt2BasePrice: 125000,
+      }),
+    }));
+  });
+
   it("records signed capture source evidence and blocks missing signatures", async () => {
     fixture = await seedFixture();
     const app = await createApp(fixture.companyId, fixture.managerUserId);
@@ -504,7 +622,8 @@ describeEmbeddedPostgres("rt2 task routes", () => {
       });
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toEqual(expect.stringContaining("deliverable"));
+    expect(response.body.error).toBe("Validation error");
+    expect(JSON.stringify(response.body.details)).toContain("deliverableTitle");
   });
 
   it("rejects capacity shrink without explicitly ending overflow participants", async () => {

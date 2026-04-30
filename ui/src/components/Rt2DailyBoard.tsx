@@ -97,6 +97,8 @@ export function Rt2DailyBoard({
   pendingCaptureDraftId = null,
   onPromoteCaptureDraft,
   onFailCaptureDraft,
+  onReviseCaptureDraft,
+  onTransitionCaptureDraft,
 }: {
   board: Rt2DailyBoardData;
   pendingTodoIssueId: string | null;
@@ -106,6 +108,27 @@ export function Rt2DailyBoard({
   pendingCaptureDraftId?: string | null;
   onPromoteCaptureDraft?: (draftId: string) => void;
   onFailCaptureDraft?: (draftId: string, reason: string) => void;
+  onReviseCaptureDraft?: (draftId: string, data: {
+    snapshot: {
+      taskTitle: string;
+      todoTitle?: string;
+      deliverableTitle: string;
+      deliverableType?: Rt2DeliverableKind;
+      basePrice?: number | null;
+      taskMode?: "solo" | "collab";
+      capacity?: number;
+      qualityHint?: string | null;
+      goalId?: string | null;
+      okrCandidate?: string | null;
+      sourceEvidenceNote?: string | null;
+      operatorNote?: string | null;
+    };
+    changeSummary?: string;
+  }) => void;
+  onTransitionCaptureDraft?: (draftId: string, data: {
+    action: "hold" | "reject" | "request_revision" | "mark_review_required";
+    reason?: string;
+  }) => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, CardDraft>>(() => buildDrafts(board));
   const [quickDrafts, setQuickDrafts] = useState<Record<string, QuickDraft>>(() => buildQuickDrafts(board));
@@ -268,6 +291,8 @@ export function Rt2DailyBoard({
             pendingDraftId={pendingCaptureDraftId}
             onPromoteDraft={onPromoteCaptureDraft}
             onFailDraft={onFailCaptureDraft}
+            onReviseDraft={onReviseCaptureDraft}
+            onTransitionDraft={onTransitionCaptureDraft}
           />
         ) : null}
         <div className="rounded-lg border border-border bg-card/80 p-3">
@@ -743,14 +768,25 @@ function CaptureReviewInbox({
   pendingDraftId,
   onPromoteDraft,
   onFailDraft,
+  onReviseDraft,
+  onTransitionDraft,
 }: {
   queue: Rt2CaptureQueue;
   pendingDraftId: string | null;
   onPromoteDraft?: (draftId: string) => void;
   onFailDraft?: (draftId: string, reason: string) => void;
+  onReviseDraft?: Parameters<typeof Rt2DailyBoard>[0]["onReviseCaptureDraft"];
+  onTransitionDraft?: Parameters<typeof Rt2DailyBoard>[0]["onTransitionCaptureDraft"];
 }) {
   const activeDrafts = queue.drafts.filter((draft) =>
-    draft.status === "review_required" || draft.status === "duplicate" || draft.status === "permission_blocked" || draft.status === "failed",
+    draft.status === "review_required"
+    || draft.status === "revised"
+    || draft.status === "on_hold"
+    || draft.status === "revision_requested"
+    || draft.status === "rejected"
+    || draft.status === "duplicate"
+    || draft.status === "permission_blocked"
+    || draft.status === "failed",
   );
 
   return (
@@ -782,6 +818,8 @@ function CaptureReviewInbox({
               pending={pendingDraftId === draft.id}
               onPromoteDraft={onPromoteDraft}
               onFailDraft={onFailDraft}
+              onReviseDraft={onReviseDraft}
+              onTransitionDraft={onTransitionDraft}
             />
           ))}
         </div>
@@ -795,14 +833,41 @@ function CaptureDraftCard({
   pending,
   onPromoteDraft,
   onFailDraft,
+  onReviseDraft,
+  onTransitionDraft,
 }: {
   draft: Rt2CaptureDraftSummary;
   pending: boolean;
   onPromoteDraft?: (draftId: string) => void;
   onFailDraft?: (draftId: string, reason: string) => void;
+  onReviseDraft?: Parameters<typeof Rt2DailyBoard>[0]["onReviseCaptureDraft"];
+  onTransitionDraft?: Parameters<typeof Rt2DailyBoard>[0]["onTransitionCaptureDraft"];
 }) {
-  const parsed = normalizeParsedDraft(draft.parsedDraft);
+  const parsed = normalizeParsedDraft(draft.latestRevision?.snapshot ?? draft.parsedDraft);
   const sourceEvidence = draft.sourceEvidence;
+  const [isReopen, setIsReopen] = useState(false);
+  const [revisionDraft, setRevisionDraft] = useState(() => ({
+    taskTitle: parsed.taskTitle || draft.rawText,
+    todoTitle: parsed.todoTitle,
+    deliverableTitle: parsed.deliverableTitle,
+    basePrice: parsed.basePrice ?? 0,
+    qualityHint: parsed.qualityHint ?? "",
+    okrCandidate: parsed.okrCandidate ?? "",
+    operatorNote: parsed.operatorNote ?? "",
+    changeSummary: "보드 검수에서 초안 수정",
+  }));
+  const canPromote = draft.status === "review_required" || draft.status === "revised" || draft.status === "revision_requested";
+  const latestRevision = draft.latestRevision;
+
+  function transition(action: "hold" | "reject" | "request_revision", reason: string) {
+    if (onTransitionDraft) {
+      onTransitionDraft(draft.id, { action, reason });
+      return;
+    }
+    if (action === "hold") {
+      onFailDraft?.(draft.id, reason);
+    }
+  }
 
   return (
     <article className="rounded-md border border-border bg-background px-3 py-3">
@@ -816,6 +881,11 @@ function CaptureDraftCard({
                 중복 의심
               </span>
             ) : null}
+            {latestRevision ? (
+              <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
+                수정 이력 v{latestRevision.revisionNumber}
+              </span>
+            ) : null}
           </div>
           <h4 className="mt-2 truncate text-sm font-medium">{parsed.taskTitle || draft.rawText}</h4>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -825,7 +895,7 @@ function CaptureDraftCard({
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
-            disabled={pending || draft.status !== "review_required" || !onPromoteDraft}
+            disabled={pending || !canPromote || !onPromoteDraft}
             onClick={() => onPromoteDraft?.(draft.id)}
           >
             {pending ? "승인 중..." : "Task로 승인"}
@@ -833,13 +903,145 @@ function CaptureDraftCard({
           <Button
             size="sm"
             variant="outline"
-            disabled={pending || !onFailDraft}
-            onClick={() => onFailDraft?.(draft.id, draft.status === "duplicate" ? "중복 초안으로 보류" : "보드 검수에서 보류")}
+            disabled={pending || !onReviseDraft}
+            onClick={() => setIsReopen((current) => !current)}
+          >
+            다시 열기
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending || (!onFailDraft && !onTransitionDraft)}
+            onClick={() => transition("hold", draft.status === "duplicate" ? "중복 초안으로 보류" : "보드 검수에서 보류")}
           >
             보류
           </Button>
         </div>
       </div>
+
+      {isReopen ? (
+        <div className="mt-3 space-y-2 rounded-md border border-border bg-muted/20 p-3" aria-label={`${draft.id}-revision-editor`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h5 className="text-xs font-semibold">초안 수정</h5>
+            <span className="text-[11px] text-muted-foreground">
+              {latestRevision ? `현재 수정 이력 v${latestRevision.revisionNumber}` : "수정 이력 없음"}
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            <label className="grid gap-1 text-xs">
+              <span className="text-muted-foreground">제목</span>
+              <input
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                value={revisionDraft.taskTitle}
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setRevisionDraft((current) => ({ ...current, taskTitle: value }));
+                }}
+              />
+            </label>
+            <label className="grid gap-1 text-xs">
+              <span className="text-muted-foreground">To-Do</span>
+              <input
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                value={revisionDraft.todoTitle}
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setRevisionDraft((current) => ({ ...current, todoTitle: value }));
+                }}
+              />
+            </label>
+            <label className="grid gap-1 text-xs">
+              <span className="text-muted-foreground">산출물</span>
+              <input
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                value={revisionDraft.deliverableTitle}
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setRevisionDraft((current) => ({ ...current, deliverableTitle: value }));
+                }}
+              />
+            </label>
+            <label className="grid gap-1 text-xs">
+              <span className="text-muted-foreground">기준가</span>
+              <input
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                type="number"
+                min={0}
+                value={revisionDraft.basePrice}
+                onInput={(event) => {
+                  const value = Number(event.currentTarget.value);
+                  setRevisionDraft((current) => ({ ...current, basePrice: value }));
+                }}
+              />
+            </label>
+            <label className="grid gap-1 text-xs">
+              <span className="text-muted-foreground">품질 힌트</span>
+              <input
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                value={revisionDraft.qualityHint}
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setRevisionDraft((current) => ({ ...current, qualityHint: value }));
+                }}
+              />
+            </label>
+            <label className="grid gap-1 text-xs">
+              <span className="text-muted-foreground">OKR/KPI 후보</span>
+              <input
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+                value={revisionDraft.okrCandidate}
+                onInput={(event) => {
+                  const value = event.currentTarget.value;
+                  setRevisionDraft((current) => ({ ...current, okrCandidate: value }));
+                }}
+              />
+            </label>
+          </div>
+          <label className="grid gap-1 text-xs">
+            <span className="text-muted-foreground">운영자 메모</span>
+            <textarea
+              className="min-h-16 rounded-md border border-border bg-background px-2 py-1 text-sm"
+              value={revisionDraft.operatorNote}
+              onInput={(event) => {
+                const value = event.currentTarget.value;
+                setRevisionDraft((current) => ({ ...current, operatorNote: value }));
+              }}
+            />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              disabled={!onReviseDraft || !revisionDraft.taskTitle.trim() || !revisionDraft.deliverableTitle.trim()}
+              onClick={() => onReviseDraft?.(draft.id, {
+                snapshot: {
+                  taskTitle: revisionDraft.taskTitle,
+                  todoTitle: revisionDraft.todoTitle,
+                  deliverableTitle: revisionDraft.deliverableTitle,
+                  deliverableType: parsed.deliverableType,
+                  basePrice: Math.max(0, Math.trunc(revisionDraft.basePrice || 0)),
+                  taskMode: parsed.taskMode === "collab" ? "collab" : "solo",
+                  capacity: parsed.capacity || 1,
+                  qualityHint: revisionDraft.qualityHint || null,
+                  okrCandidate: revisionDraft.okrCandidate || null,
+                  operatorNote: revisionDraft.operatorNote || null,
+                },
+                changeSummary: revisionDraft.changeSummary,
+              })}
+            >
+              수정 저장
+            </Button>
+            <Button size="sm" variant="outline" disabled={!onTransitionDraft} onClick={() => transition("request_revision", "추가 재검토 요청")}>
+              재검토 요청
+            </Button>
+            <Button size="sm" variant="outline" disabled={!onTransitionDraft} onClick={() => transition("reject", "보드 검수에서 반려")}>
+              반려
+            </Button>
+          </div>
+          {latestRevision?.changeSummary ? (
+            <p className="text-xs text-muted-foreground">최근 수정: {latestRevision.changeSummary}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
         <div className="rounded-md bg-muted/40 px-2 py-2">
@@ -880,6 +1082,10 @@ function normalizeParsedDraft(value: Record<string, unknown>) {
     basePrice: typeof value.basePrice === "number" ? value.basePrice : null,
     taskMode: typeof value.taskMode === "string" ? value.taskMode : "solo",
     capacity: typeof value.capacity === "number" ? value.capacity : 1,
+    deliverableType: value.deliverableType === "artifact" ? "artifact" as const : "document" as const,
+    qualityHint: typeof value.qualityHint === "string" ? value.qualityHint : "",
+    okrCandidate: typeof value.okrCandidate === "string" ? value.okrCandidate : "",
+    operatorNote: typeof value.operatorNote === "string" ? value.operatorNote : "",
   };
 }
 
@@ -887,6 +1093,14 @@ function captureStatusLabel(status: Rt2CaptureDraftSummary["status"]) {
   switch (status) {
     case "review_required":
       return "검수 필요";
+    case "revised":
+      return "수정됨";
+    case "on_hold":
+      return "보류됨";
+    case "revision_requested":
+      return "재검토 요청";
+    case "rejected":
+      return "반려됨";
     case "duplicate":
       return "중복 의심";
     case "permission_blocked":

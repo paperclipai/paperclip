@@ -145,6 +145,8 @@ describe("Rt2DailyBoard", () => {
           pendingCaptureDraftId={props.pendingCaptureDraftId ?? null}
           onPromoteCaptureDraft={props.onPromoteCaptureDraft}
           onFailCaptureDraft={props.onFailCaptureDraft}
+          onReviseCaptureDraft={props.onReviseCaptureDraft}
+          onTransitionCaptureDraft={props.onTransitionCaptureDraft}
         />,
       );
     });
@@ -198,6 +200,23 @@ describe("Rt2DailyBoard", () => {
           semanticContext: [],
           duplicateWarning: null,
           auditTrail: [],
+          latestRevision: {
+            id: "revision-1",
+            draftId: "draft-1",
+            companyId: "company-1",
+            revisionNumber: 1,
+            snapshot: {
+              taskTitle: "제안서 검수",
+              todoTitle: "가격표 확인",
+              deliverableTitle: "검수 메모",
+              basePrice: 120000,
+              taskMode: "solo",
+              capacity: 1,
+            },
+            changeSummary: "Initial capture parse",
+            createdByUserId: "user-1",
+            createdAt: new Date("2026-04-30T00:00:00.000Z"),
+          },
           createdAt: new Date("2026-04-30T00:00:00.000Z"),
           updatedAt: new Date("2026-04-30T00:00:00.000Z"),
         },
@@ -232,6 +251,7 @@ describe("Rt2DailyBoard", () => {
           semanticContext: [],
           duplicateWarning: "Potential duplicate of capture draft draft-1",
           auditTrail: [],
+          latestRevision: null,
           createdAt: new Date("2026-04-30T00:01:00.000Z"),
           updatedAt: new Date("2026-04-30T00:01:00.000Z"),
         },
@@ -596,6 +616,58 @@ describe("Rt2DailyBoard", () => {
 
     expect(onPromoteCaptureDraft).toHaveBeenCalledWith("draft-1");
     expect(onFailCaptureDraft).toHaveBeenCalledWith("draft-2", "중복 초안으로 보류");
+
+    act(() => root.unmount());
+  });
+
+  it("reopens capture drafts for revision edits and review state actions", () => {
+    const onReviseCaptureDraft = vi.fn();
+    const onTransitionCaptureDraft = vi.fn();
+    const { container, root } = renderBoard({
+      captureQueue: buildCaptureQueue(),
+      onReviseCaptureDraft,
+      onTransitionCaptureDraft,
+    });
+
+    expect(container.textContent).toContain("수정 이력 v1");
+
+    const reopenButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("다시 열기"));
+    act(() => {
+      reopenButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[aria-label="draft-1-revision-editor"]')).not.toBeNull();
+    expect(container.textContent).toContain("초안 수정");
+    expect(container.textContent).toContain("수정 저장");
+    expect(container.textContent).toContain("재검토 요청");
+    expect(container.textContent).toContain("반려");
+
+    const titleInput = container.querySelector('[aria-label="draft-1-revision-editor"] input') as HTMLInputElement | null;
+    act(() => {
+      if (!titleInput) return;
+      titleInput.value = "수정된 제안서 검수";
+      titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("수정 저장"));
+    const requestButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("재검토 요청"));
+    const rejectButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("반려"));
+
+    act(() => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      requestButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      rejectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onReviseCaptureDraft).toHaveBeenCalledWith("draft-1", expect.objectContaining({
+      snapshot: expect.objectContaining({
+        taskTitle: "수정된 제안서 검수",
+        deliverableTitle: "검수 메모",
+        basePrice: 120000,
+      }),
+    }));
+    expect(onTransitionCaptureDraft).toHaveBeenCalledWith("draft-1", { action: "request_revision", reason: "추가 재검토 요청" });
+    expect(onTransitionCaptureDraft).toHaveBeenCalledWith("draft-1", { action: "reject", reason: "보드 검수에서 반려" });
 
     act(() => root.unmount());
   });

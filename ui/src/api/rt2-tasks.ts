@@ -11,6 +11,7 @@ import type {
   Rt2BoardChecklistItem,
   Rt2BoardOverview,
   Rt2CaptureDraftSummary,
+  Rt2CaptureDraftDetail,
   Rt2CaptureQueue,
   Rt2CaptureSourceSummary,
   UpdateRt2TaskCapacity,
@@ -190,6 +191,29 @@ export const rt2TasksApi = {
     api.post<Rt2BoardAttachmentPreview>(`/companies/${companyId}/rt2/work-board/cards/${encodeURIComponent(issueId)}/attachments`, data),
   listCaptureQueue: (companyId: string) =>
     api.get<Rt2CaptureQueue>(`/companies/${companyId}/rt2/capture-drafts`),
+  getCaptureDraft: (companyId: string, draftId: string) =>
+    api.get<Rt2CaptureDraftDetail>(`/companies/${companyId}/rt2/capture-drafts/${encodeURIComponent(draftId)}`),
+  reviseCaptureDraft: (companyId: string, draftId: string, data: {
+    snapshot: {
+      taskTitle: string;
+      todoTitle?: string;
+      deliverableTitle: string;
+      deliverableType?: "document" | "artifact";
+      basePrice?: number | null;
+      taskMode?: "solo" | "collab";
+      capacity?: number;
+      qualityHint?: string | null;
+      goalId?: string | null;
+      okrCandidate?: string | null;
+      sourceEvidenceNote?: string | null;
+      operatorNote?: string | null;
+    };
+    changeSummary?: string;
+  }) => api.post<Rt2CaptureDraftSummary>(`/companies/${companyId}/rt2/capture-drafts/${encodeURIComponent(draftId)}/revisions`, data),
+  transitionCaptureDraft: (companyId: string, draftId: string, data: {
+    action: "hold" | "reject" | "request_revision" | "mark_review_required";
+    reason?: string;
+  }) => api.post<Rt2CaptureDraftSummary>(`/companies/${companyId}/rt2/capture-drafts/${encodeURIComponent(draftId)}/transition`, data),
   promoteCaptureDraft: (companyId: string, draftId: string, data:
     | { target: "task"; projectId: string; goalId?: string | null; taskMode?: "solo" | "collab"; capacity?: number; priority?: "critical" | "high" | "medium" | "low" }
     | { target: "todo"; taskIssueId: string; assigneeUserId: string }

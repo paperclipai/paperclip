@@ -133,6 +133,32 @@ export function DailyWorkPage() {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
     },
   });
+  const reviseCaptureDraft = useMutation({
+    mutationFn: ({
+      draftId,
+      data,
+    }: {
+      draftId: string;
+      data: Parameters<typeof rt2TasksApi.reviseCaptureDraft>[2];
+    }) => rt2TasksApi.reviseCaptureDraft(selectedCompanyId!, draftId, data),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+    },
+  });
+  const transitionCaptureDraft = useMutation({
+    mutationFn: ({
+      draftId,
+      data,
+    }: {
+      draftId: string;
+      data: Parameters<typeof rt2TasksApi.transitionCaptureDraft>[2];
+    }) => rt2TasksApi.transitionCaptureDraft(selectedCompanyId!, draftId, data),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+    },
+  });
 
   if (!selectedCompanyId) {
     return <EmptyState icon={SquareChartGantt} message="회사를 선택하면 일일 업무 보드를 열 수 있습니다." />;
@@ -211,6 +237,8 @@ export function DailyWorkPage() {
           pendingCaptureDraftId={promoteCaptureDraft.isPending ? promoteCaptureDraft.variables ?? null : null}
           onPromoteCaptureDraft={(draftId) => promoteCaptureDraft.mutate(draftId)}
           onFailCaptureDraft={(draftId, reason) => failCaptureDraft.mutate({ draftId, reason })}
+          onReviseCaptureDraft={(draftId, data) => reviseCaptureDraft.mutate({ draftId, data })}
+          onTransitionCaptureDraft={(draftId, data) => transitionCaptureDraft.mutate({ draftId, data })}
         />
       ) : (
         <EmptyState icon={SquareChartGantt} message="오늘 표시할 일일 업무 카드가 없습니다." />

@@ -150,9 +150,30 @@ export interface Rt2BoardOverview {
 }
 
 export type Rt2CaptureDraftSource = "web" | "floating" | "voice" | "slack" | "teams" | "webhook" | "mobile" | "native";
-export type Rt2CaptureDraftStatus = "review_required" | "duplicate" | "permission_blocked" | "failed" | "promoted" | "discarded";
+export type Rt2CaptureDraftStatus =
+  | "review_required"
+  | "revised"
+  | "on_hold"
+  | "revision_requested"
+  | "rejected"
+  | "duplicate"
+  | "permission_blocked"
+  | "failed"
+  | "promoted"
+  | "discarded";
 export type Rt2CaptureSourceInstallationState = "not_installed" | "installed" | "blocked" | "stale" | "error";
 export type Rt2CaptureSourceSigningStatus = "unsigned" | "signed" | "invalid" | "missing" | "stale";
+
+export interface Rt2CaptureDraftRevisionSummary {
+  id: string;
+  draftId: string;
+  companyId: string;
+  revisionNumber: number;
+  snapshot: Record<string, unknown>;
+  changeSummary: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
 
 export interface Rt2CaptureSourceSummary {
   id: string | null;
@@ -211,8 +232,13 @@ export interface Rt2CaptureDraftSummary {
   semanticContext: Rt2CaptureSemanticContextItem[];
   duplicateWarning: string | null;
   auditTrail: Array<Record<string, unknown>>;
+  latestRevision: Rt2CaptureDraftRevisionSummary | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface Rt2CaptureDraftDetail extends Rt2CaptureDraftSummary {
+  revisions: Rt2CaptureDraftRevisionSummary[];
 }
 
 export interface Rt2CaptureQueue {

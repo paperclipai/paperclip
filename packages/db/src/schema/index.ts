@@ -109,6 +109,7 @@ export { rt2AntiGamingSignals, rt2SettlementGovernance, rt2SettlementThresholds 
 export {
   rt2CaptureSources,
   rt2CaptureDrafts,
+  rt2CaptureDraftRevisions,
   rt2WorkBoardAttachments,
   rt2WorkBoardCards,
   rt2WorkBoardChecklistItems,

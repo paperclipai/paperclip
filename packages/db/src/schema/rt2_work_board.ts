@@ -128,3 +128,21 @@ export const rt2CaptureDrafts = pgTable(
     ),
   }),
 );
+
+export const rt2CaptureDraftRevisions = pgTable(
+  "rt2_capture_draft_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    draftId: uuid("draft_id").notNull().references(() => rt2CaptureDrafts.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    revisionNumber: integer("revision_number").notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    changeSummary: text("change_summary"),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    draftRevisionUq: uniqueIndex("rt2_capture_draft_revisions_draft_revision_uq").on(table.draftId, table.revisionNumber),
+    companyDraftIdx: index("rt2_capture_draft_revisions_company_draft_idx").on(table.companyId, table.draftId),
+  }),
+);
