@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.koenig.cron-driver</string>
+
+  <!-- Pure-Python long-running daemon. No bash wrapper, no `set -e`,
+       no .env sourcing at the shell level (Python reads .env.koenig itself).
+       This dodges the macOS Sequoia background-task-management quirk that
+       silently exits-78 the bash-wrapped watchdog plist. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts/koenig-cron-driver.py</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
+    <key>KOENIG_CRON_TICK_S</key>
+    <string>300</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Be patient — Sequoia complains if a daemon respawns too fast. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts/.logs/cron-driver.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts/.logs/cron-driver.err.log</string>
+</dict>
+</plist>
