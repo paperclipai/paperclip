@@ -17,6 +17,36 @@ sources:
   - https://news.ycombinator.com/item?id=47952722
   - https://github.com/anthropics/claude-code/issues/53262
   - https://status.claude.com/incidents/2gf1jpyty350
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Cursor 3.0 Release Notes — Agents Window, /best-of-n, /worktree"
+    url: https://cursor.com/changelog/3-0
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Cursor Changelog — Cursor"
+    url: https://cursor.com/changelog
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Claude Agent SDK Overview — Anthropic Documentation"
+    url: https://docs.anthropic.com/en/docs/claude-code/sdk
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Claude Code Overview — Anthropic Documentation"
+    url: https://docs.anthropic.com/en/docs/claude-code/overview
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Claude Code HERMES.md Billing Bug — Hacker News Discussion"
+    url: https://news.ycombinator.com/item?id=47952722
+    retrieved: 2026-04-30
+  - n: 6
+    title: "Claude Code Issue #53262 — GitHub"
+    url: https://github.com/anthropics/claude-code/issues/53262
+    retrieved: 2026-04-30
+  - n: 7
+    title: "Claude.ai API Outage — Status Page"
+    url: https://status.claude.com/incidents/2gf1jpyty350
+    retrieved: 2026-04-30
 whats_new:
   - "Cursor 3.2 and Claude Code both landed parallel-subagent runtimes in April 2026 — same architecture, opposite ergonomic bet"
 learning_objectives:
