@@ -1,0 +1,25 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-23-hr-heartbeat-masking.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: Create email-heartbeat routine",
+      "status": "pending",
+      "description": "**Goal:** New cron routine that fires every 30 min, finds all active onboarding cases, checks for candidate replies, nudges if 24h elapsed.\n\n**Files:**\n- Create: `agents/hr/routines/email-heartbeat.md`\n\n**Acceptance Criteria:**\n- [ ] cron trigger every 30min\n- [ ] reads audit-log for active cases\n- [ ] nudge only after 24h\n- [ ] no duplicate nudges\n- [ ] data sensitivity section present\n\n```json:metadata\n{\"files\": [\"agents/hr/routines/email-heartbeat.md\"], \"verifyCommand\": \"cat agents/hr/routines/email-heartbeat.md\", \"acceptanceCriteria\": [\"cron trigger every 30min\", \"reads audit-log for active cases\", \"nudge only after 24h\", \"no duplicate nudges\", \"data sensitivity section present\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Simplify Phase 3 in employee-onboarding routine",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Remove vague polling logic from Phase 3 — heartbeat owns polling.\n\n**Files:**\n- Modify: `agents/hr/routines/employee-onboarding.md` (Phase 3 section)\n\n**Acceptance Criteria:**\n- [ ] no polling in Phase 3\n- [ ] heartbeat ownership documented\n- [ ] threshold table present (24h/48h/72h)\n\n```json:metadata\n{\"files\": [\"agents/hr/routines/employee-onboarding.md\"], \"verifyCommand\": \"grep -n 'outlook_search_emails' agents/hr/routines/employee-onboarding.md\", \"acceptanceCriteria\": [\"no polling in Phase 3\", \"heartbeat ownership documented\", \"threshold table present\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Add Aadhaar masking rules",
+      "status": "pending",
+      "description": "**Goal:** Explicit government-ID redaction constraint in AGENTS.md, onboarding routine, and document-validator skill.\n\n**Files:**\n- Modify: `agents/hr/AGENTS.md`\n- Modify: `agents/hr/routines/employee-onboarding.md` (Phase 5)\n- Modify: `agents/hr/skills/document-validator.md` (Steps 4 and 5)\n\n**Acceptance Criteria:**\n- [ ] masking rule in AGENTS.md\n- [ ] masking note in Phase 5\n- [ ] REDACTED placeholder in document-validator steps 4 and 5\n\n```json:metadata\n{\"files\": [\"agents/hr/AGENTS.md\", \"agents/hr/routines/employee-onboarding.md\", \"agents/hr/skills/document-validator.md\"], \"verifyCommand\": \"grep -l 'REDACTED|never output|redact' agents/hr/AGENTS.md agents/hr/routines/employee-onboarding.md agents/hr/skills/document-validator.md\", \"acceptanceCriteria\": [\"masking rule in AGENTS.md\", \"masking note in Phase 5\", \"REDACTED placeholder in document-validator steps 4 and 5\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-04-23T00:00:00Z"
+}

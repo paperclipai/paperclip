@@ -127,6 +127,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { resolveFromRepoRoot } from "../utils/repo-root.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -279,6 +280,39 @@ export async function resolveExecutionRunAdapterConfig(input: {
     }
   }
   return { resolvedConfig, secretKeys };
+}
+
+/**
+ * Resolves relative paths inside adapter_config to absolute paths before
+ * the config is passed to the adapter execution layer.
+ *
+ * Why here and not in the adapter?
+ * adapter_config is stored in the shared Azure DB. We store relative paths
+ * (e.g. cwd:".", extraArgs:["--mcp-config","agents/marketing-specialist/mcp.json"])
+ * so the DB row works on any machine. This function runs server-side at spawn
+ * time, converting them to absolute paths specific to the current machine's
+ * repo location before Claude Code is launched.
+ */
+export function normalizeAdapterConfigPaths(config: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...config };
+  // DB stores "." or a relative path; resolve to absolute so the child process
+  // starts in the correct directory on whatever machine is running the server.
+  if (typeof result.cwd === "string" && result.cwd.trim().length > 0) {
+    result.cwd = resolveFromRepoRoot(result.cwd.trim());
+  }
+  // --mcp-config path in extraArgs was previously stored as an absolute path
+  // tied to one developer's machine. Now stored relative; resolve here.
+  if (Array.isArray(result.extraArgs)) {
+    result.extraArgs = result.extraArgs.map((arg, i, arr) => {
+      if (typeof arg !== "string") return arg;
+      const prev = arr[i - 1];
+      if (typeof prev === "string" && prev === "--mcp-config") {
+        return resolveFromRepoRoot(arg);
+      }
+      return arg;
+    });
+  }
+  return result;
 }
 
 export function extractMentionedSkillIdsFromSources(
@@ -4969,12 +5003,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : persistedWorkspaceManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+    const { resolvedConfig: rawResolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
+    const resolvedConfig = normalizeAdapterConfigPaths(rawResolvedConfig);
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,

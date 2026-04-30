@@ -80,6 +80,7 @@ import {
   inspectBoardClaimChallenge
 } from "../board-claim.js";
 import { getStorageService } from "../storage/index.js";
+import { resolveRepoRoot } from "../utils/repo-root.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -149,7 +150,7 @@ function readSkillMarkdown(skillName: string): string | null {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     path.resolve(moduleDir, "../../skills", normalized, "SKILL.md"), // published: dist/routes/ -> <pkg>/skills/
-    path.resolve(process.cwd(), "skills", normalized, "SKILL.md"), // cwd (e.g. monorepo root)
+    path.resolve(resolveRepoRoot(), "skills", normalized, "SKILL.md"), // monorepo root/skills/
     path.resolve(moduleDir, "../../../skills", normalized, "SKILL.md") // dev: src/routes/ -> repo root/skills/
   ];
   for (const skillPath of candidates) {
@@ -167,7 +168,7 @@ function resolvePaperclipSkillsDir(): string | null {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     path.resolve(moduleDir, "../../skills"),         // published
-    path.resolve(process.cwd(), "skills"),           // cwd (monorepo root)
+    path.resolve(resolveRepoRoot(), "skills"),       // monorepo root/skills/
     path.resolve(moduleDir, "../../../skills"),       // dev
   ];
   for (const candidate of candidates) {

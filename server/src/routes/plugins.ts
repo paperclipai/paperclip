@@ -21,7 +21,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
@@ -67,6 +67,7 @@ import {
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { resolveRepoRoot } from "../utils/repo-root.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -137,8 +138,9 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
   "x-request-id",
 ]);
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "../../..");
+// resolveRepoRoot() detects pnpm-workspace.yaml — reliable on any machine.
+// path.resolve(__dirname, "../../..") was wrong: walked up to server/ not repo root.
+const REPO_ROOT = resolveRepoRoot();
 
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRepoRoot, toRelativeIfPossible } from "../utils/repo-root.js";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companySkills } from "@paperclipai/db";
@@ -921,12 +922,13 @@ export async function readLocalSkillImportFromDirectory(
     ...(options?.metadata ?? {}),
   };
   const inventory = await collectLocalSkillInventory(resolvedSkillDir, options?.inventoryMode ?? "full");
+  const storedLocator = toRelativeIfPossible(resolvedSkillDir);
 
   return {
     key: deriveCanonicalSkillKey(companyId, {
       slug,
       sourceType: "local_path",
-      sourceLocator: resolvedSkillDir,
+      sourceLocator: storedLocator,
       metadata,
     }),
     slug,
@@ -935,7 +937,7 @@ export async function readLocalSkillImportFromDirectory(
     markdown,
     packageDir: resolvedSkillDir,
     sourceType: "local_path",
-    sourceLocator: resolvedSkillDir,
+    sourceLocator: storedLocator,
     sourceRef: null,
     trustLevel: deriveTrustLevel(inventory),
     compatibility: "compatible",
@@ -994,20 +996,22 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
     const inventory: CompanySkillFileInventoryEntry[] = [
       { path: "SKILL.md", kind: "skill" },
     ];
+    const skillDir = path.dirname(resolvedPath);
+    const storedLocator = toRelativeIfPossible(skillDir);
     return [{
       key: deriveCanonicalSkillKey(companyId, {
         slug,
         sourceType: "local_path",
-        sourceLocator: path.dirname(resolvedPath),
+        sourceLocator: storedLocator,
         metadata,
       }),
       slug,
       name: asString(parsed.frontmatter.name) ?? slug,
       description: asString(parsed.frontmatter.description),
       markdown,
-      packageDir: path.dirname(resolvedPath),
+      packageDir: skillDir,
       sourceType: "local_path",
-      sourceLocator: path.dirname(resolvedPath),
+      sourceLocator: storedLocator,
       sourceRef: null,
       trustLevel: deriveTrustLevel(inventory),
       compatibility: "compatible",
@@ -1346,7 +1350,9 @@ function resolveDesiredSkillKeys(
 
 function normalizeSkillDirectory(skill: SkillSourceInfoTarget) {
   if ((skill.sourceType !== "local_path" && skill.sourceType !== "catalog") || !skill.sourceLocator) return null;
-  const resolved = path.resolve(skill.sourceLocator);
+  const resolved = path.isAbsolute(skill.sourceLocator)
+    ? skill.sourceLocator
+    : path.resolve(resolveRepoRoot(), skill.sourceLocator);
   if (path.basename(resolved).toLowerCase() === "skill.md") {
     return path.dirname(resolved);
   }
@@ -1355,7 +1361,9 @@ function normalizeSkillDirectory(skill: SkillSourceInfoTarget) {
 
 function normalizeSourceLocatorDirectory(sourceLocator: string | null) {
   if (!sourceLocator) return null;
-  const resolved = path.resolve(sourceLocator);
+  const resolved = path.isAbsolute(sourceLocator)
+    ? sourceLocator
+    : path.resolve(resolveRepoRoot(), sourceLocator);
   return path.basename(resolved).toLowerCase() === "skill.md" ? path.dirname(resolved) : resolved;
 }
 

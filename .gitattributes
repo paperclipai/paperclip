@@ -1,0 +1,12 @@
+# Medicodio theme files — always keep our version when merging upstream
+ui/src/index.css                    merge=ours
+ui/src/context/ThemeContext.tsx     merge=ours
+ui/components.json                  merge=ours
+ui/public/favicon.ico               merge=ours
+ui/public/favicon.svg               merge=ours
+ui/public/favicon-16x16.png         merge=ours
+ui/public/favicon-32x32.png         merge=ours
+ui/public/android-chrome-192x192.png merge=ours
+ui/public/android-chrome-512x512.png merge=ours
+ui/public/apple-touch-icon.png      merge=ours
+ui/public/site.webmanifest          merge=ours

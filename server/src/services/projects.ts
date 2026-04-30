@@ -18,6 +18,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { toRelativeIfPossible, resolveFromRepoRoot } from "../utils/repo-root.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -142,7 +143,7 @@ function toWorkspace(
     projectId: row.projectId,
     name: row.name,
     sourceType: row.sourceType as ProjectWorkspace["sourceType"],
-    cwd: normalizeWorkspaceCwd(row.cwd),
+    cwd: resolveWorkspaceCwd(row.cwd),
     repoUrl: row.repoUrl ?? null,
     repoRef: row.repoRef ?? null,
     defaultRef: row.defaultRef ?? row.repoRef ?? null,
@@ -296,10 +297,22 @@ function readNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// Converts an absolute cwd to a relative path before writing to DB.
+// Storing relative paths (e.g. ".") means the row works on any machine —
+// each machine resolves it against its own repo root at read time.
 function normalizeWorkspaceCwd(value: unknown): string | null {
   const cwd = readNonEmptyString(value);
   if (!cwd) return null;
-  return cwd === REPO_ONLY_CWD_SENTINEL ? null : cwd;
+  if (cwd === REPO_ONLY_CWD_SENTINEL) return null;
+  return toRelativeIfPossible(cwd);
+}
+
+// Converts the relative cwd from DB back to an absolute path for runtime use.
+// Absolute paths (legacy rows) pass through unchanged.
+function resolveWorkspaceCwd(value: unknown): string | null {
+  const cwd = readNonEmptyString(value);
+  if (!cwd) return null;
+  return resolveFromRepoRoot(cwd);
 }
 
 function deriveNameFromCwd(cwd: string): string {

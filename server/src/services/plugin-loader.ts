@@ -49,6 +49,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { toRelativeIfPossible, resolveFromRepoRoot } from "../utils/repo-root.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -913,7 +914,10 @@ export function pluginLoader(
     const resolvedVersion = manifest.version;
 
     return {
-      packagePath: resolvedPackagePath,
+      // For local-path installs, strip the machine-specific prefix so DB stores
+      // e.g. "packages/plugins/my-plugin" instead of "/Users/karthikkhatavkar/...".
+      // npm installs are already relative to node_modules so no change needed.
+      packagePath: localPath ? toRelativeIfPossible(resolvedPackagePath) : resolvedPackagePath,
       packageName: resolvedPackageName,
       version: resolvedVersion,
       source: localPath ? "local-filesystem" : "npm",
@@ -1318,7 +1322,8 @@ export function pluginLoader(
         // For local-path installs, fall back to the stored packagePath so
         // `upgradePlugin` can re-read the manifest from disk without needing
         // the caller to re-supply the path every time.
-        localPath = plugin.packagePath ?? undefined,
+        // packagePath in DB may be relative — resolve before passing as localPath
+        localPath = plugin.packagePath ? resolveFromRepoRoot(plugin.packagePath) : undefined,
         version,
       } = upgradeOptions;
 
@@ -1396,8 +1401,11 @@ export function pluginLoader(
       if (isPathInsideDir(directManagedDir, localPluginDir)) {
         managedTargets.add(directManagedDir);
       }
-      if (plugin.packagePath && isPathInsideDir(plugin.packagePath, localPluginDir)) {
-        managedTargets.add(path.resolve(plugin.packagePath));
+      if (plugin.packagePath) {
+        const absPluginPath = resolveFromRepoRoot(plugin.packagePath);
+        if (isPathInsideDir(absPluginPath, localPluginDir)) {
+          managedTargets.add(absPluginPath);
+        }
       }
 
       const packageJsonPath = path.join(localPluginDir, "package.json");
@@ -1902,10 +1910,12 @@ function resolveWorkerEntrypoint(
   const manifest = plugin.manifestJson;
   const workerRelPath = manifest.entrypoints.worker;
 
-  // For local-path installs we persist the resolved package path; use it first
-  if (plugin.packagePath && existsSync(plugin.packagePath)) {
-    const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
-    if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
+  // packagePath in DB is stored as a relative path (e.g. "packages/plugins/my-plugin")
+  // for portability. Resolve it to absolute for existsSync/require to work correctly.
+  const resolvedPackagePath = plugin.packagePath ? resolveFromRepoRoot(plugin.packagePath) : null;
+  if (resolvedPackagePath && existsSync(resolvedPackagePath)) {
+    const entrypoint = path.resolve(resolvedPackagePath, workerRelPath);
+    if (entrypoint.startsWith(path.resolve(resolvedPackagePath)) && existsSync(entrypoint)) {
       return entrypoint;
     }
   }
@@ -1957,8 +1967,10 @@ function resolvePluginPackageRoot(
   plugin: PluginRecord & { packagePath?: string | null },
   localPluginDir: string,
 ): string {
-  if (plugin.packagePath && existsSync(plugin.packagePath)) {
-    return path.resolve(plugin.packagePath);
+  // packagePath stored relative in DB; resolve to absolute before filesystem ops
+  const resolvedPkgPath = plugin.packagePath ? resolveFromRepoRoot(plugin.packagePath) : null;
+  if (resolvedPkgPath && existsSync(resolvedPkgPath)) {
+    return resolvedPkgPath;
   }
 
   const packageName = plugin.packageName;

@@ -51,7 +51,7 @@ const watchedDirectories = [
 ].map((relativePath) => path.join(repoRoot, relativePath));
 
 const watchedFiles = [
-  ".env",
+  ".paperclip/.env",
   "package.json",
   "pnpm-workspace.yaml",
   "tsconfig.base.json",
@@ -132,6 +132,11 @@ if (bindMode === "custom" && !bindHost) {
 const env: NodeJS.ProcessEnv = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  // Absolute paths so server subprocess (CWD=server/) resolves these correctly
+  PAPERCLIP_HOME: path.join(repoRoot, ".paperclip"),
+  PAPERCLIP_LOG_DIR: path.join(repoRoot, ".paperclip", "logs"),
+  PAPERCLIP_STORAGE_LOCAL_DIR: path.join(repoRoot, ".paperclip", "data", "storage"),
+  PAPERCLIP_SECRETS_MASTER_KEY_FILE: path.join(repoRoot, ".paperclip", "secrets", "master.key"),
 };
 
 if (mode === "dev") {
@@ -564,7 +569,7 @@ async function getDevHealthPayload() {
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
-  return await parseJsonResponseWithLimit(response);
+  return await parseJsonResponseWithLimit(response) as { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } };
 }
 
 async function waitForChildExit() {

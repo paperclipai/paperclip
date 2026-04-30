@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "teams": {
+      "command": "node",
+      "args": ["./packages/mcp-teams/dist/stdio.js"],
+      "env": {
+        "TEAMS_TENANT_ID": "${SHAREPOINT_TENANT_ID}",
+        "TEAMS_CLIENT_ID": "${SHAREPOINT_CLIENT_ID}",
+        "TEAMS_CLIENT_SECRET": "${SHAREPOINT_CLIENT_SECRET}"
+      }
+    }
+  }
+}

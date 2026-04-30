@@ -29,6 +29,7 @@ import {
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { resolveRepoRoot } from "../utils/repo-root.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -1354,7 +1355,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         phase: "workspace_teardown",
         command,
         resolvedCommand,
-        cwd: workspacePath ?? input.projectWorkspace?.cwd ?? process.cwd(),
+        cwd: workspacePath ?? input.projectWorkspace?.cwd ?? resolveRepoRoot(),
         env: cleanupEnv,
         label: `Execution workspace cleanup command "${command}"`,
         metadata: {
@@ -1436,7 +1437,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       if (input.recorder) {
         await input.recorder.recordOperation({
           phase: "workspace_teardown",
-          cwd: projectWorkspaceCwd ?? process.cwd(),
+          cwd: projectWorkspaceCwd ?? resolveRepoRoot(),
           metadata: {
             workspaceId: input.workspace.id,
             workspacePath: resolvedWorkspacePath,
