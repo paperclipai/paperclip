@@ -4,16 +4,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
-import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanySettings } from "./CompanySettings";
+import { CompanyEnvironments } from "./CompanyEnvironments";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   update: vi.fn(),
-  pause: vi.fn(),
-  resume: vi.fn(),
-  archive: vi.fn(),
 }));
 
 const mockAccessApi = vi.hoisted(() => ({
@@ -46,7 +42,6 @@ const mockSecretsApi = vi.hoisted(() => ({
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
-const mockInvalidateQueries = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
@@ -82,52 +77,23 @@ vi.mock("../context/ToastContext", () => ({
   useToast: () => ({
     pushToast: mockPushToast,
   }),
-  useToastActions: () => ({
-    pushToast: mockPushToast,
-  }),
 }));
-
-const selectedCompany = {
-  id: "company-1",
-  name: "Paperclip",
-  description: "AI control plane",
-  status: "active" as const,
-  pauseReason: null,
-  pausedAt: null,
-  issuePrefix: "PAP",
-  issueCounter: 12,
-  budgetMonthlyCents: 0,
-  spentMonthlyCents: 0,
-  requireBoardApprovalForNewAgents: true,
-  feedbackDataSharingEnabled: false,
-  feedbackDataSharingConsentAt: null,
-  feedbackDataSharingConsentByUserId: null,
-  feedbackDataSharingTermsVersion: null,
-  brandColor: "#123456",
-  logoAssetId: null,
-  logoUrl: null,
-  createdAt: new Date("2026-04-10T00:00:00.000Z"),
-  updatedAt: new Date("2026-04-10T00:00:00.000Z"),
-};
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [selectedCompany],
-    selectedCompany,
-    selectedCompanyId: selectedCompany.id,
+    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP" }],
+    selectedCompany: {
+      id: "company-1",
+      name: "Paperclip",
+      description: null,
+      brandColor: null,
+      logoUrl: null,
+      issuePrefix: "PAP",
+    },
+    selectedCompanyId: "company-1",
     setSelectedCompanyId: mockSetSelectedCompanyId,
   }),
 }));
-
-vi.mock("@tanstack/react-query", async () => {
-  const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
-  return {
-    ...actual,
-    useQueryClient: () => ({
-      invalidateQueries: mockInvalidateQueries,
-    }),
-  };
-});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -139,26 +105,12 @@ async function flushReact() {
   });
 }
 
-describe("CompanySettings", () => {
+describe("CompanyEnvironments", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
-      configurable: true,
-      value: vi.fn(() => ({
-        fillStyle: "",
-        fillRect: vi.fn(),
-        beginPath: vi.fn(),
-        arc: vi.fn(),
-        fill: vi.fn(),
-      })),
-    });
-    Object.defineProperty(HTMLCanvasElement.prototype, "toDataURL", {
-      configurable: true,
-      value: vi.fn(() => "data:image/png;base64,stub"),
-    });
 
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableEnvironments: true,
@@ -168,65 +120,20 @@ describe("CompanySettings", () => {
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES),
     );
     mockSecretsApi.list.mockResolvedValue([]);
-    mockCompaniesApi.update.mockResolvedValue(selectedCompany);
-    mockCompaniesApi.pause.mockResolvedValue({ ...selectedCompany, status: "paused", pauseReason: "manual", pausedAt: new Date() });
-    mockCompaniesApi.resume.mockResolvedValue({ ...selectedCompany, status: "active", pauseReason: null, pausedAt: null });
-    mockCompaniesApi.archive.mockResolvedValue(selectedCompany);
-    mockInvalidateQueries.mockClear();
-    mockPushToast.mockReset();
+    mockCompaniesApi.update.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+      description: null,
+      brandColor: null,
+      logoUrl: null,
+      issuePrefix: "PAP",
+    });
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
-  });
-
-  it("renders a pause action and calls the company pause API", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <TooltipProvider>
-            <QueryClientProvider client={queryClient}>
-              <CompanySettings />
-            </QueryClientProvider>
-          </TooltipProvider>
-        </MemoryRouter>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    expect(container.textContent).toContain("Company execution");
-    expect(container.textContent).toContain("Pause company");
-
-    const pauseButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Pause company"),
-    );
-    expect(pauseButton).toBeTruthy();
-
-    await act(async () => {
-      pauseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    await flushReact();
-
-    expect(mockCompaniesApi.pause).toHaveBeenCalledWith("company-1");
-    expect(mockPushToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Company paused",
-        tone: "success",
-      }),
-    );
-
-    await act(async () => {
-      root.unmount();
-    });
   });
 
   it("hides sandbox creation when no run-capable sandbox provider plugins are installed", async () => {
@@ -239,7 +146,7 @@ describe("CompanySettings", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <CompanyEnvironments />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -305,7 +212,7 @@ describe("CompanySettings", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <CompanyEnvironments />
           </TooltipProvider>
         </QueryClientProvider>,
       );

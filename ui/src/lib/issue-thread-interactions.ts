@@ -87,6 +87,9 @@ export function buildIssueThreadInteractionSummary(
   if (interaction.status === "answered") {
     return count === 1 ? "Answered 1 question" : `Answered ${count} questions`;
   }
+  if (interaction.status === "cancelled") {
+    return count === 1 ? "Cancelled 1 question" : `Cancelled ${count} questions`;
+  }
   return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
 }
 
