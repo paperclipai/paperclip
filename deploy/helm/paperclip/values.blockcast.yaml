@@ -73,6 +73,19 @@ env:
       value: "true"
     - name: PAPERCLIP_RUNTIME_API_CANDIDATES_JSON
       value: '["https://paperclip.blockcast.net"]'
+    # GitHub PAT for the in-image github-mcp-server (stdio mode). The
+    # claude_k8s adapter reads this StatefulSet pod's env spec and copies
+    # any valueFrom entry — incl. secretKeyRef — onto every agent Job pod
+    # it creates (paperclip-adapter-claude-k8s job-manifest.ts:
+    # inheritedEnvValueFrom). The bundled github-mcp-server reads
+    # GITHUB_PERSONAL_ACCESS_TOKEN from process env at startup, so each
+    # agent's spawned stdio MCP picks up the PAT without any per-request
+    # auth-header dance. Secret pre-created out of band.
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-github-mcp-token
+          key: token
 
 persistence:
   enabled: true
