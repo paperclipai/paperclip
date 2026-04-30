@@ -78,6 +78,8 @@ describe("CompanySettingsSidebar", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 2,
+      mineIssues: 0,
+      alerts: 0,
     });
   });
 
