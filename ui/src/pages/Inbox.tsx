@@ -94,8 +94,8 @@ import {
   ListTree,
 } from "lucide-react";
 
-const INBOX_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_HEARTBEAT_RUN_LIMIT = 50;
+const INBOX_ISSUE_LIST_LIMIT = 100;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -693,10 +693,10 @@ export function Inbox() {
   const showFailedRunsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
-  const shouldLoadIssueLookup = isForegrounded && (tab !== "all" || showFailedRunsCategory);
+  const shouldLoadIssueLookup = isForegrounded && tab === "all" && showFailedRunsCategory;
   const shouldLoadMineIssues = isForegrounded && tab === "mine";
   const shouldLoadTouchedIssues = isForegrounded && (tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory));
-  const shouldLoadHeartbeatRuns = isForegrounded && (tab !== "all" || showFailedRunsCategory);
+  const shouldLoadHeartbeatRuns = isForegrounded && tab === "all" && showFailedRunsCategory;
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
