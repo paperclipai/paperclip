@@ -222,9 +222,22 @@ export function deriveIssueCommentRunLogAttribution(
   return derivedByCommentId;
 }
 
+// Express's default `qs` parser binds repeated query keys to a `string[]`,
+// so a request like `?status=todo&status=in_progress` arrives here as an
+// array. Single-key + comma-separated forms remain valid too; normalize the
+// supported shapes once so the service contract matches runtime reality.
+export function parseStatusFilter(input: string | readonly string[] | undefined): string[] {
+  if (input === undefined || input === null) return [];
+  const entries = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  return entries
+    .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
+    .map((status) => status.trim())
+    .filter(Boolean);
+}
+
 export interface IssueFilters {
   attention?: "blocked";
-  status?: string;
+  status?: string | readonly string[];
   assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -2877,11 +2890,9 @@ async function blockedInboxIssueConditions(
   }
   const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
   if (lowTrustCondition) conditions.push(lowTrustCondition);
-  if (filters?.status) {
-    const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
-    if (statuses.length > 0) {
-      conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]!) : inArray(issues.status, statuses));
-    }
+  const statuses = parseStatusFilter(filters?.status);
+  if (statuses.length > 0) {
+    conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]!) : inArray(issues.status, statuses));
   }
   if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
   if (filters?.participantAgentId) conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
@@ -3890,9 +3901,11 @@ export function issueService(db: Db) {
       }
       const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
       if (lowTrustCondition) conditions.push(lowTrustCondition);
-      if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
-        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+      const statuses = parseStatusFilter(filters?.status);
+      if (statuses.length === 1) {
+        conditions.push(eq(issues.status, statuses[0]));
+      } else if (statuses.length > 1) {
+        conditions.push(inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
@@ -4073,11 +4086,9 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
-      if (filters?.status) {
-        const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
-        if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
-        else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
-      }
+      const statuses = parseStatusFilter(filters?.status);
+      if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
+      else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
       if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
@@ -4103,20 +4114,22 @@ export function issueService(db: Db) {
       return Number(row?.count ?? 0);
     },
 
-    countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
+    countUnreadTouchedByUser: async (
+      companyId: string,
+      userId: string,
+      status?: string | readonly string[],
+    ) => {
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
-      if (status) {
-        const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
-        if (statuses.length === 1) {
-          conditions.push(eq(issues.status, statuses[0]));
-        } else if (statuses.length > 1) {
-          conditions.push(inArray(issues.status, statuses));
-        }
+      const statuses = parseStatusFilter(status);
+      if (statuses.length === 1) {
+        conditions.push(eq(issues.status, statuses[0]));
+      } else if (statuses.length > 1) {
+        conditions.push(inArray(issues.status, statuses));
       }
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
