@@ -539,6 +539,52 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("clears latest-row settle timers when unmounted", () => {
+    vi.useFakeTimers();
+    const root = createRoot(container);
+    const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const clearTimeoutMock = vi.spyOn(window, "clearTimeout");
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    clearTimeoutMock.mockClear();
+
+    act(() => {
+      root.unmount();
+    });
+
+    expect(clearTimeoutMock).toHaveBeenCalledTimes(3);
+
+    clearTimeoutMock.mockRestore();
+    scrollToMock.mockRestore();
+  });
+
   // Regression for PAP-2660: on the real issue page the chat thread is wrapped
   // in `<main id="main-content" overflow-auto>`, so the virtualizer must bind
   // to that ancestor's scroll instead of `window` (which never moves on
