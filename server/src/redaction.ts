@@ -48,11 +48,11 @@ function isPlainBinding(value: unknown): value is { type: "plain"; value: unknow
 function sanitizeCommandArgs(args: unknown[]): unknown[] {
   let redactNext = false;
   return args.map((arg) => {
-    if (typeof arg !== "string") return sanitizeValue(arg);
     if (redactNext) {
       redactNext = false;
       return REDACTED_EVENT_VALUE;
     }
+    if (typeof arg !== "string") return sanitizeValue(arg);
     if (CLI_SECRET_FLAG_RE.test(arg.trim())) {
       redactNext = true;
       return arg;

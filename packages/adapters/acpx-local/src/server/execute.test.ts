@@ -213,4 +213,29 @@ describe("acpx_local runtime skill isolation", () => {
     expect(authStat.isSymbolicLink()).toBe(true);
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
+
+  it("cleans stale credential wrapper scripts for the same ACPX agent", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const baseConfig = {
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+    };
+
+    await runExecutor({
+      ...baseConfig,
+      env: { PAPERCLIP_API_KEY: "old-key" },
+    });
+    await runExecutor({
+      ...baseConfig,
+      env: { PAPERCLIP_API_KEY: "new-key" },
+    });
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    expect(wrappers.filter((name) => name.startsWith("custom-") && name.endsWith(".sh"))).toHaveLength(1);
+    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrappers[0]!), "utf8");
+    expect(wrapper).toContain("new-key");
+    expect(wrapper).not.toContain("old-key");
+  });
 });

@@ -549,6 +549,14 @@ async function writeAgentWrapper(input: {
   ].join("\n");
   await fs.writeFile(wrapperPath, script, "utf8");
   await fs.chmod(wrapperPath, 0o700);
+  const stalePrefix = `${input.acpxAgent}-`;
+  const staleWrappers = await fs.readdir(wrappersDir).catch(() => []);
+  await Promise.all(
+    staleWrappers.map(async (name) => {
+      if (!name.startsWith(stalePrefix) || !name.endsWith(".sh") || name === path.basename(wrapperPath)) return;
+      await fs.rm(path.join(wrappersDir, name), { force: true });
+    }),
+  );
   return wrapperPath;
 }
 

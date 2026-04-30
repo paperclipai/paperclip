@@ -113,4 +113,12 @@ describe("redaction", () => {
       SAFE_VALUE: "visible",
     });
   });
+
+  it("redacts non-string command args after secret flags", () => {
+    const result = redactEventPayload({
+      commandArgs: ["--api-key", { nested: "secret-value" }, "safe-next"],
+    });
+
+    expect(result?.commandArgs).toEqual(["--api-key", REDACTED_EVENT_VALUE, "safe-next"]);
+  });
 });

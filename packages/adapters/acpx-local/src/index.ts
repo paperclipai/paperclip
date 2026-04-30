@@ -15,11 +15,11 @@ export const acpxAgentOptions = [
 ] as const;
 
 export const models = [
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
-  { id: "gpt-5.4", label: "gpt-5.4" },
-  { id: "gpt-5.3-codex", label: "gpt-5.3-codex" },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6", group: "Claude" },
+  { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Claude" },
+  { id: "gpt-5.4", label: "gpt-5.4", group: "Codex" },
+  { id: "gpt-5.3-codex", label: "gpt-5.3-codex", group: "Codex" },
+  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark", group: "Codex" },
 ];
 
 export const agentConfigurationDoc = `# acpx_local agent configuration

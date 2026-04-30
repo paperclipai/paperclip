@@ -63,10 +63,7 @@ export function getConfigSchema(): AdapterConfigSchema {
         key: "model",
         label: "Model",
         type: "combobox",
-        options: [
-          ...models.slice(0, 2).map((model) => ({ value: model.id, label: model.label, group: "Claude" })),
-          ...models.slice(2).map((model) => ({ value: model.id, label: model.label, group: "Codex" })),
-        ],
+        options: models.map((model) => ({ value: model.id, label: model.label, group: model.group })),
         hint: "Optional model override passed to the selected ACP agent when supported.",
       },
       {
