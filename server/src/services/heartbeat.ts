@@ -1620,6 +1620,14 @@ function isCheckoutConflictError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
 }
 
+function isCheckoutTerminalRaceError(error: unknown): boolean {
+  return (
+    error instanceof HttpError &&
+    error.status === 422 &&
+    error.message.startsWith("Cannot checkout a terminal issue")
+  );
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -4961,7 +4969,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
-        if (!isCheckoutConflictError(error)) throw error;
+        // Race: the issue's status was non-terminal when issueContext was
+        // read above, but transitioned to done/cancelled before checkout's
+        // own transactional SELECT (issues.ts:2738). Treat the same as a
+        // checkout conflict — let the run continue without ownership of the
+        // issue execution lock; downstream code already tolerates a missing
+        // PAPERCLIP_HARNESS_CHECKOUT_KEY.
+        if (!isCheckoutConflictError(error) && !isCheckoutTerminalRaceError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
