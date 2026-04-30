@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
@@ -95,7 +95,7 @@ import {
 } from "lucide-react";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 50;
-const INBOX_ISSUE_LIST_LIMIT = 100;
+const INBOX_ISSUE_PAGE_SIZE = 50;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -187,6 +187,28 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
   if (typeof taskId === "string" && taskId.length > 0) return taskId;
 
   return null;
+}
+
+function getNextInboxIssuePageOffset(
+  loadedPageSize: number,
+  currentOffset: number,
+): number | undefined {
+  return loadedPageSize >= INBOX_ISSUE_PAGE_SIZE ? currentOffset + INBOX_ISSUE_PAGE_SIZE : undefined;
+}
+
+function mergeInboxIssuePages(pages: Issue[][]): Issue[] {
+  const seenIssueIds = new Set<string>();
+  const merged: Issue[] = [];
+
+  for (const page of pages) {
+    for (const issue of page) {
+      if (seenIssueIds.has(issue.id)) continue;
+      seenIssueIds.add(issue.id);
+      merged.push(issue);
+    }
+  }
+
+  return merged;
 }
 
 function nonEmptyLabel(value: string | null | undefined): string | null {
@@ -798,37 +820,51 @@ export function Inbox() {
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
+        limit: INBOX_ISSUE_PAGE_SIZE,
       }),
     enabled: !!selectedCompanyId && shouldLoadIssueLookup,
   });
   const {
-    data: mineIssuesRaw = [],
+    data: mineIssuePages,
     isLoading: isMineIssuesLoading,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter],
-    queryFn: () =>
+    isFetchingNextPage: isFetchingNextMineIssues,
+    hasNextPage: hasNextMineIssuesPage,
+    fetchNextPage: fetchNextMineIssuesPage,
+  } = useInfiniteQuery({
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter, "infinite", INBOX_ISSUE_PAGE_SIZE],
+    queryFn: ({ pageParam }) =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: issueStatusRequestFilter,
         includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
+        limit: INBOX_ISSUE_PAGE_SIZE,
+        offset: pageParam,
       }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextInboxIssuePageOffset(lastPage.length, lastPageParam),
     enabled: !!selectedCompanyId && shouldLoadMineIssues,
   });
   const {
-    data: touchedIssuesRaw = [],
+    data: touchedIssuePages,
     isLoading: isTouchedIssuesLoading,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter],
-    queryFn: () =>
+    isFetchingNextPage: isFetchingNextTouchedIssues,
+    hasNextPage: hasNextTouchedIssuesPage,
+    fetchNextPage: fetchNextTouchedIssuesPage,
+  } = useInfiniteQuery({
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter, "infinite", INBOX_ISSUE_PAGE_SIZE],
+    queryFn: ({ pageParam }) =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         status: issueStatusRequestFilter,
         includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
+        limit: INBOX_ISSUE_PAGE_SIZE,
+        offset: pageParam,
       }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextInboxIssuePageOffset(lastPage.length, lastPageParam),
     enabled: !!selectedCompanyId && shouldLoadTouchedIssues,
   });
 
@@ -861,6 +897,14 @@ export function Inbox() {
     [companyMembers?.users],
   );
 
+  const mineIssuesRaw = useMemo(
+    () => mergeInboxIssuePages(mineIssuePages?.pages ?? []),
+    [mineIssuePages],
+  );
+  const touchedIssuesRaw = useMemo(
+    () => mergeInboxIssuePages(touchedIssuePages?.pages ?? []),
+    [touchedIssuePages],
+  );
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const visibleMineIssues = useMemo(
@@ -1872,6 +1916,38 @@ export function Inbox() {
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
     !isRunsLoading;
+  const hasMoreInboxIssues =
+    normalizedSearchQuery.length === 0 &&
+    (
+      (tab === "mine" && hasNextMineIssuesPage === true) ||
+      ((tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory)) && hasNextTouchedIssuesPage === true)
+    );
+  const isLoadingMoreInboxIssues =
+    tab === "mine"
+      ? isFetchingNextMineIssues
+      : (tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory))
+        ? isFetchingNextTouchedIssues
+        : false;
+  const loadMoreInboxIssues = useCallback(() => {
+    if (tab === "mine") {
+      if (!hasNextMineIssuesPage || isFetchingNextMineIssues) return;
+      void fetchNextMineIssuesPage({ cancelRefetch: false });
+      return;
+    }
+
+    if (!(tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory))) return;
+    if (!hasNextTouchedIssuesPage || isFetchingNextTouchedIssues) return;
+    void fetchNextTouchedIssuesPage({ cancelRefetch: false });
+  }, [
+    fetchNextMineIssuesPage,
+    fetchNextTouchedIssuesPage,
+    hasNextMineIssuesPage,
+    hasNextTouchedIssuesPage,
+    isFetchingNextMineIssues,
+    isFetchingNextTouchedIssues,
+    showTouchedCategory,
+    tab,
+  ]);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2526,6 +2602,19 @@ export function Inbox() {
                 });
               })()}
             </div>
+            {hasMoreInboxIssues && (
+              <div className="mt-3 flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={loadMoreInboxIssues}
+                  disabled={isLoadingMoreInboxIssues}
+                >
+                  {isLoadingMoreInboxIssues ? "Loading..." : `Load ${INBOX_ISSUE_PAGE_SIZE} more`}
+                </Button>
+              </div>
+            )}
           </div>
         </>
       )}
