@@ -1,6 +1,6 @@
 # Paperclip Routine Checks — Migration aus Hermes/Openclaw
 
-**Status:** Draft (rev 3 — addresses spec-review)
+**Status:** Approved (rev 3 + minor polish)
 **Date:** 2026-04-30
 **Owner:** marco
 **Scope:** paperclip-Server, hermes-agent, openclaw workspace
@@ -128,7 +128,7 @@ CREATE INDEX ON routine_check_runs(check_name, status, run_at DESC);  -- "letzte
 
 ### Catch-up-Policy
 
-Beim Boot des paperclip-Servers (oder nach längerer Downtime) iteriert der Runner pro Check und vergleicht `max(scheduled_for)` in DB mit der erwarteten Schedule-Sequenz. Wenn ein Slot fehlt (Differenz > 1 schedule period + 60s grace):
+Beim Boot des paperclip-Servers (oder nach längerer Downtime) iteriert der Runner pro Check und vergleicht `max(scheduled_for)` in DB mit der erwarteten Schedule-Sequenz. Schedule-Period ist definiert als "Zeit zwischen Jetzt und letztem vergangenen Slot laut Cron-Expression", berechnet via Cron-Parser (`services/cron.ts`), nicht approximiert. Wichtig für unregelmäßige Schedules wie `0 9,18,22 * * *` (Gaps: 9h/4h/11h). Wenn ein Slot fehlt (Differenz > 1 schedule period + 60s grace):
 
 1. Catch-up nur für **letzten** verpassten Slot (kein Bulk-Replay um Telegram-Spam zu vermeiden)
 2. Catch-up-Run setzt `run_at = NOW()`, `scheduled_for = <missed slot>`
@@ -168,7 +168,17 @@ Channel-Regeln:
 
 **Klarstellung:** "silent" heißt "no notify on stable status (success oder Wiederholung)", nicht "no notify ever". State-change-Recovery ist Pflicht für alle Channels.
 
+**Erst-Run-Edge-Case:** Wenn `previousStatus === null` (kein vorheriger Run für diesen Check) → `stateChange = false`. Silent-Channel bleibt bei first-run warn/error stumm by design (es gibt keinen Recovery-Kontext zu signalisieren). Threshold/telegram folgen ihren Normal-Regeln (status >= threshold bzw. findings > 0).
+
 **Recovery-Präfix:** Notify-Payload `summary` bekommt Präfix `✅ recovery — ` wenn `previousStatus IN ('warn','error') && currentStatus === 'ok'`.
+
+**Daten-Fluss:** Dispatcher reichert CheckResult vor POST an mit:
+
+- `previousStatus` (aus o.g. SQL-Query)
+- `scheduled_for` (aus dem Run-Slot, nicht NOW())
+- `content_hash` (sha256 über `summary + findings + top-3-examples`)
+
+CheckResult-Interface bleibt minimal (status/findings/payload/summary); diese 3 Felder sind Dispatcher-Verantwortung, nicht Check-Verantwortung.
 
 ### Webhook-Payload (paperclip → hermes)
 
@@ -351,7 +361,7 @@ Da paperclip-Server nun Single-Point-of-Failure für 5 Routine-Checks ist, neuer
 # scheduled_for=09:00 (Soll), run_at=09:35 (Ist) — Heartbeat-Schwelle 90min vergibt 3 Schedule-Perioden
 ```
 
-Begründung: subscription-shadow-sync läuft alle 30min, also wenn 70min keine Row → Server tot oder Cron broken. Heartbeat in openclaw, nicht paperclip — sonst könnte ausgefallener paperclip nicht selber Alarm schlagen.
+Begründung: subscription-shadow-sync läuft alle 30min, also wenn 90min keine Row → Server tot oder Cron broken (3 verpasste Slots Toleranz, vermeidet false-positive bei normalem Catch-up nach kurzem Restart). Heartbeat in openclaw, nicht paperclip — sonst könnte ausgefallener paperclip nicht selber Alarm schlagen.
 
 ## Tests
 
