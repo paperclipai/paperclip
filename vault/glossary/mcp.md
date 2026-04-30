@@ -1,6 +1,7 @@
 ---
 term: "Model Context Protocol (MCP)"
 definition: "Model Context Protocol (MCP) is an open standard introduced by Anthropic in November 2024 for connecting AI assistants to data sources and tools through a JSON-RPC wire protocol over stdio or HTTP transports."
+seo_description: "Model Context Protocol (MCP) explained: the open standard for connecting AI assistants to tools and data. Definition, primitives, and adopters."
 category: "protocol"
 related_terms: [tool-use, function-calling, agent-harness, rag]
 related_courses: [mcp-from-first-principles-to-production, claude-tool-use-from-zero, production-agents-claude-agent-sdk-mcp-connector]
