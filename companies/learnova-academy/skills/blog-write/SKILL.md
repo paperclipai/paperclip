@@ -66,6 +66,17 @@ primary_query: "<exact search phrase this targets>"
 contrarian_angle: "<the non-obvious claim>"
 sources:
   - https://...
+hero_image: auto:flux        # or full https://r2.kspl.tech/... URL
+references:
+  - title: "<exact page title>"
+    url: https://primary.source/url
+    retrieved: 2026-04-30
+  - title: "..."
+    url: https://...
+    retrieved: 2026-04-30
+  - title: "..."
+    url: https://...
+    retrieved: 2026-04-30
 whats_new:
   - <single sharp claim — used in og:image + meta description>
 learning_objectives:
@@ -148,6 +159,8 @@ grep -oP '\[\d+\]' vault/blogs/<date>-<slug>/draft.md | wc -l
 - Expected: **≥ 5** inline `[N]` citations in the body. If <5, add citations before handoff.
 - Confirm `## References` footer section is present at the end of the draft.
 - Both checks must pass. Record the count in the handoff comment (see step 6).
+- Confirm `hero_image` is present and is either a valid HTTPS URL OR the sentinel `auto:flux`.
+- Confirm `references:` has ≥3 entries and `len(references) == len(sources)`.
 
 ### 6. Hand off to G0
 
@@ -164,6 +177,8 @@ Comment on ticket:
 - Contrarian angle: "<...>"
 - citations: 7 inline ✅ · ## References footer ✅ (all 7 URLs verified live <HH:MM>)
 - Funnel link: [[course/<slug>]]
+- hero_image: <value>
+- references: <N> entries (matches sources count)
 - Status: awaiting-g0 → @content-reviewer
 ```
 

@@ -26,4 +26,12 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Koenig customization 2026-04-30: set default agent commit identity to a GitHub-recognized
+# noreply email so Vercel's Commit Author Email Verification passes. Agents may still override
+# with their own role-specific identity at commit time; this is just the safe default.
+gosu node git config --global user.name "Koenig Engineering Bot" 2>/dev/null || true
+gosu node git config --global user.email "246262476+Vardaan97@users.noreply.github.com" 2>/dev/null || true
+gosu node git config --global init.defaultBranch main 2>/dev/null || true
+gosu node git config --global --add safe.directory '*' 2>/dev/null || true
+
 exec gosu node "$@"
