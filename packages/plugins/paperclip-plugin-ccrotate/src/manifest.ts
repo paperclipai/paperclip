@@ -17,6 +17,7 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: ["environment.drivers.register", "api.routes.register"],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
   },
   environmentDrivers: [
     {
