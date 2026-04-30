@@ -51,6 +51,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { logActivity } from "./activity-log.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -1406,6 +1407,8 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  consecutiveTaskFailures: issues.consecutiveTaskFailures,
+  lastTaskFailureAt: issues.lastTaskFailureAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -2920,6 +2923,9 @@ export function issueService(db: Db) {
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
+        // Reset failure counter when the assignee changes
+        patch.consecutiveTaskFailures = 0;
+        patch.lastTaskFailureAt = null;
       }
 
       const runUpdate = async (tx: any) => {
@@ -3766,6 +3772,76 @@ export function issueService(db: Db) {
         );
       const valid = new Set(rows.map((row) => row.id));
       return [...mentionedIds].filter((projectId) => valid.has(projectId));
+    },
+
+    recordIssueTaskOutcome: async (
+      issueId: string,
+      outcome: "success" | "failure",
+      opts?: {
+        actorAgentId?: string | null;
+        actorUserId?: string | null;
+        runId?: string | null;
+        dbOrTx?: any;
+      },
+    ) => {
+      const tx = opts?.dbOrTx ?? db;
+      const now = new Date();
+
+      const [updated] = await tx
+        .update(issues)
+        .set(
+          outcome === "success"
+            ? {
+                consecutiveTaskFailures: 0,
+                lastTaskFailureAt: null,
+                updatedAt: now,
+              }
+            : {
+                consecutiveTaskFailures: sql`${issues.consecutiveTaskFailures} + 1`,
+                lastTaskFailureAt: now,
+                updatedAt: now,
+              },
+        )
+        .where(eq(issues.id, issueId))
+        .returning();
+
+      if (!updated) return { blocked: false as const, issue: null };
+
+      if (outcome === "failure" && updated.consecutiveTaskFailures >= 3) {
+        const [blocked] = await tx
+          .update(issues)
+          .set({
+            status: "blocked",
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")))
+          .returning();
+
+        if (blocked) {
+          await logActivity(tx, {
+            companyId: updated.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: opts?.actorAgentId ?? null,
+            runId: opts?.runId ?? null,
+            action: "issue.task_execution_blocked",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              previousStatus: "in_progress",
+              newStatus: "blocked",
+              consecutiveTaskFailures: updated.consecutiveTaskFailures,
+              reason: `Task failed ${updated.consecutiveTaskFailures} times in a row and was automatically blocked.`,
+            },
+          });
+          return { blocked: true as const, issue: blocked };
+        }
+      }
+
+      return { blocked: false as const, issue: updated };
     },
 
     getAncestors: async (issueId: string) => {

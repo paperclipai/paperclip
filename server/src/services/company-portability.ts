@@ -4213,7 +4213,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+            const nextAdapterConfig = {
+              ...(updated.adapterConfig as Record<string, unknown>),
+              ...materialized.adapterConfig,
+            };
+            updated = await agents.update(updated.id, { adapterConfig: nextAdapterConfig }) ?? updated;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -4249,7 +4253,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             clearLegacyPromptTemplate: true,
             replaceExisting: true,
           });
-          created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+          const nextAdapterConfig = {
+            ...(created.adapterConfig as Record<string, unknown>),
+            ...materialized.adapterConfig,
+          };
+          created = await agents.update(created.id, { adapterConfig: nextAdapterConfig }) ?? created;
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }
