@@ -29,10 +29,24 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Login to the kkroo private registry. Only attempted when the registry
+      # host is configured via repo variable BLOCKCAST_REGISTRY_HOST + the
+      # USERNAME/PASSWORD secrets are wired in repo Settings → Secrets. When
+      # the variable is absent, this and the blockcast meta/push steps are
+      # skipped and the workflow falls back to ghcr.io-only — preserves the
+      # upstream-aligned default for forks that don't run a private registry.
+      - name: Login to Blockcast registry
+        if: ${{ vars.BLOCKCAST_REGISTRY_HOST != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
+          username: ${{ secrets.BLOCKCAST_REGISTRY_USERNAME }}
+          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker meta
+      - name: Docker meta (ghcr.io)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -43,6 +57,21 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
+      # Mirror the same image to the blockcast registry under the kkroo-deploy
+      # tag scheme `sha-<8>-k8s-vendored` so `values.blockcast.yaml` picks it
+      # up directly. The `-k8s-vendored` suffix marks a kkroo-fork build
+      # (vendored adapter tarballs + ccrotate kkroo patch baked in via the
+      # Dockerfile's `COPY vendor/*` lines).
+      - name: Docker meta (blockcast)
+        id: meta_blockcast
+        if: ${{ vars.BLOCKCAST_REGISTRY_HOST != '' }}
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip
+          tags: |
+            type=sha,prefix=sha-,suffix=-k8s-vendored,format=short
+            type=raw,value=latest-k8s-vendored,enable={{is_default_branch}}
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -51,5 +80,11 @@ jobs:
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          tags: ${{ steps.meta.outputs.tags }}
+          # When the blockcast vars/secrets are wired, push to BOTH registries
+          # in one buildx invocation (single cache, single layer push,
+          # multiple destination refs). When not wired, the second tag list
+          # is empty and only ghcr.io tags are pushed.
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ steps.meta_blockcast.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
