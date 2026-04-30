@@ -18,7 +18,7 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **최근 완료:** v2.7은 release-host verification harness, embedded Postgres Windows host-ready coverage, artifact/UAT truth alignment, runtime confidence generated report를 완료했다. Audit은 requirements 11/11, phases 4/4, integration 4/4, flows 4/4이며 runtime confidence blocker 0, accepted debt 1 상태다.
 
-**현재 진행:** 새 product feature 확장보다 RealTycoon2가 Paperclip 잔재와 영문 control-plane 느낌에서 벗어나 한국어 일일 업무 운영 제품으로 보이도록 만든다. Phase 48은 제품 정체성/한국어 shell을 완료했고, Phase 49는 `daily-work`를 첫 운영 화면으로 만들며 `할 일 / 진행 중 / 완료` 3단 일일 업무 보드를 완료했다. 다음 초점은 카드 quick edit와 board controls다.
+**현재 진행:** 새 product feature 확장보다 RealTycoon2가 Paperclip 잔재와 영문 control-plane 느낌에서 벗어나 한국어 일일 업무 운영 제품으로 보이도록 만든다. Phase 48은 제품 정체성/한국어 shell을 완료했고, Phase 49는 `daily-work`를 첫 운영 화면으로 만들며 `할 일 / 진행 중 / 완료` 3단 일일 업무 보드를 완료했다. Phase 50은 카드 quick edit와 board controls를 완료했고, Phase 51은 One-Liner 입력을 보드 검수함과 capture draft promotion 흐름에 연결했다. 다음 초점은 Jarvis/wiki/graph/economy supporting surfaces와 identity regression gate다.
 
 ## Current Milestone: v2.8 RealTycoon2 Product Identity and Daily Work UX
 
@@ -28,7 +28,7 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 - 앱 구동, 첫 화면, 네비게이션, 빈 상태, 설정, 기본 문구에서 Paperclip/Paper Company/영문 기본값 노출을 제거하고 RealTycoon2-first Korean UX로 정리한다.
 - 일일업무일지 중심 3단 Trello형 칸반보드를 핵심 작업 화면으로 강화한다. - Phase 49 완료
 - Task/To-Do/Deliverable/가격/품질/OKR badge가 카드에서 바로 이해되고 빠르게 편집되는 흐름을 만든다.
-- One-Liner capture가 보드와 자연스럽게 이어져 기록 -> 분류 -> 실행 -> 산출물 흐름을 형성한다.
+- One-Liner capture가 보드와 자연스럽게 이어져 기록 -> 분류 -> 실행 -> 산출물 흐름을 형성한다. - Phase 51 완료
 - Jarvis, wiki, graph, economy 기능은 보조 패널, evidence, recommendation surface로 배치해 제품 정체성을 방해하지 않게 한다.
 
 **Deferred from this milestone:**
@@ -145,7 +145,7 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- [ ] v2.8 RealTycoon2 product identity와 Korean-first daily work UX 요구사항 15개.
+- [ ] v2.8 RealTycoon2 product identity와 Korean-first daily work UX 요구사항 15개. Phase 48-51 완료, Phase 52 남음.
 
 ### 범위 밖
 
@@ -194,7 +194,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-v2.8은 native distribution, federation, autonomy expansion보다 RealTycoon2 제품 정체성과 일일 업무 UX를 우선한다. 앱을 켰을 때 Paperclip/Paper Company/영문 control-plane 느낌이 아니라 한국어 RealTycoon2 업무 운영 시스템으로 보이고, 3단 Trello형 칸반보드와 One-Liner capture가 매일 쓰는 중심 흐름이 되어야 한다. Phase 49에서 `daily-work`가 첫 운영 화면이 되었고, 남은 작업은 카드 quick edit, board controls, capture 연결, supporting surfaces 정리다.
+v2.8은 native distribution, federation, autonomy expansion보다 RealTycoon2 제품 정체성과 일일 업무 UX를 우선한다. 앱을 켰을 때 Paperclip/Paper Company/영문 control-plane 느낌이 아니라 한국어 RealTycoon2 업무 운영 시스템으로 보이고, 3단 Trello형 칸반보드와 One-Liner capture가 매일 쓰는 중심 흐름이 되어야 한다. Phase 49에서 `daily-work`가 첫 운영 화면이 되었고, Phase 50에서 카드 quick edit/board controls가 완성되었으며, Phase 51에서 One-Liner capture가 보드 검수함으로 연결되었다. 남은 작업은 supporting surfaces 정리와 identity regression gate다.
 
 ## Evolution
 

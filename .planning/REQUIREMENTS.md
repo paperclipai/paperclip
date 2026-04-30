@@ -22,9 +22,9 @@
 
 ### Capture Flow
 
-- [ ] **CAPTURE-01**: 운영자는 One-Liner 입력 후 새 업무가 보드의 적절한 lane 또는 inbox에 즉시 나타나는 것을 볼 수 있다.
-- [ ] **CAPTURE-02**: 운영자는 One-Liner에서 업무 유형, 산출물 후보, 가격/품질 힌트, OKR/KPI 후보를 확인하고 승인하거나 수정할 수 있다.
-- [ ] **CAPTURE-03**: 운영자는 mobile/native/inbound draft도 동일한 보드 검수 흐름에서 중복 경고와 source evidence를 보고 처리할 수 있다.
+- [x] **CAPTURE-01**: 운영자는 One-Liner 입력 후 새 업무가 보드의 적절한 lane 또는 inbox에 즉시 나타나는 것을 볼 수 있다. - Phase 51
+- [x] **CAPTURE-02**: 운영자는 One-Liner에서 업무 유형, 산출물 후보, 가격/품질 힌트, OKR/KPI 후보를 확인하고 승인하거나 수정할 수 있다. - Phase 51
+- [x] **CAPTURE-03**: 운영자는 mobile/native/inbound draft도 동일한 보드 검수 흐름에서 중복 경고와 source evidence를 보고 처리할 수 있다. - Phase 51
 
 ### Supporting Surfaces
 
@@ -69,9 +69,9 @@
 | BOARD-03 | Phase 49 | Complete |
 | BOARD-04 | Phase 50 | Complete |
 | BOARD-05 | Phase 50 | Complete |
-| CAPTURE-01 | Phase 51 | Pending |
-| CAPTURE-02 | Phase 51 | Pending |
-| CAPTURE-03 | Phase 51 | Pending |
+| CAPTURE-01 | Phase 51 | Complete |
+| CAPTURE-02 | Phase 51 | Complete |
+| CAPTURE-03 | Phase 51 | Complete |
 | SUPPORT-01 | Phase 52 | Pending |
 | SUPPORT-02 | Phase 52 | Pending |
 | SUPPORT-03 | Phase 52 | Pending |
@@ -83,4 +83,4 @@
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after Phase 50 Plan 04 completion; BOARD-04 and BOARD-05 complete across shared/server/UI behavior*
+*Last updated: 2026-04-30 after Phase 51 completion; CAPTURE-01 through CAPTURE-03 complete across shared/server/UI behavior*
