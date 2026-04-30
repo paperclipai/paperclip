@@ -15,6 +15,28 @@ sources:
   - https://platform.claude.com/docs/en/docs/build-with-claude/tool-use
   - https://ai-sdk.dev/docs/foundations/agents
   - https://vercel.com/docs/ai-gateway
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "AI SDK 6 Announcement — Vercel Blog"
+    url: https://vercel.com/blog/ai-sdk-6
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Agent Capabilities API — Claude Blog"
+    url: https://claude.com/blog/agent-capabilities-api
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Tool Use with Claude — Claude Developer Platform"
+    url: https://platform.claude.com/docs/en/docs/build-with-claude/tool-use
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Foundations: Agents — AI SDK Documentation"
+    url: https://ai-sdk.dev/docs/foundations/agents
+    retrieved: 2026-04-30
+  - n: 5
+    title: "AI Gateway — Vercel Documentation"
+    url: https://vercel.com/docs/ai-gateway
+    retrieved: 2026-04-30
 whats_new:
   - Both agent SDKs shipped in 2025–2026 — the deciding factor is operational ownership of the execution loop, not code ergonomics
 learning_objectives:
