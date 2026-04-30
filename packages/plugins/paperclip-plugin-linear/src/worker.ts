@@ -107,6 +107,52 @@ async function getCompanyId(ctx: PluginContext): Promise<string | null> {
 }
 
 /**
+ * Resolve the Paperclip projectId for an incoming Linear issue.
+ *
+ * Resolution order:
+ *   1. If the Linear issue carries a project id, look up the project link
+ *      record and return its `paperclipProjectId`.
+ *   2. If a `nameLookup` is provided (bulk import has an in-memory
+ *      Linear-project-name → Paperclip-project-id map) and the Linear
+ *      issue exposes a project name, return that.
+ *   3. Fall back to the configured `defaultProjectId` from instance config
+ *      — the CEO-editable bucket for un-projected Linear tickets. Empty
+ *      string is treated as unset.
+ *   4. If nothing resolves, return null. Caller may still create the issue
+ *      without a project, but a warn is logged so we can spot regressions
+ *      in the orphan audit.
+ *
+ * Origin of this helper: BLO-2350 — pre-fix, ~235 of 271 orphans were
+ * Linear-imported issues with no projectId because none of the three
+ * create paths (bulk import, webhook, manual import) consistently
+ * resolved a project. This is the single chokepoint for that resolution.
+ */
+async function resolveProjectIdForLinearIssue(
+  ctx: PluginContext,
+  linearProject: { id?: string | null; name?: string | null } | null | undefined,
+  identifierForLog?: string,
+  nameLookup?: (name: string) => string | undefined,
+): Promise<string | null> {
+  const linearProjectId = linearProject?.id ?? null;
+  if (linearProjectId) {
+    const link = await sync.getProjectLinkByLinear(ctx, linearProjectId);
+    if (link) return link.paperclipProjectId;
+  }
+  const linearProjectName = linearProject?.name ?? null;
+  if (nameLookup && linearProjectName) {
+    const matched = nameLookup(linearProjectName);
+    if (matched) return matched;
+  }
+  const config = await ctx.config.get();
+  const fallback = (config.defaultProjectId as string | undefined) ?? "";
+  if (fallback) return fallback;
+  ctx.logger.warn(
+    `Linear import: no projectId resolved for ${identifierForLog ?? linearProjectId ?? "issue"} (no project link, no defaultProjectId configured)`,
+  );
+  return null;
+}
+
+/**
  * Resolve the Linear workspace url-key (e.g. `blockcast`) for linkifying bare
  * BLO-N refs at ingest. Prefers the value cached at OAuth-connect time; falls
  * back to parsing any candidate Linear URL the caller already has on hand
@@ -651,6 +697,11 @@ const plugin = definePlugin({
       }
 
       const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
+      const projectId = await resolveProjectIdForLinearIssue(
+        ctx,
+        linearIssue.project,
+        linearIssue.identifier,
+      );
 
       const created = await ctx.issues.create({
         companyId,
@@ -659,6 +710,7 @@ const plugin = definePlugin({
         priority: priority as "critical" | "high" | "medium" | "low",
         originKind: "plugin:paperclip-plugin-linear",
         originId: linearIssue.id,
+        ...(projectId ? { projectId } : {}),
         ...(assigneeUserId ? { assigneeUserId } : {}),
       });
 
@@ -1265,6 +1317,22 @@ async function handleWebhookEvent(
           ? linkifyBareLinearIssueRefs(rawDescription, workspaceSlug)
           : undefined;
 
+        // BLO-2350: webhook payloads carry `data.projectId` (and sometimes a
+        // nested `project.id` / `project.name`). Map to a Paperclip project
+        // so the imported row is not orphaned. Falls back to the configured
+        // defaultProjectId.
+        const webhookProject = data.project as
+          | { id?: string | null; name?: string | null }
+          | null
+          | undefined;
+        const linearProjectId =
+          webhookProject?.id ?? (data.projectId as string | null | undefined) ?? null;
+        const projectId = await resolveProjectIdForLinearIssue(
+          ctx,
+          { id: linearProjectId, name: webhookProject?.name ?? null },
+          identifier,
+        );
+
         const created = await ctx.issues.create({
           companyId,
           title: (data.title as string) ?? "Untitled",
@@ -1272,6 +1340,7 @@ async function handleWebhookEvent(
           priority: priority as "critical" | "high" | "medium" | "low",
           originKind: "plugin:paperclip-plugin-linear",
           originId: linearIssueId,
+          ...(projectId ? { projectId } : {}),
           ...(assigneeUserId ? { assigneeUserId } : {}),
         });
 
@@ -1839,10 +1908,15 @@ async function runImport(ctx: PluginContext): Promise<{
         if (labelId) issueLabelIds.push(labelId);
       }
 
-      // Resolve project
-      const projectId = linearIssue.project?.name
-        ? projectMap.get(linearIssue.project.name) ?? null
-        : null;
+      // Resolve project: prefer the Linear-project-link record (created
+      // during phase 1 above), then in-flight name match (covers projects
+      // created mid-import), then the configured defaultProjectId fallback.
+      const projectId = await resolveProjectIdForLinearIssue(
+        ctx,
+        linearIssue.project,
+        linearIssue.identifier,
+        (name) => projectMap.get(name),
+      );
 
       const description = linearIssue.description ?? undefined;
 

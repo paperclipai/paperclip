@@ -87,6 +87,7 @@ export const DEFAULT_CONFIG = {
   linearClientId: "",
   linearClientSecret: "",
   teamId: "",
+  defaultProjectId: "",
   syncComments: true,
   syncDirection: "bidirectional" as const,
 };
