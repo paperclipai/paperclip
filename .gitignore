@@ -59,10 +59,11 @@ tests/release-smoke/playwright-report/
 .env.koenig
 .vercel
 
-# Vault runtime content (agent narrative output) — only structure is committed
+# Public content layer — committed so Vercel can render it (V3-7 fix 2026-04-30):
+#   vault/blogs/   — published blog posts read by lib/vault.ts at build time
+#   vault/courses/ — published course outlines + chapters read by lib/courses.ts
+# Private operational layer — NOT committed (raw research, internal cost data, audit logs):
 vault/research/**/*.md
-vault/blogs/**/*.md
-vault/courses/**/*.md
 vault/decisions/**/*.md
 vault/retrospectives/**/*.md
 vault/_index/**/*.md
