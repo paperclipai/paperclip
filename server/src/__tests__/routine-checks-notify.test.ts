@@ -113,3 +113,62 @@ describe("computeContentHash", () => {
     expect(a).not.toBe(b);
   });
 });
+
+import { postWebhook, type WebhookPayload } from "../services/routine-checks/notify.ts";
+
+const samplePayload = (): WebhookPayload => ({
+  check: "demo",
+  status: "warn",
+  previous_status: "ok",
+  findings: 1,
+  summary: "x",
+  content_hash: "sha256-abc",
+  scheduled_for: "2026-04-30T09:00:00Z",
+  details_hint: "paperclip checks history demo --limit 1",
+});
+
+describe("postWebhook", () => {
+  it("POSTs payload with bearer token", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetcher: typeof fetch = async (url, init) => {
+      calls.push({ url: String(url), init: init! });
+      return new Response("{}", { status: 200 });
+    };
+    const ok = await postWebhook({ url: "http://localhost:9999/x", token: "secret", payload: samplePayload(), fetcher });
+    expect(ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.init.method).toBe("POST");
+    expect((calls[0]!.init.headers as Record<string, string>).Authorization).toBe("Bearer secret");
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.check).toBe("demo");
+    expect(body.findings).toBe(1);
+  });
+
+  it("returns false on non-2xx", async () => {
+    const fetcher: typeof fetch = async () => new Response("nope", { status: 401 });
+    const ok = await postWebhook({ url: "http://x", token: "t", payload: samplePayload(), fetcher });
+    expect(ok).toBe(false);
+  });
+
+  it("returns false on network error", async () => {
+    const fetcher: typeof fetch = async () => { throw new Error("connect refused"); };
+    const ok = await postWebhook({ url: "http://x", token: "t", payload: samplePayload(), fetcher });
+    expect(ok).toBe(false);
+  });
+
+  it("uses global fetch when fetcher omitted (smoke)", async () => {
+    const original = globalThis.fetch;
+    let calledUrl = "";
+    globalThis.fetch = (async (url: any) => {
+      calledUrl = String(url);
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const ok = await postWebhook({ url: "http://example.invalid/x", token: "t", payload: samplePayload() });
+      expect(ok).toBe(true);
+      expect(calledUrl).toBe("http://example.invalid/x");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

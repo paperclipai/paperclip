@@ -58,3 +58,38 @@ export function computeContentHash(i: ContentHashInput): string {
   const raw = `${i.summary} ${i.findings} ${top3}`;
   return `sha256-${createHash("sha256").update(raw).digest("hex").slice(0, 32)}`;
 }
+
+export interface WebhookPayload {
+  check: string;
+  status: CheckStatus;
+  previous_status: CheckStatus | null;
+  findings: number;
+  summary: string;
+  content_hash: string;
+  scheduled_for: string;
+  details_hint: string;
+}
+
+export interface PostWebhookArgs {
+  url: string;
+  token: string;
+  payload: WebhookPayload;
+  fetcher?: typeof fetch;
+}
+
+export async function postWebhook(a: PostWebhookArgs): Promise<boolean> {
+  const f = a.fetcher ?? fetch;
+  try {
+    const res = await f(a.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${a.token}`,
+      },
+      body: JSON.stringify(a.payload),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
