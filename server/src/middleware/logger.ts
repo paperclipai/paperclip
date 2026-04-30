@@ -1,11 +1,26 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { trace, isSpanContextValid } from "@opentelemetry/api";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
+
+/**
+ * Returns the active OTel trace/span IDs for the current async context, or an
+ * empty object when no active span exists or tracing is not enabled.
+ * These fields are included in every pino log line so that Loki entries can be
+ * correlated with Tempo traces via the traceId.
+ */
+function getTraceContext(): Record<string, string> {
+  const span = trace.getActiveSpan();
+  if (!span) return {};
+  const ctx = span.spanContext();
+  if (!isSpanContextValid(ctx)) return {};
+  return { traceId: ctx.traceId, spanId: ctx.spanId };
+}
 
 /** pino-http callback request type — IncomingMessage extended with Express body/params/query/route. */
 type PinoReq = IncomingMessage & {
@@ -86,6 +101,7 @@ function buildTransportTargets() {
 
 export const logger = pino({
   level: "debug",
+  mixin: getTraceContext,
 }, pino.transport({
   targets: buildTransportTargets(),
 }));
