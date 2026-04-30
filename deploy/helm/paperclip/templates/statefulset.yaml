@@ -69,7 +69,7 @@ spec:
                   ln -sf "/usr/local/bin/${bin}" "${BASE}/.local/bin/${bin}"
                 fi
               done
-              chown -R 1000:1000 "${BASE}/.local" 2>/dev/null || true
+              chown 1000:1000 "${BASE}/.local" "${BASE}/.local/bin" "${BASE}/.local/bin/claude" "${BASE}/.local/bin/codex" 2>/dev/null || true
               # Private kkroo plugins and k8s adapters are image-owned now.
               # Older PVCs may still have package.json/package-lock.json entries
               # pointing at deleted /tmp tarballs or adapter packages; npm install
@@ -312,7 +312,7 @@ spec:
               else:
                   print("seed: ccrotate hooks already registered in settings.json")
               PY
-                chown -R 1000:1000 "${CLAUDE_DIR}" 2>/dev/null || true
+                chown 1000:1000 "${CLAUDE_DIR}" "${HOOKS_DIR}" "${SETTINGS}" "${HOOKS_DIR}"/*.sh 2>/dev/null || true
               fi
           env:
             {{- if .Values.secret.masterKey }}
