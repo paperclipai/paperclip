@@ -26,8 +26,6 @@ The CLI package, `paperclipai`, imports code from workspace packages such as:
 
 Those workspace references are valid in development but not in a publishable npm package. The release flow rewrites versions temporarily, then builds a publishable CLI bundle.
 
-After publish, the release flow also waits for npm registry state to converge before it considers the release successful. It verifies the target dist-tag, fetches version-specific manifests for the target version, and confirms any internal `@paperclipai/*` dependencies referenced by those manifests are individually resolvable. That avoids false failures when npm serves a stale package root document for a short time after publish.
-
 ## `build-npm.sh`
 
 Run:
