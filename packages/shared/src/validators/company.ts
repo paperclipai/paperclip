@@ -13,6 +13,14 @@ export const createCompanySchema = z.object({
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
+export const observabilityConfigSchema = z.object({
+  otlpEndpoint: z.string().url().optional(),
+  otlpAuthToken: z.string().optional(),
+  samplingRate: z.number().min(0).max(1).optional(),
+}).nullable().optional();
+
+export type ObservabilityConfig = z.infer<typeof observabilityConfigSchema>;
+
 export const updateCompanySchema = createCompanySchema
   .partial()
   .extend({
@@ -25,6 +33,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
+    observabilityConfig: observabilityConfigSchema,
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
