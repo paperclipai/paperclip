@@ -311,6 +311,7 @@ The command exits non-zero when tray/menu bar status, global shortcut lifecycle,
     "releaseChannel": "beta",
     "buildIdentity": "beta-2026.430.0-current",
     "updateState": "available",
+    "failureReason": null,
     "statusLabel": "RealTycoon2 beta 2026.430.0 - update available",
     "platforms": {
       "macos": { "supported": true, "evidence": "macOS menu bar status evidence" },
@@ -353,7 +354,7 @@ The command exits non-zero when tray/menu bar status, global shortcut lifecycle,
 
 Required pass conditions:
 
-- Tray status exposes quick capture availability, queue/sync state, auth state, company state, release channel, build identity, update lifecycle state, and per-platform macOS/Windows evidence.
+- Tray status exposes quick capture availability, queue/sync state, auth state, company state, release channel, build identity, update lifecycle state, failure reason when failed, and per-platform macOS/Windows evidence.
 - Tray `releaseChannel`, `buildIdentity`, and `updateState` match the top-level installed/update state.
 - Global shortcut evidence includes accelerator, registration, conflict, permission, focus behavior, unregister support, change support, and per-platform macOS/Windows evidence.
 - Shortcut registration must be `registered`, conflict must be `none`, and permission must be `granted`; blocked states require an explicit reason and still fail the gate.

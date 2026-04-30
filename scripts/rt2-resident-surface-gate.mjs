@@ -475,6 +475,14 @@ function validateTray(manifest, blockers, passed) {
       message: "Tray update state must match updateState.state.",
     });
   }
+  if (trayUpdateState === "failed" && (typeof tray.failureReason !== "string" || !tray.failureReason.trim())) {
+    addBlocker(blockers, {
+      area: "tray",
+      check: "tray.failureReason",
+      code: "TRAY_UPDATE_FAILURE_REASON_MISSING",
+      message: "Tray status must expose failureReason when update state is failed.",
+    });
+  }
 
   requireText(blockers, {
     entry: tray,
@@ -923,6 +931,7 @@ function buildReport(summary) {
     `- Release channel: ${summary.tray?.releaseChannel ?? "missing"}`,
     `- Build identity: ${summary.tray?.buildIdentity ?? "missing"}`,
     `- Update state: ${summary.tray?.updateState ?? "missing"}`,
+    `- Failure reason: ${summary.tray?.failureReason ?? ""}`,
     "",
     "## Shortcut State",
     "",

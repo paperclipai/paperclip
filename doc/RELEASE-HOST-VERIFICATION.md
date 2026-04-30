@@ -146,7 +146,7 @@ The command returns a non-zero exit code when resident surface evidence is incom
 
 - Installed state: channel, version, and build ID.
 - Update state: one of `idle`, `checking`, `available`, `downloading`, `downloaded`, `installing`, `relaunch_required`, `failed`, or `rolled_back`.
-- Tray status: quick capture availability, queue/sync state, auth state, company state, release channel, build identity, update lifecycle state, and macOS/Windows evidence.
+- Tray status: quick capture availability, queue/sync state, auth state, company state, release channel, build identity, update lifecycle state, failure reason when failed, and macOS/Windows evidence.
 - Tray identity match: tray release channel, build identity, and update state match the top-level installed/update state.
 - Shortcut lifecycle: accelerator, registration, conflict, permission, focus behavior, unregister support, change support, and macOS/Windows evidence.
 - Shortcut readiness: registration is `registered`, conflict is `none`, and permission is `granted`; blocked states require explicit reasons and still fail.

@@ -64,6 +64,7 @@ function completeFixture() {
       releaseChannel: "beta",
       buildIdentity: "beta-2026.430.0-current",
       updateState: "available",
+      failureReason: null,
       statusLabel: "RealTycoon2 beta 2026.430.0 - update available",
       platforms: {
         macos: {
@@ -177,6 +178,17 @@ function codesFor(manifest, root = makeRoot("rt2-resident-surface-codes")) {
   const codes = codesFor(manifest);
 
   assert.ok(codes.includes("UPDATE_STATE_INVALID"));
+}
+
+{
+  const manifest = completeFixture();
+  manifest.updateState.state = "failed";
+  manifest.updateState.failureReason = "download failed";
+  manifest.tray.updateState = "failed";
+  manifest.tray.failureReason = "";
+  const codes = codesFor(manifest);
+
+  assert.ok(codes.includes("TRAY_UPDATE_FAILURE_REASON_MISSING"));
 }
 
 {
