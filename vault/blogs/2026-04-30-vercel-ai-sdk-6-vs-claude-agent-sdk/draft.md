@@ -18,6 +18,24 @@ sources:
   - https://sdk.vercel.ai/docs/ai-sdk-core/agents
   - https://vercel.com/blog/ai-sdk-6
   - https://www.anthropic.com/engineering
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Agent Capabilities API — Anthropic Announcement"
+    url: https://www.anthropic.com/news/agent-capabilities-api
+    retrieved: 2026-04-30
+  - n: 2
+    title: "ToolLoopAgent Reference — Vercel AI SDK Documentation"
+    url: https://sdk.vercel.ai/docs/ai-sdk-core/agents
+    retrieved: 2026-04-30
+  - n: 3
+    title: "AI SDK 6 Announcement — Vercel Blog"
+    url: https://vercel.com/blog/ai-sdk-6
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Scaling Managed Agents — Anthropic Engineering Blog"
+    url: https://www.anthropic.com/engineering
+    retrieved: 2026-04-30
 ---
 
 # Use Vercel AI SDK 6 for Portability, Claude Agent SDK for Managed State
