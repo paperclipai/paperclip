@@ -91,6 +91,38 @@ The command returns a non-zero exit code when required evidence is missing or fa
 
 Native signing manifests must use secret references rather than raw credentials or private key material. The gate rejects obvious private key blocks, raw token patterns, and sensitive password/private-key fields that are not secret references.
 
+## Release Channel Gate
+
+Phase 61 adds a separate native updater/release channel gate:
+
+```sh
+pnpm run rt2:release-channel-gate -- --manifest path/to/release-channel-evidence.json
+```
+
+This gate validates internal/beta/stable channel metadata before an update feed can be considered publishable. It writes:
+
+```text
+.planning/native-updater-runs/<timestamp>/
+```
+
+Each run writes:
+
+- `summary.json` - machine-readable status, installed channel/build identity, update state, blocker counts, and passed checks
+- `report.md` - operator-readable installed/update state plus blocker and passed-check tables
+
+The command returns a non-zero exit code when release channel or updater metadata is incomplete. Required checks include:
+
+- Installed state: channel, version, and build ID.
+- Update state: one of `idle`, `checking`, `available`, `downloading`, `downloaded`, `installing`, `relaunch_required`, `failed`, or `rolled_back`.
+- Channels: `internal`, `beta`, and `stable` are all present.
+- Channel metadata: version, build ID, notes or notesUrl, rollout policy, and rollback candidate.
+- Platform metadata: HTTPS artifact URL, SHA-256 checksum, updater signature content, and Phase 60 signing summary reference.
+- Signing prerequisite: referenced native signing gate summary exists, has `status: passed`, and includes the matching macOS or Windows platform.
+- Local artifact checksum: when an `artifact` path is provided, the file hash matches the manifest checksum.
+- Secret hygiene: raw private keys, passwords, provider tokens, and updater private key values are rejected.
+
+The `signature` field must contain the generated `.sig` file contents. A path, URL, or secret reference is a blocker because Tauri updater metadata expects signature content in the feed.
+
 ## Runtime Confidence Report
 
 Phase 47 adds a consolidated runtime confidence report that consumes release-host evidence and the milestone artifact gate:

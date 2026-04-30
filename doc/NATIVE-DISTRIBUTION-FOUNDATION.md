@@ -183,6 +183,89 @@ Supported Windows `trustPath` values are `store_resigning`, `store`, `msix_store
 - Evidence fields may reference local evidence files, URLs, CI artifact references, or inline command output objects.
 - Raw private keys, passwords, provider tokens, and certificate private material are rejected. Use `secret-ref:...`, `env:...`, `github-secret:...`, `azure-key-vault:...`, `keychain:...`, or equivalent secret references.
 
+## Phase 61 Release Channel Evidence Gate
+
+Phase 61 adds a deterministic release channel and signed updater metadata gate:
+
+```sh
+pnpm run rt2:release-channel-gate -- --manifest path/to/release-channel-evidence.json
+```
+
+The gate validates internal/beta/stable channel manifests and writes durable evidence under `.planning/native-updater-runs/`:
+
+- `summary.json` - machine-readable pass/blocker status, installed state, update state, blocker counts, and passed checks
+- `report.md` - operator-readable installed/update state, blocker table, and passed-check table
+
+The command exits non-zero when release channel or updater metadata is incomplete.
+
+### Release Channel Manifest Shape
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-30T00:00:00.000Z",
+  "installed": {
+    "channel": "beta",
+    "version": "2026.430.0",
+    "buildId": "beta-2026.430.0-current"
+  },
+  "updateState": {
+    "state": "available",
+    "checkedAt": "2026-04-30T00:00:00.000Z",
+    "latestChannel": "beta",
+    "latestVersion": "2026.430.0",
+    "failureReason": null
+  },
+  "channels": {
+    "internal": {
+      "version": "2026.430.0",
+      "buildId": "internal-2026.430.0-build",
+      "notes": "Internal rollout notes",
+      "pubDate": "2026-04-30T00:00:00.000Z",
+      "rollout": { "strategy": "all", "percentage": 100 },
+      "rollback": {
+        "version": "2026.429.0",
+        "buildId": "internal-2026.429.0-rollback",
+        "reason": "last known good build"
+      },
+      "platforms": {
+        "darwin-x86_64": {
+          "url": "https://releases.example.test/internal/RealTycoon2.app.tar.gz",
+          "artifact": "dist/RealTycoon2.app.tar.gz",
+          "checksum": "<sha256>",
+          "signature": "<contents of generated .sig file>",
+          "signingSummary": ".planning/native-signing-runs/<timestamp>/summary.json",
+          "signingPlatform": "macos"
+        },
+        "windows-x86_64": {
+          "url": "https://releases.example.test/internal/RealTycoon2.msi.zip",
+          "artifact": "dist/RealTycoon2.msi.zip",
+          "checksum": "<sha256>",
+          "signature": "<contents of generated .sig file>",
+          "signingSummary": ".planning/native-signing-runs/<timestamp>/summary.json",
+          "signingPlatform": "windows"
+        }
+      }
+    },
+    "beta": { "...": "same shape as internal" },
+    "stable": { "...": "same shape as internal" }
+  }
+}
+```
+
+Required pass conditions:
+
+- `installed.channel`, `installed.version`, and `installed.buildId` are present.
+- `updateState.state` is one of `idle`, `checking`, `available`, `downloading`, `downloaded`, `installing`, `relaunch_required`, `failed`, or `rolled_back`.
+- `internal`, `beta`, and `stable` channel entries are all present.
+- Every channel has version, build ID, notes or notesUrl, rollout policy, rollback candidate, and platform metadata.
+- Every platform has HTTPS artifact URL, SHA-256 checksum, updater signature content, and a passed Phase 60 signing summary for the matching platform.
+- If a local `artifact` path is provided, its SHA-256 must match the manifest checksum.
+- Updater signature values must be the generated `.sig` content. Paths, URLs, and secret references are blockers.
+- Raw updater private keys, updater key passwords, provider tokens, and certificate material are rejected. Use secret references only for private key material.
+
+Supported rollout strategies are `all`, `percentage`, and `paused`. Percentage rollout requires a numeric `percentage` between 0 and 100. Rollback candidate metadata is mandatory for every channel before the feed can pass.
+
 ## Updater Key Material
 
 Updater signing is separate from OS code signing.
