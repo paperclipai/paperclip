@@ -19,10 +19,12 @@ function getAuthHeader(init: RequestInit | undefined): string | null {
 describe("ghFetch GitHub authentication", () => {
   const originalGithubToken = process.env.GITHUB_TOKEN;
   const originalGhToken = process.env.GH_TOKEN;
+  const originalGithubHosts = process.env.PAPERCLIP_GITHUB_HOSTS;
 
   beforeEach(() => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
+    delete process.env.PAPERCLIP_GITHUB_HOSTS;
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeOkResponse()));
   });
 
@@ -31,6 +33,8 @@ describe("ghFetch GitHub authentication", () => {
     else process.env.GITHUB_TOKEN = originalGithubToken;
     if (originalGhToken === undefined) delete process.env.GH_TOKEN;
     else process.env.GH_TOKEN = originalGhToken;
+    if (originalGithubHosts === undefined) delete process.env.PAPERCLIP_GITHUB_HOSTS;
+    else process.env.PAPERCLIP_GITHUB_HOSTS = originalGithubHosts;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -61,9 +65,9 @@ describe("ghFetch GitHub authentication", () => {
     expect(getAuthHeader(init)).toBe("Bearer ghp_raw_token");
   });
 
-  it("attaches Authorization header for GitHub Enterprise API URLs", async () => {
-    // gitHubApiBase() routes GHE traffic to <host>/api/v3 — recognized by path.
+  it("attaches Authorization header for an operator-configured GitHub Enterprise host", async () => {
     process.env.GITHUB_TOKEN = "ghp_ghe_token";
+    process.env.PAPERCLIP_GITHUB_HOSTS = "github.example.com";
 
     await ghFetch("https://github.example.com/api/v3/repos/acme/widgets");
 
@@ -71,22 +75,43 @@ describe("ghFetch GitHub authentication", () => {
     expect(getAuthHeader(init)).toBe("Bearer ghp_ghe_token");
   });
 
-  it("attaches Authorization header for GitHub Enterprise raw URLs", async () => {
-    // resolveRawGitHubUrl() routes GHE raw traffic to <host>/raw/... — recognized by path.
-    process.env.GITHUB_TOKEN = "ghp_ghe_raw_token";
+  it("supports multiple GHE hosts via PAPERCLIP_GITHUB_HOSTS comma-separated list", async () => {
+    process.env.GITHUB_TOKEN = "ghp_multi";
+    process.env.PAPERCLIP_GITHUB_HOSTS = "ghe-east.example.com, ghe-west.example.com";
 
-    await ghFetch("https://github.example.com/raw/acme/widgets/main/README.md");
+    await ghFetch("https://ghe-west.example.com/api/v3/user");
 
     const init = getInitForCall(vi.mocked(fetch).mock.calls[0]);
-    expect(getAuthHeader(init)).toBe("Bearer ghp_ghe_raw_token");
+    expect(getAuthHeader(init)).toBe("Bearer ghp_multi");
+  });
+
+  it("does not attach Authorization header to a path-only GHE-shaped URL on an unconfigured host", async () => {
+    // Defense in depth: an attacker-controlled URL whose path looks like
+    // `/api/v3/...` must NOT receive the token unless the host is explicitly
+    // allowlisted via PAPERCLIP_GITHUB_HOSTS.
+    process.env.GITHUB_TOKEN = "ghp_test_token_value";
+
+    await ghFetch("https://attacker.example.com/api/v3/collect");
+
+    const init = getInitForCall(vi.mocked(fetch).mock.calls[0]);
+    expect(getAuthHeader(init)).toBeNull();
   });
 
   it("does not attach Authorization header for unrecognized hosts even when token is set", async () => {
-    // Defense in depth: ghFetch is GitHub-specific by contract, but if a
-    // caller mistakenly passes a non-GitHub URL we must not leak the token.
     process.env.GITHUB_TOKEN = "ghp_test_token_value";
 
     await ghFetch("https://example.com/some/resource");
+
+    const init = getInitForCall(vi.mocked(fetch).mock.calls[0]);
+    expect(getAuthHeader(init)).toBeNull();
+  });
+
+  it("does not attach Authorization header to a configured GHE host that does not match the URL", async () => {
+    // Configured a different GHE host — example.org should NOT get the token.
+    process.env.GITHUB_TOKEN = "ghp_test_token_value";
+    process.env.PAPERCLIP_GITHUB_HOSTS = "github.example.com";
+
+    await ghFetch("https://example.org/api/v3/whatever");
 
     const init = getInitForCall(vi.mocked(fetch).mock.calls[0]);
     expect(getAuthHeader(init)).toBeNull();

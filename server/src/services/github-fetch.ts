@@ -17,12 +17,12 @@ export function resolveRawGitHubUrl(hostname: string, owner: string, repo: strin
 }
 
 /**
- * Recognizes URLs that look like they target GitHub or a GitHub Enterprise
- * instance. github.com properties are matched by hostname; GHE installs are
- * detected by the URL shape produced by {@link gitHubApiBase} (paths under
- * `/api/v3`) and {@link resolveRawGitHubUrl} (paths under `/raw`). Anything
- * else is treated as a non-GitHub URL — even if a caller mistakenly passes
- * one to {@link ghFetch}, no credentials will be attached to it.
+ * Recognizes URLs that target GitHub or an explicitly-configured GitHub
+ * Enterprise instance. Matching is hostname-only — github.com properties are
+ * built in; GHE hosts must be opted in via the `PAPERCLIP_GITHUB_HOSTS` env
+ * var (comma-separated). Path-based detection is intentionally avoided so a
+ * URL like `https://attacker.example.com/api/v3/collect` cannot trick
+ * {@link authHeadersForGitHub} into attaching a token.
  */
 function looksLikeGitHubUrl(url: URL): boolean {
   const host = url.hostname.toLowerCase();
@@ -30,10 +30,14 @@ function looksLikeGitHubUrl(url: URL): boolean {
   if (host === "api.github.com") return true;
   if (host === "raw.githubusercontent.com" || host === "codeload.github.com") return true;
   if (host.endsWith(".github.com")) return true;
-  // GitHub Enterprise: gitHubApiBase / resolveRawGitHubUrl emit /api/v3 and /raw paths.
-  const path = url.pathname;
-  if (path === "/api/v3" || path.startsWith("/api/v3/")) return true;
-  if (path === "/raw" || path.startsWith("/raw/")) return true;
+  const enterpriseHosts = process.env.PAPERCLIP_GITHUB_HOSTS;
+  if (enterpriseHosts) {
+    const allowlist = enterpriseHosts
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+    if (allowlist.includes(host)) return true;
+  }
   return false;
 }
 
