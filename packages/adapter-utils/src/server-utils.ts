@@ -1838,10 +1838,21 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
+          // Swallow EPIPE / errors on stdin: a child that crashes immediately
+          // (e.g. wrong command, perms) may close the pipe before we finish
+          // writing the prompt. Without this listener, the EPIPE bubbles up as
+          // an unhandled 'error' event and crashes the whole server.
+          stdin.on("error", () => {});
           void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
+            if (child.killed || stdin.destroyed || !stdin.writable) return;
+            try {
+              stdin.write(opts.stdin as string, (err) => {
+                if (err) return; // already swallowed by 'error' handler above
+              });
+              stdin.end();
+            } catch {
+              // pipe may have closed between the writable check and write call
+            }
           });
         }
 
