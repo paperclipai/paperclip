@@ -341,8 +341,14 @@ spec:
                 #   - tempo       — Tempo 2.10's built-in MCP at /api/mcp.
                 #   - kubernetes  — containers/kubernetes-mcp-server, readonly
                 #                    tier (cluster-wide get/list/watch).
-                # Per-agent escalations (k8s-mcp ns-rw, admin, github with PAT,
-                # figma) are layered in later by the claude_k8s adapter from
+                #   - github      — github/github-mcp-server bundled in this
+                #                    image (see Dockerfile github-mcp stage).
+                #                    Stdio mode reads GITHUB_PERSONAL_ACCESS_TOKEN
+                #                    from env, which the claude_k8s adapter
+                #                    inherits from this StatefulSet's container
+                #                    env (paperclip-github-mcp-token Secret).
+                # Per-agent escalations (k8s-mcp ns-rw, admin, figma) are
+                # layered in later by the claude_k8s adapter from
                 # adapterConfig.mcpServers — this seed only writes the shared
                 # baseline. Re-runs overwrite to keep the file in sync with
                 # what's deployed.
@@ -364,12 +370,16 @@ spec:
                   "kubernetes": {
                     "type": "sse",
                     "url": "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/sse"
+                  },
+                  "github": {
+                    "command": "/usr/local/bin/github-mcp-server",
+                    "args": ["stdio"]
                   }
                 }
               }
               EOF
                 chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
-                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly MCP servers"
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github MCP servers"
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi

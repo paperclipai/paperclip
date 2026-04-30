@@ -73,6 +73,13 @@ RUN git clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git openco
   && npm pack \
   && mv paperclip-adapter-opencode-k8s-*.tgz /vendor/paperclip-adapter-opencode-k8s.tgz
 
+# github-mcp-server: official Go binary for GitHub's MCP server. We bundle
+# it in the image so claude can spawn it as a stdio MCP, which sidesteps
+# the per-request Authorization header dance the http transport requires
+# (the binary reads GITHUB_PERSONAL_ACCESS_TOKEN from env at startup).
+# Pin to a release tag — bump deliberately, not via :latest.
+FROM ghcr.io/github/github-mcp-server:v1.0.3 AS github-mcp
+
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
@@ -103,6 +110,7 @@ COPY --from=vendor /vendor/ccrotate.tgz /tmp/ccrotate.tgz
 RUN mkdir -p /tmp/paperclip-bundled-adapters
 COPY --from=vendor /vendor/paperclip-adapter-claude-k8s.tgz /tmp/paperclip-bundled-adapters/
 COPY --from=vendor /vendor/paperclip-adapter-opencode-k8s.tgz /tmp/paperclip-bundled-adapters/
+COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-server
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
   # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
