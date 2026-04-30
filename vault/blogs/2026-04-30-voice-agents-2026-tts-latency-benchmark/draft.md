@@ -15,6 +15,28 @@ sources:
   - https://github.com/hexgrad/kokoro
   - https://cartesia.ai/sonic
   - https://artificialanalysis.ai/text-to-speech
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Best Voice AI & TTS APIs for Real-Time Voice Agents: 2026 Benchmarks — Inworld"
+    url: https://inworld.ai/resources/best-voice-ai-tts-apis-for-real-time-voice-agents-2026-benchmarks
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Kokoro-82M Model Card — Hugging Face"
+    url: https://huggingface.co/hexgrad/Kokoro-82M
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Kokoro GitHub Repository (hexgrad/kokoro)"
+    url: https://github.com/hexgrad/kokoro
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Cartesia Sonic Product Page"
+    url: https://cartesia.ai/sonic
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Artificial Analysis Text-to-Speech Leaderboard"
+    url: https://artificialanalysis.ai/text-to-speech
+    retrieved: 2026-04-30
 whats_new:
   - Kokoro 82M matches Cartesia Sonic 3 on quality ELO (1059 vs 1054) at 1/67th the cost — the open-source option is no longer a compromise.
 learning_objectives:
