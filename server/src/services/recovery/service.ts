@@ -343,11 +343,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let cursor: string | null = issueId;
     let rootIssueId = issueId;
     for (let i = 0; i < SAFETY_LIMIT && cursor !== null; i++) {
-      const ancestor = await db
+      const rows = await db
         .select({ parentId: issues.parentId, originKind: issues.originKind })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)))
-        .then((rows) => rows[0] ?? null);
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)));
+      const ancestor = rows[0] ?? null;
       if (!ancestor) break;
       rootIssueId = cursor;
       if (
