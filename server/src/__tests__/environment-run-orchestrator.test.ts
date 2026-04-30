@@ -174,6 +174,13 @@ function makeMockRuntime(overrides: Partial<EnvironmentRuntimeService> = {}): En
   return {
     acquireRunLease: vi.fn(),
     releaseRunLeases: vi.fn(),
+    execute: vi.fn().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    }),
     realizeWorkspace: vi.fn().mockResolvedValue({
       cwd: "/workspace/project",
       metadata: {
@@ -346,5 +353,119 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     // The returned lease should reflect the updated value
     expect(result.lease).toEqual(updatedLease);
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
+  });
+
+  it("runs a remote provision command after workspace realization when configured", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "sandbox",
+            remote: { path: "/remote/workspace" },
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("sandbox"),
+    }));
+
+    expect(runtime.execute).toHaveBeenCalledOnce();
+    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({ driver: "sandbox" }),
+      lease: expect.objectContaining({ id: "lease-1" }),
+      command: "bash",
+      args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
+      cwd: "/remote/workspace",
+      env: {
+        SHELL: "/bin/bash",
+      },
+    }));
+  });
+
+  it("surfaces remote provision command failures before resolving the adapter target", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: "install-tool",
+      },
+    });
+
+    const runtime = makeMockRuntime({
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 127,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "/bin/sh: install-tool: not found\n",
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await expect(orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("sandbox"),
+    }))).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof EnvironmentRunError &&
+        err.code === "workspace_realization_failed" &&
+        String(err.message).includes("install-tool: not found"),
+    );
+
+    expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
   });
 });
