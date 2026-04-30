@@ -330,6 +330,8 @@ export const askUserQuestionsAnswerSchema = z.object({
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  cancelled: z.literal(true).optional(),
+  cancellationReason: z.string().trim().max(4000).nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -445,6 +447,11 @@ export const rejectIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
 export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInteractionSchema>;
+
+export const cancelIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),

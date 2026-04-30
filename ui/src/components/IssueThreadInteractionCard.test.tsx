@@ -91,6 +91,25 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
   });
 
+  it("only shows question cancellation when a cancel handler is wired", () => {
+    const withoutHandler = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+    expect(withoutHandler.textContent).not.toContain("Cancel question");
+
+    act(() => root?.unmount());
+    withoutHandler.remove();
+    root = null;
+
+    const withHandler = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onCancelInteraction: vi.fn(),
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+    expect(withHandler.textContent).toContain("Cancel question");
+  });
+
   it("makes child tasks explicit in suggested task trees", () => {
     const host = renderCard({
       interaction: pendingSuggestedTasksInteraction,
