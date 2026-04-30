@@ -697,6 +697,8 @@ export function Inbox() {
   const shouldLoadMineIssues = isForegrounded && tab === "mine";
   const shouldLoadTouchedIssues = isForegrounded && (tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory));
   const shouldLoadHeartbeatRuns = isForegrounded && tab === "all" && showFailedRunsCategory;
+  const issueStatusRequestFilter =
+    issueFilters.statuses.length > 0 ? issueFilters.statuses.join(",") : INBOX_MINE_ISSUE_STATUS_FILTER;
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -804,12 +806,12 @@ export function Inbox() {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        status: issueStatusRequestFilter,
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
@@ -819,11 +821,11 @@ export function Inbox() {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions", issueStatusRequestFilter],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        status: issueStatusRequestFilter,
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
