@@ -1,6 +1,7 @@
 import type {
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
+  RecoveryStatusSnapshot,
   IssueGraphLivenessAutoRecoveryPreview,
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
@@ -14,6 +15,8 @@ export const instanceSettingsApi = {
     api.patch<InstanceGeneralSettings>("/instance/settings/general", patch),
   getExperimental: () =>
     api.get<InstanceExperimentalSettings>("/instance/settings/experimental"),
+  getRecoveryStatus: () =>
+    api.get<RecoveryStatusSnapshot & { statusFilePath: string }>("/instance/recovery-status"),
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
     api.patch<InstanceExperimentalSettings>("/instance/settings/experimental", patch),
   previewIssueGraphLivenessAutoRecovery: (input: { lookbackHours?: number }) =>

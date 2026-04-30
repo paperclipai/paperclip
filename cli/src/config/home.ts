@@ -57,6 +57,14 @@ export function resolveDefaultBackupDir(instanceId?: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "backups");
 }
 
+export function resolveDefaultRecoveryDir(instanceId?: string): string {
+  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "recovery");
+}
+
+export function resolveDefaultRecoveryStatusPath(instanceId?: string): string {
+  return path.resolve(resolveDefaultRecoveryDir(instanceId), "status.json");
+}
+
 export function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
@@ -73,6 +81,8 @@ export function describeLocalInstancePaths(instanceId?: string) {
     configPath: resolveDefaultConfigPath(resolvedInstanceId),
     embeddedPostgresDataDir: resolveDefaultEmbeddedPostgresDir(resolvedInstanceId),
     backupDir: resolveDefaultBackupDir(resolvedInstanceId),
+    recoveryDir: resolveDefaultRecoveryDir(resolvedInstanceId),
+    recoveryStatusPath: resolveDefaultRecoveryStatusPath(resolvedInstanceId),
     logDir: resolveDefaultLogsDir(resolvedInstanceId),
     secretsKeyFilePath: resolveDefaultSecretsKeyFilePath(resolvedInstanceId),
     storageDir: resolveDefaultStorageDir(resolvedInstanceId),

@@ -51,6 +51,10 @@ export function InstanceGeneralSettings() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
+  const recoveryStatusQuery = useQuery({
+    queryKey: queryKeys.instance.recoveryStatus,
+    queryFn: () => instanceSettingsApi.getRecoveryStatus(),
+  });
 
   const updateGeneralMutation = useMutation({
     mutationFn: instanceSettingsApi.updateGeneral,
@@ -270,6 +274,70 @@ export function InstanceGeneralSettings() {
               })}
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-5">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Recovery status</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Tracks the authoritative off-box recovery path: latest manifest freshness, asset
+              cutover completion, and the most recent verified restore drill.
+            </p>
+          </div>
+
+          {recoveryStatusQuery.isLoading ? (
+            <div className="text-sm text-muted-foreground">Loading recovery status...</div>
+          ) : recoveryStatusQuery.error ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {recoveryStatusQuery.error instanceof Error
+                ? recoveryStatusQuery.error.message
+                : "Failed to load recovery status."}
+            </div>
+          ) : recoveryStatusQuery.data ? (
+            <>
+              <div className="grid gap-3 md:grid-cols-4">
+                <StatusBox label="State" value={recoveryStatusQuery.data.state} />
+                <StatusBox label="Manifest freshness" value={recoveryStatusQuery.data.manifestFreshness} />
+                <StatusBox label="Live asset storage" value={recoveryStatusQuery.data.storageProvider} />
+                <StatusBox
+                  label="Last verified restore"
+                  value={recoveryStatusQuery.data.latestVerifiedRestore?.finishedAt ?? "None"}
+                />
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <StatusBox
+                  label="Latest manifest"
+                  value={recoveryStatusQuery.data.latestUploadedManifest?.createdAt ?? "None"}
+                />
+                <StatusBox
+                  label="Status file"
+                  value={recoveryStatusQuery.data.statusFilePath}
+                />
+              </div>
+
+              {recoveryStatusQuery.data.degradedReasons.length > 0 ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+                  <div className="font-medium text-amber-50">Degraded reasons</div>
+                  <div className="mt-2 space-y-1">
+                    {recoveryStatusQuery.data.degradedReasons.map((reason) => (
+                      <div key={reason}>{reason}</div>
+                    ))}
+                  </div>
+                </div>
+              ) : recoveryStatusQuery.data.state === "RestoreVerified" ? (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
+                  Recovery is healthy: the latest manifest is fresh and a restore drill has passed.
+                </div>
+              ) : (
+                <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-100">
+                  Recovery setup is ready, but no restore drill has been verified yet.
+                </div>
+              )}
+            </>
+          ) : null}
         </div>
       </section>
 

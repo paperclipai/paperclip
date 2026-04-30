@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import type { StorageProvider as StorageProviderId } from "@paperclipai/shared";
 import type { StorageService, StorageProvider, PutFileInput, PutFileResult } from "./types.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 
@@ -87,16 +88,43 @@ function assertPutFileInput(input: PutFileInput): void {
   }
 }
 
-export function createStorageService(provider: StorageProvider): StorageService {
+type StorageServiceFactoryInput =
+  | StorageProvider
+  | {
+      activeProvider: StorageProvider;
+      providers: Partial<Record<StorageProviderId, StorageProvider>>;
+    };
+
+function isStorageProvider(input: StorageServiceFactoryInput): input is StorageProvider {
+  return typeof (input as StorageProvider).putObject === "function";
+}
+
+function resolveProvider(
+  providers: Partial<Record<StorageProviderId, StorageProvider>>,
+  providerId: StorageProviderId,
+): StorageProvider {
+  const provider = providers[providerId];
+  if (!provider) {
+    throw unprocessable(`Storage provider '${providerId}' is not configured.`);
+  }
+  return provider;
+}
+
+export function createStorageService(input: StorageServiceFactoryInput): StorageService {
+  const activeProvider = isStorageProvider(input) ? input : input.activeProvider;
+  const providers = isStorageProvider(input)
+    ? { [input.id]: input }
+    : input.providers;
+
   return {
-    provider: provider.id,
+    provider: activeProvider.id,
 
     async putFile(input: PutFileInput): Promise<PutFileResult> {
       assertPutFileInput(input);
       const objectKey = buildObjectKey(input.companyId, input.namespace, input.originalFilename);
       const byteSize = input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
-      await provider.putObject({
+      await activeProvider.putObject({
         objectKey,
         body: input.body,
         contentType,
@@ -104,7 +132,7 @@ export function createStorageService(provider: StorageProvider): StorageService 
       });
 
       return {
-        provider: provider.id,
+        provider: activeProvider.id,
         objectKey,
         contentType,
         byteSize,
@@ -113,19 +141,19 @@ export function createStorageService(provider: StorageProvider): StorageService 
       };
     },
 
-    async getObject(companyId: string, objectKey: string) {
+    async getObject(companyId: string, objectKey: string, providerOverride?: StorageProviderId) {
       ensureCompanyPrefix(companyId, objectKey);
-      return provider.getObject({ objectKey });
+      return resolveProvider(providers, providerOverride ?? activeProvider.id).getObject({ objectKey });
     },
 
-    async headObject(companyId: string, objectKey: string) {
+    async headObject(companyId: string, objectKey: string, providerOverride?: StorageProviderId) {
       ensureCompanyPrefix(companyId, objectKey);
-      return provider.headObject({ objectKey });
+      return resolveProvider(providers, providerOverride ?? activeProvider.id).headObject({ objectKey });
     },
 
-    async deleteObject(companyId: string, objectKey: string) {
+    async deleteObject(companyId: string, objectKey: string, providerOverride?: StorageProviderId) {
       ensureCompanyPrefix(companyId, objectKey);
-      await provider.deleteObject({ objectKey });
+      await resolveProvider(providers, providerOverride ?? activeProvider.id).deleteObject({ objectKey });
     },
   };
 }

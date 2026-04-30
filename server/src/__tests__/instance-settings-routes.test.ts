@@ -13,11 +13,15 @@ const mockHeartbeatService = vi.hoisted(() => ({
   buildIssueGraphLivenessAutoRecoveryPreview: vi.fn(),
   reconcileIssueGraphLiveness: vi.fn(),
 }));
+const mockInstanceRecoveryStatusService = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     heartbeatService: () => mockHeartbeatService,
+    instanceRecoveryStatusService: () => mockInstanceRecoveryStatusService,
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
@@ -55,6 +59,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
+    mockInstanceRecoveryStatusService.get.mockReset();
     mockLogActivity.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
@@ -107,6 +112,30 @@ describe("instance settings routes", () => {
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
       escalationIssueIds: ["issue-2"],
+    });
+    mockInstanceRecoveryStatusService.get.mockReturnValue({
+      version: 1,
+      updatedAt: "2026-04-29T03:00:00.000Z",
+      backupIntervalMinutes: 60,
+      storageProvider: "local_disk",
+      vault: null,
+      latestUploadedManifest: null,
+      latestDrillAttempt: null,
+      latestVerifiedRestore: null,
+      assetCutover: {
+        lastRunAt: null,
+        switchedAt: null,
+        migratedAssetCount: 0,
+        migratedByteCount: 0,
+        remainingLocalAssetCount: 0,
+        sampleObjectKeys: [],
+        lastError: null,
+      },
+      warnings: [],
+      state: "LocalOnly",
+      manifestFreshness: "missing",
+      degradedReasons: ["Recovery vault is not configured."],
+      statusFilePath: "/tmp/recovery/status.json",
     });
   });
 
@@ -179,6 +208,23 @@ describe("instance settings routes", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 12,
     });
+  });
+
+  it("returns recovery status to board users", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app).get("/api/instance/recovery-status").expect(200);
+    expect(res.body).toMatchObject({
+      state: "LocalOnly",
+      statusFilePath: "/tmp/recovery/status.json",
+      storageProvider: "local_disk",
+    });
+    expect(mockInstanceRecoveryStatusService.get).toHaveBeenCalledTimes(1);
   });
 
   it("previews issue graph liveness recovery candidates before enabling", async () => {

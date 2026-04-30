@@ -5,6 +5,7 @@ import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
+import { normalizeStorageProviderOverride } from "../storage/provider-override.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -318,7 +319,12 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, asset.companyId);
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    const providerOverride = normalizeStorageProviderOverride(asset.provider);
+    const object = await storage.getObject(
+      asset.companyId,
+      asset.objectKey,
+      providerOverride,
+    );
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
     res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
