@@ -93,6 +93,13 @@ const manifest: PaperclipPluginManifestV1 = {
           "Default Linear team ID. Auto-detected during OAuth connect.",
         default: DEFAULT_CONFIG.teamId,
       },
+      defaultProjectId: {
+        type: "string",
+        title: "Default Paperclip Project ID",
+        description:
+          "Paperclip project to assign Linear-imported issues to when the source Linear issue has no project (or its Linear project isn't linked yet). Leave blank to allow imports without a project.",
+        default: DEFAULT_CONFIG.defaultProjectId,
+      },
       syncComments: {
         type: "boolean",
         title: "Sync Comments",

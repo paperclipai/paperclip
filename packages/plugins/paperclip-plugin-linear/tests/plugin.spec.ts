@@ -1036,4 +1036,137 @@ describe("paperclip-plugin-linear", () => {
       await expect(harness.runJob(JOB_KEYS.initialImport)).resolves.not.toThrow();
     });
   });
+
+  // -----------------------------------------------------------------------
+  // BLO-2350: webhook-imported Linear issues must inherit projectId
+  // -----------------------------------------------------------------------
+
+  describe("BLO-2350: webhook import resolves projectId", () => {
+    it("uses the linked Paperclip project when the Linear issue has a mapped project", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      // Mock the project link lookup: Linear project lin-proj-mapped is
+      // linked to Paperclip project pap-proj-1.
+      syncModule.getProjectLinkByLinear.mockImplementation(
+        async (_ctx: unknown, linearProjectId: string) => {
+          if (linearProjectId === "lin-proj-mapped") {
+            return {
+              paperclipProjectId: "pap-proj-1",
+              paperclipCompanyId: "comp-1",
+              linearProjectId,
+              linearProjectName: "Mapped Project",
+              syncDirection: "bidirectional",
+              lastSyncAt: new Date().toISOString(),
+              lastLinearState: "started",
+            };
+          }
+          return null;
+        },
+      );
+
+      const createSpy = vi.spyOn(harness.ctx.issues, "create");
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "create",
+          data: {
+            id: "lin-iss-with-proj",
+            identifier: "LUC-101",
+            title: "Issue with mapped project",
+            description: "Body",
+            priority: 3,
+            state: { type: "started", name: "In Progress" },
+            project: { id: "lin-proj-mapped", name: "Mapped Project" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+      });
+
+      expect(createSpy).toHaveBeenCalledOnce();
+      const createInput = createSpy.mock.calls[0]![0];
+      expect(createInput.projectId).toBe("pap-proj-1");
+      expect(createInput.projectId).not.toBeNull();
+    });
+
+    it("falls back to defaultProjectId when the Linear issue has no project", async () => {
+      harness.setConfig({
+        linearClientId: "client-id-123",
+        linearClientSecret: "client-secret-456",
+        teamId: "team-1",
+        defaultProjectId: "pap-proj-default",
+        syncComments: true,
+        syncDirection: "bidirectional",
+      });
+
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      const createSpy = vi.spyOn(harness.ctx.issues, "create");
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "create",
+          data: {
+            id: "lin-iss-no-proj",
+            identifier: "LUC-102",
+            title: "Issue with no project",
+            priority: 3,
+            state: { type: "backlog", name: "Backlog" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+      });
+
+      expect(createSpy).toHaveBeenCalledOnce();
+      const createInput = createSpy.mock.calls[0]![0];
+      expect(createInput.projectId).toBe("pap-proj-default");
+    });
+
+    it("leaves projectId unset when no link and no defaultProjectId (with warn)", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      const createSpy = vi.spyOn(harness.ctx.issues, "create");
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "create",
+          data: {
+            id: "lin-iss-unmapped",
+            identifier: "LUC-103",
+            title: "Issue with unmapped project",
+            priority: 3,
+            state: { type: "backlog", name: "Backlog" },
+            project: { id: "lin-proj-unknown", name: "Unknown" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+      });
+
+      expect(createSpy).toHaveBeenCalledOnce();
+      const createInput = createSpy.mock.calls[0]![0];
+      expect(createInput.projectId).toBeUndefined();
+      expect(
+        harness.logs.some(
+          (l) => l.level === "warn" && l.message.includes("no projectId resolved"),
+        ),
+      ).toBe(true);
+    });
+  });
 });
