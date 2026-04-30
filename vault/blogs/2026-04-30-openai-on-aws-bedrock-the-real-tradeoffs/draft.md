@@ -14,6 +14,28 @@ sources:
   - https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModel.html
   - https://docs.aws.amazon.com/bedrock/latest/userguide/security-iam.html
   - https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-iam-cost-allocation/
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "OpenAI on AWS — OpenAI Announcement"
+    url: https://openai.com/index/openai-on-aws/
+    retrieved: 2026-04-30
+  - n: 2
+    title: "What Is Amazon Bedrock — AWS Documentation"
+    url: https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html
+    retrieved: 2026-04-30
+  - n: 3
+    title: "InvokeModel API Reference — AWS Bedrock Runtime"
+    url: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModel.html
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Identity and Access Management for Amazon Bedrock — AWS IAM Guide"
+    url: https://docs.aws.amazon.com/bedrock/latest/userguide/security-iam.html
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Cost Allocation by IAM User and Role in Amazon Bedrock — AWS What's New"
+    url: https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-iam-cost-allocation/
+    retrieved: 2026-04-30
 whats_new:
   - OpenAI GPT models now run on AWS Bedrock under IAM auth — not API keys — with data that never leaves your AWS region
 learning_objectives:
