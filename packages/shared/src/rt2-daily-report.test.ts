@@ -145,15 +145,17 @@ describe("RT2 daily report shared contracts", () => {
     );
   });
 
-  it("exports narrow quick-edit validators for title, deliverable, quality, and OKR updates", () => {
+  it("exports narrow quick-edit validators for title, lane, deliverable, quality, and OKR updates", () => {
     const exportsByName = sharedExports as Record<string, any>;
 
     expect(exportsByName.updateRt2DailyCardTitleSchema).toBeDefined();
+    expect(exportsByName.updateRt2DailyCardLaneSchema).toBeDefined();
     expect(exportsByName.upsertRt2DailyCardDeliverableSchema).toBeDefined();
     expect(exportsByName.updateRt2DailyCardQualitySchema).toBeDefined();
     expect(exportsByName.updateRt2DailyCardOkrSchema).toBeDefined();
 
     expect(() => exportsByName.updateRt2DailyCardTitleSchema.parse({ title: "" })).toThrow();
+    expect(() => exportsByName.updateRt2DailyCardLaneSchema.parse({ lane: "today" })).toThrow();
     expect(() =>
       exportsByName.upsertRt2DailyCardDeliverableSchema.parse({
         title: "",
@@ -167,6 +169,9 @@ describe("RT2 daily report shared contracts", () => {
 
     expect(exportsByName.updateRt2DailyCardTitleSchema.parse({ title: "고객 리포트 정리" })).toEqual({
       title: "고객 리포트 정리",
+    });
+    expect(exportsByName.updateRt2DailyCardLaneSchema.parse({ lane: "done" })).toEqual({
+      lane: "done",
     });
     expect(
       exportsByName.upsertRt2DailyCardDeliverableSchema.parse({
@@ -190,6 +195,9 @@ describe("RT2 daily report shared contracts", () => {
       }),
     ).toEqual({
       goalId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(exportsByName.updateRt2DailyCardOkrSchema.parse({ goalId: null })).toEqual({
+      goalId: null,
     });
   });
 });
