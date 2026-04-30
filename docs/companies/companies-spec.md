@@ -478,6 +478,7 @@ Additional rules for Paperclip exporters:
 - do not export provider-specific secret bindings such as `secretId`, `version`, or `type: secret_ref`
 - export env inputs as portable declarations with `required` or `optional` semantics and optional defaults
 - warn on system-dependent values such as absolute commands and absolute `PATH` overrides
+- normalize common GitHub SSH workspace remotes to HTTPS `repoUrl` values when exporting local checkout metadata
 - omit empty and default-valued Paperclip fields when possible
 
 ## 16. Export Rules

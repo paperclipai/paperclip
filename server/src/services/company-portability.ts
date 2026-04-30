@@ -893,10 +893,31 @@ async function inferPortableWorkspaceGitMetadata(workspace: NonNullable<ProjectL
   }
 
   return {
-    repoUrl,
+    repoUrl: normalizePortableGitRemoteUrl(repoUrl),
     repoRef,
     defaultRef,
   };
+}
+
+function normalizePortableGitRemoteUrl(repoUrl: string | null) {
+  const trimmed = asString(repoUrl);
+  if (!trimmed) return null;
+
+  const githubScpUrl = trimmed.match(/^git@github\.com:([^?#]+)$/i);
+  if (githubScpUrl) {
+    return `https://github.com/${githubScpUrl[1]}`;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "ssh:" && parsed.hostname.toLowerCase() === "github.com" && parsed.username === "git") {
+      return `https://github.com${parsed.pathname}`;
+    }
+  } catch {
+    // Non-URL git remote syntaxes are handled above or preserved as-is.
+  }
+
+  return trimmed;
 }
 
 async function buildPortableProjectWorkspaces(
