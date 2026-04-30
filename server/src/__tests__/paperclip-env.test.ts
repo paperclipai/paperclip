@@ -73,4 +73,57 @@ describe("buildPaperclipEnv", () => {
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
   });
+
+  it("with preferLocalListener=true, derives from listen host/port even when PAPERCLIP_RUNTIME_API_URL is set", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://desktop.tail302fee.ts.net:3100";
+    process.env.PAPERCLIP_API_URL = "http://localhost:4100";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalListener: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+  });
+
+  it("with preferLocalListener=true and 0.0.0.0 listen host, normalizes to localhost", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://desktop.tail302fee.ts.net:3100";
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalListener: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
+  });
+
+  it("with preferLocalListener=true but no listener env, falls back to runtime URL", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://desktop.tail302fee.ts.net:3100";
+    delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_LISTEN_HOST;
+    delete process.env.PAPERCLIP_LISTEN_PORT;
+    delete process.env.HOST;
+    delete process.env.PORT;
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalListener: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://desktop.tail302fee.ts.net:3100");
+  });
+
+  it("with preferLocalListener omitted, keeps existing runtime URL precedence (no behavior change)", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://desktop.tail302fee.ts.net:3100";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://desktop.tail302fee.ts.net:3100");
+  });
 });

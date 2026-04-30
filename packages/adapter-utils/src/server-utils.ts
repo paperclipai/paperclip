@@ -812,7 +812,25 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+export interface BuildPaperclipEnvOptions {
+  /**
+   * When true, derive `PAPERCLIP_API_URL` from `PAPERCLIP_LISTEN_HOST`/`PAPERCLIP_LISTEN_PORT`
+   * (i.e. the actual listener) before falling back to the public
+   * `PAPERCLIP_RUNTIME_API_URL` / `PAPERCLIP_API_URL` from the server's own env.
+   *
+   * Local adapters should pass `true` because the public/tailnet URL the server
+   * publishes for remote consumers is typically not reachable from a same-host
+   * agent process (e.g. on Windows, wintun does not hairpin the tailnet hostname
+   * back to the local listener). The loopback URL derived from the listener is
+   * always reachable when the listener is bound to it.
+   */
+  preferLocalListener?: boolean;
+}
+
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  options: BuildPaperclipEnvOptions = {},
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -823,14 +841,21 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
-  const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
-  );
-  const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+  const listenHost = process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST;
+  const listenPort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT;
+  const runtimeHost = resolveHostForUrl(listenHost ?? "localhost");
+  const runtimePort = listenPort ?? "3100";
+  const derivedFromListener = `http://${runtimeHost}:${runtimePort}`;
+  // For local adapters, the listener URL (typically loopback) is always
+  // reachable from a same-host process. The public PAPERCLIP_RUNTIME_API_URL is
+  // intended for remote consumers and may not resolve from the local agent
+  // process, so we only fall back to it when the listener cannot be derived.
+  const preferListener = options.preferLocalListener && listenHost !== undefined && listenPort !== undefined;
+  const apiUrl = preferListener
+    ? derivedFromListener
+    : process.env.PAPERCLIP_RUNTIME_API_URL ??
+      process.env.PAPERCLIP_API_URL ??
+      derivedFromListener;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }
