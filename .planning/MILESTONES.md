@@ -12,6 +12,8 @@
 | v2.6 | 운영 커넥터 및 자율성 하드닝 | Shipped | 2026-04-29 | 2026-04-29 | Phase 39-43 완료. 요구사항 12/12, integration 5/5, flows 5/5 충족. Full-suite timeout과 Windows embedded Postgres skip은 tech debt로 수용 |
 | v2.7 | 릴리즈 호스트 검증 및 런타임 신뢰도 | Shipped | 2026-04-29 | 2026-04-30 | Phase 44-47 완료. 요구사항 11/11, integration 4/4, flows 4/4 충족. Runtime confidence blocker 0, Windows default embedded Postgres skip은 accepted debt로 수용 |
 | v2.8 | RealTycoon2 Product Identity and Daily Work UX | Shipped | 2026-04-30 | 2026-04-30 | Phase 48-53 완료. 요구사항 15/15, integration 5/5, flows 5/5 충족. Korean-first daily work board, One-Liner board review, supporting evidence, identity gate 완료 |
+| v2.9 | Native Capture and Draft Reliability | Shipped | 2026-04-30 | 2026-04-30 | Phase 54-58 완료. 요구사항 13/13 완료. Persistent draft revision, PWA/mobile quick capture, signed messaging inbound, review reliability, distribution boundary closure 완료 |
+| v3.0 | Native Distribution Readiness | Active | 2026-04-30 | - | Phase 59-64 planned. DIST-01 signing/updater/release-channel/notarization pipeline과 DIST-02 shortcut/tray/mobile push를 production readiness로 구현 |
 
 ## v2.0 RT2 Refoundation
 
@@ -501,5 +503,78 @@ Audit status는 `passed`다. 남은 항목은 blocker가 아니라 accepted debt
 | identity | Full internal package rebrand away from `@paperclipai/*` | out of scope for product-facing v2.8 |
 | future_scope | Federation full apply, app-store native distribution, autonomous Jarvis apply without approval, provider-only eval mandate | deferred future scope |
 
+## v2.9 Native Capture and Draft Reliability
+
+**상태:** 2026-04-30 완료
+**시작:** 2026-04-30
+**완료:** 2026-04-30
+**Phases:** 5 planned, 5 complete
+**Plans:** 5 complete
+**Requirements:** 13 planned, 13 complete
+
+### 목표
+
+One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 안정화하고, native/mobile/messaging quick capture entry가 같은 검수 루프로 들어오게 만든다.
+
+### 완료한 Phase
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 54 | Persistent Capture Draft Revision | DRAFT-01..04 | Complete |
+| 55 | Native and Mobile Quick Capture Entry | NATIVE-01..03 | Complete |
+| 56 | Messaging Capture Source Installation | MSG-01..03 | Complete |
+| 57 | Capture Review Operations and Reliability | REVIEW-01..03 | Complete |
+| 58 | v2.9 Verification and Distribution Readiness Closure | DRAFT/NATIVE/MSG/REVIEW closure | Complete |
+
+### 완료한 것
+
+- Persistent capture draft revision, latest revision promotion, Korean board review edit/state actions를 구현했다.
+- PWA/mobile quick capture route, bounded local queue, mobile source handoff, RealTycoon2 manifest identity를 구현했다.
+- Slack/Teams/webhook source setup, signed public inbound route, redacted source metadata, malformed/source failure evidence를 구현했다.
+- Board review inbox source/status/evidence filters, promoted draft evidence labels, source-level capture reliability report를 구현했다.
+- Phase 58이 validation/verification artifact drift, `.planning/REQUIREMENTS.md`/`.planning/ROADMAP.md` traceability, future distribution boundary를 닫았다.
+
+### 알려진 Deferred Items
+
+| Category | Item | Status |
+|----------|------|--------|
+| distribution | App-store signing/updater/notarization/release channel | v3.0 scope |
+| resident | OS-level global shortcut and resident tray app | v3.0 scope |
+| push | Mobile push notification | v3.0 scope |
+| federation | Cross-company federation full apply | future scope |
+| autonomy | Autonomous Jarvis apply without approval | future scope |
+
+## v3.0 Native Distribution Readiness
+
+**상태:** Active
+**시작:** 2026-04-30
+**완료:** -
+**Phases:** 6 planned
+**Requirements:** 12 planned
+
+### 목표
+
+RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다. v2.9 DRAFT/NATIVE/MSG/REVIEW capture reliability는 shipped baseline으로 고정하고 regression gate로만 보호한다.
+
+### 계획된 Phase
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 59 | Native Distribution Foundation | DIST-01 | Planned |
+| 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Planned |
+| 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Planned |
+| 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
+| 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
+| 64 | v3.0 Distribution Gate and Capture Regression Closure | DIST-06 | Planned |
+
+### 범위
+
+- Native shell packaging 후보, signing credential inventory, platform capability boundary를 확정한다.
+- macOS Developer ID signing, hardened runtime, notarization, ticket stapling/Gatekeeper verification을 release gate에 넣는다.
+- Windows MSIX/installer signing, timestamping, Store re-signing 또는 trusted signing path를 release gate에 넣는다.
+- Internal/beta/stable release channel, signed updater feed, rollback candidate, rollout evidence를 관리한다.
+- Resident tray/menubar app과 OS-level global shortcut이 v2.9 draft review loop로 빠른 입력을 전달하게 한다.
+- Mobile/Web Push/APNs token, delivery/retry/failure/click evidence를 company-scoped notification loop로 연결한다.
+
 ---
-*마지막 업데이트: 2026-04-30, v2.8 milestone complete*
+*마지막 업데이트: 2026-04-30, v3.0 milestone initialized*

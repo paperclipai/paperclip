@@ -11,7 +11,8 @@
 - [shipped] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 완료, 2026-04-29 ([archive](milestones/v2.6-ROADMAP.md), [requirements](milestones/v2.6-REQUIREMENTS.md), [audit](milestones/v2.6-MILESTONE-AUDIT.md))
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
-- [active] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 in progress
+- [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
+- [active] **v3.0 Native Distribution Readiness** - Phase 59-64 planned
 
 ## 완료됨
 
@@ -112,7 +113,7 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v2.9 Native Capture and Draft Reliability가 시작됐다. 원 개발계획의 friction-zero capture 약속을 따라 web board에서 안정화된 One-Liner flow를 persistent draft revision, native/mobile quick capture, Slack/Teams/webhook inbound, source별 review operations로 확장한다.
+v3.0 Native Distribution Readiness가 시작됐다. v2.9 capture reliability는 shipped baseline으로 고정하고, 이번 milestone은 signed native distribution pipeline, release channel/updater, resident tray/global shortcut, mobile push notification을 운영 가능한 배포 표면으로 만든다.
 
 <details>
 <summary>v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 (Phase 44-47) - 2026-04-30 완료</summary>
@@ -127,17 +128,90 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v2.9 Native Capture and Draft Reliability (Phase 54-58) - in progress</summary>
+<summary>v3.0 Native Distribution Readiness (Phase 59-64) - planned</summary>
+
+**Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 59 | Native Distribution Foundation | DIST-01 | Planned |
+| 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Planned |
+| 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Planned |
+| 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
+| 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
+| 64 | v3.0 Distribution Gate and Capture Regression Closure | DIST-06 | Planned |
+
+### Reference Constraints
+
+- macOS release gates must account for Apple Developer ID signing, hardened runtime, notarization, ticket stapling, and Gatekeeper verification.
+- Windows release gates must account for MSIX/installer signing, timestamping, Store re-signing or trusted signing path, and SmartScreen/trust evidence.
+- Updater metadata must be signed and channel-specific; selected native shell tooling must make update check/download/install/relaunch states observable.
+- Push notification work must model Service Worker/Web Push delivery plus APNs token/device registration where native/mobile packaging requires it.
+
+### Phase Details
+
+**Phase 59: Native Distribution Foundation**
+Goal: 현재 web/PWA-first repo에서 native shell packaging 후보, platform capability boundary, signing credential inventory, updater key material, v2.9 regression boundary를 확정한다.
+Requirements: DIST-01
+Success criteria:
+1. Native shell approach and package layout are documented with the smallest viable implementation path.
+2. macOS/Windows signing identities, certificate source, secret storage, updater key material, and CI evidence owners are identified.
+3. v2.9 DRAFT/NATIVE/MSG/REVIEW behaviors are listed as regression gates, not implementation scope.
+
+**Phase 60: Signing and Notarization Pipeline**
+Goal: macOS and Windows release artifacts are signed, notarized or trusted through the selected platform path, and blocked when signing evidence is incomplete.
+Requirements: DIST-02, DIST-03
+Success criteria:
+1. macOS artifact evidence covers Developer ID signing, hardened runtime, notarization submission, ticket stapling, and Gatekeeper verification.
+2. Windows artifact evidence covers MSIX/installer signing, timestamping, selected trust path, and install trust verification.
+3. Signing failures produce operator-readable failure reasons without publishing a release artifact.
+
+**Phase 61: Release Channels and Signed Updater**
+Goal: internal/beta/stable release channels and signed updater feed provide controlled rollout, rollback, and operator-visible update state.
+Requirements: DIST-04, DIST-05
+Success criteria:
+1. Each channel has version, artifact URL, checksum, signature, notes, rollout policy, and rollback candidate metadata.
+2. App update checks validate signed metadata before download/install/relaunch.
+3. Operators can see update progress, installed channel/build identity, and failure reason.
+
+**Phase 62: Resident Tray and Global Shortcut**
+Goal: Resident tray/menubar app and OS-level global shortcut provide quick capture without bypassing v2.9 draft review semantics.
+Requirements: RES-01, RES-02, RES-03
+Success criteria:
+1. Tray/menubar status shows quick capture, sync/queue state, auth/company state, build identity, and release channel.
+2. Global shortcut registration/unregistration exposes conflict, permission, focus, and privacy state.
+3. Tray/shortcut capture creates or updates persistent drafts and never auto-applies work without approval.
+
+**Phase 63: Mobile Push Notification Loop**
+Goal: Mobile/Web Push/APNs subscription and delivery evidence route RT2 work signals back to board review targets.
+Requirements: PUSH-01, PUSH-02, PUSH-03
+Success criteria:
+1. Device push subscriptions/tokens are scoped by company, user, device, provider, and revocation state.
+2. Push payloads stay minimal and deep-link to approval waiting, failed sync, or review requested targets.
+3. Delivery, retry, token invalid, permission denied, and click-through metrics appear in reliability evidence.
+
+**Phase 64: v3.0 Distribution Gate and Capture Regression Closure**
+Goal: Distribution readiness is accepted only when signing/updater/resident/push gates pass and v2.9 capture reliability has not regressed.
+Requirements: DIST-06
+Success criteria:
+1. Release gate blocks unsigned, unnotarized, untrusted, timestamp-missing, wrong-channel, and stale updater artifacts.
+2. Focused v2.9 DRAFT/NATIVE/MSG/REVIEW regression tests pass before distribution readiness can be marked green.
+3. ROADMAP, REQUIREMENTS, STATE, validation, and verification artifacts agree on v3.0 completion status.
+
+</details>
+
+<details>
+<summary>v2.9 Native Capture and Draft Reliability (Phase 54-58) - 2026-04-30 완료</summary>
 
 **Goal:** One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 안정화하고, native/mobile/messaging quick capture entry가 같은 검수 루프로 들어오게 만든다.
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 54 | Persistent Capture Draft Revision | DRAFT-01, DRAFT-02, DRAFT-03, DRAFT-04 | Planned |
-| 55 | Native and Mobile Quick Capture Entry | NATIVE-01, NATIVE-02, NATIVE-03 | Planned |
+| 54 | Persistent Capture Draft Revision | DRAFT-01, DRAFT-02, DRAFT-03, DRAFT-04 | Complete |
+| 55 | Native and Mobile Quick Capture Entry | NATIVE-01, NATIVE-02, NATIVE-03 | Complete |
 | 56 | Messaging Capture Source Installation | MSG-01, MSG-02, MSG-03 | Complete |
-| 57 | Capture Review Operations and Reliability | REVIEW-01, REVIEW-02, REVIEW-03 | Planned |
-| 58 | v2.9 Verification and Distribution Readiness Closure | DRAFT/NATIVE/MSG/REVIEW closure | Planned |
+| 57 | Capture Review Operations and Reliability | REVIEW-01, REVIEW-02, REVIEW-03 | Complete |
+| 58 | v2.9 Verification and Distribution Readiness Closure | DRAFT/NATIVE/MSG/REVIEW closure | Complete |
 
 ### Phase Details
 
@@ -182,6 +256,8 @@ Success criteria:
 2. `.planning/REQUIREMENTS.md` and `.planning/ROADMAP.md` agree on all v2.9 requirement mappings and statuses.
 3. Focused tests cover draft revision, native/mobile queue semantics, messaging source validation, review filters, and reliability report aggregation.
 4. Remaining full app-store signing/updater/store work is documented as future distribution scope, not hidden in v2.9.
+
+Closure status: `passed`. Phase 54-57 validation/verification artifacts are current, v2.9 requirements and roadmap status agree, and app-store signing/updater/native distribution remains future `DIST-01`/`DIST-02` scope.
 
 </details>
 
@@ -311,11 +387,17 @@ Success criteria:
 | 51. One-Liner to Board Capture Flow | v2.8 | 4/4 | Complete | 2026-04-30 |
 | 52. Supporting Surfaces and Identity Regression Gate | v2.8 | 1/1 | Complete | 2026-04-30 |
 | 53. v2.8 Verification and Traceability Closure | v2.8 | 1/1 | Complete | 2026-04-30 |
-| 54. Persistent Capture Draft Revision | v2.9 | 0/1 | Planned | - |
-| 55. Native and Mobile Quick Capture Entry | v2.9 | 0/1 | Planned | - |
+| 54. Persistent Capture Draft Revision | v2.9 | 1/1 | Complete | 2026-04-30 |
+| 55. Native and Mobile Quick Capture Entry | v2.9 | 1/1 | Complete | 2026-04-30 |
 | 56. Messaging Capture Source Installation | v2.9 | 1/1 | Complete | 2026-04-30 |
-| 57. Capture Review Operations and Reliability | v2.9 | 0/1 | Planned | - |
-| 58. v2.9 Verification and Distribution Readiness Closure | v2.9 | 0/1 | Planned | - |
+| 57. Capture Review Operations and Reliability | v2.9 | 1/1 | Complete | 2026-04-30 |
+| 58. v2.9 Verification and Distribution Readiness Closure | v2.9 | 1/1 | Complete | 2026-04-30 |
+| 59. Native Distribution Foundation | v3.0 | 0/1 | Planned | - |
+| 60. Signing and Notarization Pipeline | v3.0 | 0/1 | Planned | - |
+| 61. Release Channels and Signed Updater | v3.0 | 0/1 | Planned | - |
+| 62. Resident Tray and Global Shortcut | v3.0 | 0/1 | Planned | - |
+| 63. Mobile Push Notification Loop | v3.0 | 0/1 | Planned | - |
+| 64. v3.0 Distribution Gate and Capture Regression Closure | v3.0 | 0/1 | Planned | - |
 
 ## Archive
 
@@ -349,4 +431,4 @@ Success criteria:
 - [v2.8 milestone audit](milestones/v2.8-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-30, v2.9 milestone initialized*
+*마지막 업데이트: 2026-04-30, v3.0 milestone initialized*

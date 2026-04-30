@@ -12,29 +12,44 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability
 
-**현재 마일스톤:** v2.9 Native Capture and Draft Reliability
+**현재 마일스톤:** v3.0 Native Distribution Readiness
 
-**최근 완료:** v2.8은 RealTycoon2 product identity, Korean-first daily work board, card quick edit/controls, One-Liner board review, supporting evidence rail, identity regression gate를 완료했다. Audit은 requirements 15/15, phases 6/6, integration 5/5, flows 5/5로 `passed`다.
+**최근 완료:** v2.9는 persistent draft revision, PWA/mobile quick capture, Slack/Teams/webhook signed inbound, review operations reliability, Phase 58 traceability closure를 완료했다. DRAFT/NATIVE/MSG/REVIEW capture reliability는 shipped baseline이다.
 
-**현재 진행:** v2.9는 v2.8에서 완성한 daily work board와 One-Liner review flow를 web 밖의 빠른 입력 표면으로 확장한다. 단, native/app-store 배포 자체보다 저장 가능한 draft revision, 검수 신뢰성, source별 audit evidence를 먼저 닫는다.
+**현재 진행:** v3.0은 full app-store 수준 signing/updater/release-channel/notarization pipeline과 OS-level global shortcut, resident tray app, mobile push notification을 production distribution readiness로 만든다. v2.9 capture reliability는 regression gate로만 보호한다.
 
-## Current Milestone: v2.9 Native Capture and Draft Reliability
+## Current Milestone: v3.0 Native Distribution Readiness
 
-**Goal:** One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 안정화하고, native/mobile/messaging quick capture entry가 같은 검수 루프로 들어오게 만든다.
+**Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
 
 **Target features:**
-- One-Liner/mobile/native/messaging inbound draft를 저장, 수정, 보류, 승인, 반려, 재검토할 수 있는 persistent draft revision flow를 만든다.
-- Native/mobile-friendly quick capture entry가 회사 연결, 인증 상태, local queue/retry 상태를 보여주며 보드 검수함으로 안전하게 전달되게 한다.
-- Slack/Teams/webhook capture source 설정과 signed inbound draft health를 operator가 확인할 수 있게 한다.
-- Board review inbox와 reliability report에서 source, duplicate, failure, retry, promotion latency를 볼 수 있게 한다.
+- Native shell packaging 후보, signing credential inventory, platform capability boundary를 확정한다.
+- macOS Developer ID signing, hardened runtime, notarization, ticket stapling/Gatekeeper verification을 release gate에 넣는다.
+- Windows MSIX/installer signing, timestamping, Store re-signing 또는 trusted signing path를 release gate에 넣는다.
+- Internal/beta/stable release channel, signed updater feed, rollback candidate, rollout evidence를 관리한다.
+- Resident tray/menubar app과 OS-level global shortcut이 v2.9 draft review loop로 빠른 입력을 전달하게 한다.
+- Mobile/Web Push/APNs token, delivery/retry/failure/click evidence를 company-scoped notification loop로 연결한다.
 
 **Deferred from this milestone:**
-- Full app-store signing/updater/notarization pipeline.
 - Cross-company federation full apply.
 - Autonomous Jarvis apply without approval.
 - Public/open company capture marketplace.
+- Public store listing launch, marketing, reviewer account operations.
+
+## 최근 마일스톤: v2.9 Native Capture and Draft Reliability
+
+**Goal:** One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 안정화하고, native/mobile/messaging quick capture entry가 같은 검수 루프로 들어오게 만든다.
+
+**Delivered:**
+- Persistent capture draft revision, latest revision promotion, Korean board review edit/state actions.
+- PWA/mobile quick capture route, bounded local queue, mobile source handoff, RealTycoon2 manifest identity.
+- Slack/Teams/webhook source setup, signed public inbound route, redacted source metadata, malformed/source failure evidence.
+- Board review inbox source/status/evidence filters, promoted draft evidence labels, source-level capture reliability report.
+- Phase 58 validation/verification artifact closure and v2.9 traceability sync.
+
+**Distribution boundary:** Full app-store signing/updater/notarization, release channel, resident tray, OS-level global shortcut, and mobile push remain v3.0 scope.
 
 ## 최근 마일스톤: v2.8 RealTycoon2 Product Identity and Daily Work UX
 
@@ -162,18 +177,23 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.8 daily work board 요구사항 5개. - Phase 49-50, Phase 53 검증
 - [x] v2.8 One-Liner capture flow 요구사항 3개. - Phase 51, Phase 53 검증
 - [x] v2.8 supporting surfaces 요구사항 3개. - Phase 52, Phase 53 검증
+- [x] v2.9 draft reliability 요구사항 4개. - Phase 54, Phase 58 검증
+- [x] v2.9 native/mobile quick capture 요구사항 3개. - Phase 55, Phase 58 검증
+- [x] v2.9 messaging capture 요구사항 3개. - Phase 56, Phase 58 검증
+- [x] v2.9 review operations 요구사항 3개. - Phase 57, Phase 58 검증
 
 ### 진행 중
 
-- [ ] v2.9 Native Capture and Draft Reliability 요구사항 13개. Phase 54-58 planned.
+- [ ] v3.0 Native Distribution Readiness 요구사항 12개. Phase 59-64 planned.
 
 ### 범위 밖
 
 - backend/data platform greenfield rewrite. 작동 중인 server, db, auth, approval, audit invariant를 보존한다.
-- full app-store native distribution. v2.9는 lightweight native/mobile capture entry와 draft reliability를 먼저 검증한다.
+- v2.9 DRAFT/NATIVE/MSG/REVIEW capture behavior 재개발. v3.0에서는 regression gate 실패를 고치는 경우만 허용한다.
 - trusted company ecosystem 밖의 public/open marketplace.
 - v2.5 이후 cross-company knowledge federation은 trusted company ecosystem 밖이므로 제외한다.
 - v2.5 이후 autonomous knowledge rewrites는 approval-first contradiction review가 안정화된 뒤 다룬다.
+- public store listing launch/marketing/reviewer operations는 signing/updater/notarization readiness 이후 별도 scope로 다룬다.
 
 ## Context
 
@@ -189,6 +209,11 @@ v2.0-v2.2에서 완료한 것:
 - v2.7은 release-host reproducibility, embedded Postgres accepted-debt evidence, artifact gate truth, runtime confidence generated report를 완료했다. Audit은 blocker 없이 `tech_debt`이며 Windows default embedded Postgres skip은 focused host-ready command로 닫는 accepted debt다.
 - v2.8은 RealTycoon2 product-facing identity와 한국어 daily work UX를 완료했다. Daily board가 primary work surface가 되었고 One-Liner capture, card quick edit, support evidence, identity regression gate가 연결됐다. Audit은 `passed`다.
 - v2.8 close verification에서 `pnpm typecheck`, focused Vitest 26 tests, identity gate test/scan은 통과했다. Broad `pnpm test`는 `server/src/__tests__/workspace-runtime.test.ts` provision-command case timeout으로 실패해 accepted debt로 남겼다.
+- v2.9는 persistent draft revision, PWA/mobile quick capture, signed messaging inbound, capture review operations, source-level reliability report를 완료했다. Phase 58이 validation/verification artifact drift와 traceability를 닫았다.
+- 현재 repo는 Electron/Tauri 같은 native shell dependency가 없는 web/PWA-first 상태다. v3.0 Phase 59는 native shell packaging 후보와 platform capability boundary를 먼저 확정해야 한다.
+- macOS 배포는 Developer ID signing, hardened runtime, notarization, ticket stapling/Gatekeeper verification이 release gate에 들어가야 한다.
+- Windows 배포는 MSIX/installer signing, timestamping, Store re-signing 또는 trusted signing path를 release gate에 반영해야 한다.
+- Mobile push는 APNs/Web Push/device token을 company/user/device scope로 관리하고 최소 payload/deep-link 방식으로 board review target에 연결해야 한다.
 
 ## 제약
 
@@ -214,10 +239,11 @@ v2.0-v2.2에서 완료한 것:
 | v2.6은 운영 경계 hardening을 blocker 없이 닫고 full-suite timeout을 tech debt로 기록 | targeted checks와 artifact gate는 통과했지만 Windows full-suite completion은 재확인이 필요했다 | 좋음 - milestone close를 과장하지 않고 debt를 분리 기록 |
 | v2.7은 release-host와 runtime confidence를 generated evidence로 분리 | full-suite timeout/skip을 숨기지 않고 blocker, accepted debt, deferred scope로 구분해야 했다 | 좋음 - 운영자가 release confidence를 한 곳에서 확인 가능 |
 | v2.8은 RealTycoon2 제품 얼굴과 daily work loop를 federation/autonomy/native 확장보다 먼저 닫음 | 사용자가 앱을 켰을 때 Paperclip 잔재나 영문 control-plane 느낌이 보이면 제품 신뢰가 깨진다 | 좋음 - Korean-first board, One-Liner review, support evidence, identity gate가 같은 흐름으로 묶임 |
+| v2.9 capture reliability를 v3.0 distribution의 shipped baseline으로 고정 | signing/updater/tray/push 작업 중 DRAFT/NATIVE/MSG/REVIEW를 다시 열면 검증된 입력 루프가 흔들린다 | 진행 중 - v3.0은 regression gate로만 v2.9를 보호 |
 
 ## 다음 마일스톤 목표
 
-v2.9는 Native Capture and Draft Reliability다. 원 개발계획의 friction-zero capture 약속을 따라 web board에서 안정화된 One-Liner flow를 persistent draft revision, native/mobile quick capture, Slack/Teams/webhook inbound, source별 review operations로 확장한다.
+v3.0은 Native Distribution Readiness다. full app-store signing/updater/release-channel/notarization pipeline과 OS-level global shortcut, resident tray app, mobile push notification을 구현하되, v2.9 capture reliability는 shipped baseline으로 보호한다.
 
 ## Evolution
 
@@ -237,4 +263,4 @@ v2.9는 Native Capture and Draft Reliability다. 원 개발계획의 friction-ze
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-30 after v2.9 milestone initialization*
+*마지막 업데이트: 2026-04-30 after v3.0 milestone initialization*
