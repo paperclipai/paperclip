@@ -131,9 +131,8 @@ export async function testEnvironment(
 
   checks.push({
     code: "acpx_runtime_scaffold",
-    level: "warn",
-    message: "acpx_local is registered, but runtime execution is intentionally deferred to the ACPX runtime phase.",
-    hint: "Use this scaffold to configure agents and validate package resolution; use claude_local/codex_local for live execution until Phase 2 lands.",
+    level: "info",
+    message: "acpx_local runtime execution is available through the bundled ACPX runtime.",
   });
 
   return {
