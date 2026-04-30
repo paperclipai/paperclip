@@ -4,7 +4,7 @@ author: blog-author
 ticket: KOE-32
 vendor_tag: anthropic
 content_type: article
-status: draft-for-review
+status: g0-passed
 reading_time_min: 6
 primary_query: "MCP 2026 roadmap what changes for builders"
 contrarian_angle: "The four technical features are table stakes — the real story is Anthropic handing spec governance to Working Groups, creating the first credible community veto path in any major AI protocol"
