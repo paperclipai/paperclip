@@ -136,6 +136,15 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Codex 2nd-opinion CLI wrapper for claude_k8s agents (BLO-2413).
+# Lets a claude session shell out to `paperclip-consult-codex "<prompt>"`
+# and get back codex's JSONL — used by the gstack /codex skill for the
+# "200 IQ adversary" external opinion. ccrotate handles per-target cred
+# rotation (--target codex). See .planning/codex-second-opinion.md in
+# the k8s repo for the full design and risk register.
+COPY scripts/paperclip-consult-codex.sh /usr/local/bin/paperclip-consult-codex
+RUN chmod +x /usr/local/bin/paperclip-consult-codex
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
