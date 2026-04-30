@@ -827,9 +827,12 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  // Agents run as child processes in the same container/host as the server.
+  // Prefer the loopback URL: PAPERCLIP_RUNTIME_API_URL/PAPERCLIP_API_URL may be a
+  // public/Tailscale/proxy hostname that is unreachable from inside the agent's
+  // network namespace. Operators can override with PAPERCLIP_AGENT_API_URL.
   const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
+    process.env.PAPERCLIP_AGENT_API_URL?.trim() ||
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;

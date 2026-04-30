@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildPaperclipEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   renderPaperclipWakePrompt,
   runningProcesses,
@@ -467,6 +468,104 @@ describe("applyPaperclipWorkspaceEnv", () => {
     );
 
     expect(env).toEqual({});
+  });
+});
+
+describe("buildPaperclipEnv", () => {
+  const ENV_KEYS = [
+    "PAPERCLIP_AGENT_API_URL",
+    "PAPERCLIP_RUNTIME_API_URL",
+    "PAPERCLIP_API_URL",
+    "PAPERCLIP_LISTEN_HOST",
+    "PAPERCLIP_LISTEN_PORT",
+    "HOST",
+    "PORT",
+  ] as const;
+  const saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      const value = saved[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  it("defaults PAPERCLIP_API_URL to the runtime loopback when no override is set", () => {
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
+    expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+  });
+
+  it("does not fall back to PAPERCLIP_RUNTIME_API_URL or PAPERCLIP_API_URL", () => {
+    // Both legacy chain entries are commonly set to an unreachable public URL.
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://auth.public.example/";
+    process.env.PAPERCLIP_API_URL = "https://auth.public.example/";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+  });
+
+  it("honors PAPERCLIP_AGENT_API_URL when set", () => {
+    process.env.PAPERCLIP_AGENT_API_URL = "https://agent-api.internal.example";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("https://agent-api.internal.example");
+  });
+
+  it("ignores empty/whitespace PAPERCLIP_AGENT_API_URL and uses loopback", () => {
+    process.env.PAPERCLIP_AGENT_API_URL = "   ";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+  });
+
+  it("rewrites 0.0.0.0 to localhost for the loopback URL", () => {
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "4242";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4242");
+  });
+
+  it("falls back to HOST/PORT when PAPERCLIP_LISTEN_* are unset", () => {
+    process.env.HOST = "127.0.0.1";
+    process.env.PORT = "5500";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:5500");
+  });
+
+  it("defaults to localhost:3100 when no host/port env vars are set", () => {
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
   });
 });
 
