@@ -108,8 +108,11 @@ async function writeSnapshot(
     });
 }
 
-function runCcrotate(args: string[]): { stdout: string; stderr: string; status: number | null } {
-  const r = spawnSync("ccrotate", args, { encoding: "utf8", timeout: 25_000 });
+function runCcrotate(
+  args: string[],
+  timeoutMs: number = 25_000,
+): { stdout: string; stderr: string; status: number | null } {
+  const r = spawnSync("ccrotate", args, { encoding: "utf8", timeout: timeoutMs });
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status };
 }
 
@@ -136,6 +139,20 @@ async function doExport(): Promise<void> {
   const db = createDb(dbUrl);
   const pluginId = await loadPluginIdOrExit(db);
   if (!pluginId) exitWith(0, `[ccrotate-hook] plugin ${PLUGIN_KEY} not installed; nothing to export`);
+
+  // Refresh first so the captured tier-cache reflects current API state, not
+  // whatever stale snapshot the pod was last left with. ccrotate import on
+  // the next run-start is a per-account timestamp merge (lib/commands/import.js),
+  // so even if refresh updates only a subset, the survivors merge cleanly with
+  // whatever persisted state the next pod sees. Refresh failure is non-fatal —
+  // we still export whatever is on disk.
+  const refresh = runCcrotate(["refresh"], 90_000);
+  if (refresh.status !== 0) {
+    console.error(
+      `[ccrotate-hook] ccrotate refresh exit=${refresh.status} (continuing with stale tier-cache): ${refresh.stderr || refresh.stdout}`,
+    );
+  }
+
   const r = runCcrotate(["export"]);
   if (r.status !== 0) {
     exitWith(r.status ?? 1, `[ccrotate-hook] ccrotate export failed (exit=${r.status}): ${r.stderr || r.stdout}`);
