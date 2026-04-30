@@ -19,9 +19,12 @@ async function* walkMarkers(dir: string): AsyncGenerator<string> {
   }
   for (const e of entries) {
     const full = join(dir, e.name);
+    if (e.isSymbolicLink()) {
+      continue; // never follow symlinks — protects against loops
+    }
     if (e.isDirectory()) {
       yield* walkMarkers(full);
-    } else if (e.name.startsWith(".drive-approved-")) {
+    } else if (e.isFile() && e.name.startsWith(".drive-approved-")) {
       yield full;
     }
   }

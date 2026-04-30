@@ -38,7 +38,8 @@ describe("approved-freshness", () => {
     await writeApproval("projA", "k1", "item1", "2026-04-10");
     const r = await approvedFreshness.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date("2026-04-30T00:00:00Z") });
     expect(r.findings).toBe(1);
-    expect((r.payload as any).stale_items[0].age_days).toBe(20);
+    // Sign-off body is "2026-04-10 12:00", now 2026-04-30T00:00Z → 19d 12h → floor → 19
+    expect((r.payload as any).stale_items[0].age_days).toBe(19);
     expect(r.status).toBe("warn");
   });
 
@@ -74,5 +75,34 @@ describe("approved-freshness", () => {
     expect(stale.find((s) => s.item === "item1")).toBeDefined();
     expect(stale.find((s) => s.item === "item3")).toBeDefined();
     expect(stale.find((s) => s.item === "item2")).toBeUndefined();
+  });
+
+  it("flags missing-approval items with reason='missing_approval'", async () => {
+    const dir = path.join(tmp, "projA/assets/k1/04-approved/item1");
+    await fs.mkdir(dir, { recursive: true });
+    const r = await approvedFreshness.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date() });
+    expect((r.payload as any).stale_items[0].reason).toBe("missing_approval");
+  });
+
+  it("flags missing-signoff-line items with reason='missing_signoff'", async () => {
+    await writeApproval("projA", "k1", "item1", null);
+    const r = await approvedFreshness.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date() });
+    expect((r.payload as any).stale_items[0].reason).toBe("missing_signoff");
+  });
+
+  it("flags stale items with reason='stale'", async () => {
+    await writeApproval("projA", "k1", "item1", "2026-04-10");
+    const r = await approvedFreshness.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date("2026-04-30T00:00:00Z") });
+    expect((r.payload as any).stale_items[0].reason).toBe("stale");
+  });
+
+  it("uses optional HH:MM in sign-off when present", async () => {
+    // Sign-off at 23:30 on day-15 means age_days based on times
+    const dir = path.join(tmp, "projA/assets/k1/04-approved/item1");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "APPROVAL.md"), "✅ sign-off marco 2026-04-15 23:30\n");
+    // Now is 2026-04-30 23:00 → 14d 23:30 ago → ageDays = floor(14.97) = 14, NOT stale
+    const r = await approvedFreshness.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date("2026-04-30T23:00:00Z") });
+    expect(r.findings).toBe(0);
   });
 });

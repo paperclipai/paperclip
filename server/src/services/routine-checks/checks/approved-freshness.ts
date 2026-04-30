@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CheckCtx, CheckDef, CheckResult } from "../types.js";
 
-const SIGNOFF_RE = /✅\s+sign-off\s+\S+\s+(\d{4}-\d{2}-\d{2})/;
+const SIGNOFF_RE = /✅\s+sign-off\s+(\w[\w.-]*)\s+(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?/;
 const STALE_DAYS = 14;
 const MS_PER_DAY = 86_400_000;
 
@@ -12,10 +12,13 @@ function getCreativeRoot(): string {
     ?? join(homedir(), ".openclaw/workspace/projects/happygang");
 }
 
+type StaleReason = "stale" | "missing_signoff" | "missing_approval";
+
 interface StaleItem {
   project: string;
   item: string;
   age_days: number;
+  reason: StaleReason;
 }
 
 async function safeReaddir(dir: string): Promise<import("node:fs").Dirent[]> {
@@ -55,18 +58,20 @@ async function run(ctx: CheckCtx): Promise<CheckResult> {
     try {
       body = await readFile(approvalPath, "utf8");
     } catch {
-      stale.push({ project: it.project, item: it.item, age_days: Number.POSITIVE_INFINITY });
+      stale.push({ project: it.project, item: it.item, age_days: Number.POSITIVE_INFINITY, reason: "missing_approval" });
       continue;
     }
     const m = body.match(SIGNOFF_RE);
     if (!m) {
-      stale.push({ project: it.project, item: it.item, age_days: Number.POSITIVE_INFINITY });
+      stale.push({ project: it.project, item: it.item, age_days: Number.POSITIVE_INFINITY, reason: "missing_signoff" });
       continue;
     }
-    const signedAt = new Date(`${m[1]}T00:00:00Z`).getTime();
+    const dateStr = m[2]!;
+    const timeStr = m[3] ?? "00:00";
+    const signedAt = new Date(`${dateStr}T${timeStr}:00Z`).getTime();
     const ageDays = Math.floor((now - signedAt) / MS_PER_DAY);
     if (ageDays > STALE_DAYS) {
-      stale.push({ project: it.project, item: it.item, age_days: ageDays });
+      stale.push({ project: it.project, item: it.item, age_days: ageDays, reason: "stale" });
     }
   }
 

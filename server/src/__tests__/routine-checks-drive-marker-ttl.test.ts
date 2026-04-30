@@ -74,4 +74,29 @@ describe("drive-marker-ttl", () => {
     expect(r.status).toBe("ok");
     expect(r.findings).toBe(0);
   });
+
+  it("skips symlinks (does not follow them)", async () => {
+    const projectDir = path.join(tmp, "p1");
+    await fs.mkdir(projectDir, { recursive: true });
+    // Create a symlink loop: tmp/loop → tmp/p1
+    const loopLink = path.join(tmp, "loop");
+    await fs.symlink(projectDir, loopLink);
+    // Create a marker only inside p1 — if walker follows the symlink it would re-enter, no infinite loop because of basename matching, but we want to assert it doesn't double-count
+    const marker = path.join(projectDir, ".drive-approved-x");
+    await fs.writeFile(marker, "");
+    await fs.utimes(marker, new Date(Date.now() - 90 * 60 * 1000), new Date(Date.now() - 90 * 60 * 1000));
+    const r = await driveMarkerTtl.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date() });
+    expect((r.payload as any).removed).toEqual([marker]);
+  });
+
+  it("ignores directory entries named .drive-approved-* (only files)", async () => {
+    const projectDir = path.join(tmp, "p1");
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.mkdir(path.join(projectDir, ".drive-approved-dir-shaped")); // edge case: dir with marker name
+    const marker = path.join(projectDir, ".drive-approved-real");
+    await fs.writeFile(marker, "");
+    await fs.utimes(marker, new Date(Date.now() - 90 * 60 * 1000), new Date(Date.now() - 90 * 60 * 1000));
+    const r = await driveMarkerTtl.run({ db: {} as any, fs: fsStub, logger: noopLogger, now: () => new Date() });
+    expect((r.payload as any).removed).toEqual([marker]);
+  });
 });
