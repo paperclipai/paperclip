@@ -17,6 +17,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
+import { usePageForegrounded } from "../hooks/usePageForegrounded";
 import { queryKeys } from "../lib/queryKeys";
 import {
   applyIssueFilters,
@@ -653,6 +654,7 @@ export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { isMobile } = useSidebar();
+  const isForegrounded = usePageForegrounded();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -691,10 +693,10 @@ export function Inbox() {
   const showFailedRunsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
-  const shouldLoadIssueLookup = tab !== "all" || showFailedRunsCategory;
-  const shouldLoadMineIssues = tab === "mine";
-  const shouldLoadTouchedIssues = tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory);
-  const shouldLoadHeartbeatRuns = tab !== "all" || showFailedRunsCategory;
+  const shouldLoadIssueLookup = isForegrounded && (tab !== "all" || showFailedRunsCategory);
+  const shouldLoadMineIssues = isForegrounded && tab === "mine";
+  const shouldLoadTouchedIssues = isForegrounded && (tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory));
+  const shouldLoadHeartbeatRuns = isForegrounded && (tab !== "all" || showFailedRunsCategory);
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -713,18 +715,18 @@ export function Inbox() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
     queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const { data: executionWorkspaces = [] } = useQuery({
@@ -732,7 +734,7 @@ export function Inbox() {
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
     queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
-    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
+    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled && isForegrounded,
   });
 
   useEffect(() => {
@@ -761,7 +763,7 @@ export function Inbox() {
   } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const {
@@ -779,14 +781,14 @@ export function Inbox() {
         throw err;
       }
     },
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
     retry: false,
   });
 
   const { data: dashboard, isLoading: isDashboardLoading } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
@@ -837,14 +839,14 @@ export function Inbox() {
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
     refetchInterval: 5000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 

@@ -59,6 +59,7 @@ import {
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
+import { usePageForegrounded } from "../hooks/usePageForegrounded";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -907,19 +908,23 @@ function IssueDetailActivityTab({
   onApprovalAction,
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
+  const isForegrounded = usePageForegrounded();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
+    enabled: isForegrounded,
     placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
   const { data: linkedRuns, isLoading: linkedRunsLoading } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
+    enabled: isForegrounded,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId),
     queryFn: () => issuesApi.listApprovals(issueId),
+    enabled: isForegrounded,
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.listApprovals>>>(issueId),
   });
   const { data: continuationHandoff } = useQuery({
@@ -932,6 +937,7 @@ function IssueDetailActivityTab({
         throw error;
       }
     },
+    enabled: isForegrounded,
     retry: false,
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getDocument>> | null>(
       issueId,
@@ -1107,6 +1113,7 @@ export function IssueDetail() {
   const location = useLocation();
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
+  const isForegrounded = usePageForegrounded();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
@@ -1149,7 +1156,7 @@ export function IssueDetail() {
         identifier: issueHeaderSeed.identifier,
       } : null,
     }),
-    enabled: !!issueId,
+    enabled: !!issueId && isForegrounded,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
@@ -1174,7 +1181,7 @@ export function IssueDetail() {
         limit: ISSUE_COMMENT_PAGE_SIZE,
         ...(pageParam ? { after: pageParam } : {}),
       }),
-    enabled: !!issueId,
+    enabled: !!issueId && isForegrounded,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
@@ -1199,21 +1206,21 @@ export function IssueDetail() {
   const { data: interactions = [] } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
     queryFn: () => issuesApi.listInteractions(issueId!),
-    enabled: !!issueId,
+    enabled: !!issueId && isForegrounded,
     placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId ?? "pending"),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
-    enabled: !!issueId,
+    enabled: !!issueId && isForegrounded,
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
   });
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
-    enabled: !!issueId,
+    enabled: !!issueId && isForegrounded,
     refetchInterval: 3000,
     select: (runs) => runs.length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
@@ -1222,7 +1229,7 @@ export function IssueDetail() {
   const { data: hasActiveRun = false } = useQuery<ActiveRunForIssue | null, Error, boolean>({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
-    enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
+    enabled: !!issueId && isForegrounded && (!!issue?.executionRunId || issue?.status === "in_progress"),
     refetchInterval: liveRunCount > 0 ? false : 3000,
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
@@ -1245,13 +1252,13 @@ export function IssueDetail() {
         ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
         : ["issues", "parent", "pending"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { descendantOf: issue!.id, includeBlockedBy: true }),
-    enabled: !!resolvedCompanyId && !!issue?.id,
+    enabled: !!resolvedCompanyId && !!issue?.id && isForegrounded,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
   const { data: companyLiveRuns } = useQuery({
     queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && isForegrounded,
     refetchInterval: 5000,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(resolvedCompanyId ?? "pending"),
   });
@@ -1259,12 +1266,12 @@ export function IssueDetail() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: session } = useQuery({
@@ -1275,13 +1282,13 @@ export function IssueDetail() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    enabled: !!session?.user?.id,
+    enabled: !!session?.user?.id && isForegrounded,
     retry: false,
   });
   const canManageTreeControl = Boolean(
@@ -1291,12 +1298,12 @@ export function IssueDetail() {
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
-    enabled: !!issueId && !!currentUserId,
+    enabled: !!issueId && !!currentUserId && isForegrounded,
   });
   const { data: instanceGeneralSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
-    enabled: !!issueId,
+    enabled: !!issueId && isForegrounded,
     retry: false,
   });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
@@ -1310,7 +1317,7 @@ export function IssueDetail() {
     slotTypes: ["detailTab"],
     entityType: "issue",
     companyId: resolvedCompanyId,
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && isForegrounded,
   });
   const issuePluginTabItems = useMemo(
     () => issuePluginDetailSlots.map((slot) => ({
@@ -1340,14 +1347,14 @@ export function IssueDetail() {
           strategy: "manual",
         },
       }),
-    enabled: treeControlOpen && !!issueId && canManageTreeControl,
+    enabled: treeControlOpen && !!issueId && canManageTreeControl && isForegrounded,
     staleTime: 0,
     retry: false,
   });
   const { data: treeControlState } = useQuery({
     queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
     queryFn: () => issuesApi.getTreeControlState(issueId!),
-    enabled: !!issueId && canManageTreeControl,
+    enabled: !!issueId && canManageTreeControl && isForegrounded,
     retry: false,
   });
   const { data: activeRootPauseHolds = [] } = useQuery({
@@ -1358,7 +1365,7 @@ export function IssueDetail() {
         mode: "pause",
         includeMembers: true,
       }),
-    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true,
+    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true && isForegrounded,
   });
   const { data: activeCancelHolds = [] } = useQuery({
     queryKey: ["issues", "tree-holds", issueId ?? "pending", "active-cancel"],
@@ -1367,7 +1374,7 @@ export function IssueDetail() {
         status: "active",
         mode: "cancel",
       }),
-    enabled: !!issueId && canManageTreeControl,
+    enabled: !!issueId && canManageTreeControl && isForegrounded,
   });
 
   const agentMap = useMemo(() => {
