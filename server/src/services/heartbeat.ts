@@ -121,7 +121,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
@@ -359,11 +359,17 @@ async function resolveRunScopedMentionedSkillKeys(input: {
         eq(issueComments.companyId, input.companyId),
       ),
     );
-  const mentionedSkillIds = extractMentionedSkillIdsFromSources([
+  const rawMentionedSkillIds = extractMentionedSkillIdsFromSources([
     issue.title,
     issue.description ?? "",
     ...comments.map((comment) => comment.body),
   ]);
+  if (rawMentionedSkillIds.length === 0) return [];
+
+  // Only UUID-shaped values are valid for the companySkills.id (uuid) column.
+  // Malformed mentions like `skill://paperclip-create-agent` (slug as host)
+  // would otherwise crash the run with a Postgres uuid syntax error.
+  const mentionedSkillIds = rawMentionedSkillIds.filter(isUuidLike);
   if (mentionedSkillIds.length === 0) return [];
 
   const skillRows = await input.db

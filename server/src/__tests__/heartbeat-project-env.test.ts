@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { buildSkillMentionHref, isUuidLike } from "@paperclipai/shared";
 import {
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
@@ -81,6 +81,27 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `Duplicate mention [/release-changelog](${releaseHref})`,
       ]),
     ).toEqual(["skill-1", "skill-2"]);
+  });
+
+  // Regression: malformed mentions like `skill://paperclip-create-agent` (slug
+  // as host instead of `skill://<uuid>?s=<slug>`) used to flow into a Postgres
+  // uuid-typed `inArray` query and crash run startup with
+  // `invalid input syntax for type uuid`. The resolver now filters extracted
+  // ids through `isUuidLike` before the query.
+  it("filters slug-form skill mentions out before they reach a uuid query", () => {
+    const validUuid = "b405cd52-ddfb-490a-a769-7a34a0f26ea8";
+    const validHref = buildSkillMentionHref(validUuid, "real-skill");
+    const malformedHref = "skill://paperclip-create-agent";
+
+    const extracted = extractMentionedSkillIdsFromSources([
+      `Real mention [/real-skill](${validHref})`,
+      `Malformed mention [/paperclip-create-agent](${malformedHref})`,
+    ]);
+    expect(extracted).toContain(validUuid);
+    expect(extracted).toContain("paperclip-create-agent");
+
+    const safeForUuidQuery = extracted.filter(isUuidLike);
+    expect(safeForUuidQuery).toEqual([validUuid]);
   });
 });
 
