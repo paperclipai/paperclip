@@ -417,6 +417,7 @@ export function NewIssueDialog() {
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
+  const initializationKeyRef = useRef<string | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -673,7 +674,13 @@ export function NewIssueDialog() {
 
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
-    if (!newIssueOpen) return;
+    if (!newIssueOpen) {
+      initializationKeyRef.current = null;
+      return;
+    }
+    const initializationKey = `${selectedCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
+    if (initializationKeyRef.current === initializationKey) return;
+    initializationKeyRef.current = initializationKey;
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
 
@@ -681,6 +688,7 @@ export function NewIssueDialog() {
     if (newIssueDefaults.parentId) {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
         ?? defaultProjectWorkspaceIdForProject(defaultProject);
       const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
@@ -697,7 +705,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
+        ? defaultProjectId || null
+        : null;
     } else if (newIssueDefaults.title) {
       setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
@@ -716,7 +726,7 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+      executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
@@ -742,7 +752,9 @@ export function NewIssueDialog() {
           ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
+      executionWorkspaceDefaultProjectId.current = draft.projectWorkspaceId || restoredProject
+        ? restoredProjectId || null
+        : null;
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
@@ -761,9 +773,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+      executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
     }
-  }, [newIssueOpen, newIssueDefaults, orderedProjects, setIssueText]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects, selectedCompanyId, setIssueText]);
 
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
@@ -815,6 +827,7 @@ export function NewIssueDialog() {
     setIsFileDragOver(false);
     setCompanyOpen(false);
     executionWorkspaceDefaultProjectId.current = null;
+    initializationKeyRef.current = null;
   }
 
   function handleCompanyChange(companyId: string) {
@@ -1060,7 +1073,12 @@ export function NewIssueDialog() {
   }, [orderedProjects]);
 
   useEffect(() => {
-    if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
+    if (
+      !newIssueOpen ||
+      !projectId ||
+      selectedExecutionWorkspaceId ||
+      executionWorkspaceDefaultProjectId.current === projectId
+    ) {
       return;
     }
     const project = orderedProjects.find((entry) => entry.id === projectId);
@@ -1069,7 +1087,7 @@ export function NewIssueDialog() {
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
     setSelectedExecutionWorkspaceId("");
-  }, [newIssueOpen, orderedProjects, projectId]);
+  }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorkspaceId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]

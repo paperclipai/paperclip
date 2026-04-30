@@ -478,22 +478,34 @@ describe("MarkdownEditor", () => {
     });
   });
 
-  it("anchors the mention menu inside the visual viewport when mobile offsets are present", () => {
+  it("places the menu top on the caret line and offsets the left a space-width past the caret", () => {
     expect(
       computeMentionMenuPosition(
-        { viewportTop: 180, viewportLeft: 120 },
+        { viewportTop: 100, viewportBottom: 118, viewportLeft: 240 },
+        { offsetLeft: 0, offsetTop: 0, width: 800, height: 600 },
+      ),
+    ).toEqual({
+      top: 100,
+      left: 250,
+    });
+  });
+
+  it("applies visual viewport offsets when present", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 20, viewportBottom: 38, viewportLeft: 120 },
         { offsetLeft: 24, offsetTop: 320, width: 320, height: 260 },
       ),
     ).toEqual({
-      top: 372,
-      left: 144,
+      top: 340,
+      left: 154,
     });
   });
 
   it("clamps the mention menu back into view near the viewport edges", () => {
     expect(
       computeMentionMenuPosition(
-        { viewportTop: 260, viewportLeft: 240 },
+        { viewportTop: 260, viewportBottom: 278, viewportLeft: 240 },
         { offsetLeft: 0, offsetTop: 0, width: 280, height: 220 },
       ),
     ).toEqual({
@@ -502,16 +514,28 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("flips the menu above the caret line when it would overflow below", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 560, viewportBottom: 580, viewportLeft: 200 },
+        { offsetLeft: 0, offsetTop: 0, width: 800, height: 600 },
+      ),
+    ).toEqual({
+      top: 372,
+      left: 210,
+    });
+  });
+
   it("keeps a short mention menu on the same line when it fits below the caret", () => {
     expect(
       computeMentionMenuPosition(
-        { viewportTop: 160, viewportLeft: 120 },
+        { viewportTop: 160, viewportBottom: 178, viewportLeft: 120 },
         { offsetLeft: 0, offsetTop: 0, width: 320, height: 220 },
         { width: 188, height: 42 },
       ),
     ).toEqual({
-      top: 164,
-      left: 120,
+      top: 160,
+      left: 130,
     });
   });
 
@@ -619,8 +643,20 @@ describe("MarkdownEditor", () => {
     editable.remove();
   });
 
-  it("accepts mention selection from touchstart taps", async () => {
-    const handleChange = vi.fn();
+  function createTouchEvent(
+    type: "touchstart" | "touchmove" | "touchend",
+    touches: Array<{ clientX: number; clientY: number }>,
+  ) {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    const list = touches as unknown as TouchList;
+    Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : list });
+    Object.defineProperty(event, "changedTouches", { value: list });
+    return event;
+  }
+
+  async function openMentionMenuFor(
+    handleChange: ReturnType<typeof vi.fn>,
+  ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot> }> {
     const root = createRoot(container);
 
     await act(async () => {
@@ -645,7 +681,6 @@ describe("MarkdownEditor", () => {
 
     const editable = container.querySelector('[contenteditable="true"]');
     expect(editable).not.toBeNull();
-
     const textNode = editable?.firstChild;
     expect(textNode?.nodeType).toBe(Node.TEXT_NODE);
 
@@ -659,20 +694,69 @@ describe("MarkdownEditor", () => {
     act(() => {
       document.dispatchEvent(new Event("selectionchange"));
     });
-
     await flush();
 
     const option = Array.from(document.body.querySelectorAll('button[type="button"]'))
-      .find((node) => node.textContent?.includes("Paperclip App"));
+      .find((node) => node.textContent?.includes("Paperclip App")) as HTMLButtonElement | undefined;
     expect(option).toBeTruthy();
+    return { option: option!, root };
+  }
+
+  it("accepts mention selection from a touch tap", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(handleChange);
+    const point = { clientX: 100, clientY: 50 };
 
     act(() => {
-      option?.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
+      option.dispatchEvent(createTouchEvent("touchstart", [point]));
+    });
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchend", [point]));
     });
 
     expect(handleChange).toHaveBeenCalledWith(
       `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not preventDefault on touchstart so the mention menu can scroll on mobile", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(handleChange);
+
+    const touchstart = createTouchEvent("touchstart", [{ clientX: 100, clientY: 50 }]);
+    act(() => {
+      option.dispatchEvent(touchstart);
+    });
+
+    expect(touchstart.defaultPrevented).toBe(false);
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not select when the touch moves like a scroll", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(handleChange);
+    const start = { clientX: 100, clientY: 50 };
+    const moved = { clientX: 100, clientY: 90 };
+
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchstart", [start]));
+    });
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchmove", [moved]));
+    });
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchend", [moved]));
+    });
+
+    expect(handleChange).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

@@ -8,6 +8,7 @@ import type {
   FeedbackVote,
   Issue,
   IssueAttachment,
+  IssueCostSummary,
   IssueComment,
   IssueDocument,
   IssueLabel,
@@ -159,6 +160,8 @@ export const issuesApi = {
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+  cancelInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
   respondToInteraction: (
     id: string,
     interactionId: string,
@@ -168,6 +171,7 @@ export const issuesApi = {
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
+  getCostSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters ?? {})) {
