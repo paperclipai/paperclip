@@ -145,6 +145,79 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+
+// Max cap applied to `GET /api/companies/:companyId/heartbeat-runs?limit=...`.
+// This is the historical silent cap that already lived inline in the route as
+// a magic 1000. Exported so the route + tests share the constant instead of
+// duplicating the value. There is intentionally no DEFAULT constant: when
+// `?limit=` is omitted, the helper returns `undefined` and the service skips
+// `.limit()` entirely — preserving the pre-fix behavior where omitted-limit
+// callers received the full unbounded result set. Adding a default here would
+// be a silent breaking change for any consumer that relied on that.
+export const HEARTBEAT_RUNS_MAX_LIMIT = 1000;
+
+export class HeartbeatRunsListLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HeartbeatRunsListLimitError";
+  }
+}
+
+/**
+ * Normalize a `?status=` query value (single string, comma-separated string,
+ * `string[]` from repeated keys, or mixed array+CSV) into a clean `string[]`.
+ *
+ * Exported (and re-exported via `services/index.ts`) so the route handler,
+ * the service, and the unit tests can all share one parser. This duplicates
+ * `parseStatusFilter` from `services/issues.ts` (added in PR #4890 for issue
+ * #4628); a follow-up should consolidate both into a single shared helper
+ * (e.g. `services/util/parse-status-filter.ts`) and remove this copy.
+ */
+export function parseHeartbeatRunStatusFilter(
+  input: string | readonly string[] | undefined,
+): string[] {
+  if (input === undefined || input === null) return [];
+  const arr = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  return arr
+    .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Normalize the `?limit=` query value for the heartbeat-runs list endpoint.
+ *
+ *   - undefined / null / empty string → returns `undefined` so the service
+ *     skips `.limit()` and returns all rows. This intentionally preserves
+ *     the pre-fix behavior for omitted-`?limit=` callers; changing it would
+ *     be a silent truncation for existing consumers.
+ *   - integer in [1, MAX] → returned as-is
+ *   - integer > MAX → silently clamped to MAX (preserves backward compat
+ *     with polling clients that already submitted huge limits and got 1000)
+ *   - anything else (non-integer, zero, negative, NaN, decimal) → throws
+ *     {@link HeartbeatRunsListLimitError} so the route can surface a 400.
+ *
+ * Throws instead of returning a discriminated union so the route handler stays
+ * one line; the caller catches and responds.
+ */
+export function clampHeartbeatRunsListLimit(input: unknown): number | undefined {
+  if (input === undefined || input === null || input === "") {
+    return undefined;
+  }
+  const raw = typeof input === "string" ? input : String(input);
+  if (!/^\d+$/.test(raw)) {
+    throw new HeartbeatRunsListLimitError(
+      `limit must be a positive integer up to ${HEARTBEAT_RUNS_MAX_LIMIT}`,
+    );
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new HeartbeatRunsListLimitError(
+      `limit must be a positive integer up to ${HEARTBEAT_RUNS_MAX_LIMIT}`,
+    );
+  }
+  return Math.min(parsed, HEARTBEAT_RUNS_MAX_LIMIT);
+}
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -7506,8 +7579,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      status?: string | readonly string[],
+    ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const conditions = [eq(heartbeatRuns.companyId, companyId)];
+      if (agentId) {
+        conditions.push(eq(heartbeatRuns.agentId, agentId));
+      }
+      // Mirror services/issues.ts pattern: empty status → no predicate (return
+      // all statuses); single → eq; many → inArray. Trust SQL on unknown values
+      // (no enum validation, matches issue-list precedent).
+      if (status !== undefined) {
+        const statuses = parseHeartbeatRunStatusFilter(status);
+        if (statuses.length === 1) {
+          conditions.push(eq(heartbeatRuns.status, statuses[0]));
+        } else if (statuses.length > 1) {
+          conditions.push(inArray(heartbeatRuns.status, statuses));
+        }
+      }
       const query = db
         .select(
           safeForLegacyEncoding
@@ -7523,11 +7616,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
         )
         .from(heartbeatRuns)
-        .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
-        )
+        .where(and(...conditions))
         .orderBy(desc(heartbeatRuns.createdAt));
 
       const rows = limit ? await query.limit(limit) : await query;
