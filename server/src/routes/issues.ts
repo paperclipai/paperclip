@@ -3400,6 +3400,16 @@ export function issueRoutes(
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
+
+    // Agent heartbeat context with missing/expired JWT must be rejected loudly (POI-238).
+    // Agents always send X-Paperclip-Run-Id; if it's present but auth resolved to non-agent,
+    // the JWT was missing or failed verification — do not silently attribute to local-board.
+    const hasRunId = !!req.header("x-paperclip-run-id");
+    if (hasRunId && req.actor.type !== "agent") {
+      res.status(401).json({ error: "agent_jwt_required", reason: "missing_or_expired" });
+      return;
+    }
+
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });

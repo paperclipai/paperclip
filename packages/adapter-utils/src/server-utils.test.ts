@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
@@ -8,6 +8,8 @@ import {
   runningProcesses,
   runChildProcess,
   stringifyPaperclipWakePayload,
+  postIssueComment,
+  AgentJwtError,
 } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
@@ -477,5 +479,51 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("postIssueComment", () => {
+  it("returns comment data on success", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "cmt-1", body: "hello" }), { status: 201 }),
+    );
+
+    const result = await postIssueComment(
+      "http://localhost:3100",
+      "fake-api-key",
+      "run-id-1",
+      "issue-123",
+      "hello",
+    );
+
+    expect(result.commentId).toBe("cmt-1");
+    expect(result.body).toBe("hello");
+    fetchSpy.mockRestore();
+  });
+
+  it("throws AgentJwtError immediately on 401 agent_jwt_required without retrying the same token", async () => {
+    const jwtErrBody = JSON.stringify({ error: "agent_jwt_required", reason: "missing_or_expired" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(jwtErrBody, { status: 401 }));
+
+    await expect(
+      postIssueComment("http://localhost:3100", "expired-jwt", "run-id-1", "issue-123", "hello"),
+    ).rejects.toBeInstanceOf(AgentJwtError);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
+  it("throws a plain error for non-agent-jwt 401s without retrying", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "forbidden" }), { status: 401 }),
+    );
+
+    await expect(
+      postIssueComment("http://localhost:3100", "bad-key", "run-id-1", "issue-123", "hello"),
+    ).rejects.toThrow("HTTP 401: forbidden");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
   });
 });
