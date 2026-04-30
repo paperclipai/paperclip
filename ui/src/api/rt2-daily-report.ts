@@ -5,13 +5,21 @@ import type {
   Rt2DailyReportCard,
   Rt2DailyWikiAnswer,
   Rt2DailyWikiPage,
+  UpdateRt2DailyCardOkr,
+  UpdateRt2DailyCardQuality,
+  UpdateRt2DailyCardTitle,
   UpsertRt2DailyReportCard,
+  UpsertRt2DailyCardDeliverable,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
 export type Rt2DailyReportSaveResponse = {
   card: Rt2DailyReportCard;
   wikiPage: Rt2DailyWikiPage;
+};
+
+export type Rt2DailyCardUpdateResponse = {
+  card: Rt2DailyReportCard;
 };
 
 function buildDailyQueryParams(input: ListRt2DailyBoard) {
@@ -29,6 +37,26 @@ export const rt2DailyReportApi = {
   saveCard: (companyId: string, todoIssueId: string, data: UpsertRt2DailyReportCard) =>
     api.put<Rt2DailyReportSaveResponse>(
       `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}`,
+      data,
+    ),
+  updateCardTitle: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardTitle) =>
+    api.patch<Rt2DailyCardUpdateResponse>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/title`,
+      data,
+    ),
+  upsertCardDeliverable: (companyId: string, todoIssueId: string, data: UpsertRt2DailyCardDeliverable) =>
+    api.put<Rt2DailyCardUpdateResponse>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/deliverable`,
+      data,
+    ),
+  updateCardQuality: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardQuality) =>
+    api.patch<Rt2DailyCardUpdateResponse>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/quality`,
+      data,
+    ),
+  updateCardOkr: (companyId: string, todoIssueId: string, data: UpdateRt2DailyCardOkr) =>
+    api.patch<Rt2DailyCardUpdateResponse>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/daily-report/cards/${encodeURIComponent(todoIssueId)}/okr`,
       data,
     ),
   getWiki: (companyId: string, projectId: string, reportDate: string) => {

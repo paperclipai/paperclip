@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { rt2BoardQualityStatusSchema, rt2DeliverableKindSchema } from "./rt2-task.js";
 
 export const rt2DailyLaneSchema = z.enum(["todo", "doing", "done"]);
 const rt2DailyReportDatePattern = /^\d{4}-\d{2}-\d{2}$/;
@@ -33,6 +34,39 @@ export const upsertRt2DailyReportCardSchema = z.object({
 });
 
 export type UpsertRt2DailyReportCard = z.infer<typeof upsertRt2DailyReportCardSchema>;
+
+export const updateRt2DailyCardTitleSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+});
+
+export type UpdateRt2DailyCardTitle = z.infer<typeof updateRt2DailyCardTitleSchema>;
+
+export const updateRt2DailyCardLaneSchema = z.object({
+  lane: rt2DailyLaneSchema,
+});
+
+export type UpdateRt2DailyCardLane = z.infer<typeof updateRt2DailyCardLaneSchema>;
+
+export const upsertRt2DailyCardDeliverableSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  type: rt2DeliverableKindSchema,
+  required: z.boolean(),
+  basePrice: z.number().int().min(0),
+});
+
+export type UpsertRt2DailyCardDeliverable = z.infer<typeof upsertRt2DailyCardDeliverableSchema>;
+
+export const updateRt2DailyCardQualitySchema = z.object({
+  qualityStatus: rt2BoardQualityStatusSchema,
+});
+
+export type UpdateRt2DailyCardQuality = z.infer<typeof updateRt2DailyCardQualitySchema>;
+
+export const updateRt2DailyCardOkrSchema = z.object({
+  goalId: z.string().uuid().nullable(),
+});
+
+export type UpdateRt2DailyCardOkr = z.infer<typeof updateRt2DailyCardOkrSchema>;
 
 export const listRt2DailyBoardSchema = z.object({
   projectId: z.string().uuid(),
