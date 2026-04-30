@@ -1849,6 +1849,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "I will inspect the repo next and then implement the fix.",
       provider: "test",
       model: "test-model",
+      resultJson: { summary: "I will inspect the repo next and then implement the fix." },
     });
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -1927,6 +1928,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         summary: "Plan:\n- Inspect files\n- Implement fix",
         provider: "test",
         model: "test-model",
+        resultJson: { summary: "Plan:\n- Inspect files\n- Implement fix" },
       };
     });
     const heartbeat = heartbeatService(db);
