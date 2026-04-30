@@ -148,6 +148,7 @@ export function pluginRegistryService(db: Db) {
           .set({
             packageName: input.packageName,
             packagePath: input.packagePath ?? null,
+            localSourcePath: input.localSourcePath ?? null,
             version: manifest.version,
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
@@ -176,6 +177,7 @@ export function pluginRegistryService(db: Db) {
             status: "installed" as PluginStatus,
             installOrder,
             packagePath: input.packagePath ?? null,
+            localSourcePath: input.localSourcePath ?? null,
           })
           .returning();
         return rows[0];
@@ -199,6 +201,8 @@ export function pluginRegistryService(db: Db) {
         packageName?: string;
         version?: string;
         manifest?: PaperclipPluginManifestV1;
+        packagePath?: string | null;
+        localSourcePath?: string | null;
       },
     ) => {
       const plugin = await getById(id);
@@ -214,6 +218,8 @@ export function pluginRegistryService(db: Db) {
         setClause.apiVersion = data.manifest.apiVersion;
         setClause.categories = data.manifest.categories;
       }
+      if (data.packagePath !== undefined) setClause.packagePath = data.packagePath;
+      if (data.localSourcePath !== undefined) setClause.localSourcePath = data.localSourcePath;
 
       return db
         .update(plugins)

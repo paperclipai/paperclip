@@ -358,8 +358,14 @@ export interface PluginRecord {
   status: PluginStatus;
   /** Deterministic load order (null if not yet assigned). */
   installOrder: number | null;
-  /** Resolved package path for local-path installs; used to find worker entrypoint. */
+  /** Runtime location — managed plugin directory for local-path / .pcplugin
+   * installs; npm node_modules path for npm installs. The worker entrypoint
+   * is resolved relative to this directory. */
   packagePath: string | null;
+  /** Original source folder for local-path installs. Persisted so a Reinstall
+   * can re-read the freshly-rebuilt artifacts and re-copy them into the
+   * managed directory. Null for npm and .pcplugin uploads. */
+  localSourcePath: string | null;
   /** Most recent error message, or operator-provided disable reason. */
   lastError: string | null;
   /** Timestamp when the plugin was first installed. */

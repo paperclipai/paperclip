@@ -35,6 +35,8 @@ export class ApiConnectionError extends Error {
 
 interface RequestOptions {
   ignoreNotFound?: boolean;
+  /** Per-request header overrides (e.g. `Content-Type` for binary uploads). */
+  headers?: Record<string, string>;
 }
 
 interface RecoverAuthInput {
@@ -68,9 +70,20 @@ export class PaperclipApiClient {
   }
 
   post<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
+    // Raw binary bodies (e.g. .pcplugin uploads) are passed through verbatim
+    // — caller is expected to supply the appropriate Content-Type via opts.headers.
+    const isRawBody =
+      body instanceof Uint8Array ||
+      body instanceof ArrayBuffer ||
+      (typeof Buffer !== "undefined" && Buffer.isBuffer(body));
     return this.request<T>(path, {
       method: "POST",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body:
+        body === undefined
+          ? undefined
+          : isRawBody
+            ? (body as BodyInit)
+            : JSON.stringify(body),
     }, opts);
   }
 
@@ -101,6 +114,7 @@ export class PaperclipApiClient {
     const headers: Record<string, string> = {
       accept: "application/json",
       ...toStringRecord(init.headers),
+      ...(opts?.headers ?? {}),
     };
 
     if (init.body !== undefined) {

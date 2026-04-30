@@ -32,8 +32,15 @@ export const plugins = pgTable(
     manifestJson: jsonb("manifest_json").$type<PaperclipPluginManifestV1>().notNull(),
     status: text("status").$type<PluginStatus>().notNull().default("installed"),
     installOrder: integer("install_order"),
-    /** Resolved package path for local-path installs; used to find worker entrypoint. */
+    /** Runtime package location (managed plugin directory for local-path / .pcplugin
+     * installs; the npm node_modules path for npm installs). The worker entrypoint
+     * is resolved relative to this directory. */
     packagePath: text("package_path"),
+    /** Original source path supplied to `--local` installs. Persisted so a
+     * Reinstall can re-read the freshly-rebuilt artifacts from the dev folder
+     * and re-copy them into the managed directory. Null for npm and
+     * .pcplugin uploads. */
+    localSourcePath: text("local_source_path"),
     lastError: text("last_error"),
     installedAt: timestamp("installed_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

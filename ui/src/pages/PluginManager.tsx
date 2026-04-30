@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, RefreshCw, Settings, Trash } from "lucide-react";
+import { AlertTriangle, Download, FlaskConical, Plus, Power, Puzzle, RefreshCw, Settings, Sparkles, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -68,6 +68,9 @@ export function PluginManager() {
 
   const [installPackage, setInstallPackage] = useState("");
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const [installMode, setInstallMode] = useState<"npm" | "file">("npm");
+  const [installFile, setInstallFile] = useState<File | null>(null);
+  const [installDragOver, setInstallDragOver] = useState(false);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
   const [errorDetailsPlugin, setErrorDetailsPlugin] = useState<PluginRecord | null>(null);
@@ -104,6 +107,22 @@ export function PluginManager() {
       setInstallDialogOpen(false);
       setInstallPackage("");
       pushToast({ title: "Plugin installed successfully", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
+    },
+  });
+
+  const installFileMutation = useMutation({
+    mutationFn: (file: File) => pluginsApi.installFile(file),
+    onSuccess: (record) => {
+      invalidatePluginQueries();
+      setInstallDialogOpen(false);
+      setInstallFile(null);
+      pushToast({
+        title: `Installed ${record.manifestJson.displayName ?? record.packageName} v${record.version}`,
+        tone: "success",
+      });
     },
     onError: (err: Error) => {
       pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
@@ -157,6 +176,27 @@ export function PluginManager() {
     },
   });
 
+  const libraryQuery = useQuery({
+    queryKey: queryKeys.plugins.library,
+    queryFn: () => pluginsApi.listLibrary(),
+    staleTime: 60_000,
+  });
+
+  const installFromLibraryMutation = useMutation({
+    mutationFn: (id: string) => pluginsApi.installFromLibrary(id),
+    onSuccess: (record) => {
+      invalidatePluginQueries();
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.library });
+      pushToast({
+        title: `Installed ${record.manifestJson.displayName ?? record.packageName} v${record.version}`,
+        tone: "success",
+      });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
+    },
+  });
+
   const installedPlugins = plugins ?? [];
   const examples = examplesQuery.data ?? [];
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
@@ -180,7 +220,17 @@ export function PluginManager() {
           <h1 className="text-xl font-semibold">Plugin Manager</h1>
         </div>
         
-        <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
+        <Dialog
+          open={installDialogOpen}
+          onOpenChange={(open) => {
+            setInstallDialogOpen(open);
+            if (!open) {
+              setInstallPackage("");
+              setInstallFile(null);
+              setInstallDragOver(false);
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
               <Plus className="h-4 w-4" />
@@ -191,44 +241,235 @@ export function PluginManager() {
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
+                Install from npm or upload a packed `.pcplugin` archive.
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
-                <Input
-                  id="packageName"
-                  placeholder="@paperclipai/plugin-example"
-                  value={installPackage}
-                  onChange={(e) => setInstallPackage(e.target.value)}
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
-              <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
-                disabled={!installPackage || installMutation.isPending}
+
+            <div className="flex gap-1 rounded-md border p-1 text-xs">
+              <button
+                type="button"
+                className={cn(
+                  "flex-1 rounded px-3 py-1.5 transition",
+                  installMode === "npm"
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted",
+                )}
+                onClick={() => setInstallMode("npm")}
               >
-                {installMutation.isPending ? "Installing..." : "Install"}
+                From npm
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "flex-1 rounded px-3 py-1.5 transition",
+                  installMode === "file"
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted",
+                )}
+                onClick={() => setInstallMode("file")}
+              >
+                Upload .pcplugin
+              </button>
+            </div>
+
+            <div className="grid gap-4 py-2">
+              {installMode === "npm" ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="packageName">npm Package Name</Label>
+                  <Input
+                    id="packageName"
+                    placeholder="@paperclipai/plugin-example"
+                    value={installPackage}
+                    onChange={(e) => setInstallPackage(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Pulls the plugin from the npm registry. Pin a version with
+                    the @ syntax: <code>my-plugin@1.2.3</code>.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  <Label>Plugin archive</Label>
+                  <label
+                    htmlFor="pcplugin-file-input"
+                    className={cn(
+                      "flex cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-6 py-8 text-center text-sm transition",
+                      installDragOver
+                        ? "border-primary bg-primary/5"
+                        : "hover:border-foreground/30",
+                    )}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setInstallDragOver(true);
+                    }}
+                    onDragLeave={() => setInstallDragOver(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setInstallDragOver(false);
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) setInstallFile(file);
+                    }}
+                  >
+                    <input
+                      id="pcplugin-file-input"
+                      type="file"
+                      accept=".pcplugin,application/zip,application/octet-stream"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        setInstallFile(file);
+                      }}
+                    />
+                    {installFile ? (
+                      <>
+                        <span className="font-medium text-foreground">
+                          {installFile.name}
+                        </span>
+                        <span className="mt-1 text-xs text-muted-foreground">
+                          {Math.round(installFile.size / 1024)} KB — click or
+                          drop another to replace
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-medium text-foreground">
+                          Drop a .pcplugin file here
+                        </span>
+                        <span className="mt-1 text-xs text-muted-foreground">
+                          or click to browse
+                        </span>
+                      </>
+                    )}
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Generate a .pcplugin from a built plugin folder with
+                    <code className="ml-1">paperclipai plugin pack &lt;path&gt;</code>.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>
+                Cancel
               </Button>
+              {installMode === "npm" ? (
+                <Button
+                  onClick={() => installMutation.mutate({ packageName: installPackage })}
+                  disabled={!installPackage || installMutation.isPending}
+                >
+                  {installMutation.isPending ? "Installing..." : "Install"}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => installFile && installFileMutation.mutate(installFile)}
+                  disabled={!installFile || installFileMutation.isPending}
+                >
+                  {installFileMutation.isPending ? "Uploading..." : "Upload & install"}
+                </Button>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
 
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-        <div className="flex items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
-          <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">Plugins are alpha.</p>
-            <p className="text-muted-foreground">
-              The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles.
-            </p>
-          </div>
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-base font-semibold">Plugin Library</h2>
+          {libraryQuery.data?.release.tag && (
+            <Badge variant="outline">
+              {libraryQuery.data.repo} · {libraryQuery.data.release.tag}
+            </Badge>
+          )}
         </div>
-      </div>
+
+        {libraryQuery.isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading plugin library…</div>
+        ) : libraryQuery.error ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            Failed to load plugin library: {(libraryQuery.error as Error).message}
+          </div>
+        ) : (libraryQuery.data?.plugins.length ?? 0) === 0 ? (
+          <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            No plugins found in the latest release of{" "}
+            {libraryQuery.data?.repo ?? "the plugin library"}.
+          </div>
+        ) : (
+          <ul className="divide-y rounded-md border bg-card">
+            {libraryQuery.data!.plugins.map((entry) => {
+              const inFlight =
+                installFromLibraryMutation.isPending &&
+                installFromLibraryMutation.variables === entry.id;
+              const isInstalled = entry.installed;
+              const upgrade = entry.upgradeAvailable;
+              return (
+                <li key={entry.id}>
+                  <div className="flex items-center gap-4 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">
+                          {entry.displayName ?? entry.id}
+                        </span>
+                        <Badge variant="outline">v{entry.version}</Badge>
+                        {isInstalled && !upgrade && (
+                          <Badge
+                            variant="default"
+                            className="bg-green-600 hover:bg-green-700"
+                          >
+                            Installed
+                          </Badge>
+                        )}
+                        {isInstalled && upgrade && (
+                          <Badge variant="secondary">
+                            Update available (you have v{entry.installedVersion})
+                          </Badge>
+                        )}
+                        {!isInstalled && <Badge variant="secondary">Not installed</Badge>}
+                      </div>
+                      {entry.description && (
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {entry.description}
+                        </p>
+                      )}
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {entry.id}
+                        {typeof entry.sizeBytes === "number" &&
+                          ` · ${Math.round(entry.sizeBytes / 1024)} KB`}
+                        {entry.author && ` · ${entry.author}`}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {!isInstalled && (
+                        <Button
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => installFromLibraryMutation.mutate(entry.id)}
+                          disabled={inFlight}
+                        >
+                          <Download className="h-4 w-4" />
+                          {inFlight ? "Installing…" : "Install"}
+                        </Button>
+                      )}
+                      {isInstalled && upgrade && (
+                        <Button
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => installFromLibraryMutation.mutate(entry.id)}
+                          disabled={inFlight}
+                        >
+                          <RefreshCw className={cn("h-4 w-4", inFlight && "animate-spin")} />
+                          {inFlight ? "Updating…" : `Update to v${entry.version}`}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <section className="space-y-3">
         <div className="flex items-center gap-2">

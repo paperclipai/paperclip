@@ -711,8 +711,14 @@ export type PluginManifestV1Input = z.infer<typeof pluginManifestV1Schema>;
 export const installPluginSchema = z.object({
   packageName: z.string().min(1),
   version: z.string().min(1).optional(),
-  /** Set by loader for local-path installs so the worker can be resolved. */
+  /** Runtime location — managed directory for local/.pcplugin installs;
+   * node_modules path for npm installs. The worker entrypoint is resolved
+   * relative to this directory. */
   packagePath: z.string().min(1).optional(),
+  /** Original source folder for local-path installs. Persisted so a Reinstall
+   * can re-read the freshly-rebuilt artifacts and re-copy them into the
+   * managed directory. Null for npm and .pcplugin uploads. */
+  localSourcePath: z.string().min(1).optional(),
 });
 
 export type InstallPlugin = z.infer<typeof installPluginSchema>;

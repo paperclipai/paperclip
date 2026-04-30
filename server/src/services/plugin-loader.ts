@@ -25,7 +25,7 @@
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -77,6 +77,37 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
   ".paperclip",
   "plugins",
 );
+
+/**
+ * Default managed plugin install directory.  Each plugin installed via the
+ * `--local` flag, an uploaded `.pcplugin` archive, or any future "copy on
+ * install" code path lands at `<this dir>/<plugin-id>/`. The folder layout
+ * mirrors what the source plugin produces — a `dist/` subfolder plus a
+ * sanitized `package.json` — so the standard worker resolver can find the
+ * entrypoint via `manifest.entrypoints.worker` (e.g. `./dist/worker.js`).
+ *
+ * Kept separate from `DEFAULT_LOCAL_PLUGIN_DIR` so that:
+ * - the discovery scanner doesn't double-discover managed installs as
+ *   "extra plugins" alongside their DB rows;
+ * - npm's `node_modules` live and managed-install artifacts never collide
+ *   on the same package name; and
+ * - operators can wipe `installed-plugins/<plugin-id>/` to force a clean
+ *   reinstall without affecting npm-installed plugins.
+ */
+export const DEFAULT_MANAGED_PLUGIN_DIR = path.join(
+  os.homedir(),
+  ".paperclip",
+  "installed-plugins",
+);
+
+/**
+ * Compute the managed install directory for a given plugin id. Used by the
+ * install/upgrade pipelines to decide where to copy plugin artifacts and by
+ * the worker resolver to find them at runtime.
+ */
+export function getManagedPluginDir(pluginId: string, managedDir = DEFAULT_MANAGED_PLUGIN_DIR): string {
+  return path.join(managedDir, pluginId);
+}
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -148,6 +179,14 @@ export interface PluginLoaderOptions {
    * Defaults to ~/.paperclip/plugins/
    */
   localPluginDir?: string;
+
+  /**
+   * Directory where copy-on-install plugins (local-path and .pcplugin
+   * uploads) land. Each plugin gets a `<managedDir>/<plugin-id>/` folder
+   * containing a `dist/` and a sanitized `package.json`. Defaults to
+   * ~/.paperclip/installed-plugins/
+   */
+  managedPluginDir?: string;
 
   /** Optional direct Postgres connection used for plugin DDL migrations. */
   migrationDb?: Db;
@@ -740,6 +779,7 @@ export function pluginLoader(
 ): PluginLoader {
   const {
     localPluginDir = DEFAULT_LOCAL_PLUGIN_DIR,
+    managedPluginDir = DEFAULT_MANAGED_PLUGIN_DIR,
     migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
@@ -1269,27 +1309,51 @@ export function pluginLoader(
 
     async installPlugin(installOptions: PluginInstallOptions): Promise<DiscoveredPlugin> {
       const discovered = await fetchAndValidate(installOptions);
+      const manifest = discovered.manifest!;
 
-      // Step 6: Persist install record in Postgres (include packagePath for local installs so the worker can be resolved)
+      // For local-path installs, copy artifacts into the managed plugin dir so
+      // the running worker no longer depends on the operator's source folder
+      // existing or staying in place. The original source is recorded as
+      // localSourcePath so a Reinstall can re-read after a rebuild.
+      let runtimePackagePath = discovered.packagePath;
+      let localSourcePath: string | undefined;
+      if (discovered.source === "local-filesystem") {
+        const targetDir = getManagedPluginDir(manifest.id, managedPluginDir);
+        await copyPluginToManagedDir(discovered.packagePath, targetDir);
+        log.info(
+          { pluginId: manifest.id, source: discovered.packagePath, target: targetDir },
+          "plugin-loader: copied plugin into managed install directory",
+        );
+        localSourcePath = discovered.packagePath;
+        runtimePackagePath = targetDir;
+      }
+
+      // Step 6: Persist install record in Postgres
       await registry.install(
         {
           packageName: discovered.packageName,
-          packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+          packagePath:
+            discovered.source === "local-filesystem" ? runtimePackagePath : undefined,
+          localSourcePath,
         },
-        discovered.manifest!,
+        manifest,
       );
 
       log.info(
         {
-          pluginId: discovered.manifest!.id,
+          pluginId: manifest.id,
           packageName: discovered.packageName,
           version: discovered.version,
-          capabilities: discovered.manifest!.capabilities,
+          capabilities: manifest.capabilities,
+          runtimePackagePath,
+          localSourcePath,
         },
         "plugin-loader: plugin installed successfully",
       );
 
-      return discovered;
+      // Reflect the post-copy runtime location on the returned descriptor
+      // so callers (CLI, API) report where the plugin actually lives.
+      return { ...discovered, packagePath: runtimePackagePath };
     },
 
     // -----------------------------------------------------------------------
@@ -1321,6 +1385,7 @@ export function pluginLoader(
         id: string;
         packageName: string;
         packagePath: string | null;
+        localSourcePath: string | null;
         manifestJson: PaperclipPluginManifestV1;
       } | null;
       if (!plugin) throw new Error(`Plugin not found: ${pluginId}`);
@@ -1328,10 +1393,13 @@ export function pluginLoader(
       const oldManifest = plugin.manifestJson;
       const {
         packageName = plugin.packageName,
-        // For local-path installs, fall back to the stored packagePath so
-        // `upgradePlugin` can re-read the manifest from disk without needing
-        // the caller to re-supply the path every time.
-        localPath = plugin.packagePath ?? undefined,
+        // For local-path installs, prefer the stored source folder (where the
+        // operator's editable copy lives) over the managed runtime directory
+        // — the runtime dir is a snapshot of dist/ and won't pick up code
+        // changes since the last install. localSourcePath is null for
+        // npm-installed plugins, in which case `localPath` stays undefined
+        // and fetchAndValidate uses the npm path.
+        localPath = plugin.localSourcePath ?? undefined,
         version,
       } = upgradeOptions;
 
@@ -1374,17 +1442,36 @@ export function pluginLoader(
         );
       }
 
+      // 3a. For local-path upgrades, copy the freshly-rebuilt artifacts into
+      // the managed install directory so the worker reads from the snapshot,
+      // not the operator's source tree. localSourcePath stays the same
+      // (the source tree didn't move; just its contents changed).
+      let runtimePackagePath: string | undefined;
+      let nextLocalSourcePath: string | undefined;
+      if (discovered.source === "local-filesystem") {
+        const targetDir = getManagedPluginDir(newManifest.id, managedPluginDir);
+        await copyPluginToManagedDir(discovered.packagePath, targetDir);
+        log.info(
+          { pluginId: newManifest.id, source: discovered.packagePath, target: targetDir },
+          "plugin-loader: copied plugin into managed install directory (upgrade)",
+        );
+        runtimePackagePath = targetDir;
+        nextLocalSourcePath = discovered.packagePath;
+      }
+
       // 4. Update the existing record
       await registry.update(pluginId, {
         packageName: discovered.packageName,
         version: discovered.version,
         manifest: newManifest,
+        ...(runtimePackagePath !== undefined ? { packagePath: runtimePackagePath } : {}),
+        ...(nextLocalSourcePath !== undefined ? { localSourcePath: nextLocalSourcePath } : {}),
       });
 
       return {
         oldManifest,
         newManifest,
-        discovered,
+        discovered: { ...discovered, packagePath: runtimePackagePath ?? discovered.packagePath },
       };
     },
 
@@ -1914,6 +2001,52 @@ export function pluginLoader(
  *
  * @see PLUGIN_SPEC.md §10 — Package Contract
  */
+/**
+ * Copy a plugin's runtime artifacts (the `dist/` folder plus a sanitized
+ * `package.json`) from the source folder into the managed install directory.
+ *
+ * Wipes any prior contents at the target so each install is a clean snapshot
+ * of the source — operators using the Reinstall flow after a rebuild always
+ * see the latest dist/ rather than a merged result.
+ *
+ * The sanitized `package.json` keeps only the fields the host needs at
+ * runtime (name, version, type, paperclipPlugin, dependencies). Dev-only
+ * fields (devDependencies, scripts, repository, build configs) are stripped
+ * to minimize the install footprint and avoid leaking the source tree.
+ */
+async function copyPluginToManagedDir(sourceDir: string, targetDir: string): Promise<void> {
+  if (!existsSync(sourceDir)) {
+    throw new Error(`copyPluginToManagedDir: source does not exist: ${sourceDir}`);
+  }
+  const sourceDistDir = path.join(sourceDir, "dist");
+  if (!existsSync(sourceDistDir)) {
+    throw new Error(
+      `copyPluginToManagedDir: source has no dist/ folder. Did the plugin author run \`pnpm build\` before installing? Source: ${sourceDir}`,
+    );
+  }
+  const sourcePkgPath = path.join(sourceDir, "package.json");
+  if (!existsSync(sourcePkgPath)) {
+    throw new Error(`copyPluginToManagedDir: source has no package.json at ${sourcePkgPath}`);
+  }
+
+  await rm(targetDir, { recursive: true, force: true });
+  await mkdir(targetDir, { recursive: true });
+  await cp(sourceDistDir, path.join(targetDir, "dist"), { recursive: true });
+
+  const pkgRaw = await readFile(sourcePkgPath, "utf-8");
+  const pkg = JSON.parse(pkgRaw) as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+  const KEEP_FIELDS = ["name", "version", "type", "paperclipPlugin", "dependencies", "engines"];
+  for (const key of KEEP_FIELDS) {
+    if (key in pkg) sanitized[key] = pkg[key];
+  }
+  await writeFile(
+    path.join(targetDir, "package.json"),
+    JSON.stringify(sanitized, null, 2) + "\n",
+    "utf-8",
+  );
+}
+
 function resolveWorkerEntrypoint(
   plugin: PluginRecord & { packagePath?: string | null },
   localPluginDir: string,

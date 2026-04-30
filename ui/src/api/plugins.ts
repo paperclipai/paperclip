@@ -140,6 +140,40 @@ export interface AvailablePluginExample {
   tag: "example";
 }
 
+/** A single plugin entry returned by `GET /plugins/library`. */
+export interface PluginLibraryEntry {
+  id: string;
+  version: string;
+  displayName?: string;
+  description?: string;
+  categories?: string[];
+  author?: string | null;
+  apiVersion?: number;
+  capabilities?: string[];
+  fileName?: string;
+  sizeBytes?: number;
+  /** Direct URL to the .pcplugin asset on the GitHub release. */
+  downloadUrl: string;
+  /** True when a plugin with this id is currently installed (any version). */
+  installed: boolean;
+  /** Currently installed version, or null if not installed. */
+  installedVersion: string | null;
+  /** True when installed at a different version than the library entry. */
+  upgradeAvailable: boolean;
+}
+
+/** Response shape from `GET /plugins/library`. */
+export interface PluginLibraryResponse {
+  repo: string;
+  release: {
+    tag: string;
+    name: string;
+    url: string;
+    publishedAt: string | null;
+  };
+  plugins: PluginLibraryEntry[];
+}
+
 /**
  * Plugin management API client.
  *
@@ -192,6 +226,34 @@ export const pluginsApi = {
    */
   install: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>
     api.post<PluginRecord>("/plugins/install", params),
+
+  /**
+   * Upload a `.pcplugin` archive (produced by `paperclipai plugin pack`) and
+   * install the contained plugin. The file is read as ArrayBuffer first so
+   * fetch sends a clean binary body — passing a File directly causes some
+   * browsers to ignore the explicit Content-Type and use the file's MIME
+   * type (which for .pcplugin is empty/unrecognized), and the server's
+   * `express.raw` middleware then skips parsing.
+   *
+   * @param file - The .pcplugin file selected by the operator (typically from
+   *   a file input or drag-drop).
+   */
+  installFile: async (file: File | Blob) => {
+    const buf = await file.arrayBuffer();
+    // Don't pass a content-type override here — `api.postRaw` already
+    // defaults to application/octet-stream. Setting it again merges as
+    // "application/octet-stream, application/octet-stream", which breaks
+    // express.raw's type matching on the server.
+    return api.postRaw<PluginRecord>("/plugins/install-file", buf);
+  },
+
+  /** Fetch the curated plugin library (the latest GitHub release of the
+   * configured paperclip-extensions repo, normalized with install state). */
+  listLibrary: () => api.get<PluginLibraryResponse>("/plugins/library"),
+
+  /** Install (or upgrade in place) a plugin by id from the library. */
+  installFromLibrary: (id: string) =>
+    api.post<PluginRecord>("/plugins/library/install", { id }),
 
   /**
    * Uninstall a plugin.

@@ -19,11 +19,14 @@
  */
 
 import { existsSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { Router } from "express";
+import express, { Router } from "express";
 import type { Request, Response } from "express";
+import JSZip from "jszip";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -944,6 +947,396 @@ export function pluginRoutes(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
+    }
+  });
+
+  /**
+   * POST /api/plugins/install-file
+   *
+   * Install a plugin from a `.pcplugin` archive uploaded as the request body.
+   * The archive is a zip produced by `paperclipai plugin pack`. Body is the
+   * raw bytes; Content-Type must be `application/octet-stream`.
+   *
+   * Steps:
+   * 1. Validate the upload is a zip and within size limits.
+   * 2. Extract the zip to a temp directory.
+   * 3. Run the standard install pipeline against the temp directory; the
+   *    loader's copy-on-install logic relocates the artifacts into the
+   *    managed plugin directory.
+   * 4. Clean up the temp directory.
+   *
+   * Response: `PluginRecord`
+   * Errors:
+   * - 400 — empty body, malformed zip, missing manifest, install failed
+   * - 409 — plugin with that id is already installed (matching message from /install)
+   */
+  router.post(
+    "/plugins/install-file",
+    express.raw({ type: ["application/octet-stream", "application/zip"], limit: "50mb" }),
+    async (req, res) => {
+      assertInstanceAdmin(req);
+
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length === 0) {
+        res.status(400).json({
+          error:
+            "Expected the .pcplugin file as the raw request body with Content-Type: application/octet-stream.",
+        });
+        return;
+      }
+
+      const tempRoot = path.join(os.tmpdir(), "paperclip-pcplugin");
+      const tempDir = path.join(tempRoot, randomUUID());
+      try {
+        let zip: JSZip;
+        try {
+          zip = await JSZip.loadAsync(buf);
+        } catch (err) {
+          res.status(400).json({
+            error: `Uploaded file is not a valid zip: ${(err as Error).message}`,
+          });
+          return;
+        }
+
+        await mkdir(tempDir, { recursive: true });
+        for (const [relPath, entry] of Object.entries(zip.files)) {
+          if (entry.dir) continue;
+          // Reject path-traversal attempts; only allow descendants of tempDir.
+          const target = path.resolve(tempDir, relPath);
+          if (!target.startsWith(path.resolve(tempDir) + path.sep) && target !== path.resolve(tempDir)) {
+            res.status(400).json({
+              error: `Invalid file path in archive: ${relPath}`,
+            });
+            return;
+          }
+          const data = await entry.async("nodebuffer");
+          await mkdir(path.dirname(target), { recursive: true });
+          await writeFile(target, data);
+        }
+
+        const discovered = await loader.installPlugin({ localPath: tempDir });
+        if (!discovered.manifest) {
+          res.status(500).json({ error: "Plugin installed but manifest is missing" });
+          return;
+        }
+
+        const existingPlugin = await registry.getByKey(discovered.manifest.id);
+        if (!existingPlugin) {
+          res.status(500).json({ error: "Plugin installed but not found in registry" });
+          return;
+        }
+
+        await lifecycle.load(existingPlugin.id);
+        const updated = await registry.getById(existingPlugin.id);
+        await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
+          pluginId: existingPlugin.id,
+          pluginKey: existingPlugin.pluginKey,
+          packageName: updated?.packageName ?? existingPlugin.packageName,
+          version: updated?.version ?? existingPlugin.version,
+          source: "pcplugin_upload",
+          uploadSizeBytes: buf.length,
+        });
+        publishGlobalLiveEvent({
+          type: "plugin.ui.updated",
+          payload: { pluginId: existingPlugin.id, action: "installed" },
+        });
+        res.json(updated);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: message });
+      } finally {
+        // The loader has already copied the install artifacts into the managed
+        // directory by this point; the temp extraction can be cleared.
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  );
+
+  // ===========================================================================
+  // Plugin Library — install from a curated GitHub release
+  // ===========================================================================
+
+  /**
+   * Default plugin library repo (publishes `.pcplugin` files to its GitHub
+   * releases via .github/workflows/release.yml). Override with the
+   * `PAPERCLIP_PLUGIN_LIBRARY_REPO` env var for forks or private mirrors.
+   *
+   * Format: `<owner>/<repo>`. Plain HTTP fetch is required to be able to
+   * download release assets, so this defaults to a GitHub public repo.
+   */
+  const PLUGIN_LIBRARY_REPO =
+    process.env.PAPERCLIP_PLUGIN_LIBRARY_REPO?.trim() || "barrycarrjr/paperclip-extensions";
+
+  /** Hosts whose URLs `/library/install` is allowed to download from. */
+  const PLUGIN_LIBRARY_TRUSTED_HOSTS = new Set([
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "codeload.github.com",
+  ]);
+
+  interface LibraryIndexPlugin {
+    id: string;
+    version: string;
+    displayName?: string;
+    description?: string;
+    categories?: string[];
+    author?: string | null;
+    apiVersion?: number;
+    capabilities?: string[];
+    fileName?: string;
+    sizeBytes?: number;
+  }
+
+  interface GitHubReleaseAsset {
+    name: string;
+    browser_download_url: string;
+    size: number;
+  }
+
+  interface GitHubRelease {
+    tag_name: string;
+    name?: string | null;
+    html_url?: string;
+    published_at?: string;
+    assets?: GitHubReleaseAsset[];
+  }
+
+  let cachedLibrary: { fetchedAt: number; data: LibraryResponse } | null = null;
+  const LIBRARY_CACHE_TTL_MS = 60_000;
+
+  interface LibraryResponse {
+    repo: string;
+    release: {
+      tag: string;
+      name: string;
+      url: string;
+      publishedAt: string | null;
+    };
+    plugins: Array<
+      LibraryIndexPlugin & {
+        downloadUrl: string;
+        installed: boolean;
+        installedVersion: string | null;
+        upgradeAvailable: boolean;
+      }
+    >;
+  }
+
+  async function fetchLatestLibrary(): Promise<LibraryResponse> {
+    if (cachedLibrary && Date.now() - cachedLibrary.fetchedAt < LIBRARY_CACHE_TTL_MS) {
+      return cachedLibrary.data;
+    }
+
+    const releaseUrl = `https://api.github.com/repos/${PLUGIN_LIBRARY_REPO}/releases/latest`;
+    const releaseRes = await fetch(releaseUrl, {
+      headers: { accept: "application/vnd.github+json" },
+    });
+    if (!releaseRes.ok) {
+      throw new Error(
+        `Plugin library: GitHub returned ${releaseRes.status} for ${releaseUrl}. ` +
+          `Verify PAPERCLIP_PLUGIN_LIBRARY_REPO points at a public repo with at least one release.`,
+      );
+    }
+    const release = (await releaseRes.json()) as GitHubRelease;
+    const assets = release.assets ?? [];
+    const indexAsset = assets.find((a) => a.name === "index.json");
+    if (!indexAsset) {
+      throw new Error(
+        `Plugin library: release ${release.tag_name} for ${PLUGIN_LIBRARY_REPO} has no index.json asset. ` +
+          `The release workflow should attach one alongside the .pcplugin files.`,
+      );
+    }
+    const indexRes = await fetch(indexAsset.browser_download_url, {
+      headers: { accept: "application/json" },
+    });
+    if (!indexRes.ok) {
+      throw new Error(
+        `Plugin library: failed to fetch index.json (${indexRes.status}) from ${indexAsset.browser_download_url}.`,
+      );
+    }
+    const indexJson = (await indexRes.json()) as { plugins?: LibraryIndexPlugin[] };
+    const plugins = indexJson.plugins ?? [];
+
+    const installedRows = await registry.listInstalled();
+    const installedByKey = new Map(installedRows.map((p) => [p.pluginKey, p]));
+
+    const enriched = plugins.map((p) => {
+      const fileName = p.fileName ?? `${p.id}-${p.version}.pcplugin`;
+      const asset = assets.find((a) => a.name === fileName);
+      const downloadUrl = asset?.browser_download_url ?? "";
+      const installedRow = installedByKey.get(p.id);
+      const installedVersion = installedRow?.version ?? null;
+      const upgradeAvailable = !!installedVersion && installedVersion !== p.version;
+      return {
+        ...p,
+        downloadUrl,
+        installed: !!installedRow,
+        installedVersion,
+        upgradeAvailable,
+      };
+    });
+
+    const data: LibraryResponse = {
+      repo: PLUGIN_LIBRARY_REPO,
+      release: {
+        tag: release.tag_name,
+        name: release.name ?? release.tag_name,
+        url: release.html_url ?? "",
+        publishedAt: release.published_at ?? null,
+      },
+      plugins: enriched,
+    };
+    cachedLibrary = { fetchedAt: Date.now(), data };
+    return data;
+  }
+
+  /**
+   * GET /api/plugins/library
+   *
+   * Returns the current contents of the configured GitHub plugin library —
+   * the latest release's index.json plus per-plugin install status. Used by
+   * the Plugin Manager UI to render "Available from <repo>".
+   */
+  router.get("/plugins/library", async (req, res) => {
+    assertInstanceAdmin(req);
+    try {
+      const data = await fetchLatestLibrary();
+      res.json(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: message });
+    }
+  });
+
+  /**
+   * POST /api/plugins/library/install
+   *
+   * Install a plugin by id from the configured GitHub plugin library. The
+   * server downloads the matching `.pcplugin` asset from the release and
+   * runs the same install pipeline as `/install-file`.
+   *
+   * Body: `{ id: string }` — the plugin id (e.g. `"email-tools"`).
+   */
+  router.post("/plugins/library/install", async (req, res) => {
+    assertInstanceAdmin(req);
+    const id = (req.body as { id?: string } | undefined)?.id?.trim();
+    if (!id) {
+      res.status(400).json({ error: "Body must include { id: string }." });
+      return;
+    }
+
+    let library: LibraryResponse;
+    try {
+      library = await fetchLatestLibrary();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: message });
+      return;
+    }
+
+    const entry = library.plugins.find((p) => p.id === id);
+    if (!entry) {
+      res.status(404).json({ error: `Plugin "${id}" not found in library ${library.repo}.` });
+      return;
+    }
+    if (!entry.downloadUrl) {
+      res.status(404).json({
+        error: `Plugin "${id}" has no .pcplugin asset in release ${library.release.tag}.`,
+      });
+      return;
+    }
+
+    let assetHost: string;
+    try {
+      assetHost = new URL(entry.downloadUrl).hostname;
+    } catch {
+      res.status(400).json({ error: `Invalid asset URL: ${entry.downloadUrl}` });
+      return;
+    }
+    if (!PLUGIN_LIBRARY_TRUSTED_HOSTS.has(assetHost)) {
+      res.status(400).json({
+        error: `Refusing to download plugin asset from untrusted host: ${assetHost}`,
+      });
+      return;
+    }
+
+    const tempRoot = path.join(os.tmpdir(), "paperclip-pcplugin-library");
+    const tempDir = path.join(tempRoot, randomUUID());
+    try {
+      const assetRes = await fetch(entry.downloadUrl, {
+        headers: { accept: "application/octet-stream" },
+      });
+      if (!assetRes.ok) {
+        res.status(502).json({
+          error: `Failed to download ${entry.fileName ?? id} (HTTP ${assetRes.status}).`,
+        });
+        return;
+      }
+      const buf = Buffer.from(await assetRes.arrayBuffer());
+
+      let zip: JSZip;
+      try {
+        zip = await JSZip.loadAsync(buf);
+      } catch (err) {
+        res.status(502).json({
+          error: `Downloaded asset is not a valid zip: ${(err as Error).message}`,
+        });
+        return;
+      }
+
+      await mkdir(tempDir, { recursive: true });
+      for (const [relPath, archiveEntry] of Object.entries(zip.files)) {
+        if (archiveEntry.dir) continue;
+        const target = path.resolve(tempDir, relPath);
+        if (
+          !target.startsWith(path.resolve(tempDir) + path.sep) &&
+          target !== path.resolve(tempDir)
+        ) {
+          res.status(502).json({ error: `Invalid file path in archive: ${relPath}` });
+          return;
+        }
+        const data = await archiveEntry.async("nodebuffer");
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, data);
+      }
+
+      const discovered = await loader.installPlugin({ localPath: tempDir });
+      if (!discovered.manifest) {
+        res.status(500).json({ error: "Plugin installed but manifest is missing" });
+        return;
+      }
+      const existingPlugin = await registry.getByKey(discovered.manifest.id);
+      if (!existingPlugin) {
+        res.status(500).json({ error: "Plugin installed but not found in registry" });
+        return;
+      }
+      await lifecycle.load(existingPlugin.id);
+      const updated = await registry.getById(existingPlugin.id);
+
+      // Bust the library cache so the UI immediately reflects the install.
+      cachedLibrary = null;
+
+      await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
+        pluginId: existingPlugin.id,
+        pluginKey: existingPlugin.pluginKey,
+        packageName: updated?.packageName ?? existingPlugin.packageName,
+        version: updated?.version ?? existingPlugin.version,
+        source: "library",
+        libraryRepo: library.repo,
+        libraryReleaseTag: library.release.tag,
+      });
+      publishGlobalLiveEvent({
+        type: "plugin.ui.updated",
+        payload: { pluginId: existingPlugin.id, action: "installed" },
+      });
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 
@@ -1901,10 +2294,15 @@ export function pluginRoutes(
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
-    if (!plugin.packagePath) {
+    // Prefer the original source path (set for current-style local installs)
+    // and fall back to packagePath for legacy installs that predate the
+    // managed-install copy. .pcplugin / npm installs have neither set in a way
+    // useful for re-reading from disk; surface a clear message instead.
+    const sourcePath = plugin.localSourcePath ?? plugin.packagePath;
+    if (!sourcePath) {
       res.status(400).json({
         error:
-          "Reinstall is only supported for plugins installed from a local path. Use /upgrade for npm-installed plugins.",
+          "Reinstall is only supported for plugins installed from a local path. Use /upgrade for npm-installed plugins, or upload a fresh .pcplugin to update.",
       });
       return;
     }
@@ -1912,7 +2310,7 @@ export function pluginRoutes(
     const previousVersion = plugin.version;
     try {
       await lifecycle.unload(plugin.id, /* purge= */ false);
-      const discovered = await loader.installPlugin({ localPath: plugin.packagePath });
+      const discovered = await loader.installPlugin({ localPath: sourcePath });
       if (!discovered.manifest) {
         res.status(500).json({ error: "Plugin reinstalled but manifest is missing" });
         return;

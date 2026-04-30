@@ -307,7 +307,24 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
+      const indexHtmlPath = path.join(uiDist, "index.html");
+      // Read+brand `index.html` from disk on every request (with a tiny mtime
+      // cache so we don't re-parse for every concurrent client). Without this,
+      // a UI rebuild after server start leaves the server holding a stale HTML
+      // shell that points at the previous bundle's hash, and operators see
+      // their old code until the server restarts. The asset bundles
+      // themselves are content-hashed, so reading fresh HTML always picks up
+      // whatever the latest deploy is.
+      let cachedIndexHtml: string | null = null;
+      let cachedIndexMtimeMs = 0;
+      const readFreshIndexHtml = (): string => {
+        const stat = fs.statSync(indexHtmlPath);
+        if (cachedIndexHtml === null || stat.mtimeMs !== cachedIndexMtimeMs) {
+          cachedIndexHtml = applyUiBranding(fs.readFileSync(indexHtmlPath, "utf-8"));
+          cachedIndexMtimeMs = stat.mtimeMs;
+        }
+        return cachedIndexHtml;
+      };
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
       app.use(
@@ -319,17 +336,15 @@ export async function createApp(
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
+      // reasonably fast. Skip serving index.html via this middleware so that
+      // ALL HTML requests (including bare `/`) flow through the SPA fallback
+      // below, which re-reads from disk on rebuild. Otherwise the static
+      // handler can satisfy `/` from in-memory state and bypass the freshness
+      // logic.
       app.use(
         express.static(uiDist, {
+          index: false,
           maxAge: "1h",
-          setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
-            }
-          },
         }),
       );
       // SPA fallback. Only for non-asset routes — if the browser asks for
@@ -347,7 +362,7 @@ export async function createApp(
           .status(200)
           .set("Content-Type", "text/html")
           .set("Cache-Control", "no-cache")
-          .end(indexHtml);
+          .end(readFreshIndexHtml());
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
@@ -420,14 +435,25 @@ export async function createApp(
   const devWatcher = opts.uiMode === "vite-dev"
     ? createPluginDevWatcher(
       lifecycle,
-      async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+      // Watch the editable source folder for managed installs (where the
+      // operator edits TS files); fall back to packagePath for legacy local
+      // installs that still run from the source tree directly.
+      async (pluginId) => {
+        const plugin = await pluginRegistry.getById(pluginId);
+        if (!plugin) return null;
+        return plugin.localSourcePath ?? plugin.packagePath ?? null;
+      },
     )
     : null;
   void loader.loadAll().then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
-      if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-        devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+      if (devWatcher && loaded.success) {
+        const watchPath =
+          loaded.plugin.localSourcePath ?? loaded.plugin.packagePath ?? null;
+        if (watchPath) {
+          devWatcher.watch(loaded.plugin.id, watchPath);
+        }
       }
     }
   }).catch((err) => {
