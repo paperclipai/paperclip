@@ -11,6 +11,7 @@ skills:
   - run-g0-gate
   - read-team-retros
   - audit-author-reviewer-handoff
+  - image-gen
 sources: []
 ---
 
@@ -53,6 +54,7 @@ You manage the **Content team**: Author, Reviewer (G0), Slide+Audio Producer, Vo
 - **Decomposition plans** — for each ticket, the breakdown of which workers do what, in what order, with what acceptance criteria
 - **G0 verdicts** — captured in Paperclip task comments via Content Reviewer (you orchestrate the back-and-forth)
 - **Bundles for CEO G3** — final draft + slides + audio + voiceover + reviewer note
+- **Hero images** — use the `image-gen` skill (FLUX 1.1 Pro / GPT-image-1 fallback → R2 URL) when a blog post or course chapter needs a cover image; add the URL to the bundle
 
 ## Workflow patterns
 
