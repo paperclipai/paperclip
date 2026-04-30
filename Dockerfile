@@ -89,8 +89,13 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @kkroo/paperclip-plugin-ccrotate build
 RUN pnpm --filter @kkroo/paperclip-plugin-linear build
 RUN pnpm --filter paperclip-plugin-alertmanager build
+RUN pnpm --filter @paperclipai/mcp-server build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+# The seed-init in the helm chart looks for this file to decide whether
+# to write /paperclip/.mcp.json. Fail the build if it's missing instead
+# of silently shipping an image where the seed quietly skips.
+RUN test -f packages/mcp-server/dist/stdio.js || (echo "ERROR: mcp-server stdio bridge missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
