@@ -20,9 +20,9 @@
 
 ### Messaging Capture
 
-- [ ] **MSG-01**: 운영자는 Slack/Teams/webhook capture source를 설치 또는 연결하는 설정 흐름에서 signing secret, callback URL, source label, health status를 확인할 수 있다.
-- [ ] **MSG-02**: 운영자는 messaging inbound draft가 같은 draft revision/review flow에 들어오며 source-specific metadata와 permission failure를 보존하는 것을 볼 수 있다.
-- [ ] **MSG-03**: 운영자는 duplicate, unauthorized source, malformed payload 같은 messaging capture 실패를 board review surface와 audit evidence에서 구분할 수 있다.
+- [x] **MSG-01**: 운영자는 Slack/Teams/webhook capture source를 설치 또는 연결하는 설정 흐름에서 signing secret, callback URL, source label, health status를 확인할 수 있다.
+- [x] **MSG-02**: 운영자는 messaging inbound draft가 같은 draft revision/review flow에 들어오며 source-specific metadata와 permission failure를 보존하는 것을 볼 수 있다.
+- [x] **MSG-03**: 운영자는 duplicate, unauthorized source, malformed payload 같은 messaging capture 실패를 board review surface와 audit evidence에서 구분할 수 있다.
 
 ### Review Operations
 
@@ -66,9 +66,9 @@
 | NATIVE-01 | Phase 55 | Pending |
 | NATIVE-02 | Phase 55 | Pending |
 | NATIVE-03 | Phase 55 | Pending |
-| MSG-01 | Phase 56 | Pending |
-| MSG-02 | Phase 56 | Pending |
-| MSG-03 | Phase 56 | Pending |
+| MSG-01 | Phase 56 | Complete |
+| MSG-02 | Phase 56 | Complete |
+| MSG-03 | Phase 56 | Complete |
 | REVIEW-01 | Phase 57 | Pending |
 | REVIEW-02 | Phase 57 | Pending |
 | REVIEW-03 | Phase 57 | Pending |
@@ -80,4 +80,4 @@
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after v2.9 milestone initialization*
+*Last updated: 2026-04-30 after Phase 56 completion*

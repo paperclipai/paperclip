@@ -11,7 +11,7 @@
 - [shipped] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 완료, 2026-04-29 ([archive](milestones/v2.6-ROADMAP.md), [requirements](milestones/v2.6-REQUIREMENTS.md), [audit](milestones/v2.6-MILESTONE-AUDIT.md))
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
-- [active] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 planned
+- [active] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 in progress
 
 ## 완료됨
 
@@ -127,7 +127,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v2.9 Native Capture and Draft Reliability (Phase 54-58) - planned</summary>
+<summary>v2.9 Native Capture and Draft Reliability (Phase 54-58) - in progress</summary>
 
 **Goal:** One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 안정화하고, native/mobile/messaging quick capture entry가 같은 검수 루프로 들어오게 만든다.
 
@@ -135,7 +135,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 |-------|------|--------------|--------|
 | 54 | Persistent Capture Draft Revision | DRAFT-01, DRAFT-02, DRAFT-03, DRAFT-04 | Planned |
 | 55 | Native and Mobile Quick Capture Entry | NATIVE-01, NATIVE-02, NATIVE-03 | Planned |
-| 56 | Messaging Capture Source Installation | MSG-01, MSG-02, MSG-03 | Planned |
+| 56 | Messaging Capture Source Installation | MSG-01, MSG-02, MSG-03 | Complete |
 | 57 | Capture Review Operations and Reliability | REVIEW-01, REVIEW-02, REVIEW-03 | Planned |
 | 58 | v2.9 Verification and Distribution Readiness Closure | DRAFT/NATIVE/MSG/REVIEW closure | Planned |
 
@@ -313,7 +313,7 @@ Success criteria:
 | 53. v2.8 Verification and Traceability Closure | v2.8 | 1/1 | Complete | 2026-04-30 |
 | 54. Persistent Capture Draft Revision | v2.9 | 0/1 | Planned | - |
 | 55. Native and Mobile Quick Capture Entry | v2.9 | 0/1 | Planned | - |
-| 56. Messaging Capture Source Installation | v2.9 | 0/1 | Planned | - |
+| 56. Messaging Capture Source Installation | v2.9 | 1/1 | Complete | 2026-04-30 |
 | 57. Capture Review Operations and Reliability | v2.9 | 0/1 | Planned | - |
 | 58. v2.9 Verification and Distribution Readiness Closure | v2.9 | 0/1 | Planned | - |
 
