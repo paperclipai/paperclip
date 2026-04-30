@@ -92,6 +92,10 @@ describe("buildSubIssueDefaults", () => {
       executionWorkspaceId: "workspace-1",
       executionWorkspaceMode: "reuse_existing",
       parentExecutionWorkspaceLabel: "Parent workspace",
+      sameCodeChangeSourceIssueId: "issue-1",
+      sameCodeChangeSourceIssueIdentifier: "PAP-1",
+      sameCodeChangeSourceIssueTitle: "Parent issue",
+      executionProvenanceHandoffRole: "follow_up",
       assigneeAgentId: "agent-1",
     });
   });
@@ -111,6 +115,10 @@ describe("buildSubIssueDefaults", () => {
       projectWorkspaceId: "project-workspace-1",
       goalId: "goal-1",
       executionWorkspaceMode: "shared_workspace",
+      sameCodeChangeSourceIssueId: "issue-1",
+      sameCodeChangeSourceIssueIdentifier: "PAP-1",
+      sameCodeChangeSourceIssueTitle: "Parent issue",
+      executionProvenanceHandoffRole: "follow_up",
       assigneeUserId: "user-1",
     });
   });
@@ -131,6 +139,10 @@ describe("buildSubIssueDefaults", () => {
       projectWorkspaceId: "project-workspace-1",
       goalId: "goal-1",
       executionWorkspaceMode: "shared_workspace",
+      sameCodeChangeSourceIssueId: "issue-1",
+      sameCodeChangeSourceIssueIdentifier: "PAP-1",
+      sameCodeChangeSourceIssueTitle: "Parent issue",
+      executionProvenanceHandoffRole: "follow_up",
     });
   });
 });
