@@ -313,7 +313,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   it("treats escaped wildcard characters as literals in issue search", async () => {
     const companyId = randomUUID();
     const percentMatchId = randomUUID();
-    const wildcardOnlyId = randomUUID();
+    const percentWildcardOnlyId = randomUUID();
+    const underscoreMatchId = randomUUID();
+    const underscoreWildcardOnlyId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -331,20 +333,40 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         priority: "medium",
       },
       {
-        id: wildcardOnlyId,
+        id: percentWildcardOnlyId,
         companyId,
         title: "CPU reached 100x during search",
         status: "todo",
         priority: "medium",
       },
+      {
+        id: underscoreMatchId,
+        companyId,
+        title: "CPU reached 200_ during search",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: underscoreWildcardOnlyId,
+        companyId,
+        title: "CPU reached 200x during search",
+        status: "todo",
+        priority: "medium",
+      },
     ]);
 
-    const result = await svc.list(companyId, {
+    const percentResult = await svc.list(companyId, {
       q: "100%",
       limit: 2,
     });
 
-    expect(result.map((issue) => issue.id)).toEqual([percentMatchId]);
+    const underscoreResult = await svc.list(companyId, {
+      q: "200_",
+      limit: 2,
+    });
+
+    expect(percentResult.map((issue) => issue.id)).toEqual([percentMatchId]);
+    expect(underscoreResult.map((issue) => issue.id)).toEqual([underscoreMatchId]);
   });
 
   it("ranks comment matches ahead of description-only matches", async () => {
