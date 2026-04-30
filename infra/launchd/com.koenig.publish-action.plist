@@ -11,7 +11,7 @@
         <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts/publish-action.sh</string>
     </array>
     <key>StartInterval</key>
-    <integer>300</integer>
+    <integer>60</integer>
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>
