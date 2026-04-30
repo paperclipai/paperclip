@@ -222,6 +222,25 @@ async function flush() {
   });
 }
 
+async function typeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    valueSetter?.call(textarea, value);
+    textarea.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        data: value,
+        inputType: "insertText",
+      }),
+    );
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await flush();
+}
+
 async function waitForAssertion(assertion: () => void, attempts = 20) {
   let lastError: unknown;
 
@@ -260,6 +279,7 @@ describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    vi.useRealTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.newIssueOpen = true;
@@ -411,25 +431,8 @@ describe("NewIssueDialog", () => {
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
 
-    await act(async () => {
-      const valueSetter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      valueSetter?.call(titleInput, "Typed issue");
-      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flush();
-
-    await act(async () => {
-      const valueSetter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      valueSetter?.call(descriptionInput, "Typed description");
-      descriptionInput!.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flush();
+    await typeTextareaValue(titleInput!, "Typed issue");
+    await typeTextareaValue(descriptionInput!, "Typed description");
 
     await act(async () => {
       resolveProjects([
@@ -448,7 +451,7 @@ describe("NewIssueDialog", () => {
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Issue"));
     expect(submitButton).not.toBeUndefined();
-    await waitForAssertion(() => {
+    await vi.waitFor(() => {
       expect(submitButton?.hasAttribute("disabled")).toBe(false);
     });
 

@@ -3464,6 +3464,11 @@ export function IssueChatThread({
         return;
       }
 
+      if (typeof document === "undefined") {
+        finish();
+        return;
+      }
+
       const el = document.getElementById(latestCommentAnchor);
       if (!el) {
         // Row hasn't been rendered into the virtualizer's buffer yet — nudge

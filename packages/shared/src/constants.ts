@@ -160,6 +160,7 @@ export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "accepted",
   "rejected",
   "answered",
+  "cancelled",
   "expired",
   "failed",
 ] as const;
