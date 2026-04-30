@@ -14,6 +14,28 @@ sources:
   - https://modelcontextprotocol.io/specification/
   - https://github.com/modelcontextprotocol/specification
   - https://modelcontextprotocol.io/community/contributing
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "2026 MCP Roadmap — Model Context Protocol Blog"
+    url: https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/
+    retrieved: 2026-04-30
+  - n: 2
+    title: "RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP) — IETF"
+    url: https://datatracker.ietf.org/doc/html/rfc9449
+    retrieved: 2026-04-30
+  - n: 3
+    title: "MCP Protocol Specification 2025-11-25 — modelcontextprotocol.io"
+    url: https://modelcontextprotocol.io/specification/
+    retrieved: 2026-04-30
+  - n: 4
+    title: "MCP Specification Repository — GitHub"
+    url: https://github.com/modelcontextprotocol/specification
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Contributing — SEP Process — Model Context Protocol"
+    url: https://modelcontextprotocol.io/community/contributing
+    retrieved: 2026-04-30
 whats_new:
   - MCP's 2026 roadmap shifts spec control from Anthropic release cycles to community Working Groups — for the first time, outside contributors have a credible path to shape what gets into the protocol
 learning_objectives:
