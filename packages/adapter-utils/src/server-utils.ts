@@ -1667,3 +1667,76 @@ export async function runChildProcess(
       .catch(reject);
   });
 }
+
+export interface PostIssueCommentResult {
+  commentId: string;
+  body: string;
+}
+
+export class AgentJwtError extends Error {
+  constructor(public readonly reason: string) {
+    super(`agent_jwt_required: ${reason}`);
+    this.name = "AgentJwtError";
+  }
+}
+
+/**
+ * Posts a comment to a Paperclip issue with a single retry on transient failure.
+ *
+ * On `401 agent_jwt_required` the error is surfaced explicitly rather than swallowed
+ * so the agent loop can surface the authentication problem. A second 401 after the
+ * retry throws `AgentJwtError`.
+ */
+export async function postIssueComment(
+  apiUrl: string,
+  apiKey: string,
+  runId: string,
+  issueIdOrIdentifier: string,
+  body: string,
+): Promise<PostIssueCommentResult> {
+  const url = `${apiUrl}/api/issues/${encodeURIComponent(issueIdOrIdentifier)}/comments`;
+  const headers: Record<string, string> = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "X-Paperclip-Run-Id": runId,
+  };
+  const payload = JSON.stringify({ body });
+
+  async function attempt(): Promise<PostIssueCommentResult> {
+    const res = await fetch(url, { method: "POST", headers, body: payload });
+    if (res.status === 401) {
+      let errorCode = "unknown";
+      let reason = "unknown";
+      try {
+        const json = await res.json() as Record<string, unknown>;
+        errorCode = typeof json.error === "string" ? json.error : errorCode;
+        reason = typeof json.reason === "string" ? json.reason : reason;
+      } catch {
+        // ignore parse errors
+      }
+      if (errorCode === "agent_jwt_required") {
+        throw new AgentJwtError(reason);
+      }
+      throw new Error(`HTTP 401: ${errorCode}`);
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} posting comment to ${issueIdOrIdentifier}`);
+    }
+    const json = await res.json() as Record<string, unknown>;
+    return {
+      commentId: typeof json.id === "string" ? json.id : "",
+      body: typeof json.body === "string" ? json.body : body,
+    };
+  }
+
+  try {
+    return await attempt();
+  } catch (err) {
+    if (err instanceof AgentJwtError) {
+      // Single retry with same token — handles transient 401s.
+      // Genuinely expired JWTs will fail again and surface to the agent loop.
+      return await attempt();
+    }
+    throw err;
+  }
+}

@@ -123,6 +123,23 @@ async function flush() {
   });
 }
 
+async function findButtonByText(
+  container: HTMLElement,
+  label: string,
+  attempts = 10,
+): Promise<HTMLButtonElement> {
+  for (let i = 0; i < attempts; i++) {
+    const found = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === label,
+    ) as HTMLButtonElement | undefined;
+    if (found) return found;
+    await flush();
+  }
+  throw new Error(
+    `Button with text "${label}" was not rendered within ${attempts} flush cycles`,
+  );
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -967,6 +984,255 @@ describe("IssueProperties", () => {
     expect(container.textContent).not.toContain("Run review now");
     expect(container.textContent).not.toContain("Run approval now");
 
+    act(() => root.unmount());
+  });
+
+  it("renders Approve and Request changes actions when the current user is the pending participant", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", userId: "user-1", agentId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "approval-stage",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "user-1", agentId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+
+    await findButtonByText(container, "Approve");
+    await findButtonByText(container, "Request changes");
+
+    act(() => root.unmount());
+  });
+
+  it("hides stage actions when another user is the pending participant", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", userId: "other-user", agentId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "approval-stage",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "other-user", agentId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    // The read-only Execution label still appears, but the action buttons do not.
+    expect(container.textContent).toContain("Approval pending");
+    const buttonLabels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent);
+    expect(buttonLabels).not.toContain("Approve");
+    expect(buttonLabels).not.toContain("Request changes");
+
+    act(() => root.unmount());
+  });
+
+  it("hides stage actions when the pending participant is an agent", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "review-stage",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: "agent-1", userId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const buttonLabels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent);
+    expect(buttonLabels).not.toContain("Approve");
+    expect(buttonLabels).not.toContain("Request changes");
+
+    act(() => root.unmount());
+  });
+
+  it("calls onUpdate with status=done and the comment when Approve is clicked", async () => {
+    const onUpdate = vi.fn();
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("LGTM — ship it");
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", userId: "user-1", agentId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "approval-stage",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "user-1", agentId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+
+    const approveButton = await findButtonByText(container, "Approve");
+    act(() => approveButton.click());
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "done", comment: "LGTM — ship it" });
+    promptSpy.mockRestore();
+    act(() => root.unmount());
+  });
+
+  it("calls onUpdate with status=in_progress when Request changes is clicked", async () => {
+    const onUpdate = vi.fn();
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("please add tests");
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", userId: "user-1", agentId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "approval-stage",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "user-1", agentId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+
+    const rejectButton = await findButtonByText(container, "Request changes");
+    act(() => rejectButton.click());
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_progress", comment: "please add tests" });
+    promptSpy.mockRestore();
+    act(() => root.unmount());
+  });
+
+  it("does not call onUpdate when the prompt is cancelled", async () => {
+    const onUpdate = vi.fn();
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", userId: "user-1", agentId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "approval-stage",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "user-1", agentId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+
+    const approveButton = await findButtonByText(container, "Approve");
+    act(() => approveButton.click());
+
+    expect(onUpdate).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+    act(() => root.unmount());
+  });
+
+  it("does not call onUpdate when the prompt returns an empty note", async () => {
+    const onUpdate = vi.fn();
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("   ");
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", userId: "user-1", agentId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageId: "approval-stage",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "user-1", agentId: null },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+
+    const approveButton = await findButtonByText(container, "Approve");
+    act(() => approveButton.click());
+
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(alertSpy).toHaveBeenCalled();
+    promptSpy.mockRestore();
+    alertSpy.mockRestore();
     act(() => root.unmount());
   });
 });

@@ -61,10 +61,18 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
-function assertTransition(from: string, to: string) {
+
+export const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
+
+function assertTransition(from: string, to: string, allowTerminalReopen = false) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
+  }
+  if (TERMINAL_STATUSES.has(from) && !TERMINAL_STATUSES.has(to) && !allowTerminalReopen) {
+    throw unprocessable(
+      `Cannot reopen a terminal issue (status="${from}") without explicit allowTerminalReopen`,
+    );
   }
 }
 
@@ -2834,6 +2842,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        allowTerminalReopen?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -2849,6 +2858,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        allowTerminalReopen,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -2859,7 +2869,7 @@ export function issueService(db: Db) {
       }
 
       if (issueData.status) {
-        assertTransition(existing.status, issueData.status);
+        assertTransition(existing.status, issueData.status, allowTerminalReopen);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -3085,7 +3095,7 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null, { allowTerminalReopen = false }: { allowTerminalReopen?: boolean } = {}) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -3115,6 +3125,20 @@ export function issueService(db: Db) {
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+      }
+
+      // Guard: do not reopen terminal issues via checkout
+      const currentIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!currentIssue) throw notFound("Issue not found");
+      if (TERMINAL_STATUSES.has(currentIssue.status) && !allowTerminalReopen) {
+        throw unprocessable(
+          `Cannot checkout a terminal issue (status="${currentIssue.status}")`,
+          { issueId: id, status: currentIssue.status },
+        );
       }
 
       const sameRunAssigneeCondition = checkoutRunId
