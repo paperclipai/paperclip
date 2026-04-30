@@ -343,20 +343,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let cursor: string | null = issueId;
     let rootIssueId = issueId;
     for (let i = 0; i < SAFETY_LIMIT && cursor !== null; i++) {
-      const issue = await db
+      const ancestor = await db
         .select({ parentId: issues.parentId, originKind: issues.originKind })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)))
         .then((rows) => rows[0] ?? null);
-      if (!issue) break;
+      if (!ancestor) break;
       rootIssueId = cursor;
       if (
-        issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND ||
-        issue.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+        ancestor.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND ||
+        ancestor.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
       ) {
         depth++;
       }
-      cursor = issue.parentId;
+      cursor = ancestor.parentId;
     }
 
     return { depth, rootIssueId };
