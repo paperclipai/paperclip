@@ -14,11 +14,28 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
 
-**현재 마일스톤:** 다음 milestone 요구사항 정의 전
+**현재 마일스톤:** v2.8 RealTycoon2 Product Identity and Daily Work UX
 
 **최근 완료:** v2.7은 release-host verification harness, embedded Postgres Windows host-ready coverage, artifact/UAT truth alignment, runtime confidence generated report를 완료했다. Audit은 requirements 11/11, phases 4/4, integration 4/4, flows 4/4이며 runtime confidence blocker 0, accepted debt 1 상태다.
 
-**현재 진행:** 새 product feature 확장보다 다음 milestone의 운영/배포 우선순위를 정해야 한다. Native distribution, cross-company federation, provider-backed eval mandate, approval-first autonomy observation은 v2.7 confidence gate 위에서 다시 평가한다.
+**현재 진행:** 새 product feature 확장보다 RealTycoon2가 Paperclip 잔재와 영문 control-plane 느낌에서 벗어나 한국어 일일 업무 운영 제품으로 보이도록 만든다. 첫 화면, navigation, empty state, 설정, 3단 칸반보드, One-Liner capture, Task/To-Do/Deliverable 카드 흐름을 v2.8의 중심으로 둔다.
+
+## Current Milestone: v2.8 RealTycoon2 Product Identity and Daily Work UX
+
+**Goal:** 앱을 구동했을 때 RealTycoon2가 Paperclip-derived 도구가 아니라 한국어 일일 업무 운영 시스템으로 즉시 인식되도록 제품 정체성과 핵심 보드 UX를 완성한다.
+
+**Target features:**
+- 앱 구동, 첫 화면, 네비게이션, 빈 상태, 설정, 기본 문구에서 Paperclip/Paper Company/영문 기본값 노출을 제거하고 RealTycoon2-first Korean UX로 정리한다.
+- 일일업무일지 중심 3단 Trello형 칸반보드를 핵심 작업 화면으로 강화한다.
+- Task/To-Do/Deliverable/가격/품질/OKR badge가 카드에서 바로 이해되고 빠르게 편집되는 흐름을 만든다.
+- One-Liner capture가 보드와 자연스럽게 이어져 기록 -> 분류 -> 실행 -> 산출물 흐름을 형성한다.
+- Jarvis, wiki, graph, economy 기능은 보조 패널, evidence, recommendation surface로 배치해 제품 정체성을 방해하지 않게 한다.
+
+**Deferred from this milestone:**
+- Cross-company federation full apply.
+- Full app-store native distribution.
+- Autonomous Jarvis apply without approval.
+- Mandatory provider-only eval path.
 
 ## 최근 마일스톤: v2.7 릴리즈 호스트 검증 및 런타임 신뢰도
 
@@ -128,7 +145,7 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- [ ] 다음 milestone 요구사항 정의.
+- [ ] v2.8 RealTycoon2 product identity와 Korean-first daily work UX 요구사항 15개.
 
 ### 범위 밖
 
@@ -177,7 +194,7 @@ v2.0-v2.2에서 완료한 것:
 
 ## 다음 마일스톤 목표
 
-다음 milestone은 v2.7 confidence gate를 기반으로 native distribution, cross-company federation, provider-backed eval hardening, approval-first autonomy observation 중 실제 운영 가치가 가장 큰 축을 선택한다. 시작 전 새 `.planning/REQUIREMENTS.md`를 정의해야 한다.
+v2.8은 native distribution, federation, autonomy expansion보다 RealTycoon2 제품 정체성과 일일 업무 UX를 우선한다. 앱을 켰을 때 Paperclip/Paper Company/영문 control-plane 느낌이 아니라 한국어 RealTycoon2 업무 운영 시스템으로 보이고, 3단 Trello형 칸반보드와 One-Liner capture가 매일 쓰는 중심 흐름이 되어야 한다.
 
 ## Evolution
 
@@ -197,4 +214,4 @@ v2.0-v2.2에서 완료한 것:
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-04-30 after v2.7 milestone completion*
+*마지막 업데이트: 2026-04-30 after v2.8 milestone initialization*

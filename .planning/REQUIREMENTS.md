@@ -1,0 +1,86 @@
+# Requirements: RealTycoon2 Product Identity and Daily Work UX
+
+**Defined:** 2026-04-30
+**Core Value:** 회사 범위 work signal은 disconnected tool이나 Paperclip-shaped manual workflow를 강요하지 않고 logging -> execution -> knowledge accumulation -> approval -> economic feedback으로 이어져야 한다.
+
+## v2.8 Requirements
+
+### Identity
+
+- [ ] **IDENT-01**: 운영자는 앱 구동 직후 첫 화면, 상단/측면 navigation, workspace/header copy에서 RealTycoon2를 제품 정체성으로 인식할 수 있다.
+- [ ] **IDENT-02**: 운영자는 product-facing UI에서 Paperclip, Paper Company, Multica 등 legacy/control-plane 명칭을 보지 않고 RealTycoon2/Jarvis/업무 중심 용어만 볼 수 있다.
+- [ ] **IDENT-03**: 운영자는 onboarding, empty state, settings, error/help copy에서 한국어 기본 문구를 볼 수 있으며 영문 기본값은 내부 developer/debug surface에만 남는다.
+- [ ] **IDENT-04**: 운영자는 브라우저 title, favicon/brand mark, app shell loading/fallback state에서도 RealTycoon2 정체성을 확인할 수 있다.
+
+### Daily Work Board
+
+- [ ] **BOARD-01**: 운영자는 일일업무일지 중심 3단 칸반보드를 첫 번째 작업 화면으로 사용할 수 있다.
+- [ ] **BOARD-02**: 운영자는 업무 카드를 To-Do, Doing, Done 사이에서 이동하고 즉시 저장된 상태를 확인할 수 있다.
+- [ ] **BOARD-03**: 운영자는 카드에서 Task/To-Do/Deliverable 구분, 담당자, 마감, OKR/KPI 연결, 가격/품질 상태를 한눈에 볼 수 있다.
+- [ ] **BOARD-04**: 운영자는 카드 quick edit로 제목, 상태, 산출물, 기준가, 품질 평가, OKR badge를 별도 깊은 화면 이동 없이 수정할 수 있다.
+- [ ] **BOARD-05**: 운영자는 board filter/sort/search를 사용해 오늘 업무, 내 업무, 산출물 누락, 승인 대기, 품질 이슈 카드를 빠르게 찾을 수 있다.
+
+### Capture Flow
+
+- [ ] **CAPTURE-01**: 운영자는 One-Liner 입력 후 새 업무가 보드의 적절한 lane 또는 inbox에 즉시 나타나는 것을 볼 수 있다.
+- [ ] **CAPTURE-02**: 운영자는 One-Liner에서 업무 유형, 산출물 후보, 가격/품질 힌트, OKR/KPI 후보를 확인하고 승인하거나 수정할 수 있다.
+- [ ] **CAPTURE-03**: 운영자는 mobile/native/inbound draft도 동일한 보드 검수 흐름에서 중복 경고와 source evidence를 보고 처리할 수 있다.
+
+### Supporting Surfaces
+
+- [ ] **SUPPORT-01**: 운영자는 Jarvis, wiki, graph, economy 기능을 핵심 보드 옆 보조 패널이나 카드 상세 evidence로 접근할 수 있다.
+- [ ] **SUPPORT-02**: 운영자는 Jarvis 추천이나 지식 citation이 업무 카드와 산출물 맥락을 흐리지 않고 보조 정보로 표시되는 것을 볼 수 있다.
+- [ ] **SUPPORT-03**: 운영자는 RealTycoon2 Korean UX/identity regression을 잡는 focused verification 또는 lint/report를 실행할 수 있다.
+
+## Future Requirements
+
+### Federation
+
+- **FED-01**: Trusted company 간 read-only federation preview와 sharing contract를 정의한다.
+- **FED-02**: Cross-company apply/write는 explicit approval, audit, company boundary policy 이후에만 다룬다.
+
+### Native Distribution
+
+- **NATIVE-01**: App-store 수준 native app distribution과 updater/signing pipeline을 별도 milestone에서 정의한다.
+
+### Autonomy
+
+- **AUTO-01**: Jarvis autonomous apply는 approval-first observation loop와 provider-backed eval evidence가 안정화된 뒤 다룬다.
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Cross-company federation full apply | 제품 얼굴과 일일 업무 UX가 먼저 독립적으로 안정화되어야 한다 |
+| Full app-store native distribution | 이번 milestone의 핵심은 web/operator daily workflow identity이며 배포 파이프라인은 별도 위험을 가진다 |
+| Autonomous Jarvis apply without approval | RealTycoon2 업무 신뢰를 해치지 않도록 approval-first 원칙을 유지한다 |
+| Provider-only eval mandate | local dev/CI deterministic fallback과 기존 runtime confidence gate를 보존해야 한다 |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| IDENT-01 | Phase 48 | Pending |
+| IDENT-02 | Phase 48 | Pending |
+| IDENT-03 | Phase 48 | Pending |
+| IDENT-04 | Phase 48 | Pending |
+| BOARD-01 | Phase 49 | Pending |
+| BOARD-02 | Phase 49 | Pending |
+| BOARD-03 | Phase 49 | Pending |
+| BOARD-04 | Phase 50 | Pending |
+| BOARD-05 | Phase 50 | Pending |
+| CAPTURE-01 | Phase 51 | Pending |
+| CAPTURE-02 | Phase 51 | Pending |
+| CAPTURE-03 | Phase 51 | Pending |
+| SUPPORT-01 | Phase 52 | Pending |
+| SUPPORT-02 | Phase 52 | Pending |
+| SUPPORT-03 | Phase 52 | Pending |
+
+**Coverage:**
+- v2.8 requirements: 15 total
+- Mapped to phases: 15
+- Unmapped: 0
+
+---
+*Requirements defined: 2026-04-30*
+*Last updated: 2026-04-30 after v2.8 milestone initialization*
