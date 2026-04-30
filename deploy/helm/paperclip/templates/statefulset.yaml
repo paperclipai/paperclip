@@ -331,18 +331,45 @@ spec:
               MCP_FILE="${BASE}/.mcp.json"
               MCP_BRIDGE_JS="/app/packages/mcp-server/dist/stdio.js"
               if [ -f "${MCP_BRIDGE_JS}" ]; then
+                # Cluster-internal MCP servers (deployed via kubectl in the
+                # paperclip ns; see .planning/mcp-servers.yaml). All agents
+                # in this instance get the same baseline set:
+                #   - paperclip   — stdio bridge to /api/plugins/tools/* and
+                #                    paperclip's first-class entity tools.
+                #   - prometheus  — pab1it0/prometheus-mcp-server, pointed at
+                #                    in-cluster prometheus.monitoring.
+                #   - tempo       — Tempo 2.10's built-in MCP at /api/mcp.
+                #   - kubernetes  — containers/kubernetes-mcp-server, readonly
+                #                    tier (cluster-wide get/list/watch).
+                # Per-agent escalations (k8s-mcp ns-rw, admin, github with PAT,
+                # figma) are layered in later by the claude_k8s adapter from
+                # adapterConfig.mcpServers — this seed only writes the shared
+                # baseline. Re-runs overwrite to keep the file in sync with
+                # what's deployed.
                 cat > "${MCP_FILE}" <<EOF
               {
                 "mcpServers": {
                   "paperclip": {
                     "command": "node",
                     "args": ["${MCP_BRIDGE_JS}"]
+                  },
+                  "prometheus": {
+                    "type": "http",
+                    "url": "http://prometheus-mcp-server.paperclip.svc.cluster.local:8080/mcp"
+                  },
+                  "tempo": {
+                    "type": "http",
+                    "url": "http://tempo.monitoring.svc.cluster.local:3200/api/mcp"
+                  },
+                  "kubernetes": {
+                    "type": "sse",
+                    "url": "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/sse"
                   }
                 }
               }
               EOF
                 chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
-                echo "seed: wrote ${MCP_FILE} with paperclip MCP bridge"
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly MCP servers"
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi
