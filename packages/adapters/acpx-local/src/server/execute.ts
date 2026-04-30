@@ -1064,24 +1064,24 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           void cancelActiveTurn?.(`Timed out after ${prepared.timeoutSec}s`).catch(() => {});
         }, timeoutMs);
       }
-      const turn = await withProcessEnv(prepared.env, async () =>
-        runtime.startTurn({
+      const terminal = await withProcessEnv(prepared.env, async () => {
+        const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
           mode: "prompt",
           requestId: ctx.runId,
           timeoutMs,
           signal: controller?.signal,
-        }),
-      );
-      cancelActiveTurn = async (reason: string) => {
-        await turn.cancel({ reason });
-      };
-      for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
-        await emitRuntimeEvent(ctx, event);
-      }
-      const terminal = await turn.result;
+        });
+        cancelActiveTurn = async (reason: string) => {
+          await turn.cancel({ reason });
+        };
+        for await (const event of turn.events) {
+          if (event.type === "text_delta") textParts.push(event.text);
+          await emitRuntimeEvent(ctx, event);
+        }
+        return await turn.result;
+      });
       if (timeout) clearTimeout(timeout);
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         warmHandles.delete(prepared.sessionKey);

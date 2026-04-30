@@ -240,4 +240,51 @@ describe("acpx_local runtime skill isolation", () => {
     expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
   });
+
+  it("keeps Paperclip env available while ACPX lazily streams a turn", async () => {
+    let observedApiKeyDuringStream: string | undefined;
+    const execute = createAcpxLocalExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await Promise.resolve();
+            observedApiKeyDuringStream = process.env.PAPERCLIP_API_KEY;
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    try {
+      delete process.env.PAPERCLIP_API_KEY;
+      const result = await execute({
+        runId: "run-1",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+        },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js" },
+        context: {},
+        authToken: "runtime-key",
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+
+      expect(result.exitCode).toBe(0);
+      expect(observedApiKeyDuringStream).toBe("runtime-key");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previousApiKey;
+    }
+  });
 });
