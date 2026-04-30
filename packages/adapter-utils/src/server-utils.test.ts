@@ -96,6 +96,28 @@ describe("materializePaperclipSkillCopy", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("breaks stale materialization locks left by dead processes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.mkdir(lock, { recursive: true });
+      await fs.writeFile(
+        path.join(lock, "owner.json"),
+        JSON.stringify({ pid: 999_999_999, createdAt: "2000-01-01T00:00:00.000Z" }),
+        "utf8",
+      );
+
+      await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+      await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runChildProcess", () => {

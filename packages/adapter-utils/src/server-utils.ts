@@ -92,6 +92,8 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../../../../skills",
 ];
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
+const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
+const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
@@ -1466,19 +1468,58 @@ async function materializedSkillFingerprintMatches(targetRoot: string, sourceFin
 
 async function acquireMaterializeLock(lockDir: string): Promise<() => Promise<void>> {
   await fs.mkdir(path.dirname(lockDir), { recursive: true });
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + MATERIALIZED_SKILL_LOCK_STALE_MS;
   while (true) {
     try {
       await fs.mkdir(lockDir);
+      await fs.writeFile(
+        path.join(lockDir, MATERIALIZED_SKILL_LOCK_OWNER),
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
       return async () => {
         await fs.rm(lockDir, { recursive: true, force: true });
       };
     } catch (err) {
       const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
-      if (code !== "EEXIST" || Date.now() >= deadline) throw err;
+      if (code !== "EEXIST") throw err;
+      if (await removeStaleMaterializeLock(lockDir, MATERIALIZED_SKILL_LOCK_STALE_MS)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for Paperclip skill materialization lock at ${lockDir}`);
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+    return code === "EPERM";
+  }
+}
+
+async function removeStaleMaterializeLock(lockDir: string, staleMs: number): Promise<boolean> {
+  const ownerPath = path.join(lockDir, MATERIALIZED_SKILL_LOCK_OWNER);
+  let shouldRemove = false;
+  try {
+    const raw = JSON.parse(await fs.readFile(ownerPath, "utf8")) as unknown;
+    const owner = parseObject(raw);
+    const pid = typeof owner.pid === "number" ? owner.pid : 0;
+    const createdAt = typeof owner.createdAt === "string" ? Date.parse(owner.createdAt) : Number.NaN;
+    const ageMs = Number.isFinite(createdAt) ? Date.now() - createdAt : staleMs + 1;
+    shouldRemove = !isPidAlive(pid) || ageMs > staleMs;
+  } catch {
+    const stat = await fs.stat(lockDir).catch(() => null);
+    shouldRemove = !stat || Date.now() - stat.mtimeMs > staleMs;
+  }
+  if (!shouldRemove) return false;
+  await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  return true;
 }
 
 export async function materializePaperclipSkillCopy(

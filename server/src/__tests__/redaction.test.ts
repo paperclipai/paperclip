@@ -121,4 +121,14 @@ describe("redaction", () => {
 
     expect(result?.commandArgs).toEqual(["--api-key", REDACTED_EVENT_VALUE, "safe-next"]);
   });
+
+  it("does not treat bare args payloads as command args", () => {
+    const result = redactEventPayload({
+      args: ["--api-key", "not-a-command-secret"],
+      argv: ["--api-key", "command-secret"],
+    });
+
+    expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
+    expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
 });

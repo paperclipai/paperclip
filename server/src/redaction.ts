@@ -2,7 +2,7 @@ const SECRET_PAYLOAD_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
-const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|args|argv)$/i;
+const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 const JWT_TEXT_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
 const OPENAI_KEY_TEXT_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
@@ -144,6 +144,26 @@ async function pathExists(candidate: string): Promise<boolean> {
 
 async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
+}
+
+async function writeFileAtomically(input: {
+  target: string;
+  contents: string;
+  mode: number;
+}): Promise<void> {
+  await ensureParentDir(input.target);
+  const tempPath = `${input.target}.tmp-${process.pid}-${randomUUID()}`;
+  const handle = await fs.open(tempPath, "wx", input.mode);
+  try {
+    await handle.writeFile(input.contents, "utf8");
+    await handle.close();
+    await fs.rename(tempPath, input.target);
+    await fs.chmod(input.target, input.mode).catch(() => {});
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 async function ensureSymlink(target: string, source: string): Promise<void> {
@@ -538,8 +558,6 @@ async function writeAgentWrapper(input: {
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  await fs.writeFile(envFilePath, `${envLines.join("\n")}\n`, "utf8");
-  await fs.chmod(envFilePath, 0o600);
   const script = [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
@@ -552,8 +570,16 @@ async function writeAgentWrapper(input: {
     `exec ${input.agentCommandShell} "$@"`,
     "",
   ].join("\n");
-  await fs.writeFile(wrapperPath, script, "utf8");
-  await fs.chmod(wrapperPath, 0o700);
+  await writeFileAtomically({
+    target: envFilePath,
+    contents: `${envLines.join("\n")}\n`,
+    mode: 0o600,
+  });
+  await writeFileAtomically({
+    target: wrapperPath,
+    contents: script,
+    mode: 0o700,
+  });
   const stalePrefix = `${input.acpxAgent}-`;
   const staleWrappers = await fs.readdir(wrappersDir).catch(() => []);
   await Promise.all(
