@@ -45,6 +45,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/pools",
       auth: "board",
       capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
     },
     {
       routeKey: "switch",
@@ -52,6 +53,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/switch",
       auth: "board",
       capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
     },
     {
       routeKey: "refresh",
@@ -59,6 +61,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/refresh",
       auth: "board",
       capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
     },
   ],
   ui: {
