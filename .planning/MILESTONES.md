@@ -13,7 +13,7 @@
 | v2.7 | 릴리즈 호스트 검증 및 런타임 신뢰도 | Shipped | 2026-04-29 | 2026-04-30 | Phase 44-47 완료. 요구사항 11/11, integration 4/4, flows 4/4 충족. Runtime confidence blocker 0, Windows default embedded Postgres skip은 accepted debt로 수용 |
 | v2.8 | RealTycoon2 Product Identity and Daily Work UX | Shipped | 2026-04-30 | 2026-04-30 | Phase 48-53 완료. 요구사항 15/15, integration 5/5, flows 5/5 충족. Korean-first daily work board, One-Liner board review, supporting evidence, identity gate 완료 |
 | v2.9 | Native Capture and Draft Reliability | Shipped | 2026-04-30 | 2026-04-30 | Phase 54-58 완료. 요구사항 13/13 완료. Persistent draft revision, PWA/mobile quick capture, signed messaging inbound, review reliability, distribution boundary closure 완료 |
-| v3.0 | Native Distribution Readiness | Active | 2026-04-30 | - | Phase 59-64 planned. DIST-01 signing/updater/release-channel/notarization pipeline과 DIST-02 shortcut/tray/mobile push를 production readiness로 구현 |
+| v3.0 | Native Distribution Readiness | Active | 2026-04-30 | - | Phase 59-60 complete, Phase 61-64 planned. Signing evidence gate 완료, updater/release-channel/shortcut/tray/mobile push를 production readiness로 구현 |
 
 ## v2.0 RT2 Refoundation
 
@@ -549,8 +549,8 @@ One-Liner와 board review flow를 저장 가능한 draft revision 기반으로 �
 **상태:** Active
 **시작:** 2026-04-30
 **완료:** -
-**Phases:** 6 planned
-**Requirements:** 12 planned
+**Phases:** 2 complete, 4 planned
+**Requirements:** 3 complete, 9 pending
 
 ### 목표
 
@@ -560,8 +560,8 @@ RealTycoon2를 signed native distribution, release channel, updater, resident de
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 59 | Native Distribution Foundation | DIST-01 | Planned |
-| 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Planned |
+| 59 | Native Distribution Foundation | DIST-01 | Complete |
+| 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Complete |
 | 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Planned |
 | 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
 | 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
@@ -577,4 +577,4 @@ RealTycoon2를 signed native distribution, release channel, updater, resident de
 - Mobile/Web Push/APNs token, delivery/retry/failure/click evidence를 company-scoped notification loop로 연결한다.
 
 ---
-*마지막 업데이트: 2026-04-30, v3.0 milestone initialized*
+*마지막 업데이트: 2026-04-30, Phase 60 signing evidence gate completed*
