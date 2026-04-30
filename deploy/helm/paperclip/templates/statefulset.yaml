@@ -90,12 +90,12 @@ spec:
                   fi
                   if [ "${installed_ver}" = "${pkg_ver}" ]; then
                     echo "seed: bundled adapter ${pkg_name}@${pkg_ver} already installed"
-                    continue
+                  else
+                    echo "seed: installing bundled adapter ${pkg_name}@${pkg_ver} (was: ${installed_ver:-none})"
+                    rm -rf "${ADAPTER_DIR}/node_modules/${pkg_name}"
+                    mkdir -p "${ADAPTER_DIR}/node_modules/${pkg_name}"
+                    tar -xzf "${tgz}" -C "${ADAPTER_DIR}/node_modules/${pkg_name}" --strip-components=1
                   fi
-                  echo "seed: installing bundled adapter ${pkg_name}@${pkg_ver} (was: ${installed_ver:-none})"
-                  rm -rf "${ADAPTER_DIR}/node_modules/${pkg_name}"
-                  mkdir -p "${ADAPTER_DIR}/node_modules/${pkg_name}"
-                  tar -xzf "${tgz}" -C "${ADAPTER_DIR}/node_modules/${pkg_name}" --strip-components=1
                   # Ensure adapter-plugins.json registry entry exists / is updated.
                   python3 - "${BASE}/adapter-plugins.json" "${pkg_name}" "${pkg_ver}" "${ADAPTER_DIR}/node_modules/${pkg_name}" <<'PY' || echo "seed: registry update for ${pkg_name} failed (non-fatal)"
               import json, os, sys
