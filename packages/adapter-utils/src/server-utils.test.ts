@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  applyAdapterEnvOverrides,
   appendWithByteCap,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  normalizeProcessExitCode,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -393,6 +395,59 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("applyAdapterEnvOverrides", () => {
+  it("preserves injected PAPERCLIP runtime context while allowing other env overrides", () => {
+    const merged = applyAdapterEnvOverrides(
+      {
+        PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_TASK_ID: "issue-1",
+        OPENAI_API_KEY: "server-value",
+      },
+      {
+        PAPERCLIP_API_URL: "https://unreachable-control-plane.example",
+        PAPERCLIP_TASK_ID: "issue-2",
+        PAPERCLIP_API_KEY: "explicit-agent-key",
+        OPENAI_API_KEY: "adapter-value",
+        CUSTOM_VAR: "custom-value",
+      },
+    );
+
+    expect(merged.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+    expect(merged.PAPERCLIP_TASK_ID).toBe("issue-1");
+    expect(merged.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
+    expect(merged.OPENAI_API_KEY).toBe("adapter-value");
+    expect(merged.CUSTOM_VAR).toBe("custom-value");
+  });
+});
+
+describe("normalizeProcessExitCode", () => {
+  it("maps unsigned 32-bit Windows exit codes back to signed values", () => {
+    expect(normalizeProcessExitCode(4294967295)).toBe(-1);
+    expect(normalizeProcessExitCode(4294967294)).toBe(-2);
+  });
+
+  it("maps STATUS_CONTROL_C_EXIT (0xC000001B) to signed int32", () => {
+    // 3221226091 = 0xC000001B, exceeds int32 max (2147483647)
+    expect(normalizeProcessExitCode(3221226091)).toBe(-1073741205);
+  });
+
+  it("passes through values already in signed int32 range", () => {
+    expect(normalizeProcessExitCode(0)).toBe(0);
+    expect(normalizeProcessExitCode(1)).toBe(1);
+    expect(normalizeProcessExitCode(-1)).toBe(-1);
+    expect(normalizeProcessExitCode(2147483647)).toBe(2147483647);
+    expect(normalizeProcessExitCode(-2147483648)).toBe(-2147483648);
+  });
+
+  it("returns null for non-numeric or out-of-range values", () => {
+    expect(normalizeProcessExitCode(null)).toBeNull();
+    expect(normalizeProcessExitCode(undefined)).toBeNull();
+    expect(normalizeProcessExitCode(NaN)).toBeNull();
+    expect(normalizeProcessExitCode(Infinity)).toBeNull();
+    expect(normalizeProcessExitCode(4294967296)).toBeNull();
   });
 });
 

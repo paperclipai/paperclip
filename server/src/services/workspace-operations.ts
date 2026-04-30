@@ -4,6 +4,7 @@ import { workspaceOperations } from "@paperclipai/db";
 import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@paperclipai/shared";
 import { asc, desc, eq, inArray, isNull, or, and } from "drizzle-orm";
 import { notFound } from "../errors.js";
+import { normalizeProcessExitCode } from "@paperclipai/adapter-utils/server-utils";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
@@ -162,7 +163,7 @@ export function workspaceOperationService(db: Db) {
               .set({
                 executionWorkspaceId,
                 status: result.status ?? "succeeded",
-                exitCode: result.exitCode ?? null,
+                exitCode: normalizeProcessExitCode(result.exitCode) ?? null,
                 stdoutExcerpt: stdoutExcerpt || null,
                 stderrExcerpt: stderrExcerpt || null,
                 logBytes: finalized.bytes,

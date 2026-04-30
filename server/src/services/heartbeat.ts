@@ -109,6 +109,7 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
+  normalizeProcessExitCode,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -5625,7 +5626,7 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
         error: runErrorMessage,
         errorCode: runErrorCode,
-        exitCode: adapterResult.exitCode,
+        exitCode: normalizeProcessExitCode(adapterResult.exitCode),
         signal: adapterResult.signal,
         usageJson,
         resultJson: persistedResultJson,
@@ -5654,7 +5655,7 @@ export function heartbeatService(db: Db) {
           message: `run ${outcome}`,
           payload: {
             status,
-            exitCode: adapterResult.exitCode,
+            exitCode: normalizeProcessExitCode(adapterResult.exitCode),
           },
         });
         const livenessRun = finalizedRun;
