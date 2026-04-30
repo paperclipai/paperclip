@@ -1,7 +1,9 @@
 import { and, desc, eq, ne } from "drizzle-orm";
 import { routineCheckRuns } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
+import { mostRecentPastSlot, parseCron } from "../cron.js";
 import { buildSummary, computeContentHash, postWebhook, shouldNotify, type WebhookPayload } from "./notify.js";
+import type { Registry } from "./registry.js";
 import type { CheckCtx, CheckDef, CheckLogger, CheckResult, CheckStatus, NotifyChannel } from "./types.js";
 
 export async function computePreviousStatus(args: {
@@ -143,4 +145,46 @@ export async function runOne(args: RunOneArgs): Promise<RunOneResult> {
     .where(eq(routineCheckRuns.id, id));
 
   return { skipped: false, notified, status: result.status };
+}
+
+export interface OrchestrationArgs {
+  db: Db;
+  registry: Registry;
+  now: () => Date;
+  logger: CheckLogger;
+  webhook: WebhookCfg | undefined;
+}
+
+export async function catchUpAll(args: OrchestrationArgs): Promise<void> {
+  for (const def of args.registry.list()) {
+    const cron = parseCron(def.schedule);
+    const lastSlot = mostRecentPastSlot(cron, args.now());
+    if (!lastSlot) continue;
+
+    const rows = await args.db
+      .select({ scheduled: routineCheckRuns.scheduledFor })
+      .from(routineCheckRuns)
+      .where(eq(routineCheckRuns.checkName, def.name))
+      .orderBy(desc(routineCheckRuns.scheduledFor))
+      .limit(1);
+    const lastRecorded = rows[0]?.scheduled?.getTime() ?? 0;
+
+    if (lastSlot.getTime() > lastRecorded) {
+      args.logger.info({ check: def.name, slot: lastSlot.toISOString() }, "catch-up running missed slot");
+      await runOne({ db: args.db, def, scheduledFor: lastSlot, logger: args.logger, now: args.now, webhook: args.webhook });
+    }
+  }
+}
+
+const TICK_GRACE_MS = 60_000;
+
+export async function tickAll(args: OrchestrationArgs): Promise<void> {
+  for (const def of args.registry.list()) {
+    const cron = parseCron(def.schedule);
+    const slot = mostRecentPastSlot(cron, args.now());
+    if (!slot) continue;
+    const ageMs = args.now().getTime() - slot.getTime();
+    if (ageMs > TICK_GRACE_MS) continue;
+    await runOne({ db: args.db, def, scheduledFor: slot, logger: args.logger, now: args.now, webhook: args.webhook });
+  }
 }
