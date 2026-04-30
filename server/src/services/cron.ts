@@ -371,3 +371,29 @@ function advanceToNextMonth(d: Date, months: number[]): void {
     }
   }
 }
+
+function matchesCron(c: ParsedCron, t: Date): boolean {
+  return (
+    c.minutes.includes(t.getUTCMinutes()) &&
+    c.hours.includes(t.getUTCHours()) &&
+    c.daysOfMonth.includes(t.getUTCDate()) &&
+    c.months.includes(t.getUTCMonth() + 1) &&
+    c.daysOfWeek.includes(t.getUTCDay())
+  );
+}
+
+/**
+ * Find the most recent past slot matching a cron expression, walking backwards
+ * minute-by-minute up to 7 days. Returns null if none found in the window.
+ *
+ * Cron fields are interpreted in UTC, consistent with {@link nextCronTick}.
+ */
+export function mostRecentPastSlot(cron: ParsedCron, ref: Date): Date | null {
+  const start = new Date(ref);
+  start.setUTCSeconds(0, 0);
+  for (let i = 0; i < 60 * 24 * 7; i++) {
+    const t = new Date(start.getTime() - i * 60_000);
+    if (matchesCron(cron, t)) return t;
+  }
+  return null;
+}
