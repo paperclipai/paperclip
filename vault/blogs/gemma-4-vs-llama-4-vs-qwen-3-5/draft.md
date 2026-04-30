@@ -14,6 +14,28 @@ sources:
   - https://qwenlm.github.io/blog/qwen3/
   - https://huggingface.co/Qwen/Qwen3-235B-A22B
   - https://huggingface.co/mistralai/Mistral-Medium-3.5-128B
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Gemma 4 Model Family — Google DeepMind"
+    url: https://deepmind.google/models/gemma/gemma-4/
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Llama 4: Multimodal Intelligence — Meta AI Blog"
+    url: https://ai.meta.com/blog/llama-4-multimodal-intelligence/
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Qwen3: Think Deeper, Act Faster — Qwen Blog"
+    url: https://qwenlm.github.io/blog/qwen3/
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Qwen3-235B-A22B Model Card — Hugging Face"
+    url: https://huggingface.co/Qwen/Qwen3-235B-A22B
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Mistral-Medium-3.5-128B Model Card — Hugging Face"
+    url: https://huggingface.co/mistralai/Mistral-Medium-3.5-128B
+    retrieved: 2026-04-30
 note_dead_source: "https://blog.google/technology/developers/gemma-4/ returned 404 — swapped to deepmind.google canonical model page (verified 200)"
 whats_new:
   - "Gemma 4's April 2026 launch completes the open-weights frontier: edge through cloud, all in one model family"
