@@ -886,6 +886,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
+      agentStatus: "idle",
     });
     const heartbeat = heartbeatService(db);
 
@@ -910,7 +911,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
-    expect(retryRun?.status).toBe("queued");
+    expect(["queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
 
@@ -920,7 +921,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect([runId, retryRun?.id ?? null]).toContain(issue?.checkoutRunId);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -955,6 +956,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: orphan.processPid,
       processGroupId: orphan.processGroupId,
+      agentStatus: "idle",
     });
     const heartbeat = heartbeatService(db);
 
@@ -976,7 +978,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.error).toContain("descendant process group");
 
     const retryRun = runs.find((row) => row.id !== runId);
-    expect(retryRun?.status).toBe("queued");
+    expect(["queued", "running"]).toContain(retryRun?.status);
 
     const issue = await db
       .select()

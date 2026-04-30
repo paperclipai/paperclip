@@ -103,7 +103,10 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    schedulerHeartbeat?: ReturnType<typeof heartbeatService>;
+  } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
@@ -149,7 +152,7 @@ export function agentRoutes(
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const environmentsSvc = environmentService(db);
-  const heartbeat = heartbeatService(db, {
+  const heartbeat = options.schedulerHeartbeat ?? heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
@@ -2602,6 +2605,43 @@ export function agentRoutes(
     });
 
     res.status(202).json(run);
+  });
+
+  router.post("/agents/:id/unpause-auto", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const rc = (agent.runtimeConfig as Record<string, unknown> | null) ?? {};
+    const { autoPause: _removed, ...rest } = rc as Record<string, unknown>;
+    const [updated] = await db
+      .update(agentsTable)
+      .set({ runtimeConfig: rest, updatedAt: new Date() })
+      .where(eq(agentsTable.id, id))
+      .returning();
+
+    // Clear stale runaway timestamps so the first post-unpause enqueue doesn't
+    // immediately re-trip the detector due to pre-pause activity.
+    heartbeat.clearAgentEnqueueTimestamps(id);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.auto_pause_cleared",
+      entityType: "agent",
+      entityId: id,
+      details: { agentName: agent.name },
+    });
+
+    res.json(updated ?? agent);
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {

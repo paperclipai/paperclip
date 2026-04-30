@@ -19,11 +19,32 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+export interface RunawayDetectorSettings {
+  fastThresholdCount: number;
+  fastWindowSec: number;
+  slowThresholdCount: number;
+  slowWindowSec: number;
+  autoPauseEnabled: boolean;
+  startupGuardThreshold: number;
+  startupGuardEnabled: boolean;
+}
+
+export const DEFAULT_RUNAWAY_SETTINGS: RunawayDetectorSettings = {
+  fastThresholdCount: 3,
+  fastWindowSec: 60,
+  slowThresholdCount: 5,
+  slowWindowSec: 300,
+  autoPauseEnabled: true,
+  startupGuardThreshold: 6,
+  startupGuardEnabled: true,
+};
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  runaway: RunawayDetectorSettings;
 }
 
 export interface InstanceExperimentalSettings {

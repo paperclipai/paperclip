@@ -13,6 +13,7 @@ import {
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issueRelations,
@@ -93,6 +94,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
+    // Disable the runaway detector so tests that legitimately enqueue several
+    // runs in quick succession don't trip the auto-pause and cancel runs.
+    await db.insert(instanceSettings).values({
+      general: { runaway: { autoPauseEnabled: false } },
+    }).onConflictDoUpdate({
+      target: [instanceSettings.singletonKey],
+      set: { general: { runaway: { autoPauseEnabled: false } } },
+    });
   }, 20_000);
 
   afterEach(async () => {

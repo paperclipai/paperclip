@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -21,6 +21,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
@@ -593,6 +594,9 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const schedulerHeartbeat = config.heartbeatSchedulerEnabled
+    ? heartbeatService(db as any, { pluginWorkerManager })
+    : undefined;
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -616,6 +620,7 @@ export async function startServer(): Promise<StartedServer> {
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
     resolveSession,
+    schedulerHeartbeat,
     pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
@@ -669,14 +674,36 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
   
-  if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+  if (config.heartbeatSchedulerEnabled && schedulerHeartbeat) {
+    const heartbeat = schedulerHeartbeat;
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
+    // Before resuming, check if a large queued-run backlog indicates the system was
+    // in a runaway state — auto-pause to prevent immediate re-flood on restart.
     void heartbeat
       .reapOrphanedRuns()
+      .then(async () => {
+        const settings = instanceSettingsService(db as any);
+        if (process.env.PAPERCLIP_SKIP_STARTUP_GUARD !== "1") {
+          const general = await settings.getGeneral();
+          if (general.runaway.startupGuardEnabled) {
+            const threshold = general.runaway.startupGuardThreshold;
+            const [{ value: queuedCount }] = await db
+              .select({ value: count() })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.status, "queued"));
+            if (queuedCount > threshold) {
+              const { paused } = await settings.getSystemPauseState();
+              if (!paused) {
+                logger.warn({ queuedCount, threshold }, "startup guard: queued-run backlog exceeds threshold — auto-pausing system");
+                await settings.pause(`startup guard: ${queuedCount} queued runs at boot (threshold: ${threshold})`);
+              }
+            }
+          }
+        }
+      })
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();
@@ -727,8 +754,11 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "heartbeat timer tick failed");
         });
 
-      void routines
-        .tickScheduledTriggers(new Date())
+      void instanceSettingsService(db as any).getSystemPauseState()
+        .then(({ paused }) => {
+          if (paused) return { triggered: 0 };
+          return routines.tickScheduledTriggers(new Date());
+        })
         .then((result) => {
           if (result.triggered > 0) {
             logger.info({ ...result }, "routine scheduler tick enqueued runs");

@@ -1,14 +1,19 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { agents, heartbeatRuns } from "@paperclipai/db";
 import {
   issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
 } from "@paperclipai/shared";
+import { z } from "zod";
+import { eq, count } from "drizzle-orm";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { logger } from "../middleware/logger.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -20,10 +25,18 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(
+  db: Db,
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    schedulerHeartbeat?: ReturnType<typeof heartbeatService>;
+  } = {},
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = options.schedulerHeartbeat ?? heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
 
   router.get("/instance/settings/general", async (req, res) => {
     // General settings (e.g. keyboardShortcuts) are readable by any
@@ -98,6 +111,85 @@ export function instanceSettingsRoutes(db: Db) {
       res.json(updated.experimental);
     },
   );
+
+  router.get("/admin/status", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const [state, [{ value: queuedRunCount }]] = await Promise.all([
+      svc.getSystemPauseState(),
+      db.select({ value: count() }).from(heartbeatRuns).where(eq(heartbeatRuns.status, "queued")),
+    ]);
+    res.json({ ...state, queuedRunCount });
+  });
+
+  router.get("/admin/agents/queued-counts", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const rows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        queuedCount: count(),
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"))
+      .groupBy(heartbeatRuns.agentId);
+    res.json(rows);
+  });
+
+  router.post("/admin/pause", validate(z.object({ reason: z.string().optional() })), async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    await svc.pause(req.body.reason);
+    await heartbeat.cancelAllActiveRuns(req.body.reason ?? "system paused by operator");
+    const state = await svc.getSystemPauseState();
+    const actor = getActorInfo(req);
+    logger.warn({ actor, reason: req.body.reason }, "system paused by operator");
+    const companyIds = await svc.listCompanyIds();
+    await Promise.all(
+      companyIds.map((companyId) =>
+        logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "instance.system.paused",
+          entityType: "instance_settings",
+          entityId: "system",
+          details: { reason: req.body.reason ?? null },
+        }),
+      ),
+    );
+    res.json(state);
+  });
+
+  router.post("/admin/unpause", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    await svc.unpause();
+    // Clear all in-memory runaway timestamps so agents that had near-runaway
+    // activity before the pause don't immediately re-trip the detector on their
+    // first post-unpause enqueue. Queued runs are picked up by the next natural
+    // scheduler tick — no explicit promotion call needed.
+    const allAgentIds = await db.select({ id: agents.id }).from(agents);
+    for (const { id } of allAgentIds) heartbeat.clearAgentEnqueueTimestamps(id);
+    const state = await svc.getSystemPauseState();
+    const actor = getActorInfo(req);
+    logger.info({ actor }, "system unpaused by operator");
+    const companyIds = await svc.listCompanyIds();
+    await Promise.all(
+      companyIds.map((companyId) =>
+        logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "instance.system.unpaused",
+          entityType: "instance_settings",
+          entityId: "system",
+          details: {},
+        }),
+      ),
+    );
+    res.json(state);
+  });
 
   router.post(
     "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",

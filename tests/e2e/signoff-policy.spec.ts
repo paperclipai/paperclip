@@ -151,6 +151,11 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
     );
   }
 
+  const settingsRes = await boardRequest.patch(`${BASE_URL}/api/instance/settings/general`, {
+    data: { runaway: { autoPauseEnabled: false } },
+  });
+  expect(settingsRes.ok()).toBe(true);
+
   // Create company
   const companyRes = await boardRequest.post(`${BASE_URL}/api/companies`, {
     data: { name: COMPANY_NAME },

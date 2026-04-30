@@ -387,7 +387,8 @@ describe("NewIssueDialog", () => {
         "value",
       )?.set;
       valueSetter?.call(titleInput, "Typed issue");
-      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      titleInput!.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      titleInput!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flush();
 
@@ -397,14 +398,21 @@ describe("NewIssueDialog", () => {
         "value",
       )?.set;
       valueSetter?.call(descriptionInput, "Typed description");
-      descriptionInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      descriptionInput!.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      descriptionInput!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flush();
 
-    const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Issue"));
-    expect(submitButton).not.toBeUndefined();
-    expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    let submitButton: HTMLButtonElement | undefined;
+    await vi.waitFor(() => {
+      submitButton = Array.from(container.querySelectorAll("button")).find(
+        (button): button is HTMLButtonElement =>
+          button instanceof HTMLButtonElement &&
+          button.textContent?.includes("Create Issue") === true,
+      );
+      expect(submitButton).not.toBeUndefined();
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     await act(async () => {
       submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));

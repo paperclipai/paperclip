@@ -120,6 +120,9 @@ export const queryKeys = {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    adminStatus: ["instance", "admin-status"] as const,
+    agentQueuedCounts: ["instance", "agent-queued-counts"] as const,
+    allAgents: ["instance", "all-agents"] as const,
   },
   health: ["health"] as const,
   secrets: {
