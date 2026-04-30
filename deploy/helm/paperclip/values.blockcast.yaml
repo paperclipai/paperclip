@@ -9,7 +9,7 @@
 
 image:
   repository: registry.blockcast.net/paperclip
-  tag: sha-a41ab77e-k8s-vendored
+  tag: sha-e1a92b42-k8s-vendored
   pullPolicy: Always
   # Bump this to the kkroo image tag built from this repo when deploying.
 
