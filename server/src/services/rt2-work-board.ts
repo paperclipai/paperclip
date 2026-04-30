@@ -20,6 +20,7 @@ import {
   type PromoteRt2CaptureDraft,
   type ReviseRt2CaptureDraft,
   type Rt2CaptureDraftSource,
+  type Rt2CaptureSourceEvidence,
   type TransitionRt2CaptureDraft,
   type UpsertRt2CaptureSource,
   type UpdateRt2BoardCard,
@@ -70,6 +71,59 @@ function canonicalCapturePayload(input: CreateOneLinerInboundDraft) {
 
 function signCapturePayload(secretHash: string, input: CreateOneLinerInboundDraft) {
   return createHmac("sha256", secretHash).update(canonicalCapturePayload(input)).digest("hex");
+}
+
+function sourceBlockedReason(captureSource: CaptureSourceRow | null) {
+  if (!captureSource) return null;
+  if (captureSource.installationState === "not_installed") return "source_not_installed";
+  if (captureSource.installationState === "blocked") return "source_blocked";
+  if (captureSource.installationState === "stale") return "source_stale";
+  if (captureSource.installationState === "error") return "source_error";
+  return null;
+}
+
+function resolveCaptureSigning(captureSource: CaptureSourceRow | null, input: Pick<CreateOneLinerInboundDraft, "source" | "text" | "channel" | "externalUserId" | "eventId" | "eventTimestamp" | "signature">) {
+  let signingStatus: "unsigned" | "signed" | "invalid" | "missing" | "stale" = captureSource?.signingSecretHash ? "missing" : "unsigned";
+  let reasonCode: string | null = sourceBlockedReason(captureSource);
+
+  if (captureSource?.signingSecretHash) {
+    const expected = signCapturePayload(captureSource.signingSecretHash, {
+      source: input.source,
+      text: input.text,
+      channel: input.channel ?? null,
+      externalUserId: input.externalUserId ?? null,
+      eventId: input.eventId ?? null,
+      eventTimestamp: input.eventTimestamp ?? null,
+      signature: input.signature ?? null,
+    });
+    if (!input.signature) {
+      signingStatus = "missing";
+      reasonCode = "signature_missing";
+    } else if (input.signature !== expected) {
+      signingStatus = "invalid";
+      reasonCode = "signature_invalid";
+    } else {
+      signingStatus = "signed";
+    }
+  }
+
+  return { signingStatus, reasonCode };
+}
+
+function buildSourceEvidence(
+  captureSource: CaptureSourceRow | null,
+  signing: ReturnType<typeof resolveCaptureSigning>,
+  input: Pick<CreateOneLinerInboundDraft, "eventId" | "eventTimestamp" | "metadata">,
+): Rt2CaptureSourceEvidence {
+  return {
+    sourceInstallationId: captureSource?.id ?? null,
+    installationState: (captureSource?.installationState ?? "not_installed") as "not_installed" | "installed" | "blocked" | "stale" | "error",
+    signingStatus: signing.signingStatus,
+    eventId: input.eventId ?? null,
+    eventTimestamp: input.eventTimestamp ?? null,
+    reasonCode: signing.reasonCode,
+    metadata: input.metadata && Object.keys(input.metadata).length > 0 ? input.metadata : null,
+  };
 }
 
 function citationTargetFor(result: { type: string; sourceId: string; sourceKey: string }) {
@@ -218,6 +272,7 @@ function toCaptureDraft(row: CaptureRow, latestRevision: CaptureRevisionRow | nu
       eventId: string | null;
       eventTimestamp: string | null;
       reasonCode: string | null;
+      metadata?: Record<string, string> | null;
     } | null) ?? null,
     semanticContext: (row.semanticContext ?? []) as Array<{
       id: string;
@@ -372,6 +427,10 @@ export function rt2WorkBoardService(db: Db) {
 
   return {
     listCaptureSources,
+
+    getCaptureSource: async (companyId: string, source: CreateOneLinerInboundDraft["source"], sourceInstallationId?: string | null) => {
+      return findCaptureSource(companyId, source, sourceInstallationId ?? null).then((row) => (row ? toCaptureSource(row) : null));
+    },
 
     upsertCaptureSource: async (companyId: string, actorUserId: string, input: UpsertRt2CaptureSource) => {
       const now = new Date();
@@ -565,21 +624,7 @@ export function rt2WorkBoardService(db: Db) {
       const parsed = parseOneLinerInput(input.text);
       const hash = normalizeHash(input.text);
       const captureSource = await findCaptureSource(companyId, input.source, input.sourceInstallationId ?? null);
-      let signingStatus: "unsigned" | "signed" | "invalid" | "missing" | "stale" = captureSource?.signingSecretHash ? "missing" : "unsigned";
-      let sourceReasonCode: string | null = null;
-
-      if (captureSource?.signingSecretHash) {
-        const expected = captureSource.signingSecretHash ? signCapturePayload(captureSource.signingSecretHash, input) : null;
-        if (!input.signature) {
-          signingStatus = "missing";
-          sourceReasonCode = "signature_missing";
-        } else if (!expected || input.signature !== expected) {
-          signingStatus = "invalid";
-          sourceReasonCode = "signature_invalid";
-        } else {
-          signingStatus = "signed";
-        }
-      }
+      const signing = resolveCaptureSigning(captureSource, input);
 
       const duplicate = await db
         .select({ id: rt2CaptureDrafts.id })
@@ -590,23 +635,16 @@ export function rt2WorkBoardService(db: Db) {
           eq(rt2CaptureDrafts.normalizedHash, hash),
         ))
         .then((rows) => rows[0] ?? null);
-      const sourceBlocked = captureSource?.installationState === "blocked" || signingStatus === "invalid" || signingStatus === "missing";
+      const sourceBlocked = Boolean(signing.reasonCode) || signing.signingStatus === "invalid" || signing.signingStatus === "missing";
       const permissionStatus = sourceBlocked
         ? "blocked"
         : (input.source === "mobile" || input.source === "native") && !input.externalUserId
         ? "missing_external_user"
         : "allowed";
-      const status = duplicate ? "duplicate" : permissionStatus === "allowed" ? "review_required" : "permission_blocked";
+      const status = permissionStatus === "allowed" ? (duplicate ? "duplicate" : "review_required") : "permission_blocked";
       const duplicateWarning = duplicate ? `Potential duplicate of capture draft ${duplicate.id}` : null;
       const semanticContext = await buildSemanticContext(companyId, input.text);
-      const sourceEvidence = {
-        sourceInstallationId: captureSource?.id ?? null,
-        installationState: (captureSource?.installationState ?? "not_installed") as "not_installed" | "installed" | "blocked" | "stale" | "error",
-        signingStatus,
-        eventId: input.eventId ?? null,
-        eventTimestamp: input.eventTimestamp ?? null,
-        reasonCode: sourceReasonCode,
-      };
+      const sourceEvidence = buildSourceEvidence(captureSource, signing, input);
       const [row] = await db
         .insert(rt2CaptureDrafts)
         .values({
@@ -621,8 +659,8 @@ export function rt2WorkBoardService(db: Db) {
           duplicateOfDraftId: duplicate?.id ?? null,
           permissionStatus,
           sourceInstallationId: captureSource?.id ?? null,
-          sourceSigningStatus: signingStatus,
-          sourceEvidence,
+          sourceSigningStatus: signing.signingStatus,
+          sourceEvidence: sourceEvidence as unknown as Record<string, unknown>,
           semanticContext,
           duplicateWarning,
           createdByUserId: actorUserId,
@@ -651,12 +689,77 @@ export function rt2WorkBoardService(db: Db) {
           .set({
             lastInboundEventAt: input.eventTimestamp ? new Date(input.eventTimestamp) : new Date(),
             lastInboundEventId: input.eventId ?? row.id,
-            signingStatus,
-            lastErrorCode: sourceReasonCode,
+            signingStatus: signing.signingStatus,
+            lastErrorCode: signing.reasonCode,
             updatedAt: new Date(),
           })
           .where(eq(rt2CaptureSources.id, captureSource.id));
       }
+      return toCaptureDraft(row, revision);
+    },
+
+    createMalformedInboundDraft: async (
+      companyId: string,
+      actorUserId: string,
+      input: Omit<CreateOneLinerInboundDraft, "text"> & { text?: string | null; failureMessage: string },
+    ) => {
+      const source = input.source ?? "webhook";
+      const fallbackText = input.text?.trim() || `malformed ${source} capture payload`;
+      const parsed = parseOneLinerInput(fallbackText);
+      const captureSource = await findCaptureSource(companyId, source, input.sourceInstallationId ?? null);
+      if (!captureSource) {
+        throw notFound("RT2 capture source not found");
+      }
+      const signing = resolveCaptureSigning(captureSource, { ...input, text: fallbackText });
+      const sourceEvidence = buildSourceEvidence(captureSource, { ...signing, reasonCode: signing.reasonCode ?? "malformed_payload" }, input);
+      const [row] = await db
+        .insert(rt2CaptureDrafts)
+        .values({
+          companyId,
+          source,
+          channel: input.channel ?? null,
+          externalUserId: input.externalUserId ?? null,
+          rawText: fallbackText,
+          normalizedHash: normalizeHash(`${source}:${input.eventId ?? fallbackText}`),
+          parsedDraft: parsed as unknown as Record<string, unknown>,
+          status: "failed",
+          failureCode: "parse_error",
+          failureMessage: input.failureMessage,
+          permissionStatus: signing.reasonCode === "signature_missing" || signing.reasonCode === "signature_invalid" ? "blocked" : "allowed",
+          sourceInstallationId: captureSource.id,
+          sourceSigningStatus: signing.signingStatus,
+          sourceEvidence: sourceEvidence as unknown as Record<string, unknown>,
+          semanticContext: [],
+          createdByUserId: actorUserId,
+          auditTrail: [{
+            action: "capture_malformed",
+            actorUserId,
+            details: { source, failureCode: "parse_error", sourceEvidence },
+            at: new Date().toISOString(),
+          }],
+        })
+        .returning();
+      const [revision] = await db
+        .insert(rt2CaptureDraftRevisions)
+        .values({
+          draftId: row.id,
+          companyId,
+          revisionNumber: 1,
+          snapshot: revisionSnapshotFromParsed(parsed),
+          changeSummary: "Malformed messaging payload",
+          createdByUserId: actorUserId,
+        })
+        .returning();
+      await db
+        .update(rt2CaptureSources)
+        .set({
+          lastInboundEventAt: input.eventTimestamp ? new Date(input.eventTimestamp) : new Date(),
+          lastInboundEventId: input.eventId ?? row.id,
+          signingStatus: signing.signingStatus,
+          lastErrorCode: sourceEvidence.reasonCode ?? "malformed_payload",
+          updatedAt: new Date(),
+        })
+        .where(eq(rt2CaptureSources.id, captureSource.id));
       return toCaptureDraft(row, revision);
     },
 

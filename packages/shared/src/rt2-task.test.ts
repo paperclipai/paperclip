@@ -5,6 +5,8 @@ import {
   claimRt2ExecutionSchema,
   completeRt2ExecutionSchema,
   createOneLinerInboundDraftSchema,
+  createRt2MessagingInboundSchema,
+  rt2CaptureSourceEvidenceMetadataSchema,
   createRt2TaskSchema,
   createRt2TodoSchema,
   enqueueRt2ExecutionSchema,
@@ -96,6 +98,57 @@ describe("RT2 task shared contracts", () => {
         text: "task: Capture field note; deliverable: note; price: 1000",
       });
     }
+  });
+
+  it("accepts bounded messaging metadata without changing existing inbound source compatibility", () => {
+    expect(createOneLinerInboundDraftSchema.parse({
+      source: "slack",
+      text: "task: Slack capture; deliverable: note; price: 1000",
+      metadata: {
+        channelId: "C123",
+        teamId: "T123",
+        ignoredNull: null,
+        numericEvent: 42,
+      },
+    })).toEqual(expect.objectContaining({
+      source: "slack",
+      metadata: {
+        channelId: "C123",
+        teamId: "T123",
+        numericEvent: "42",
+      },
+    }));
+
+    expect(rt2CaptureSourceEvidenceMetadataSchema.parse({
+      "  provider  ": "Slack",
+      token: "x".repeat(700),
+    })).toEqual({
+      provider: "Slack",
+    });
+  });
+
+  it("normalizes public messaging inbound payload fields", () => {
+    expect(createRt2MessagingInboundSchema.parse({
+      messageText: "task: Teams note; deliverable: summary; price: 1000",
+      channelId: "19:abc",
+      userId: "user-1",
+      messageId: "message-1",
+      teamId: "team-1",
+      metadata: {
+        tenantId: "tenant-1",
+        providerLabel: "Teams",
+      },
+    })).toEqual(expect.objectContaining({
+      messageText: "task: Teams note; deliverable: summary; price: 1000",
+      channelId: "19:abc",
+      userId: "user-1",
+      messageId: "message-1",
+      teamId: "team-1",
+      metadata: {
+        tenantId: "tenant-1",
+        providerLabel: "Teams",
+      },
+    }));
   });
 
   it("validates persisted capture draft revision and transition payloads", () => {

@@ -11,6 +11,7 @@ import {
   issueWorkProducts,
   issues,
   projects,
+  rt2CaptureDrafts,
   rt2V33DomainEvents,
   rt2V33ExecutionAttempts,
   rt2CaptureDraftRevisions,
@@ -96,6 +97,21 @@ describeEmbeddedPostgres("rt2 task routes", () => {
         isInstanceAdmin: false,
         companyIds: [companyId],
       };
+      next();
+    });
+    app.use("/api", routeModule.rt2TaskRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
+
+  async function createPublicApp() {
+    const routePath = "../routes/rt2-tasks.js";
+    const routeModule = await vi.importActual<any>(routePath);
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
       next();
     });
     app.use("/api", routeModule.rt2TaskRoutes(db));
@@ -559,6 +575,160 @@ describeEmbeddedPostgres("rt2 task routes", () => {
       sourceEvidence: expect.objectContaining({ signingStatus: "signed", eventId: "evt-signed" }),
       semanticContext: expect.any(Array),
     }));
+  });
+
+  it("receives signed public Slack inbound payloads without board auth", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const publicApp = await createPublicApp();
+    const secret = "phase-56-public-secret";
+
+    const sourceResponse = await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/capture-sources/slack`)
+      .send({
+        source: "slack",
+        label: "Slack Ops",
+        installationState: "installed",
+        signingStatus: "signed",
+        signingSecret: secret,
+      })
+      .expect(200);
+
+    expect(JSON.stringify(sourceResponse.body)).not.toContain(secret);
+
+    const signedPayload = {
+      text: "task: Slack signal; todo: triage ops note; deliverable: Slack summary; price: 120000",
+      channel: "C-ops",
+      externalUserId: "U123",
+      eventId: "evt-public-signed",
+      eventTimestamp: "2026-04-30T00:01:00.000Z",
+      teamId: "T123",
+      permalink: "https://slack.example/archives/C-ops/p1",
+    };
+    const secretHash = createHash("sha256").update(secret).digest("hex");
+    const canonical = JSON.stringify({
+      source: "slack",
+      text: signedPayload.text,
+      channel: signedPayload.channel,
+      externalUserId: signedPayload.externalUserId,
+      eventId: signedPayload.eventId,
+      eventTimestamp: signedPayload.eventTimestamp,
+    });
+    const signature = createHmac("sha256", secretHash).update(canonical).digest("hex");
+
+    const response = await request(publicApp)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-sources/slack/inbound`)
+      .set("x-rt2-signature", signature)
+      .send(signedPayload)
+      .expect(201);
+
+    expect(response.body.inbound).toEqual(expect.objectContaining({
+      source: "slack",
+      status: "review_required",
+      permissionStatus: "allowed",
+      sourceEvidence: expect.objectContaining({
+        signingStatus: "signed",
+        eventId: "evt-public-signed",
+        metadata: expect.objectContaining({
+          provider: "slack",
+          channel: "C-ops",
+          teamId: "T123",
+          permalink: "https://slack.example/archives/C-ops/p1",
+        }),
+      }),
+    }));
+  });
+
+  it("keeps public messaging signature and malformed failures distinguishable", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const publicApp = await createPublicApp();
+
+    await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/capture-sources/slack`)
+      .send({
+        source: "slack",
+        label: "Slack Ops",
+        installationState: "installed",
+        signingStatus: "signed",
+        signingSecret: "phase-56-block-secret",
+      })
+      .expect(200);
+
+    const blocked = await request(publicApp)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-sources/slack/inbound`)
+      .send({
+        text: "task: unsigned Slack; deliverable: blocked note; price: 10",
+        channel: "C-ops",
+        externalUserId: "U123",
+        eventId: "evt-public-missing-signature",
+      })
+      .expect(201);
+
+    expect(blocked.body.inbound).toEqual(expect.objectContaining({
+      status: "permission_blocked",
+      permissionStatus: "blocked",
+      sourceEvidence: expect.objectContaining({
+        signingStatus: "missing",
+        reasonCode: "signature_missing",
+      }),
+    }));
+
+    await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/capture-sources/webhook`)
+      .send({
+        source: "webhook",
+        label: "Webhook Ops",
+        installationState: "installed",
+        signingStatus: "unsigned",
+      })
+      .expect(200);
+
+    const malformed = await request(publicApp)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-sources/webhook/inbound`)
+      .send({
+        channel: "ops-webhook",
+        eventId: "evt-malformed",
+        metadata: { providerLabel: "Ops webhook" },
+      })
+      .expect(201);
+
+    expect(malformed.body.inbound).toEqual(expect.objectContaining({
+      source: "webhook",
+      status: "failed",
+      sourceEvidence: expect.objectContaining({
+        reasonCode: "malformed_payload",
+        metadata: expect.objectContaining({
+          provider: "webhook",
+          providerLabel: "Ops webhook",
+        }),
+      }),
+    }));
+
+    const sources = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/capture-sources`)
+      .expect(200);
+    expect(sources.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "webhook", lastErrorCode: "malformed_payload" }),
+    ]));
+  });
+
+  it("rejects public messaging inbound for sources that are not installed", async () => {
+    fixture = await seedFixture();
+    const publicApp = await createPublicApp();
+
+    await request(publicApp)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-sources/teams/inbound`)
+      .send({
+        text: "task: unknown Teams; deliverable: none; price: 1",
+      })
+      .expect(404);
+
+    const rows = await db
+      .select()
+      .from(rt2CaptureDrafts)
+      .where(eq(rt2CaptureDrafts.companyId, fixture.companyId));
+    expect(rows).toHaveLength(0);
   });
 
   it("preserves artifact deliverable types when creating task definitions", async () => {

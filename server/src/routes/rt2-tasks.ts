@@ -4,6 +4,7 @@ import {
   assignRt2ParticipantSchema,
   claimRt2ExecutionSchema,
   createOneLinerInboundDraftSchema,
+  createRt2MessagingInboundSchema,
   completeRt2ExecutionSchema,
   createRt2BoardAttachmentSchema,
   createRt2BoardChecklistItemSchema,
@@ -22,6 +23,7 @@ import {
   updateRt2BoardChecklistItemSchema,
   updateRt2TaskCapacitySchema,
   upsertRt2CaptureSourceSchema,
+  rt2MessagingInboundSourceSchema,
   buildOneLinerRewardEvidence,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
@@ -38,6 +40,92 @@ function assertBoardActor(req: Request): string {
     throw forbidden("Board user required");
   }
   return req.actor.userId;
+}
+
+function cleanString(value: unknown, max = 500) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed.slice(0, max) : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).slice(0, max);
+  }
+  return null;
+}
+
+function readPath(payload: Record<string, unknown>, path: string[]) {
+  let current: unknown = payload;
+  for (const part of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return null;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function firstString(payload: Record<string, unknown>, paths: string[][], max = 500) {
+  for (const path of paths) {
+    const value = cleanString(path.length === 1 ? payload[path[0]!] : readPath(payload, path), max);
+    if (value) return value;
+  }
+  return null;
+}
+
+function normalizeTimestamp(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function metadataFromPayload(source: "slack" | "teams" | "webhook", payload: Record<string, unknown>, parsedMetadata?: Record<string, string>) {
+  const metadata: Record<string, string> = {
+    ...(parsedMetadata ?? {}),
+    provider: source,
+  };
+  const candidates: Array<[string, string[][]]> = [
+    ["channel", [["channel"], ["channelId"], ["channel_id"], ["event", "channel"], ["message", "channel"]]],
+    ["externalUserId", [["externalUserId"], ["userId"], ["user_id"], ["event", "user"], ["message", "user"]]],
+    ["eventId", [["eventId"], ["event_id"], ["messageId"], ["message_id"], ["event", "client_msg_id"], ["event", "ts"]]],
+    ["teamId", [["teamId"], ["team_id"], ["team", "id"], ["event", "team"]]],
+    ["tenantId", [["tenantId"], ["tenant_id"]]],
+    ["threadId", [["threadId"], ["thread_ts"], ["event", "thread_ts"]]],
+    ["permalink", [["permalink"], ["message", "permalink"]]],
+  ];
+  for (const [key, paths] of candidates) {
+    const value = firstString(payload, paths);
+    if (value) metadata[key] = value;
+  }
+  return Object.fromEntries(Object.entries(metadata).slice(0, 20));
+}
+
+function inboundResponse(storedDraft: {
+  id: string;
+  source: string;
+  channel: string | null;
+  externalUserId: string | null;
+  status: string;
+  duplicateOfDraftId: string | null;
+  permissionStatus: string;
+  sourceEvidence: unknown;
+  semanticContext: unknown;
+  duplicateWarning: string | null;
+  parsedDraft: Record<string, unknown>;
+}) {
+  return {
+    draft: storedDraft.parsedDraft,
+    inbound: {
+      id: storedDraft.id,
+      source: storedDraft.source,
+      channel: storedDraft.channel,
+      externalUserId: storedDraft.externalUserId,
+      status: storedDraft.status,
+      duplicateOfDraftId: storedDraft.duplicateOfDraftId,
+      permissionStatus: storedDraft.permissionStatus,
+      sourceEvidence: storedDraft.sourceEvidence,
+      semanticContext: storedDraft.semanticContext,
+      duplicateWarning: storedDraft.duplicateWarning,
+      reviewRequired: storedDraft.status === "review_required",
+    },
+  };
 }
 
 export function rt2TaskRoutes(db: Db) {
@@ -109,24 +197,81 @@ export function rt2TaskRoutes(db: Db) {
           permissionStatus: storedDraft.permissionStatus,
         },
       });
-      res.status(201).json({
-        draft: storedDraft.parsedDraft,
-        inbound: {
-          id: storedDraft.id,
-          source: storedDraft.source,
-          channel: storedDraft.channel,
-          externalUserId: storedDraft.externalUserId,
-          status: storedDraft.status,
-          duplicateOfDraftId: storedDraft.duplicateOfDraftId,
-          permissionStatus: storedDraft.permissionStatus,
-          sourceEvidence: storedDraft.sourceEvidence,
-          semanticContext: storedDraft.semanticContext,
-          duplicateWarning: storedDraft.duplicateWarning,
-          reviewRequired: true,
-        },
-      });
+      res.status(201).json(inboundResponse(storedDraft));
     },
   );
+
+  router.post("/companies/:companyId/rt2/capture-sources/:source/inbound", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const sourceResult = rt2MessagingInboundSourceSchema.safeParse(req.params.source);
+    if (!sourceResult.success) {
+      throw badRequest("Messaging capture source must be slack, teams, or webhook");
+    }
+    const source = sourceResult.data;
+    const sourceRecord = await boardSvc.getCaptureSource(companyId, source);
+    if (!sourceRecord?.id) {
+      res.status(404).json({ error: "RT2_CAPTURE_SOURCE_NOT_INSTALLED" });
+      return;
+    }
+
+    const payload = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const parsed = createRt2MessagingInboundSchema.safeParse(payload);
+    const data: Record<string, unknown> = parsed.success ? parsed.data : payload;
+    const signature = req.header("x-rt2-signature") ?? cleanString(data.signature) ?? null;
+    const text = firstString(data, [["text"], ["messageText"], ["message", "text"], ["event", "text"]], 5000);
+    const channel = firstString(data, [["channel"], ["channelId"], ["channel_id"], ["event", "channel"], ["message", "channel"]], 120);
+    const externalUserId = firstString(data, [["externalUserId"], ["userId"], ["user_id"], ["event", "user"], ["message", "user"]], 200);
+    const eventId = firstString(data, [["eventId"], ["event_id"], ["messageId"], ["message_id"], ["event", "client_msg_id"], ["event", "ts"]], 200);
+    const eventTimestamp = normalizeTimestamp(firstString(data, [["eventTimestamp"], ["timestamp"], ["event", "event_ts"], ["event", "ts"]], 120));
+    const parsedMetadata = parsed.success ? parsed.data.metadata : undefined;
+    const metadata = metadataFromPayload(source, data, parsedMetadata);
+    const actorUserId = "messaging-inbound";
+
+    const storedDraft = text
+      ? await boardSvc.createInboundDraft(companyId, actorUserId, {
+        source,
+        text,
+        channel,
+        externalUserId,
+        sourceInstallationId: sourceRecord.id,
+        eventId,
+        eventTimestamp,
+        signature,
+        metadata,
+      })
+      : await boardSvc.createMalformedInboundDraft(companyId, actorUserId, {
+        source,
+        channel,
+        externalUserId,
+        sourceInstallationId: sourceRecord.id,
+        eventId,
+        eventTimestamp,
+        signature,
+        metadata,
+        failureMessage: parsed.success
+          ? "Messaging payload did not include capture text."
+          : "Messaging payload did not match the expected capture shape.",
+      });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: actorUserId,
+      action: "rt2.capture.messaging_inbound_received",
+      entityType: "capture_draft",
+      entityId: storedDraft.id,
+      details: {
+        source: storedDraft.source,
+        status: storedDraft.status,
+        duplicateOfDraftId: storedDraft.duplicateOfDraftId,
+        permissionStatus: storedDraft.permissionStatus,
+        sourceEvidence: storedDraft.sourceEvidence,
+      },
+    });
+    res.status(201).json(inboundResponse(storedDraft));
+  });
 
   router.get("/companies/:companyId/rt2/capture-sources", async (req, res) => {
     const companyId = req.params.companyId as string;

@@ -845,6 +845,8 @@ function CaptureDraftCard({
 }) {
   const parsed = normalizeParsedDraft(draft.latestRevision?.snapshot ?? draft.parsedDraft);
   const sourceEvidence = draft.sourceEvidence;
+  const failureLabel = captureFailureEvidenceLabel(draft);
+  const metadataEntries = Object.entries(sourceEvidence?.metadata ?? {}).slice(0, 4);
   const [isReopen, setIsReopen] = useState(false);
   const [revisionDraft, setRevisionDraft] = useState(() => ({
     taskTitle: parsed.taskTitle || draft.rawText,
@@ -879,6 +881,11 @@ function CaptureDraftCard({
             {draft.duplicateWarning ? (
               <span className="rounded-md border border-amber-300/70 px-2 py-1 text-xs text-amber-700 dark:text-amber-200">
                 중복 의심
+              </span>
+            ) : null}
+            {failureLabel ? (
+              <span className="rounded-md border border-destructive/30 px-2 py-1 text-xs text-destructive">
+                {failureLabel}
               </span>
             ) : null}
             {latestRevision ? (
@@ -1060,6 +1067,13 @@ function CaptureDraftCard({
         </div>
       </div>
 
+      {metadataEntries.length > 0 ? (
+        <div className="mt-2 rounded-md bg-muted/40 px-2 py-2 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">메시징 근거</span>{" "}
+          {metadataEntries.map(([key, value]) => `${key}: ${value}`).join(" · ")}
+        </div>
+      ) : null}
+
       {draft.duplicateWarning ? (
         <p className="mt-2 rounded-md border border-amber-300/70 bg-amber-50 px-2 py-2 text-xs text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
           {draft.duplicateWarning}
@@ -1112,6 +1126,32 @@ function captureStatusLabel(status: Rt2CaptureDraftSummary["status"]) {
     case "discarded":
       return "보류됨";
   }
+}
+
+function captureFailureEvidenceLabel(draft: Rt2CaptureDraftSummary) {
+  const reasonCode = draft.sourceEvidence?.reasonCode;
+  const signingStatus = draft.sourceEvidence?.signingStatus;
+  if (
+    reasonCode === "signature_missing"
+    || reasonCode === "signature_invalid"
+    || signingStatus === "missing"
+    || signingStatus === "invalid"
+  ) {
+    return "서명 오류";
+  }
+  if (
+    draft.status === "permission_blocked"
+    || draft.permissionStatus === "blocked"
+    || reasonCode === "source_blocked"
+    || reasonCode === "source_stale"
+    || reasonCode === "source_not_installed"
+  ) {
+    return "출처 차단";
+  }
+  if (draft.failureCode === "parse_error" || reasonCode === "malformed_payload") {
+    return "형식 오류";
+  }
+  return null;
 }
 
 function captureSourceLabel(source: Rt2CaptureDraftSummary["source"]) {

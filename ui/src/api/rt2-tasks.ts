@@ -137,7 +137,7 @@ export type Rt2InboundDraftResponse = {
     sourceEvidence: Rt2CaptureDraftSummary["sourceEvidence"];
     semanticContext: Rt2CaptureDraftSummary["semanticContext"];
     duplicateWarning: string | null;
-    reviewRequired: true;
+    reviewRequired: boolean;
   };
 };
 

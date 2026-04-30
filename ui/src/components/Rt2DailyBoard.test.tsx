@@ -620,6 +620,78 @@ describe("Rt2DailyBoard", () => {
     act(() => root.unmount());
   });
 
+  it("distinguishes messaging duplicate, signature, and malformed failures", () => {
+    const queue = buildCaptureQueue();
+    const base = queue.drafts[0]!;
+    queue.summary = {
+      reviewRequired: 0,
+      duplicate: 1,
+      permissionBlocked: 1,
+      failed: 1,
+      promoted: 0,
+    };
+    queue.drafts = [
+      {
+        ...base,
+        id: "draft-slack-duplicate",
+        source: "slack",
+        status: "duplicate",
+        duplicateOfDraftId: "draft-original",
+        duplicateWarning: "Potential duplicate of capture draft draft-original",
+        sourceEvidence: {
+          ...base.sourceEvidence!,
+          signingStatus: "signed",
+          eventId: "evt-dup",
+          metadata: { channel: "C-sales", externalUserId: "U-sales" },
+        },
+      },
+      {
+        ...base,
+        id: "draft-slack-signature",
+        source: "slack",
+        status: "permission_blocked",
+        permissionStatus: "blocked",
+        duplicateOfDraftId: null,
+        duplicateWarning: null,
+        sourceEvidence: {
+          ...base.sourceEvidence!,
+          signingStatus: "invalid",
+          reasonCode: "signature_invalid",
+          eventId: "evt-invalid",
+          metadata: { channel: "C-ops", externalUserId: "U-ops" },
+        },
+      },
+      {
+        ...base,
+        id: "draft-webhook-malformed",
+        source: "webhook",
+        status: "failed",
+        failureCode: "parse_error",
+        failureMessage: "Messaging payload did not include capture text.",
+        duplicateOfDraftId: null,
+        duplicateWarning: null,
+        sourceEvidence: {
+          ...base.sourceEvidence!,
+          signingStatus: "unsigned",
+          reasonCode: "malformed_payload",
+          eventId: "evt-bad",
+          metadata: { provider: "webhook", eventId: "evt-bad" },
+        },
+      },
+    ];
+
+    const { container, root } = renderBoard({ captureQueue: queue });
+
+    expect(container.textContent).toContain("중복 의심");
+    expect(container.textContent).toContain("서명 오류");
+    expect(container.textContent).toContain("형식 오류");
+    expect(container.textContent).toContain("메시징 근거");
+    expect(container.textContent).toContain("channel: C-ops");
+    expect(container.textContent).toContain("provider: webhook");
+
+    act(() => root.unmount());
+  });
+
   it("reopens capture drafts for revision edits and review state actions", () => {
     const onReviseCaptureDraft = vi.fn();
     const onTransitionCaptureDraft = vi.fn();

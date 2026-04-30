@@ -37,8 +37,21 @@ export const createRt2TaskSchema = z.object({
 export type CreateRt2Task = z.infer<typeof createRt2TaskSchema>;
 
 export const oneLinerInboundDraftSourceSchema = z.enum(["web", "floating", "voice", "slack", "teams", "webhook", "mobile", "native"]);
+export const rt2MessagingInboundSourceSchema = z.enum(["slack", "teams", "webhook"]);
 export const rt2CaptureSourceInstallationStateSchema = z.enum(["not_installed", "installed", "blocked", "stale", "error"]);
 export const rt2CaptureSourceSigningStatusSchema = z.enum(["unsigned", "signed", "invalid", "missing", "stale"]);
+export const rt2CaptureSourceEvidenceMetadataSchema = z
+  .record(z.union([z.string(), z.number(), z.boolean(), z.null()]))
+  .transform((metadata) => {
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(metadata).slice(0, 20)) {
+      const cleanKey = key.trim().slice(0, 80);
+      if (!cleanKey || value == null) continue;
+      if (/token|secret|signature|authorization|password/i.test(cleanKey)) continue;
+      result[cleanKey] = String(value).trim().slice(0, 500);
+    }
+    return result;
+  });
 
 export const upsertRt2CaptureSourceSchema = z.object({
   source: oneLinerInboundDraftSourceSchema,
@@ -61,9 +74,38 @@ export const createOneLinerInboundDraftSchema = z.object({
   eventId: z.string().trim().min(1).max(200).nullable().optional(),
   eventTimestamp: z.string().datetime().nullable().optional(),
   signature: z.string().trim().min(1).max(500).nullable().optional(),
+  metadata: rt2CaptureSourceEvidenceMetadataSchema.optional(),
 });
 
 export type CreateOneLinerInboundDraft = z.infer<typeof createOneLinerInboundDraftSchema>;
+
+export const createRt2MessagingInboundSchema = z.object({
+  text: z.string().trim().min(1).max(5000).nullable().optional(),
+  messageText: z.string().trim().min(1).max(5000).nullable().optional(),
+  channel: z.string().trim().min(1).max(120).nullable().optional(),
+  channelId: z.string().trim().min(1).max(120).nullable().optional(),
+  channel_id: z.string().trim().min(1).max(120).nullable().optional(),
+  externalUserId: z.string().trim().min(1).max(200).nullable().optional(),
+  userId: z.string().trim().min(1).max(200).nullable().optional(),
+  user_id: z.string().trim().min(1).max(200).nullable().optional(),
+  sourceInstallationId: z.string().uuid().nullable().optional(),
+  eventId: z.string().trim().min(1).max(200).nullable().optional(),
+  event_id: z.string().trim().min(1).max(200).nullable().optional(),
+  messageId: z.string().trim().min(1).max(200).nullable().optional(),
+  eventTimestamp: z.string().datetime().nullable().optional(),
+  timestamp: z.string().trim().min(1).max(120).nullable().optional(),
+  signature: z.string().trim().min(1).max(500).nullable().optional(),
+  teamId: z.string().trim().min(1).max(120).nullable().optional(),
+  team_id: z.string().trim().min(1).max(120).nullable().optional(),
+  tenantId: z.string().trim().min(1).max(120).nullable().optional(),
+  tenant_id: z.string().trim().min(1).max(120).nullable().optional(),
+  threadId: z.string().trim().min(1).max(200).nullable().optional(),
+  thread_ts: z.string().trim().min(1).max(200).nullable().optional(),
+  permalink: z.string().trim().max(500).nullable().optional(),
+  metadata: rt2CaptureSourceEvidenceMetadataSchema.optional(),
+}).passthrough();
+
+export type CreateRt2MessagingInbound = z.infer<typeof createRt2MessagingInboundSchema>;
 
 export const rt2CaptureDraftRevisionSnapshotSchema = z.object({
   taskTitle: z.string().trim().min(1).max(300),

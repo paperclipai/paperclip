@@ -196,6 +196,7 @@ export interface Rt2CaptureSourceEvidence {
   eventId: string | null;
   eventTimestamp: string | null;
   reasonCode: string | null;
+  metadata?: Record<string, string> | null;
 }
 
 export interface Rt2CaptureSemanticContextItem {

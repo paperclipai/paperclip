@@ -64,6 +64,9 @@ const CAPTURE_ENTRYPOINTS = [
   { source: "native", label: "Native", route: "POST /api/companies/:companyId/rt2/one-liner/inbound-draft" },
 ] as const;
 
+const MESSAGING_CAPTURE_SOURCES = ["slack", "teams", "webhook"] as const;
+type MessagingCaptureSource = typeof MESSAGING_CAPTURE_SOURCES[number];
+
 function buildReviewedOneLinerText(draft: OneLinerDraft) {
   return [
     `task: ${draft.taskTitle.trim()}`,
@@ -90,6 +93,12 @@ function createEmptyDraft(rawInput: string): OneLinerDraft {
   };
 }
 
+function callbackUrl(companyId: string, source: MessagingCaptureSource) {
+  const path = `/api/companies/${companyId}/rt2/capture-sources/${source}/inbound`;
+  if (typeof window === "undefined") return path;
+  return `${window.location.origin}${path}`;
+}
+
 export function OneLinerPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -100,6 +109,12 @@ export function OneLinerPage() {
   const [draft, setDraft] = useState<OneLinerDraft | null>(null);
   const [draftGenerated, setDraftGenerated] = useState(false);
   const [createdDraft, setCreatedDraft] = useState<Rt2InboundDraftResponse | null>(null);
+  const [sourceEdits, setSourceEdits] = useState<Record<string, {
+    label: string;
+    installationState: "not_installed" | "installed" | "blocked" | "stale" | "error";
+    blockedReason: string;
+  }>>({});
+  const [sourceSecrets, setSourceSecrets] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setBreadcrumbs([{ label: "일일 업무 기록" }]);
@@ -120,6 +135,22 @@ export function OneLinerPage() {
     queryFn: () => rt2TasksApi.listCaptureQueue(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+
+  useEffect(() => {
+    setSourceEdits((current) => {
+      const next = { ...current };
+      for (const source of captureSources) {
+        if (!MESSAGING_CAPTURE_SOURCES.includes(source.source as MessagingCaptureSource)) continue;
+        if (next[source.source]) continue;
+        next[source.source] = {
+          label: source.label,
+          installationState: source.installationState,
+          blockedReason: source.blockedReason ?? "",
+        };
+      }
+      return next;
+    });
+  }, [captureSources]);
 
   const activeProjects = useMemo(
     () => projects.filter((project) => !project.archivedAt),
@@ -165,6 +196,31 @@ export function OneLinerPage() {
         queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.listByProject(selectedCompanyId, projectId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(selectedCompanyId, projectId) });
       }
+    },
+  });
+
+  const saveCaptureSource = useMutation({
+    mutationFn: async (source: MessagingCaptureSource) => {
+      if (!selectedCompanyId) {
+        throw new Error("Company context is required.");
+      }
+      const edit = sourceEdits[source];
+      const signingSecret = sourceSecrets[source]?.trim();
+      const currentSource = captureSources.find((item) => item.source === source);
+      return rt2TasksApi.upsertCaptureSource(selectedCompanyId, source, {
+        source,
+        label: edit?.label?.trim() || undefined,
+        installationState: edit?.installationState ?? "installed",
+        signingStatus: signingSecret ? "signed" : currentSource?.signingStatus ?? "unsigned",
+        signingSecret: signingSecret || undefined,
+        blockedReason: edit?.blockedReason?.trim() || null,
+      });
+    },
+    onSuccess: (_result, source) => {
+      if (!selectedCompanyId) return;
+      setSourceSecrets((current) => ({ ...current, [source]: "" }));
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureSources(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
     },
   });
 
@@ -294,6 +350,126 @@ export function OneLinerPage() {
                   <code className="truncate text-[11px] text-muted-foreground">{entrypoint.route}</code>
                 </div>
               ))}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background px-4 py-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">메시징 입력 채널 설정</div>
+                <p className="mt-1 text-xs text-muted-foreground">Slack, Teams, webhook 입력을 서명 검증 후 보드 검수함으로 연결합니다.</p>
+              </div>
+              <div className="text-xs text-muted-foreground">secret은 저장 후 표시하지 않음</div>
+            </div>
+            <div className="grid gap-3">
+              {captureSources
+                .filter((source) => MESSAGING_CAPTURE_SOURCES.includes(source.source as MessagingCaptureSource))
+                .map((source) => {
+                  const messagingSource = source.source as MessagingCaptureSource;
+                  const edit = sourceEdits[messagingSource] ?? {
+                    label: source.label,
+                    installationState: source.installationState,
+                    blockedReason: source.blockedReason ?? "",
+                  };
+                  return (
+                    <div key={source.source} className="grid gap-2 rounded-md bg-muted/40 px-3 py-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-medium text-foreground">{source.label}</div>
+                        <div className="flex flex-wrap gap-1.5 text-muted-foreground">
+                          <span className="rounded-md border border-border px-2 py-0.5">{source.installationState}</span>
+                          <span className="rounded-md border border-border px-2 py-0.5">{source.signingStatus}</span>
+                          {source.lastErrorCode ? (
+                            <span className="rounded-md border border-amber-300/70 px-2 py-0.5 text-amber-700 dark:text-amber-200">
+                              {source.lastErrorCode}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <label className="grid gap-1">
+                        <span className="text-muted-foreground">Callback URL</span>
+                        <input
+                          readOnly
+                          className="w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-[11px] text-muted-foreground"
+                          value={callbackUrl(selectedCompanyId, messagingSource)}
+                        />
+                      </label>
+                      <div className="grid gap-2 md:grid-cols-[1fr_8rem]">
+                        <label className="grid gap-1">
+                          <span className="text-muted-foreground">Source label</span>
+                          <input
+                            className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+                            value={edit.label}
+                            onChange={(event) => setSourceEdits((current) => ({
+                              ...current,
+                              [messagingSource]: { ...edit, label: event.target.value },
+                            }))}
+                          />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-muted-foreground">상태</span>
+                          <select
+                            className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+                            value={edit.installationState}
+                            onChange={(event) => setSourceEdits((current) => ({
+                              ...current,
+                              [messagingSource]: {
+                                ...edit,
+                                installationState: event.target.value as typeof edit.installationState,
+                              },
+                            }))}
+                          >
+                            <option value="not_installed">미설치</option>
+                            <option value="installed">설치됨</option>
+                            <option value="blocked">차단</option>
+                            <option value="stale">갱신 필요</option>
+                            <option value="error">오류</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <label className="grid gap-1">
+                          <span className="text-muted-foreground">Signing secret 입력/교체</span>
+                          <input
+                            type="password"
+                            autoComplete="new-password"
+                            className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+                            value={sourceSecrets[messagingSource] ?? ""}
+                            placeholder={source.signingStatus === "signed" ? "저장됨 - 새 값 입력 시 교체" : "8자 이상 secret"}
+                            onChange={(event) => setSourceSecrets((current) => ({
+                              ...current,
+                              [messagingSource]: event.target.value,
+                            }))}
+                          />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-muted-foreground">차단/오류 사유</span>
+                          <input
+                            className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+                            value={edit.blockedReason}
+                            onChange={(event) => setSourceEdits((current) => ({
+                              ...current,
+                              [messagingSource]: { ...edit, blockedReason: event.target.value },
+                            }))}
+                          />
+                        </label>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
+                        <span>
+                          마지막 입력 {source.lastInboundEventAt ? new Date(source.lastInboundEventAt).toLocaleString() : "없음"}
+                          {source.lastInboundEventId ? ` · ${source.lastInboundEventId}` : ""}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={saveCaptureSource.isPending}
+                          onClick={() => saveCaptureSource.mutate(messagingSource)}
+                        >
+                          {saveCaptureSource.isPending ? "저장 중" : "설정 저장"}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           </div>
           <div className="rounded-lg border border-border bg-background px-4 py-3">
