@@ -57,3 +57,15 @@ export const updateCompanyBrandingSchema = z
   );
 
 export type UpdateCompanyBranding = z.infer<typeof updateCompanyBrandingSchema>;
+
+export const claudeOauthProfileSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  userProfilePath: z.string().min(1),
+});
+
+export const putClaudeOauthProfilesSchema = z.object({
+  profiles: z.array(claudeOauthProfileSchema),
+});
+
+export type PutClaudeOauthProfiles = z.infer<typeof putClaudeOauthProfilesSchema>;

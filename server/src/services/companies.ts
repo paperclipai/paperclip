@@ -322,5 +322,28 @@ export function companyService(db: Db) {
         }
         return result;
       }),
+
+    getClaudeOauthProfiles: async (companyId: string) => {
+      const row = await db
+        .select({ claudeOauthProfiles: companies.claudeOauthProfiles })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return Array.isArray(row.claudeOauthProfiles) ? row.claudeOauthProfiles : [];
+    },
+
+    setClaudeOauthProfiles: async (
+      companyId: string,
+      profiles: Array<{ id: string; label: string; userProfilePath: string }>,
+    ) => {
+      const updated = await db
+        .update(companies)
+        .set({ claudeOauthProfiles: profiles, updatedAt: new Date() })
+        .where(eq(companies.id, companyId))
+        .returning({ id: companies.id })
+        .then((rows) => rows[0] ?? null);
+      return updated !== null;
+    },
   };
 }

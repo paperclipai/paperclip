@@ -22,9 +22,12 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  claudeOauthProfileSchema,
+  putClaudeOauthProfilesSchema,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type PutClaudeOauthProfiles,
 } from "./company.js";
 export {
   environmentDriverSchema,

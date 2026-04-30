@@ -36,6 +36,7 @@ import {
   agentInstructionsService,
   accessService,
   approvalService,
+  companyService,
   companySkillService,
   budgetService,
   heartbeatService,
@@ -3179,6 +3180,48 @@ export function agentRoutes(
       agentName: agent.name,
       adapterType: agent.adapterType,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
+    });
+  });
+
+  router.get("/companies/:companyId/oauth-profiles", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const agentId = req.query.agentId as string | undefined;
+    if (!agentId) {
+      res.status(400).json({ error: "agentId query parameter is required" });
+      return;
+    }
+
+    const agent = await svc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const meta = asRecord(adapterConfig.meta) ?? {};
+    const env = asRecord(adapterConfig.env) ?? {};
+
+    // Prefer company-level profiles; fall back to per-agent config for backward compat.
+    const companySvc = companyService(db);
+    const companyProfiles = await companySvc.getClaudeOauthProfiles(companyId);
+    const perAgentProfiles = (Array.isArray(meta.oauthProfiles) ? meta.oauthProfiles : []).map(
+      (p: unknown) => {
+        const entry = p as { id?: string; label?: string };
+        return { id: entry.id ?? "", label: entry.label ?? "" };
+      },
+    );
+    const profiles = companyProfiles && companyProfiles.length > 0
+      ? companyProfiles.map((p) => ({ id: p.id, label: p.label }))
+      : perAgentProfiles;
+
+    const currentProfile = typeof env.USERPROFILE === "string" ? env.USERPROFILE : null;
+
+    res.json({
+      agentId: agent.id,
+      currentProfile,
+      profiles,
     });
   });
 
