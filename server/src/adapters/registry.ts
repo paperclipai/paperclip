@@ -1,4 +1,4 @@
-import type { ServerAdapterModule } from "./types.js";
+import type { AdapterModelProfileDefinition, ServerAdapterModule } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
@@ -9,7 +9,11 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
 } from "@paperclipai/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
+import {
+  agentConfigurationDoc as claudeAgentConfigurationDoc,
+  models as claudeModels,
+  modelProfiles as claudeModelProfiles,
+} from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
   listCodexSkills,
@@ -18,7 +22,11 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
 } from "@paperclipai/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
+import {
+  agentConfigurationDoc as codexAgentConfigurationDoc,
+  models as codexModels,
+  modelProfiles as codexModelProfiles,
+} from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -26,7 +34,11 @@ import {
   testEnvironment as cursorTestEnvironment,
   sessionCodec as cursorSessionCodec,
 } from "@paperclipai/adapter-cursor-local/server";
-import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
+import {
+  agentConfigurationDoc as cursorAgentConfigurationDoc,
+  models as cursorModels,
+  modelProfiles as cursorModelProfiles,
+} from "@paperclipai/adapter-cursor-local";
 import {
   execute as geminiExecute,
   listGeminiSkills,
@@ -34,7 +46,11 @@ import {
   testEnvironment as geminiTestEnvironment,
   sessionCodec as geminiSessionCodec,
 } from "@paperclipai/adapter-gemini-local/server";
-import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
+import {
+  agentConfigurationDoc as geminiAgentConfigurationDoc,
+  models as geminiModels,
+  modelProfiles as geminiModelProfiles,
+} from "@paperclipai/adapter-gemini-local";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -46,6 +62,7 @@ import {
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
   models as openCodeModels,
+  modelProfiles as openCodeModelProfiles,
 } from "@paperclipai/adapter-opencode-local";
 import {
   execute as openclawGatewayExecute,
@@ -67,6 +84,7 @@ import {
 } from "@paperclipai/adapter-pi-local/server";
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
+  modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
 import {
   execute as hermesExecute,
@@ -126,6 +144,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   sessionCodec: claudeSessionCodec,
   sessionManagement: getAdapterSessionManagement("claude_local") ?? undefined,
   models: claudeModels,
+  modelProfiles: claudeModelProfiles,
   listModels: listClaudeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -144,6 +163,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   sessionCodec: codexSessionCodec,
   sessionManagement: getAdapterSessionManagement("codex_local") ?? undefined,
   models: codexModels,
+  modelProfiles: codexModelProfiles,
   listModels: listCodexModels,
   refreshModels: refreshCodexModels,
   supportsLocalAgentJwt: true,
@@ -163,6 +183,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
   sessionCodec: cursorSessionCodec,
   sessionManagement: getAdapterSessionManagement("cursor") ?? undefined,
   models: cursorModels,
+  modelProfiles: cursorModelProfiles,
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -180,6 +201,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
   sessionCodec: geminiSessionCodec,
   sessionManagement: getAdapterSessionManagement("gemini_local") ?? undefined,
   models: geminiModels,
+  modelProfiles: geminiModelProfiles,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -206,6 +228,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   syncSkills: syncOpenCodeSkills,
   sessionCodec: openCodeSessionCodec,
   models: openCodeModels,
+  modelProfiles: openCodeModelProfiles,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
@@ -224,6 +247,7 @@ const piLocalAdapter: ServerAdapterModule = {
   sessionCodec: piSessionCodec,
   sessionManagement: getAdapterSessionManagement("pi_local") ?? undefined,
   models: [],
+  modelProfiles: piModelProfiles,
   listModels: listPiModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -472,6 +496,16 @@ export async function refreshAdapterModels(type: string): Promise<{ id: string; 
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];
+}
+
+export async function listAdapterModelProfiles(type: string): Promise<AdapterModelProfileDefinition[]> {
+  const adapter = findActiveServerAdapter(type);
+  if (!adapter) return [];
+  if (adapter.listModelProfiles) {
+    const discovered = await adapter.listModelProfiles();
+    if (discovered.length > 0) return discovered;
+  }
+  return adapter.modelProfiles ?? [];
 }
 
 export function listServerAdapters(): ServerAdapterModule[] {
