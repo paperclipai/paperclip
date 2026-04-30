@@ -205,8 +205,8 @@ export function sidebarBadgeService(db: Db) {
           row.updatedAt ?? row.createdAt,
         )
       ).length;
-      const unreadTouchedIssues = extra?.unreadTouchedIssues ?? (currentUserId
-        ? await db
+      const unreadTouchedIssues: number = extra?.unreadTouchedIssues ?? (currentUserId
+        ? Number(await db
           .select({ count: count() })
           .from(issues)
           .where(
@@ -219,7 +219,7 @@ export function sidebarBadgeService(db: Db) {
               isNull(issues.hiddenAt),
             ),
           )
-          .then((rows) => rows[0]?.count ?? 0)
+          .then((rows) => rows[0]?.count ?? 0))
         : 0);
       return {
         inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
