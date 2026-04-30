@@ -18,8 +18,8 @@
  */
 export function pickAssistantChunk(data: Record<string, unknown>): string | null {
   const delta = typeof data.delta === "string" ? data.delta : null;
-  if (delta && delta.length > 0) return delta;
+  if (delta !== null && delta.length > 0) return delta;
   const text = typeof data.text === "string" ? data.text : null;
-  if (text && text.length > 0) return text;
+  if (text !== null && text.length > 0) return text;
   return null;
 }
