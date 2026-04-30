@@ -58,7 +58,8 @@ Check (each item is BLOCK-level if missing):
 - [ ] **Wikipedia-style lead sentence**: first sentence matches `[Topic] is [category] [defined-by]` form
 - [ ] **Lead paragraph 40-80 words** with a named entity + a number + a date in first 2 sentences
 - [ ] **`## Key facts` numbered list** of 3-7 items immediately after lead paragraph, before any prose H2
-- [ ] **`## References` footer** at the end with numbered `[1]`, `[2]`, etc. (format `[N] Title — URL · retrieved YYYY-MM-DD`)
+- [ ] **`## References` footer** at the end with numbered `[1]`, `[2]`, etc. (format `[N] Title — URL · retrieved YYYY-MM-DD`) — **BLOCK if absent**
+- [ ] **Inline citation count ≥ 5** — count every `[N]` marker in the body (excluding items inside the References section itself). Report as `citations: N inline ✅` (if ≥5) or `citations: N inline ❌ BLOCK` (if <5). **BLOCK if <5.**
 - [ ] ≥3 internal wikilinks to related Academy courses or glossary entries
 - [ ] OG-friendly first 60 chars of intro
 - [ ] Reading-time pill in frontmatter
@@ -98,6 +99,7 @@ Score: 5/5 if reads natural. <4 → BLOCK.
 
 - Accuracy 5/5 · Brand voice 5/5 · Structure 5/5 · Completeness 5/5 · Spam-brain 5/5
 - 6 sources verified live (last checked <HH:MM>)
+- citations: 6 inline ✅ · ## References footer ✅
 - Routing → @ceo G3 alignment (auto-publish on PASS unless high_stakes:true)
 ```
 
@@ -109,6 +111,12 @@ Score: 5/5 if reads natural. <4 → BLOCK.
 ACCURACY (<n> blockers)
 - Para 3: "Anthropic shipped 8 connectors" — actual count is 7 per <URL>. Fix.
 - Para 7: cited <URL> returns 404. Verify or replace.
+
+CITATIONS (BLOCK)
+- citations: 2 inline ❌ BLOCK — minimum 5 required; add ≥3 more `[N]` inline citation markers in the body.
+
+REFERENCES (BLOCK)
+- `## References` footer is absent — add numbered `[1]`, `[2]`… section before handoff.
 
 STRUCTURE (<n> blockers)
 - H1 reads "Claude Connectors Guide" — answer-first preferred. Suggest: "How to use Claude's 7 connectors in 10 minutes".

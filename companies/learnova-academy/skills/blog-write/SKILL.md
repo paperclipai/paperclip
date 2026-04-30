@@ -138,6 +138,17 @@ wc -w vault/blogs/<date>-<slug>/draft.md
 
 Expected: 800-1500 words (excluding frontmatter). Outside this range = revise before handoff.
 
+**Citation pre-flight (BLOCK if failed — do not hand off until resolved):**
+
+```bash
+# Count inline [N] citation markers in the body (excluding the References section)
+grep -oP '\[\d+\]' vault/blogs/<date>-<slug>/draft.md | wc -l
+```
+
+- Expected: **≥ 5** inline `[N]` citations in the body. If <5, add citations before handoff.
+- Confirm `## References` footer section is present at the end of the draft.
+- Both checks must pass. Record the count in the handoff comment (see step 6).
+
 ### 6. Hand off to G0
 
 ```yaml
@@ -151,7 +162,7 @@ Comment on ticket:
 - 1,140 words; 1 RunPromptCell, 1 KnowledgeCheck
 - Primary query: "<...>"
 - Contrarian angle: "<...>"
-- Cited 7 sources (all verified live <HH:MM>)
+- citations: 7 inline ✅ · ## References footer ✅ (all 7 URLs verified live <HH:MM>)
 - Funnel link: [[course/<slug>]]
 - Status: awaiting-g0 → @content-reviewer
 ```

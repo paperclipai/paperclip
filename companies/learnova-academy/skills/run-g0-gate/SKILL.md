@@ -43,8 +43,13 @@ Check it has all 5 dimensions scored:
 - [ ] Structure ≥ 4/5
 - [ ] Completeness 5/5
 - [ ] Spam-brain ≥ 4/5
+- [ ] `citations: N inline ✅` present with **N ≥ 5** (pattern: `citations: \d+ inline ✅`)
+- [ ] `## References footer ✅` confirmed in PASS comment
 
 If any dimension is missing or <4/5 with a PASS → **chain is broken**. Route ticket back to `awaiting-g0` with a comment to Reviewer.
+
+If `citations:` line is absent or shows N < 5 → **chain is broken**. Comment: "BLOCK: Reviewer did not verify inline citation count ≥ 5. Re-review required."
+If `## References footer` is not confirmed → **chain is broken**. Comment: "BLOCK: Reviewer did not confirm ## References footer. Re-review required."
 
 ### 3. Spot-check Reviewer's URL verification
 
