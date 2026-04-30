@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
+import { trace } from "@opentelemetry/api";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
@@ -30,6 +31,17 @@ const sharedOpts = {
 export const logger = pino({
   level: "debug",
   redact: ["req.headers.authorization"],
+  mixin() {
+    const activeSpan = trace.getActiveSpan();
+    if (activeSpan) {
+      const spanContext = activeSpan.spanContext();
+      return {
+        traceId: spanContext.traceId,
+        spanId: spanContext.spanId,
+      };
+    }
+    return {};
+  },
 }, pino.transport({
   targets: [
     {

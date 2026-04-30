@@ -42,6 +42,13 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  withHeartbeatSpan,
+  withHeartbeatChildSpan,
+  withAdapterSpan,
+  recordAdapterResult,
+  getTraceContextHeaders,
+} from "../telemetry/spans.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -4921,6 +4928,11 @@ export function heartbeatService(db: Db) {
 
     activeRunExecutions.add(run.id);
 
+    // Wrap the execution in an OpenTelemetry heartbeat span
+    await withHeartbeatSpan(
+      { runId: run.id, agentId: run.agentId, companyId: run.companyId },
+      async (heartbeatSpan) => {
+
     try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
@@ -4938,11 +4950,18 @@ export function heartbeatService(db: Db) {
       return;
     }
 
+    // Enrich the heartbeat span with agent/issue details
+    heartbeatSpan.setAttributes({
+      "heartbeat.agent_name": agent.name ?? "",
+      "heartbeat.adapter_type": agent.adapterType,
+    });
+
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
+    if (issueId) heartbeatSpan.setAttribute("heartbeat.issue_id", issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
@@ -5713,30 +5732,55 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        executionTarget,
-        executionTransport: remoteExecution
-          ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
-          : undefined,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, {
-            pid: meta.pid,
-            processGroupId:
-              "processGroupId" in meta && typeof meta.processGroupId === "number"
-                ? meta.processGroupId
-                : null,
-            startedAt: meta.startedAt,
+      // Propagate trace context to adapter via environment variables
+      const traceHeaders = getTraceContextHeaders();
+      if (traceHeaders.traceparent) {
+        runtimeConfig.TRACEPARENT = traceHeaders.traceparent;
+        if (traceHeaders.tracestate) {
+          runtimeConfig.TRACESTATE = traceHeaders.tracestate;
+        }
+      }
+
+      const adapterResult = await withAdapterSpan(
+        { adapterType: agent.adapterType, agentId: agent.id, runId: run.id },
+        async (adapterSpan) => {
+          const result = await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context,
+            executionTarget,
+            executionTransport: remoteExecution
+              ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+              : undefined,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, {
+                pid: meta.pid,
+                processGroupId:
+                  "processGroupId" in meta && typeof meta.processGroupId === "number"
+                    ? meta.processGroupId
+                    : null,
+                startedAt: meta.startedAt,
+              });
+            },
+            authToken: authToken ?? undefined,
           });
+          // Record LLM metrics on the adapter span
+          recordAdapterResult(adapterSpan, {
+            provider: result.provider,
+            model: result.model,
+            inputTokens: result.usage?.inputTokens,
+            cachedInputTokens: result.usage?.cachedInputTokens,
+            outputTokens: result.usage?.outputTokens,
+            costUsd: result.costUsd,
+            billingType: result.billingType,
+          });
+          return result;
         },
-        authToken: authToken ?? undefined,
-      });
+      );
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -5811,6 +5855,14 @@ export function heartbeatService(db: Db) {
         outcome = "succeeded";
       } else {
         outcome = "failed";
+      }
+      // Record outcome on the heartbeat span
+      heartbeatSpan.setAttribute("heartbeat.outcome", outcome);
+      if (outcome !== "succeeded") {
+        heartbeatSpan.setStatus({
+          code: 2, // SpanStatusCode.ERROR
+          message: outcome,
+        });
       }
       const runErrorMessage =
         outcome === "cancelled"
@@ -6110,9 +6162,12 @@ export function heartbeatService(db: Db) {
             }).catch(() => undefined);
           }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+        }
+
+    }); // end withHeartbeatSpan
+
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
-        }
   }
 
   function buildImmediateExecutionPathRecoveryComment(input: {
