@@ -682,6 +682,19 @@ export function Inbox() {
       ? pathSegment
       : "mine";
   const canArchiveFromTab = isMineInboxTab(tab);
+  const showJoinRequestsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
+  const showTouchedCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
+  const showApprovalsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "approvals";
+  const showFailedRunsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
+  const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
+  const shouldLoadIssueLookup = tab !== "all" || showFailedRunsCategory;
+  const shouldLoadMineIssues = tab === "mine";
+  const shouldLoadTouchedIssues = tab === "recent" || tab === "unread" || (tab === "all" && showTouchedCategory);
+  const shouldLoadHeartbeatRuns = tab !== "all" || showFailedRunsCategory;
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -783,7 +796,7 @@ export function Inbox() {
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && shouldLoadIssueLookup,
   });
   const {
     data: mineIssuesRaw = [],
@@ -798,7 +811,7 @@ export function Inbox() {
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && shouldLoadMineIssues,
   });
   const {
     data: touchedIssuesRaw = [],
@@ -812,13 +825,13 @@ export function Inbox() {
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && shouldLoadTouchedIssues,
   });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && shouldLoadHeartbeatRuns,
   });
 
   const { data: liveRuns } = useQuery({
@@ -935,9 +948,11 @@ export function Inbox() {
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
+    for (const issue of mineIssuesRaw) map.set(issue.id, issue);
+    for (const issue of touchedIssuesRaw) map.set(issue.id, issue);
     for (const issue of issues ?? []) map.set(issue.id, issue);
     return map;
-  }, [issues]);
+  }, [issues, mineIssuesRaw, touchedIssuesRaw]);
   const projectById = useMemo(() => {
     const map = new Map<string, { name: string; color: string | null }>();
     for (const project of projects ?? []) {
@@ -1015,15 +1030,6 @@ export function Inbox() {
     }
     return filtered;
   }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
-  const showJoinRequestsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
-  const showTouchedCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
-  const showApprovalsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "approvals";
-  const showFailedRunsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
-  const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
     if (tab === "all" && !showFailedRunsCategory) return [];
     return failedRuns;
