@@ -3,30 +3,30 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Native Distribution Readiness
 status: executing
-last_updated: "2026-04-30T20:54:18+09:00"
-last_activity: 2026-04-30 -- Phase 62 planning complete
+last_updated: "2026-04-30T21:12:46+09:00"
+last_activity: 2026-04-30 -- Phase 62 completed
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 4
-  completed_plans: 3
-  percent: 50
+  completed_plans: 4
+  percent: 67
 ---
 
 # RealTycoon2 Planning State
 
 ## Current Position
 
-Phase: 62 Resident Tray and Global Shortcut
+Phase: 63 Mobile Push Notification Loop
 Plan: -
-Status: Ready to execute
-Last activity: 2026-04-30 -- Phase 62 planning complete
+Status: Ready to discuss and plan
+Last activity: 2026-04-30 -- Phase 62 completed
 
 ## 현재 위치
 
-v3.0 Native Distribution Readiness milestone이 진행 중이다. Phase 59는 native distribution foundation을 완료했고 Phase 60은 native signing/notarization/trust evidence gate를 완료했으며 Phase 61은 release channel/signed updater evidence gate를 완료했다. v2.9 Native Capture and Draft Reliability는 shipped baseline으로 취급하며 DRAFT/NATIVE/MSG/REVIEW 기능은 regression gate 실패를 고치는 경우에만 다시 연다.
+v3.0 Native Distribution Readiness milestone이 진행 중이다. Phase 59는 native distribution foundation을 완료했고 Phase 60은 native signing/notarization/trust evidence gate를 완료했으며 Phase 61은 release channel/signed updater evidence gate를 완료했고 Phase 62는 resident surface evidence gate를 완료했다. v2.9 Native Capture and Draft Reliability는 shipped baseline으로 취급하며 DRAFT/NATIVE/MSG/REVIEW 기능은 regression gate 실패를 고치는 경우에만 다시 연다.
 
-이번 milestone은 `DIST-01`, `DIST-02`, `DIST-03`, `DIST-04`, `DIST-05`를 완료했고, 다음으로 OS-level global shortcut, resident tray app, mobile push notification을 production distribution readiness로 끌어올린다.
+이번 milestone은 `DIST-01`, `DIST-02`, `DIST-03`, `DIST-04`, `DIST-05`, `RES-01`, `RES-02`, `RES-03`을 완료했고, 다음으로 mobile push notification과 final distribution gate를 production distribution readiness로 끌어올린다.
 
 ## 최근 완료한 마일스톤
 
@@ -53,7 +53,7 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 | 59 | Native Distribution Foundation | DIST-01 | Complete |
 | 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Complete |
 | 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Complete |
-| 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
+| 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Complete |
 | 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
 | 64 | v3.0 Distribution Gate and Capture Regression Closure | DIST-06 | Planned |
 
@@ -66,6 +66,7 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 - 현재 repo는 Electron/Tauri 같은 native shell dependency가 없는 web/PWA-first 상태다. Phase 59는 Tauri v2를 native shell baseline으로 선택하고 `apps/desktop` future package layout, signing/updater/channel inventory, v2.9 regression gate boundary를 확정했다.
 - Phase 60은 `scripts/rt2-native-signing-gate.mjs`로 macOS Developer ID/hardened runtime/codesign/notarization/stapling/Gatekeeper evidence와 Windows installer trust path/signing/timestamping/signature verification/install trust evidence를 검증하고 blocker report를 남긴다.
 - Phase 61은 `scripts/rt2-release-channel-gate.mjs`로 internal/beta/stable release channel, updater signature/checksum, rollout/rollback, installed/update state, Phase 60 signing prerequisite, secret hygiene evidence를 검증하고 blocker report를 남긴다.
+- Phase 62는 `scripts/rt2-resident-surface-gate.mjs`로 resident tray/menubar status, OS-level global shortcut lifecycle, privacy boundary, native capture handoff, macOS/Windows resident evidence를 검증하고 blocker report를 남긴다.
 - macOS/Windows 실제 signing credential은 repo에 저장하지 않고 manifest evidence와 secret reference로만 다룬다.
 - Push는 APNs/Web Push/device token을 company/user/device scope로 관리하고 최소 payload/deep-link 방식으로 board review target에 연결해야 한다.
 - Windows sandbox `spawn EPERM`은 계속 환경 제약이다. Vitest/build tooling은 승인된 unsandboxed command execution이 필요할 수 있다.
@@ -79,13 +80,13 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 | marketplace | Public/open company capture marketplace | v3.0 범위 밖 |
 | store_ops | Public store listing launch/marketing/reviewer operations | signing/updater/notarization readiness 이후 후속 scope |
 | postgres | Windows default embedded Postgres broader suite execution | accepted debt; closure command is `pnpm rt2:embedded-postgres-host-ready` |
-| test | Full `pnpm test` on this host | v2.8/v2.9에서 full-suite timeout residual risk가 있었고 focused gates를 우선 사용 |
+| test | Full `pnpm test` on this host | 2026-04-30 Phase 62 run은 server temp DB hook timeout 1건으로 실패했고 해당 suite 단독 재실행은 통과; focused gates와 typecheck 우선 사용 |
 
 ## 다음 단계
 
-Phase 62 Resident Tray and Global Shortcut를 논의하고 계획한다. Phase 61의 installed channel/build identity와 update lifecycle state contract를 tray 상태 표시에 재사용하되, resident tray/menubar와 OS-level global shortcut은 Phase 62에서 별도 구현해야 한다.
+Phase 63 Mobile Push Notification Loop를 논의하고 계획한다. Phase 62의 resident tray/shortcut capture handoff와 v2.9 board review target을 유지하면서 APNs/Web Push/device token, minimal payload, delivery/retry/failure/click evidence를 company-scoped notification loop로 연결해야 한다.
 
-다음 세션 지시어: `$gsd-discuss-phase 62 --auto --chain`으로 resident tray/global shortcut 범위를 확정하고 자동 계획/실행한다. 바로 계획하려면 `$gsd-plan-phase 62 --auto`를 실행한다.
+다음 세션 지시어: `$gsd-discuss-phase 63 --auto --chain`으로 mobile push notification loop 범위를 확정하고 자동 계획/실행한다. 바로 계획하려면 `$gsd-plan-phase 63 --auto`를 실행한다.
 
 ---
-*상태 업데이트: 2026-04-30, Phase 61 completed*
+*상태 업데이트: 2026-04-30, Phase 62 completed*

@@ -12,7 +12,7 @@
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
-- [active] **v3.0 Native Distribution Readiness** - Phase 59-61 complete, Phase 62-64 planned
+- [active] **v3.0 Native Distribution Readiness** - Phase 59-62 complete, Phase 63-64 planned
 
 ## 완료됨
 
@@ -128,7 +128,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v3.0 Native Distribution Readiness (Phase 59-61 complete, Phase 62-64 planned)</summary>
+<summary>v3.0 Native Distribution Readiness (Phase 59-62 complete, Phase 63-64 planned)</summary>
 
 **Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
 
@@ -137,7 +137,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 | 59 | Native Distribution Foundation | DIST-01 | Complete |
 | 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Complete |
 | 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Complete |
-| 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
+| 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Complete |
 | 63 | Mobile Push Notification Loop | PUSH-01, PUSH-02, PUSH-03 | Planned |
 | 64 | v3.0 Distribution Gate and Capture Regression Closure | DIST-06 | Planned |
 
@@ -187,6 +187,8 @@ Success criteria:
 1. Tray/menubar status shows quick capture, sync/queue state, auth/company state, build identity, and release channel.
 2. Global shortcut registration/unregistration exposes conflict, permission, focus, and privacy state.
 3. Tray/shortcut capture creates or updates persistent drafts and never auto-applies work without approval.
+
+Completion status: `passed` on 2026-04-30. Phase 62 added `scripts/rt2-resident-surface-gate.mjs`, focused tests, package scripts, and operator docs so resident tray/menubar and OS-level global shortcut manifests produce durable `summary.json`/`report.md` evidence and block on missing tray status, invalid update state, unresolved shortcut lifecycle state, unsafe privacy behavior, capture review bypass, or raw secret material.
 
 **Phase 63: Mobile Push Notification Loop**
 Goal: Mobile/Web Push/APNs subscription and delivery evidence route RT2 work signals back to board review targets.
@@ -400,8 +402,8 @@ Success criteria:
 | 58. v2.9 Verification and Distribution Readiness Closure | v2.9 | 1/1 | Complete | 2026-04-30 |
 | 59. Native Distribution Foundation | v3.0 | 1/1 | Complete | 2026-04-30 |
 | 60. Signing and Notarization Pipeline | v3.0 | 1/1 | Complete | 2026-04-30 |
-| 61. Release Channels and Signed Updater | v3.0 | 0/1 | Planned | - |
-| 62. Resident Tray and Global Shortcut | v3.0 | 0/1 | Planned | - |
+| 61. Release Channels and Signed Updater | v3.0 | 1/1 | Complete | 2026-04-30 |
+| 62. Resident Tray and Global Shortcut | v3.0 | 1/1 | Complete | 2026-04-30 |
 | 63. Mobile Push Notification Loop | v3.0 | 0/1 | Planned | - |
 | 64. v3.0 Distribution Gate and Capture Regression Closure | v3.0 | 0/1 | Planned | - |
 
@@ -437,4 +439,4 @@ Success criteria:
 - [v2.8 milestone audit](milestones/v2.8-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-30, v3.0 milestone initialized*
+*마지막 업데이트: 2026-04-30, Phase 62 resident surface evidence gate completed*

@@ -18,9 +18,9 @@ Requirements for `v3.0 Native Distribution Readiness`. v2.9 DRAFT/NATIVE/MSG/REV
 
 ### Resident Desktop
 
-- [ ] **RES-01**: 운영자는 resident tray/menubar app에서 RealTycoon2 quick capture, sync/queue state, auth/company state, build identity, release channel을 확인할 수 있다.
-- [ ] **RES-02**: 운영자는 OS-level global shortcut을 등록, 해제, 변경하고 shortcut conflict, permission, focus/privacy 상태를 확인할 수 있다.
-- [ ] **RES-03**: tray/global shortcut capture는 v2.9 persistent draft revision과 board review inbox로만 들어가며 승인 전 자동 apply를 하지 않는다.
+- [x] **RES-01**: 운영자는 resident tray/menubar app에서 RealTycoon2 quick capture, sync/queue state, auth/company state, build identity, release channel을 확인할 수 있다. - Phase 62
+- [x] **RES-02**: 운영자는 OS-level global shortcut을 등록, 해제, 변경하고 shortcut conflict, permission, focus/privacy 상태를 확인할 수 있다. - Phase 62
+- [x] **RES-03**: tray/global shortcut capture는 v2.9 persistent draft revision과 board review inbox로만 들어가며 승인 전 자동 apply를 하지 않는다. - Phase 62
 
 ### Mobile Push
 
@@ -65,9 +65,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DIST-04 | Phase 61 | Complete |
 | DIST-05 | Phase 61 | Complete |
 | DIST-06 | Phase 64 | Pending |
-| RES-01 | Phase 62 | Pending |
-| RES-02 | Phase 62 | Pending |
-| RES-03 | Phase 62 | Pending |
+| RES-01 | Phase 62 | Complete |
+| RES-02 | Phase 62 | Complete |
+| RES-03 | Phase 62 | Complete |
 | PUSH-01 | Phase 63 | Pending |
 | PUSH-02 | Phase 63 | Pending |
 | PUSH-03 | Phase 63 | Pending |
@@ -76,9 +76,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 - v3.0 requirements: 12 total
 - Mapped to phases: 12
 - Unmapped: 0
-- Complete: 5
-- Pending: 7
+- Complete: 8
+- Pending: 4
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after Phase 61 release channel evidence gate completion*
+*Last updated: 2026-04-30 after Phase 62 resident surface evidence gate completion*
