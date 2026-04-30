@@ -1,9 +1,0 @@
-name Latvian
-language lv
-maintainer Valdis Vitolins <valdis.vitolins@odo.lv>
-status mature
-words 0 2
-pitch 67 123
-tone 60 150 204 100 400 255 700 10 3000 255
-stressAmp 11 8 11 9 0 0 14 12
-stressLength 160 120 200 130 0 0 230 180

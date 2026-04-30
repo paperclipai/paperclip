@@ -87,3 +87,7 @@ observability/minio-data/
 observability/redis-data/
 observability/open-notebook/surreal_data/
 observability/open-notebook/notebook_data/
+
+# Python virtualenvs in services/
+services/*/.venv/
+services/**/.venv/

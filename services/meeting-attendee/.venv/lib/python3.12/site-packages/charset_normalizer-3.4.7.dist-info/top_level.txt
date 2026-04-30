@@ -1,2 +1,0 @@
-81d243bd2c585b0f4821__mypyc
-charset_normalizer

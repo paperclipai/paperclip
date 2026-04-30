@@ -1,8 +1,0 @@
-name Persian (Pinglish)
-// Sometimes, Farsi speakers write Farsi words using English characters, particularly in Chat and SMS (texte messages).), called Pinglish
-language fa-latn
-maintainer Shadyar Khodayari <shadyar81@gmail.com>
-status mature
-dictrules 1
-phonemes fa
-

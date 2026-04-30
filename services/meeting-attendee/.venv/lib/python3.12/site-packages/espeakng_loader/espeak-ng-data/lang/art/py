@@ -1,7 +1,0 @@
-name Pyash
-language py
-maintainer Logan Streondj <logan@liberit.ca>
-status testing
-
-speed 80   // speed adjustment, percentage
-stressRule 0

@@ -1,4 +1,0 @@
-name Sindarin
-language sjn
-stressRule 2
-// rule=penultimate, with sjn_rules for light penultimate syllables to move primary stress to the preceding (antepenultimate) syllable
