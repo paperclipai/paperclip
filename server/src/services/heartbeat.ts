@@ -8,11 +8,13 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type ModelProfileKey,
   type RunLivenessState,
 } from "@paperclipai/shared";
 import {
@@ -38,8 +40,14 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
-import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
+import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import type {
+  AdapterExecutionResult,
+  AdapterInvocationMeta,
+  AdapterModelProfileDefinition,
+  AdapterSessionCodec,
+  UsageSummary,
+} from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
@@ -879,8 +887,21 @@ type SessionCompactionDecision = {
 };
 
 interface ParsedIssueAssigneeAdapterOverrides {
+  modelProfile: ModelProfileKey | null;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
+}
+
+type ModelProfileRequestSource = "issue_override" | "wake_context";
+type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
+
+export interface ModelProfileApplication {
+  requested: ModelProfileKey | null;
+  requestedBy: ModelProfileRequestSource | null;
+  applied: ModelProfileKey | null;
+  configSource: AppliedModelProfileConfigSource | null;
+  fallbackReason: string | null;
+  adapterConfig: Record<string, unknown> | null;
 }
 
 export type ResolvedWorkspaceForRun = {
@@ -917,6 +938,147 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function readModelProfileKey(value: unknown): ModelProfileKey | null {
+  return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
+    ? (value as ModelProfileKey)
+    : null;
+}
+
+function readContextModelProfile(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): ModelProfileKey | null {
+  return readModelProfileKey(contextSnapshot?.modelProfile);
+}
+
+export function normalizeModelProfileWakeContext(input: {
+  contextSnapshot: Record<string, unknown>;
+  payload: Record<string, unknown> | null | undefined;
+}): Record<string, unknown> {
+  const modelProfileFromPayload = readModelProfileKey(input.payload?.modelProfile);
+  if (!readContextModelProfile(input.contextSnapshot) && modelProfileFromPayload) {
+    input.contextSnapshot.modelProfile = modelProfileFromPayload;
+  }
+  return input.contextSnapshot;
+}
+
+function readAgentRuntimeModelProfile(
+  runtimeConfig: unknown,
+  key: ModelProfileKey,
+): { enabled: boolean; adapterConfig: Record<string, unknown>; configured: boolean } {
+  const modelProfiles = parseObject(parseObject(runtimeConfig).modelProfiles);
+  const profile = parseObject(modelProfiles[key]);
+  if (Object.keys(profile).length === 0) {
+    return { enabled: true, adapterConfig: {}, configured: false };
+  }
+
+  return {
+    enabled: profile.enabled !== false,
+    adapterConfig: parseObject(profile.adapterConfig),
+    configured: true,
+  };
+}
+
+export function resolveModelProfileApplication(input: {
+  adapterModelProfiles: AdapterModelProfileDefinition[];
+  agentRuntimeConfig: unknown;
+  issueModelProfile: ModelProfileKey | null | undefined;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  profileResolutionFallbackReason?: string | null;
+}): ModelProfileApplication {
+  const issueModelProfile = input.issueModelProfile ?? null;
+  const contextModelProfile = readContextModelProfile(input.contextSnapshot);
+  const requested = issueModelProfile ?? contextModelProfile;
+  const requestedBy: ModelProfileRequestSource | null = issueModelProfile
+    ? "issue_override"
+    : contextModelProfile
+      ? "wake_context"
+      : null;
+
+  if (!requested) {
+    return {
+      requested: null,
+      requestedBy: null,
+      applied: null,
+      configSource: null,
+      fallbackReason: null,
+      adapterConfig: null,
+    };
+  }
+
+  const adapterProfile = input.adapterModelProfiles.find((profile) => profile.key === requested) ?? null;
+  if (!adapterProfile) {
+    return {
+      requested,
+      requestedBy,
+      applied: null,
+      configSource: null,
+      fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
+      adapterConfig: null,
+    };
+  }
+
+  const runtimeProfile = readAgentRuntimeModelProfile(input.agentRuntimeConfig, requested);
+  if (!runtimeProfile.enabled) {
+    return {
+      requested,
+      requestedBy,
+      applied: null,
+      configSource: null,
+      fallbackReason: "agent_runtime_profile_disabled",
+      adapterConfig: null,
+    };
+  }
+
+  return {
+    requested,
+    requestedBy,
+    applied: requested,
+    configSource: runtimeProfile.configured ? "agent_runtime" : "adapter_default",
+    fallbackReason: null,
+    adapterConfig: {
+      ...parseObject(adapterProfile.adapterConfig),
+      ...runtimeProfile.adapterConfig,
+    },
+  };
+}
+
+export function mergeModelProfileAdapterConfig(input: {
+  baseConfig: Record<string, unknown>;
+  modelProfile: ModelProfileApplication;
+  issueAdapterConfig: Record<string, unknown> | null | undefined;
+}): Record<string, unknown> {
+  return {
+    ...input.baseConfig,
+    ...(input.modelProfile.adapterConfig ?? {}),
+    ...(input.issueAdapterConfig ?? {}),
+  };
+}
+
+function modelProfileRunMetadata(
+  modelProfile: ModelProfileApplication,
+): Record<string, unknown> | null {
+  if (!modelProfile.requested) return null;
+  return {
+    requested: modelProfile.requested,
+    requestedBy: modelProfile.requestedBy,
+    applied: modelProfile.applied,
+    configSource: modelProfile.configSource,
+    fallbackReason: modelProfile.fallbackReason,
+  };
+}
+
+function mergeModelProfileRunMetadata(
+  resultJson: Record<string, unknown> | null,
+  modelProfile: ModelProfileApplication,
+): Record<string, unknown> | null {
+  const metadata = modelProfileRunMetadata(modelProfile);
+  if (!metadata) return resultJson;
+  return {
+    ...(resultJson ?? {}),
+    modelProfile: metadata,
+  };
+}
+
 export function summarizeHeartbeatRunContextSnapshot(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -930,6 +1092,7 @@ export function summarizeHeartbeatRunContextSnapshot(
     "wakeReason",
     "wakeSource",
     "wakeTriggerDetail",
+    "modelProfile",
   ] as const;
 
   for (const key of allowedKeys) {
@@ -1259,6 +1422,9 @@ function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
+  const modelProfile = MODEL_PROFILE_KEYS.includes(parsed.modelProfile as ModelProfileKey)
+    ? parsed.modelProfile as ModelProfileKey
+    : null;
   const parsedAdapterConfig = parseObject(parsed.adapterConfig);
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
@@ -1266,8 +1432,9 @@ function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!adapterConfig && useProjectWorkspace === null) return null;
+  if (!modelProfile && !adapterConfig && useProjectWorkspace === null) return null;
   return {
+    modelProfile,
     adapterConfig,
     useProjectWorkspace,
   };
@@ -1551,6 +1718,7 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  normalizeModelProfileWakeContext({ contextSnapshot, payload });
 
   return {
     contextSnapshot,
@@ -4964,9 +5132,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceConfig: existingExecutionWorkspace?.config ?? null,
       mode: effectiveExecutionWorkspaceMode,
     });
-    const mergedConfig = issueAssigneeOverrides?.adapterConfig
-      ? { ...persistedWorkspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
-      : persistedWorkspaceManagedConfig;
+    let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
+    let profileResolutionFallbackReason: string | null = null;
+    try {
+      adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
+    } catch (error) {
+      profileResolutionFallbackReason = "adapter_profile_resolution_failed";
+      logger.warn(
+        {
+          err: error,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          runId: run.id,
+        },
+        "Failed to resolve adapter model profiles; falling back to primary adapter config",
+      );
+    }
+    const modelProfileApplication = resolveModelProfileApplication({
+      adapterModelProfiles,
+      agentRuntimeConfig: agent.runtimeConfig,
+      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
+      contextSnapshot: context,
+      profileResolutionFallbackReason,
+    });
+    const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
+    if (modelProfileMetadata) {
+      context.paperclipModelProfile = modelProfileMetadata;
+      if (modelProfileApplication.requested) context.modelProfile = modelProfileApplication.requested;
+    } else {
+      delete context.paperclipModelProfile;
+    }
+    const mergedConfig = mergeModelProfileAdapterConfig({
+      baseConfig: persistedWorkspaceManagedConfig,
+      modelProfile: modelProfileApplication,
+      issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+    });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
@@ -5527,12 +5728,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (key in meta.env) meta.env[key] = "***REDACTED***";
           }
         }
+        const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",
           stream: "system",
           level: "info",
           message: "adapter invocation",
-          payload: meta as unknown as Record<string, unknown>,
+          payload: {
+            ...(meta as unknown as Record<string, unknown>),
+            ...(modelProfileMetadata ? { modelProfile: modelProfileMetadata } : {}),
+          },
         });
       };
 
@@ -5715,11 +5920,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
-          resultJson: mergeAdapterRecoveryMetadata({
-            resultJson: adapterResult.resultJson ?? null,
-            errorFamily: adapterResult.errorFamily ?? null,
-            retryNotBefore: adapterResult.retryNotBefore ?? null,
-          }),
+          resultJson: mergeModelProfileRunMetadata(
+            mergeAdapterRecoveryMetadata({
+              resultJson: adapterResult.resultJson ?? null,
+              errorFamily: adapterResult.errorFamily ?? null,
+              retryNotBefore: adapterResult.retryNotBefore ?? null,
+            }),
+            modelProfileApplication,
+          ),
           errorCode: runErrorCode,
           errorMessage: runErrorMessage,
         }),
