@@ -2,7 +2,6 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import {
-  HEARTBEAT_RUNS_DEFAULT_LIMIT,
   HEARTBEAT_RUNS_MAX_LIMIT,
   HeartbeatRunsListLimitError,
   clampHeartbeatRunsListLimit,
@@ -33,10 +32,14 @@ import {
  */
 
 describe("clampHeartbeatRunsListLimit", () => {
-  it("returns the default when input is undefined / empty / null", () => {
-    expect(clampHeartbeatRunsListLimit(undefined)).toBe(HEARTBEAT_RUNS_DEFAULT_LIMIT);
-    expect(clampHeartbeatRunsListLimit(null)).toBe(HEARTBEAT_RUNS_DEFAULT_LIMIT);
-    expect(clampHeartbeatRunsListLimit("")).toBe(HEARTBEAT_RUNS_DEFAULT_LIMIT);
+  it("returns undefined when input is undefined / empty / null (preserves pre-fix 'no limit' behavior)", () => {
+    // Pre-fix the route mapped omitted-`?limit=` to `undefined` and the
+    // service skipped `.limit()` entirely (returning all rows). Returning
+    // `undefined` here keeps that contract — anything else would be a silent
+    // truncation for existing API consumers that omit `?limit=`.
+    expect(clampHeartbeatRunsListLimit(undefined)).toBeUndefined();
+    expect(clampHeartbeatRunsListLimit(null)).toBeUndefined();
+    expect(clampHeartbeatRunsListLimit("")).toBeUndefined();
   });
 
   it("returns the parsed value when it is in [1, MAX]", () => {
@@ -109,11 +112,11 @@ describe("GET /api/companies/:companyId/heartbeat-runs route parsing", () => {
     return app;
   }
 
-  it("forwards a single ?status=running and clamped default limit", async () => {
+  it("forwards a single ?status=running with undefined limit (omitted ?limit=)", async () => {
     const stub = vi.fn().mockResolvedValue([]);
     const res = await request(buildApp(stub)).get("/api/companies/c1/heartbeat-runs?status=running");
     expect(res.status).toBe(200);
-    expect(stub).toHaveBeenCalledWith("c1", undefined, HEARTBEAT_RUNS_DEFAULT_LIMIT, "running");
+    expect(stub).toHaveBeenCalledWith("c1", undefined, undefined, "running");
   });
 
   it("forwards CSV ?status=running,queued (preserves legacy comma form)", async () => {
@@ -122,7 +125,7 @@ describe("GET /api/companies/:companyId/heartbeat-runs route parsing", () => {
       "/api/companies/c1/heartbeat-runs?status=running,queued",
     );
     expect(res.status).toBe(200);
-    expect(stub).toHaveBeenCalledWith("c1", undefined, HEARTBEAT_RUNS_DEFAULT_LIMIT, "running,queued");
+    expect(stub).toHaveBeenCalledWith("c1", undefined, undefined, "running,queued");
   });
 
   it("forwards repeated-key ?status=running&status=queued as array (the bug fix)", async () => {
@@ -131,7 +134,7 @@ describe("GET /api/companies/:companyId/heartbeat-runs route parsing", () => {
       "/api/companies/c1/heartbeat-runs?status=running&status=queued",
     );
     expect(res.status).toBe(200);
-    expect(stub).toHaveBeenCalledWith("c1", undefined, HEARTBEAT_RUNS_DEFAULT_LIMIT, [
+    expect(stub).toHaveBeenCalledWith("c1", undefined, undefined, [
       "running",
       "queued",
     ]);
@@ -143,17 +146,17 @@ describe("GET /api/companies/:companyId/heartbeat-runs route parsing", () => {
       "/api/companies/c1/heartbeat-runs?status=running,queued&status=failed",
     );
     expect(res.status).toBe(200);
-    expect(stub).toHaveBeenCalledWith("c1", undefined, HEARTBEAT_RUNS_DEFAULT_LIMIT, [
+    expect(stub).toHaveBeenCalledWith("c1", undefined, undefined, [
       "running,queued",
       "failed",
     ]);
   });
 
-  it("uses the default limit when ?limit is absent", async () => {
+  it("forwards undefined limit when ?limit is absent (preserves pre-fix unbounded behavior)", async () => {
     const stub = vi.fn().mockResolvedValue([]);
     const res = await request(buildApp(stub)).get("/api/companies/c1/heartbeat-runs");
     expect(res.status).toBe(200);
-    expect(stub).toHaveBeenCalledWith("c1", undefined, HEARTBEAT_RUNS_DEFAULT_LIMIT, undefined);
+    expect(stub).toHaveBeenCalledWith("c1", undefined, undefined, undefined);
   });
 
   it("silently clamps ?limit=5000 to the MAX (no 400)", async () => {

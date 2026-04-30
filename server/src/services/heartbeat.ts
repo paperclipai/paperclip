@@ -146,28 +146,16 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 
-// Limits applied to `GET /api/companies/:companyId/heartbeat-runs?limit=...`.
-// MAX is the historical silent cap that already lived inline in the route as a
-// magic 1000. DEFAULT preserves the prior implicit fallback (the route used
-// `parseInt(...) || 200`). Exporting both so the route + tests share the
-// constants instead of duplicating the values.
-export const HEARTBEAT_RUNS_DEFAULT_LIMIT = 200;
+// Max cap applied to `GET /api/companies/:companyId/heartbeat-runs?limit=...`.
+// This is the historical silent cap that already lived inline in the route as
+// a magic 1000. Exported so the route + tests share the constant instead of
+// duplicating the value. There is intentionally no DEFAULT constant: when
+// `?limit=` is omitted, the helper returns `undefined` and the service skips
+// `.limit()` entirely — preserving the pre-fix behavior where omitted-limit
+// callers received the full unbounded result set. Adding a default here would
+// be a silent breaking change for any consumer that relied on that.
 export const HEARTBEAT_RUNS_MAX_LIMIT = 1000;
 
-/**
- * Normalize the `?limit=` query value for the heartbeat-runs list endpoint.
- *
- * Mirrors the issue-list precedent (`clampIssueListLimit` in services/issues.ts):
- *   - undefined / missing → returns the default limit (no error)
- *   - integer in [1, MAX] → returned as-is
- *   - integer > MAX → silently clamped to MAX (preserves backward compat with
- *     polling clients that already submitted huge limits and got 1000)
- *   - anything else (non-integer, zero, negative, NaN, decimal) → throws
- *     {@link HeartbeatRunsListLimitError} so the route can surface a 400.
- *
- * Throws instead of returning a discriminated union so the route handler stays
- * one line; the caller catches and responds.
- */
 export class HeartbeatRunsListLimitError extends Error {
   constructor(message: string) {
     super(message);
@@ -179,11 +167,11 @@ export class HeartbeatRunsListLimitError extends Error {
  * Normalize a `?status=` query value (single string, comma-separated string,
  * `string[]` from repeated keys, or mixed array+CSV) into a clean `string[]`.
  *
- * NOTE: this duplicates `parseStatusFilter` from `services/issues.ts` (added
- * in PR #4890 for issue #4628). The helper is kept private to this module so
- * this PR remains self-contained and order-independent of #4890. Once both
- * land, a small follow-up should consolidate to a single shared helper (e.g.
- * `services/util/parse-status-filter.ts`) and remove this copy.
+ * Exported (and re-exported via `services/index.ts`) so the route handler,
+ * the service, and the unit tests can all share one parser. This duplicates
+ * `parseStatusFilter` from `services/issues.ts` (added in PR #4890 for issue
+ * #4628); a follow-up should consolidate both into a single shared helper
+ * (e.g. `services/util/parse-status-filter.ts`) and remove this copy.
  */
 export function parseHeartbeatRunStatusFilter(
   input: string | readonly string[] | undefined,
@@ -196,9 +184,25 @@ export function parseHeartbeatRunStatusFilter(
     .filter(Boolean);
 }
 
-export function clampHeartbeatRunsListLimit(input: unknown): number {
+/**
+ * Normalize the `?limit=` query value for the heartbeat-runs list endpoint.
+ *
+ *   - undefined / null / empty string → returns `undefined` so the service
+ *     skips `.limit()` and returns all rows. This intentionally preserves
+ *     the pre-fix behavior for omitted-`?limit=` callers; changing it would
+ *     be a silent truncation for existing consumers.
+ *   - integer in [1, MAX] → returned as-is
+ *   - integer > MAX → silently clamped to MAX (preserves backward compat
+ *     with polling clients that already submitted huge limits and got 1000)
+ *   - anything else (non-integer, zero, negative, NaN, decimal) → throws
+ *     {@link HeartbeatRunsListLimitError} so the route can surface a 400.
+ *
+ * Throws instead of returning a discriminated union so the route handler stays
+ * one line; the caller catches and responds.
+ */
+export function clampHeartbeatRunsListLimit(input: unknown): number | undefined {
   if (input === undefined || input === null || input === "") {
-    return HEARTBEAT_RUNS_DEFAULT_LIMIT;
+    return undefined;
   }
   const raw = typeof input === "string" ? input : String(input);
   if (!/^\d+$/.test(raw)) {

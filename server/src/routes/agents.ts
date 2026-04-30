@@ -2817,7 +2817,10 @@ export function agentRoutes(
     // `parseStatusFilter` normalizes single, CSV, array, and mixed shapes
     // (#4628). Pre-fix, `?status=` was silently dropped (#4568).
     const statusInput = req.query.status as string | string[] | undefined;
-    let limit: number;
+    // `undefined` here intentionally means "no `.limit()` clause" so the service
+    // returns all rows for callers that omit `?limit=` — preserving pre-fix
+    // behavior. See `clampHeartbeatRunsListLimit` JSDoc.
+    let limit: number | undefined;
     try {
       limit = clampHeartbeatRunsListLimit(req.query.limit);
     } catch (err) {

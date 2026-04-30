@@ -32,7 +32,6 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export {
-  HEARTBEAT_RUNS_DEFAULT_LIMIT,
   HEARTBEAT_RUNS_MAX_LIMIT,
   HeartbeatRunsListLimitError,
   clampHeartbeatRunsListLimit,
