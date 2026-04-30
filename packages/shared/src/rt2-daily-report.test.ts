@@ -119,6 +119,7 @@ describe("RT2 daily report shared contracts", () => {
       searchText: "주간 보고서 김운영 운영 리듬 개선 수정 필요",
       searchableLabels: ["주간 보고서", "김운영", "운영 리듬 개선", "수정 필요"],
       dueDate: "2026-04-30",
+      gapFlags: [],
     };
 
     expect(contract).toEqual(

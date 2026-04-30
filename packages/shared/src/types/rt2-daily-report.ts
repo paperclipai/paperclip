@@ -1,4 +1,10 @@
+import type { Rt2BoardQualityStatus, Rt2DeliverableKind } from "./rt2-task.js";
+
 export type Rt2DailyLane = "todo" | "doing" | "done";
+
+export type Rt2DailyDeliverableOwner = "task" | "todo";
+export type Rt2DailyApprovalWaitingSource = "none" | "deliverable_review" | "quality_review_proxy";
+export type Rt2DailyOkrSource = "direct_task" | "inherited_project" | "none";
 
 export type Rt2DailyActivityType =
   | "todo_added"
@@ -23,9 +29,29 @@ export interface Rt2DailyReportCard {
   deliverableCount: number;
   submittedDeliverableCount: number;
   taskDeliverableCount: number;
+  deliverableId: string | null;
+  deliverableTitle: string | null;
+  deliverableType: Rt2DeliverableKind | null;
+  deliverableRequired: boolean;
+  deliverableOwner: Rt2DailyDeliverableOwner | null;
+  deliverableSource: Rt2DailyDeliverableOwner | null;
+  deliverableMissing: boolean;
   basePriceTotal: number;
-  qualityStatus: "none" | "pending_review" | "reviewed";
+  qualityStatus: Rt2BoardQualityStatus;
+  approvalWaiting: boolean;
+  approvalWaitingSource: Rt2DailyApprovalWaitingSource;
   okrContextStatus: "connected" | "missing_goal";
+  okrSource: Rt2DailyOkrSource;
+  directGoalId: string | null;
+  directGoalTitle: string | null;
+  inheritedGoalId: string | null;
+  inheritedGoalTitle: string | null;
+  reportDateMatchesBoard: boolean;
+  actorMatchesAssignee: boolean;
+  assigneeDisplayName: string | null;
+  searchText: string;
+  searchableLabels: string[];
+  dueDate: string | null;
   gapFlags: Rt2DailyGapFlag[];
 }
 
