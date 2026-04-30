@@ -99,7 +99,8 @@ function readRunLogLimitBytes(value: unknown) {
 function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(0, Math.min(max, Math.trunc(parsed)));
+  if (parsed <= 0) return fallback;
+  return Math.min(max, Math.trunc(parsed));
 }
 
 export function agentRoutes(
@@ -2821,8 +2822,8 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
-    const minCount = readLiveRunsQueryInt(req.query.minCount, 50);
-    const limit = readLiveRunsQueryInt(req.query.limit, 50);
+    const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 50);
+    const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
 
     const columns = {
       id: heartbeatRuns.id,
@@ -2862,8 +2863,8 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    const liveRuns = limit > 0 ? await liveRunsQuery.limit(limit) : await liveRunsQuery;
-    const targetRunCount = limit > 0 ? Math.min(minCount, limit) : minCount;
+    const liveRuns = await liveRunsQuery.limit(limit);
+    const targetRunCount = Math.min(minCount, limit);
 
     if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
       const activeIds = liveRuns.map((r) => r.id);

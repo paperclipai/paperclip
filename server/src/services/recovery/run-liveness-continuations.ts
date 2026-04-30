@@ -127,7 +127,6 @@ export function decideRunLivenessContinuation(input: {
   if (budgetBlocked) {
     return { kind: "skip", reason: "budget hard stop blocks continuation" };
   }
-
   const currentAttempt = readContinuationAttempt(run.continuationAttempt);
   if (currentAttempt >= maxAttempts) {
     return {

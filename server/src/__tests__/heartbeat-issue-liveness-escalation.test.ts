@@ -289,10 +289,23 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const heartbeat = heartbeatService(db);
 
     const first = await heartbeat.reconcileIssueGraphLiveness();
-    const second = await heartbeat.reconcileIssueGraphLiveness();
 
     expect(first.escalationsCreated).toBe(1);
+    const [sourceAfterFirst] = await db
+      .select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId));
+    const eventsAfterFirst = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    expect(eventsAfterFirst.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+
     expect(second.escalationsCreated).toBe(0);
+    const [sourceAfterSecond] = await db
+      .select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId));
+    expect(sourceAfterSecond?.updatedAt.getTime()).toBe(sourceAfterFirst?.updatedAt.getTime());
 
     const escalations = await db
       .select()
@@ -345,7 +358,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         projectWorkspaceSourceIssueId: blockerIssueId,
       },
     });
-    expect(events.some((event) => event.action === "issue.blockers.updated")).toBe(true);
+    expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {
