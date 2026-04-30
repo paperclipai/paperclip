@@ -1,25 +1,23 @@
 export type CcrotateTarget = "claude" | "codex";
 
-export interface CcrotateSshConfig {
-  host: string;
-  user: string;
-  port: number;
-  identityFile: string;
-  strictHostKeyChecking: boolean;
+export interface AccountRow {
+  email: string;
+  target: CcrotateTarget;
+  tier: string;
+  utilization5h: number | null;
+  utilization7d: number | null;
+  availability: string;
+  isActive: boolean;
+  isHealthy: boolean;
 }
 
-export interface CcrotateDriverConfig {
-  ssh: CcrotateSshConfig;
-  target: CcrotateTarget;
-  remoteWorkspaceRoot: string;
-  midRunRetries: number;
-  rateLimitPatterns: string[];
+export interface SnapshotResponse {
+  fetchedAt: string;
+  cacheAge: string | null;
+  targets: Record<CcrotateTarget, { error?: string; accounts?: AccountRow[] }>;
 }
 
-export interface CcrotateLeaseState {
-  providerLeaseId: string;
-  remoteCwd: string;
-  rotatedEmail: string | null;
-  rotatedAt: string;
-  target: CcrotateTarget;
+export interface PersistedSnapshot {
+  blob: string;
+  capturedAt: string;
 }

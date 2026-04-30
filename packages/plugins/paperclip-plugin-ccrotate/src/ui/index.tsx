@@ -1,92 +1,53 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type { PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { PLUGIN_ID } from "../manifest.js";
 
-// ---------------------------------------------------------------------------
-// Types — narrow projections of the JSON shape returned by the worker routes.
-// We deliberately keep these loose so a future ccrotate `tier-cache` schema
-// bump (extra fields) is non-breaking; only the columns we render are typed.
-// ---------------------------------------------------------------------------
+// ─── Types (mirror worker.ts) ────────────────────────────────────────────────
 
 type Target = "claude" | "codex";
 
 interface AccountRow {
   email: string;
-  serviceTier?: string | null;
-  utilization5h?: number | null;
-  utilization7d?: number | null;
-  reset5h?: number | null; // unix seconds
-  reset7d?: number | null;
-  resetAt?: string | null;
-  lastUsed?: string | null;
-  isCurrent?: boolean;
+  target: Target;
+  tier: string;
+  utilization5h: number | null;
+  utilization7d: number | null;
+  availability: string;
+  isActive: boolean;
+  isHealthy: boolean;
 }
 
-interface PoolPayload {
-  cachedAt?: string | null;
-  currentEmail?: string | null;
-  accounts?: AccountRow[];
-  // ccrotate's tier-cache JSON is a record keyed by email — accept either shape.
-  [email: string]: unknown;
-  error?: string;
-}
-
-interface PoolsResponse {
-  pools: Record<Target, PoolPayload>;
+interface SnapshotResponse {
   fetchedAt: string;
+  cacheAge: string | null;
+  targets: Record<Target, { error?: string; accounts?: AccountRow[] }>;
 }
 
-interface SshConfig {
-  host: string;
-  user: string;
-  port: number;
-  identityFile: string;
-  strictHostKeyChecking: boolean;
-}
+// ─── Styles ──────────────────────────────────────────────────────────────────
 
-interface PanelHostState {
-  ssh: SshConfig | null;
-  /** Persisted in localStorage so operators don't re-enter the SSH config every visit. */
-  remembered: boolean;
-}
+const wrap: CSSProperties = { padding: "16px", fontSize: "13px" };
 
-const SSH_LOCAL_STORAGE_KEY = `${PLUGIN_ID}:ssh-host`;
-
-// ---------------------------------------------------------------------------
-// Styles (match the linear plugin's tokens)
-// ---------------------------------------------------------------------------
-
-const cardStyle: CSSProperties = {
-  border: "1px solid var(--border, #27272a)",
-  borderRadius: "8px",
-  padding: "16px",
-  background: "var(--card, #09090b)",
-  marginBottom: "12px",
+const headerRow: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: "16px",
+  gap: "12px",
 };
 
-const labelStyle: CSSProperties = {
+const h1: CSSProperties = { fontSize: "18px", fontWeight: 600, margin: 0 };
+
+const meta: CSSProperties = {
   fontSize: "11px",
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
   color: "var(--muted-foreground, #a1a1aa)",
+  display: "flex",
+  gap: "12px",
 };
 
-const inputStyle: CSSProperties = {
-  fontSize: "13px",
-  padding: "6px 10px",
-  border: "1px solid var(--border, #27272a)",
-  borderRadius: "6px",
-  background: "var(--input, #18181b)",
-  color: "var(--foreground, #fafafa)",
-  outline: "none",
-  width: "100%",
-};
-
-const btnStyle: CSSProperties = {
+const button: CSSProperties = {
   fontSize: "12px",
   fontWeight: 500,
-  padding: "4px 10px",
+  padding: "6px 12px",
   borderRadius: "6px",
   border: "1px solid var(--border, #27272a)",
   background: "var(--secondary, #27272a)",
@@ -94,449 +55,234 @@ const btnStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-const tableHeaderRow: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1.5fr 0.6fr 0.7fr 0.7fr 0.7fr 0.6fr",
-  gap: "8px",
-  padding: "8px 0",
-  borderBottom: "1px solid var(--border, #27272a)",
+const card: CSSProperties = {
+  border: "1px solid var(--border, #27272a)",
+  borderRadius: "8px",
+  background: "var(--card, #09090b)",
+  marginBottom: "16px",
+  overflow: "hidden",
+};
+
+const cardHeader: CSSProperties = {
+  padding: "10px 16px",
   fontSize: "11px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  color: "var(--muted-foreground, #a1a1aa)",
+  borderBottom: "1px solid var(--border, #27272a)",
+  display: "flex",
+  justifyContent: "space-between",
+  gap: "8px",
+};
+
+const tableGrid: CSSProperties = {
+  display: "grid",
+  // marker · email · tier · 5h · 7d · availability
+  gridTemplateColumns: "32px 1fr 90px 70px 70px 1.4fr",
+  gap: "0",
+};
+
+const cellHeader: CSSProperties = {
+  padding: "8px 12px",
+  fontSize: "10px",
   fontWeight: 600,
   textTransform: "uppercase",
   letterSpacing: "0.05em",
   color: "var(--muted-foreground, #a1a1aa)",
+  background: "var(--muted, #18181b)",
 };
 
-const tableRowStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1.5fr 0.6fr 0.7fr 0.7fr 0.7fr 0.6fr",
-  gap: "8px",
-  padding: "10px 0",
-  borderBottom: "1px solid var(--border, #1f1f22)",
+const cell: CSSProperties = {
+  padding: "10px 12px",
+  borderTop: "1px solid var(--border, #27272a)",
   fontSize: "13px",
-  alignItems: "center",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function loadStoredSsh(): SshConfig | null {
-  try {
-    const raw = window.localStorage.getItem(SSH_LOCAL_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<SshConfig> | null;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (typeof parsed.host !== "string" || typeof parsed.user !== "string") return null;
-    if (typeof parsed.identityFile !== "string") return null;
-    return {
-      host: parsed.host,
-      user: parsed.user,
-      port: typeof parsed.port === "number" && parsed.port > 0 ? parsed.port : 22,
-      identityFile: parsed.identityFile,
-      strictHostKeyChecking: parsed.strictHostKeyChecking !== false,
-    };
-  } catch {
-    return null;
+const tierBadge = (tier: string): CSSProperties => {
+  const t = tier.toLowerCase();
+  let bg = "var(--muted, #27272a)";
+  let fg = "var(--muted-foreground, #a1a1aa)";
+  if (t === "base") {
+    bg = "rgba(34, 197, 94, 0.15)";
+    fg = "rgb(74, 222, 128)";
+  } else if (t === "extra") {
+    bg = "rgba(234, 179, 8, 0.15)";
+    fg = "rgb(250, 204, 21)";
+  } else if (t === "exhausted") {
+    bg = "rgba(239, 68, 68, 0.15)";
+    fg = "rgb(248, 113, 113)";
   }
+  return {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: "10px",
+    fontSize: "11px",
+    fontWeight: 600,
+    textTransform: "lowercase",
+    background: bg,
+    color: fg,
+  };
+};
+
+const utilColor = (pct: number | null): string => {
+  if (pct === null) return "var(--muted-foreground, #a1a1aa)";
+  if (pct >= 95) return "rgb(248, 113, 113)";
+  if (pct >= 70) return "rgb(250, 204, 21)";
+  return "var(--foreground, #fafafa)";
+};
+
+const errorBox: CSSProperties = {
+  padding: "10px 12px",
+  fontSize: "12px",
+  color: "rgb(248, 113, 113)",
+  background: "rgba(239, 68, 68, 0.08)",
+};
+
+// ─── Page ────────────────────────────────────────────────────────────────────
+
+const TARGETS: Target[] = ["claude", "codex"];
+const TARGET_LABEL: Record<Target, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+};
+
+interface FetchState {
+  loading: boolean;
+  error: string | null;
+  data: SnapshotResponse | null;
 }
 
-function storeSsh(ssh: SshConfig) {
-  try {
-    window.localStorage.setItem(SSH_LOCAL_STORAGE_KEY, JSON.stringify(ssh));
-  } catch {
-    // ignore — localStorage may be unavailable in private browsing
-  }
-}
+export function CcrotatePoolsPage(_props: PluginSettingsPageProps) {
+  const [state, setState] = useState<FetchState>({ loading: true, error: null, data: null });
 
-/**
- * Normalize the loose PoolPayload returned from `ccrotate tier-cache` into
- * a list of AccountRows ready for the table. Defensive: ccrotate has shipped
- * a few different cache shapes across 1.0.x → 1.1.x.
- */
-function normalizePoolAccounts(pool: PoolPayload): AccountRow[] {
-  if (!pool || typeof pool !== "object") return [];
-  if (Array.isArray(pool.accounts)) return pool.accounts;
-
-  // Fall back to record-keyed-by-email shape: { "email@x.com": { ...rateLimits } }
-  const rows: AccountRow[] = [];
-  for (const [key, value] of Object.entries(pool)) {
-    if (key === "cachedAt" || key === "currentEmail" || key === "error" || key === "accounts") {
-      continue;
-    }
-    if (!key.includes("@") || !value || typeof value !== "object") continue;
-    const v = value as Record<string, unknown>;
-    rows.push({
-      email: key,
-      serviceTier: typeof v.serviceTier === "string" ? v.serviceTier : null,
-      utilization5h: typeof v.utilization5h === "number" ? v.utilization5h : null,
-      utilization7d: typeof v.utilization7d === "number" ? v.utilization7d : null,
-      reset5h: typeof v.reset5h === "number" ? v.reset5h : null,
-      reset7d: typeof v.reset7d === "number" ? v.reset7d : null,
-      resetAt: typeof v.resetAt === "string" ? v.resetAt : null,
-      lastUsed: typeof v.lastUsed === "string" ? v.lastUsed : null,
-      isCurrent: pool.currentEmail === key,
-    });
-  }
-  return rows;
-}
-
-function formatCountdown(epochSeconds: number | null | undefined, nowMs: number): string {
-  if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) return "—";
-  const deltaMs = epochSeconds * 1000 - nowMs;
-  if (deltaMs <= 0) return "now";
-  const totalMinutes = Math.floor(deltaMs / 60000);
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  const hours = Math.floor(totalMinutes / 60);
-  const mins = totalMinutes % 60;
-  if (hours < 24) return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  const remHours = hours % 24;
-  return remHours > 0 ? `${days}d${remHours}h` : `${days}d`;
-}
-
-function formatUtilization(util: number | null | undefined): string {
-  if (typeof util !== "number" || !Number.isFinite(util)) return "—";
-  return `${Math.round(util)}%`;
-}
-
-function formatTier(tier: string | null | undefined): string {
-  if (!tier) return "—";
-  return tier;
-}
-
-function tierColor(tier: string | null | undefined): string {
-  if (tier === "base") return "var(--success, #4ade80)";
-  if (tier === "extra") return "var(--warning, #fbbf24)";
-  if (tier === "exhausted") return "var(--destructive, #ef4444)";
-  return "var(--muted-foreground, #a1a1aa)";
-}
-
-async function callPluginRoute<T = unknown>(
-  routePath: string,
-  body: unknown,
-): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
-  try {
-    const res = await fetch(`/api/plugins/${PLUGIN_ID}/api${routePath}`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const ok = res.ok;
-    const status = res.status;
-    let data: T | null = null;
-    let error: string | undefined;
+  async function load() {
+    setState((s) => ({ ...s, loading: true, error: null }));
     try {
-      data = (await res.json()) as T;
-    } catch {
-      // non-JSON response (e.g. nginx 503 HTML); fall through with error.
+      const res = await fetch(`/api/plugins/${PLUGIN_ID}/api/snapshot`, {
+        credentials: "same-origin",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as SnapshotResponse;
+      setState({ loading: false, error: null, data });
+    } catch (err) {
+      setState({
+        loading: false,
+        error: err instanceof Error ? err.message : "fetch failed",
+        data: null,
+      });
     }
-    if (!ok) error = `HTTP ${status}`;
-    return { ok, status, data, error };
-  } catch (err) {
-    return {
-      ok: false,
-      status: 0,
-      data: null,
-      error: err instanceof Error ? err.message : "fetch failed",
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// SSH host editor (top of panel) — operators paste the same config the
-// environment driver uses. Persisted to localStorage so reloads keep state.
-// ---------------------------------------------------------------------------
-
-function HostEditor({
-  ssh,
-  onChange,
-}: {
-  ssh: SshConfig | null;
-  onChange: (next: SshConfig) => void;
-}) {
-  const [draft, setDraft] = useState<SshConfig>(
-    ssh ?? {
-      host: "",
-      user: "",
-      port: 22,
-      identityFile: "",
-      strictHostKeyChecking: true,
-    },
-  );
-
-  function commit() {
-    if (!draft.host.trim() || !draft.user.trim() || !draft.identityFile.trim()) return;
-    const next: SshConfig = { ...draft, host: draft.host.trim(), user: draft.user.trim() };
-    storeSsh(next);
-    onChange(next);
   }
 
-  return (
-    <div style={cardStyle}>
-      <div style={{ ...labelStyle, marginBottom: "10px" }}>SSH host (where ccrotate lives)</div>
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 0.6fr", gap: "8px", marginBottom: "8px" }}>
-        <input
-          style={inputStyle}
-          placeholder="host (e.g. 69.25.95.32)"
-          value={draft.host}
-          onChange={(e) => setDraft({ ...draft, host: e.target.value })}
-        />
-        <input
-          style={inputStyle}
-          placeholder="user"
-          value={draft.user}
-          onChange={(e) => setDraft({ ...draft, user: e.target.value })}
-        />
-        <input
-          style={inputStyle}
-          placeholder="port"
-          type="number"
-          value={draft.port}
-          onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) || 22 })}
-        />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "8px" }}>
-        <input
-          style={inputStyle}
-          placeholder="identity file (absolute path on the plugin worker host)"
-          value={draft.identityFile}
-          onChange={(e) => setDraft({ ...draft, identityFile: e.target.value })}
-        />
-        <button style={btnStyle} onClick={commit}>
-          Use host
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Pool table — accounts for one target (claude or codex)
-// ---------------------------------------------------------------------------
-
-function PoolTable({
-  target,
-  pool,
-  ssh,
-  onAfterAction,
-}: {
-  target: Target;
-  pool: PoolPayload | null | undefined;
-  ssh: SshConfig;
-  onAfterAction: () => void;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  const [busy, setBusy] = useState<string | null>(null);
-
-  // Live countdown — re-render every 30s without re-polling routes.
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    load();
+    const id = window.setInterval(load, 30_000);
     return () => window.clearInterval(id);
   }, []);
 
-  const accounts = useMemo(
-    () => (pool ? normalizePoolAccounts(pool) : []),
-    [pool],
-  );
-
-  if (!pool) {
-    return (
-      <div style={{ color: "var(--muted-foreground, #a1a1aa)", padding: "12px" }}>
-        Loading {target}…
-      </div>
-    );
-  }
-
-  if (pool.error) {
-    return (
-      <div style={{ color: "var(--destructive, #ef4444)", padding: "12px", fontSize: "13px" }}>
-        {target}: {pool.error}
-      </div>
-    );
-  }
-
-  if (accounts.length === 0) {
-    return (
-      <div style={{ color: "var(--muted-foreground, #a1a1aa)", padding: "12px" }}>
-        No accounts in {target} pool. Run <code>ccrotate snap</code> on the host.
-      </div>
-    );
-  }
-
-  async function doSwitch(email: string) {
-    setBusy(`switch:${email}`);
-    const res = await callPluginRoute("/switch", { ssh, email, target });
-    setBusy(null);
-    onAfterAction();
-    if (!res.ok) {
-      window.alert(`switch failed: ${res.error ?? "unknown"}`);
-    }
-  }
-
-  async function doRefresh() {
-    setBusy("refresh");
-    const res = await callPluginRoute("/refresh", { ssh, target });
-    setBusy(null);
-    onAfterAction();
-    if (!res.ok) {
-      window.alert(`refresh failed: ${res.error ?? "unknown"}`);
-    }
-  }
-
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-        <div style={{ ...labelStyle, fontSize: "13px", textTransform: "none" }}>
-          {target} ({accounts.length} accounts)
+    <div style={wrap}>
+      <div style={headerRow}>
+        <div>
+          <h1 style={h1}>ccrotate accounts</h1>
+          <div style={meta}>
+            {state.data ? (
+              <>
+                <span>fetched {new Date(state.data.fetchedAt).toLocaleTimeString()}</span>
+                {state.data.cacheAge && <span>cache: {state.data.cacheAge}</span>}
+              </>
+            ) : null}
+          </div>
         </div>
-        <button style={btnStyle} disabled={busy === "refresh"} onClick={doRefresh}>
-          {busy === "refresh" ? "Refreshing…" : "Refresh"}
+        <button style={button} disabled={state.loading} onClick={load}>
+          {state.loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
-      <div style={tableHeaderRow}>
-        <div>Email</div>
-        <div>Tier</div>
-        <div>5h util</div>
-        <div>7d util</div>
-        <div>Reset</div>
-        <div></div>
-      </div>
+      {state.error && (
+        <div style={{ ...card, ...errorBox, marginBottom: "16px" }}>
+          Failed to load snapshot: {state.error}
+        </div>
+      )}
 
-      {accounts.map((acct) => {
-        const earliestReset =
-          typeof acct.reset5h === "number" && typeof acct.reset7d === "number"
-            ? Math.min(acct.reset5h, acct.reset7d)
-            : (acct.reset5h ?? acct.reset7d ?? null);
-        const isBusy = busy === `switch:${acct.email}`;
-        return (
-          <div key={acct.email} style={tableRowStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
-              {acct.isCurrent && (
-                <span style={{ color: "var(--success, #4ade80)" }} title="current account">★</span>
-              )}
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {acct.email}
-              </span>
-            </div>
-            <div style={{ color: tierColor(acct.serviceTier), fontWeight: 500 }}>
-              {formatTier(acct.serviceTier)}
-            </div>
-            <div>{formatUtilization(acct.utilization5h)}</div>
-            <div>{formatUtilization(acct.utilization7d)}</div>
-            <div style={{ color: "var(--muted-foreground, #a1a1aa)", fontSize: "12px" }}>
-              {formatCountdown(earliestReset, now)}
-            </div>
-            <div>
-              <button
-                style={{ ...btnStyle, opacity: acct.isCurrent ? 0.5 : 1 }}
-                disabled={acct.isCurrent || isBusy}
-                onClick={() => doSwitch(acct.email)}
-              >
-                {isBusy ? "…" : "Switch"}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      {state.data &&
+        TARGETS.map((target) => (
+          <TargetCard key={target} target={target} payload={state.data!.targets[target]} />
+        ))}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Top-level settings page export
-// ---------------------------------------------------------------------------
+interface TargetCardProps {
+  target: Target;
+  payload: { error?: string; accounts?: AccountRow[] };
+}
 
-export function CcrotatePoolsPage(_props: PluginSettingsPageProps) {
-  const [ssh, setSsh] = useState<SshConfig | null>(() => loadStoredSsh());
-  const [response, setResponse] = useState<PoolsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function fetchPools(currentSsh: SshConfig) {
-    setLoading(true);
-    setError(null);
-    const res = await callPluginRoute<PoolsResponse>("/pools", {
-      ssh: currentSsh,
-      targets: ["claude", "codex"],
-    });
-    setLoading(false);
-    if (res.ok && res.data) {
-      setResponse(res.data);
-    } else {
-      setError(res.error ?? "request failed");
-    }
-  }
-
-  useEffect(() => {
-    if (!ssh) return;
-    fetchPools(ssh);
-  }, [ssh]);
-
-  // Auto-refresh every 30s once an SSH host is set. Cheap on the host: each
-  // poll just re-reads the on-disk tier-cache, no Anthropic API hits.
-  useEffect(() => {
-    if (!ssh) return;
-    const id = window.setInterval(() => fetchPools(ssh), 30_000);
-    return () => window.clearInterval(id);
-  }, [ssh]);
-
+function TargetCard({ target, payload }: TargetCardProps) {
+  const accounts = payload.accounts ?? [];
   return (
-    <div style={{ maxWidth: "900px", padding: "16px" }}>
-      <div style={{ marginBottom: "12px" }}>
-        <h1 style={{ fontSize: "20px", fontWeight: 600, margin: 0 }}>ccrotate Pools</h1>
-        <p style={{ color: "var(--muted-foreground, #a1a1aa)", margin: "4px 0 0", fontSize: "13px" }}>
-          Live tier cache for the Claude and Codex account pools. Reads from{" "}
-          <code>ccrotate tier-cache</code> on the SSH host — does not hit the Anthropic API.
-        </p>
+    <div style={card}>
+      <div style={cardHeader}>
+        <span>{TARGET_LABEL[target]}</span>
+        <span>
+          {accounts.length} account{accounts.length === 1 ? "" : "s"}
+          {payload.error ? " · error" : ""}
+        </span>
       </div>
-
-      <HostEditor ssh={ssh} onChange={setSsh} />
-
-      {!ssh && (
-        <div style={{ ...cardStyle, color: "var(--muted-foreground, #a1a1aa)" }}>
-          Enter the SSH host above to load pools.
+      {payload.error ? (
+        <div style={errorBox}>{payload.error}</div>
+      ) : accounts.length === 0 ? (
+        <div style={{ ...cell, color: "var(--muted-foreground, #a1a1aa)", borderTop: "none" }}>
+          No accounts. Run <code>ccrotate snap</code> + <code>ccrotate export</code> on a host
+          with a fresh login, then PUT /state to publish.
         </div>
-      )}
-
-      {error && (
-        <div style={{ ...cardStyle, color: "var(--destructive, #ef4444)" }}>
-          Error: {error}
-        </div>
-      )}
-
-      {ssh && (
-        <div style={cardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-            <div style={labelStyle}>
-              {loading
-                ? "Loading…"
-                : response
-                  ? `Fetched ${new Date(response.fetchedAt).toLocaleTimeString()}`
-                  : ""}
-            </div>
-            <button style={btnStyle} disabled={loading} onClick={() => fetchPools(ssh)}>
-              {loading ? "…" : "Reload"}
-            </button>
-          </div>
-          <PoolTable
-            target="claude"
-            pool={response?.pools?.claude}
-            ssh={ssh}
-            onAfterAction={() => fetchPools(ssh)}
-          />
-          <div style={{ height: "16px" }} />
-          <PoolTable
-            target="codex"
-            pool={response?.pools?.codex}
-            ssh={ssh}
-            onAfterAction={() => fetchPools(ssh)}
-          />
+      ) : (
+        <div style={tableGrid}>
+          <div style={cellHeader} aria-label="Active marker"></div>
+          <div style={cellHeader}>Email</div>
+          <div style={cellHeader}>Tier</div>
+          <div style={cellHeader}>5h</div>
+          <div style={cellHeader}>7d</div>
+          <div style={cellHeader}>Availability</div>
+          {accounts.map((a) => (
+            <AccountRowCells key={`${target}:${a.email}`} row={a} />
+          ))}
         </div>
       )}
     </div>
+  );
+}
+
+function AccountRowCells({ row }: { row: AccountRow }) {
+  const dim = !row.isHealthy ? { opacity: 0.55 } : {};
+  const marker = row.isActive ? "★" : row.isHealthy ? "✓" : "✗";
+  const markerColor = row.isActive
+    ? "rgb(250, 204, 21)"
+    : row.isHealthy
+      ? "rgb(74, 222, 128)"
+      : "rgb(248, 113, 113)";
+  return (
+    <>
+      <div style={{ ...cell, ...dim, color: markerColor, fontWeight: 700, textAlign: "center" }}>
+        {marker}
+      </div>
+      <div style={{ ...cell, ...dim, fontFamily: "var(--font-mono, monospace)" }}>{row.email}</div>
+      <div style={{ ...cell, ...dim }}>
+        <span style={tierBadge(row.tier)}>{row.tier}</span>
+      </div>
+      <div style={{ ...cell, ...dim, color: utilColor(row.utilization5h) }}>
+        {row.utilization5h === null ? "—" : `${row.utilization5h}%`}
+      </div>
+      <div style={{ ...cell, ...dim, color: utilColor(row.utilization7d) }}>
+        {row.utilization7d === null ? "—" : `${row.utilization7d}%`}
+      </div>
+      <div style={{ ...cell, ...dim, color: "var(--muted-foreground, #a1a1aa)" }}>
+        {row.availability}
+      </div>
+    </>
   );
 }
 

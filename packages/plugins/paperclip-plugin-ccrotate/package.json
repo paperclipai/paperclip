@@ -1,6 +1,6 @@
 {
   "name": "@kkroo/paperclip-plugin-ccrotate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Paperclip sandbox provider plugin that runs agents through ccrotate-managed Claude/Codex accounts over SSH, with automatic mid-run rotation on rate limits.",
   "license": "MIT",
   "type": "module",
