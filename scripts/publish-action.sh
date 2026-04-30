@@ -62,6 +62,7 @@ else
       "https://api.github.com/repos/$GH_DISPATCH_REPO/dispatches" \
       -H "Authorization: Bearer $GH_PAT_DISPATCH" \
       -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
       -d "$(python3 -c "import json; print(json.dumps({'event_type':'publish-ready','client_payload':{'issue_id':'$ISSUE_ID','slug':'$SLUG'}}))")")"
     if [[ "$DISPATCH_HTTP" == "204" ]]; then
       DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -106,7 +107,8 @@ else
   curl -s \
     "https://api.github.com/repos/$GH_DISPATCH_REPO/actions/runs?event=repository_dispatch&per_page=20" \
     -H "Authorization: Bearer $GH_PAT_DISPATCH" \
-    -H "Accept: application/vnd.github+json" > "$GH_RUNS_TMP"
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" > "$GH_RUNS_TMP"
 
   PV_AGENT_ID="$(curl -s "$PAPERCLIP_URL/api/companies/$COMPANY_ID/agents" | python3 -c "
 import json, sys
@@ -120,13 +122,27 @@ print(match)
     log "Phase 2: checking GH Actions run for issue=$ISSUE_ID dispatched_at=${DISPATCHED_AT:-unknown}"
     RUN_STATUS="$(python3 -c "
 import json, sys
+from datetime import datetime, timezone
 data = json.load(open('$GH_RUNS_TMP'))
 issue_id = '$ISSUE_ID'
 dispatched_at = '$DISPATCHED_AT'
+if not dispatched_at:
+    print('not_found')
+    sys.exit(0)
+try:
+    boundary = datetime.fromisoformat(dispatched_at.replace('Z', '+00:00'))
+except ValueError:
+    print('not_found')
+    sys.exit(0)
 runs = data.get('workflow_runs', [])
 match = None
 for r in runs:
-    if issue_id in (r.get('name') or '') and r.get('created_at', '') >= dispatched_at:
+    run_name = r.get('display_title') or ''
+    try:
+        created_at = datetime.fromisoformat((r.get('created_at') or '').replace('Z', '+00:00'))
+    except ValueError:
+        continue
+    if issue_id in run_name and created_at >= boundary:
         match = r
         break
 if match:
