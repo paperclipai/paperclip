@@ -52,6 +52,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -1174,12 +1175,12 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
-  const reviewNodeIds = [...nodesById.values()]
-    .filter((node) => node.status === "in_review")
+  const explicitWaitCandidateIds = [...nodesById.values()]
+    .filter((node) => node.status !== "done")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
-  if (reviewNodeIds.length > 0) {
-    for (const chunk of chunkList(reviewNodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+  if (explicitWaitCandidateIds.length > 0) {
+    for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
       const interactionRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueThreadInteractions.issueId })
         .from(issueThreadInteractions)
@@ -1204,22 +1205,28 @@ async function listIssueBlockerAttentionMap(
           ),
         );
       for (const row of approvalRows) explicitWaitingIssueIds.add(row.issueId);
+    }
 
-      const recoveryRows: Array<{ originId: string | null }> = await dbOrTx
-        .select({ originId: issues.originId })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
-            isNull(issues.hiddenAt),
-            inArray(issues.originId, chunk),
-            notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
-          ),
-        );
-      for (const row of recoveryRows) {
-        if (row.originId) explicitWaitingIssueIds.add(row.originId);
-      }
+    // Recovery rows are intentionally company-wide: a liveness escalation for
+    // the same leaf blocker represents an active waiting path even when that
+    // blocker is reached through another blocked graph.
+    const recoveryRows: Array<{ id: string; originId: string | null }> = await dbOrTx
+      .select({ id: issues.id, originId: issues.originId })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
+        ),
+      );
+    for (const row of recoveryRows) {
+      const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
+      if (!parsed || parsed.companyId !== companyId) continue;
+      explicitWaitingIssueIds.add(row.id);
+      explicitWaitingIssueIds.add(parsed.issueId);
+      explicitWaitingIssueIds.add(parsed.leafIssueId);
     }
   }
 
@@ -1257,8 +1264,11 @@ async function listIssueBlockerAttentionMap(
     if (node.status === "done") {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
+    if (explicitWaitingIssueIds.has(node.id)) {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
     if (node.status === "in_review") {
-      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId) || explicitWaitingIssueIds.has(node.id);
+      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
       if (hasWaitingPath) {
         return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
       }
