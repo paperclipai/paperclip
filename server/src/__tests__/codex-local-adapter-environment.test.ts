@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
+import { buildCodexExecArgs } from "@paperclipai/adapter-codex-local/server";
 
 const itWindows = process.platform === "win32" ? it : it.skip;
 
@@ -138,5 +139,14 @@ describe("codex_local environment diagnostics", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("adds --skip-git-repo-check to Codex exec args for hello probes in non-git directories", () => {
+    const result = buildCodexExecArgs({
+      command: "codex",
+      cwd: path.join(os.tmpdir(), "paperclip-codex-non-git"),
+    });
+
+    expect(result.args.slice(0, 3)).toEqual(["exec", "--json", "--skip-git-repo-check"]);
   });
 });
