@@ -687,9 +687,42 @@ postmortem; info-severity alerts probably want auto-close. Consider a future
 
 **Status: Resolved (V1).** Plugin config map via the manifest's `ownerMap`
 field, resolved by `src/owner-resolver.ts`. Resolution chain documented in
-§7.7. Live cluster config has not populated `ownerMap` yet — operational
-follow-up to fill it in for real teams. V2 (namespace-label sync) and V3
-(pluggable resolver protocol) remain on the roadmap.
+§7.7. Live cluster has populated `ownerMap` for the five active alert
+classes (`real_path_dns`, `vip_readiness`, `tls_handshake`,
+`relay_ats_per_ds`, `relay_ats_t3c_apply`) all routing to a shared support
+alias on the Blockcast cluster. V2 (oncall-rotation, see separate spec
+`2026-04-30-oncall-plugin-spec.md`) and V3 (pluggable resolver protocol)
+remain on the roadmap.
+
+#### Stub-user pitfall when routing to mailing-list aliases
+
+If `ownerMap` resolves to an email that doesn't correspond to a real
+human user (e.g. a `support@…` mailing list), the plugin's
+`ctx.users.findByEmail` will only find a matching row if you've created
+a "stub user" in the `user` table — and even then, `ctx.issues.create`
+**also** validates the assignee against `company_memberships`. If the
+membership row is missing, the plugin processes the webhook (HTTP 200,
+delivery `success`) but `issues.create` throws `Assignee user not
+found`, the error is caught by the per-alert try/catch, and **no issue
+lands**. The webhook delivery row says success and the failure is only
+visible in the worker log.
+
+To make a stub user assignable:
+
+```sql
+-- 1. Create the stub user (no `account` row, so no login path)
+INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+VALUES ('<32-char-id>', 'CDN/Network Support', 'support@example.com', true, now(), now());
+
+-- 2. Add membership in the target company (the validation `issues.create` does)
+INSERT INTO company_memberships (company_id, principal_type, principal_id, status, membership_role)
+VALUES ('<company-uuid>', 'user', '<stub-user-id>', 'active', 'member');
+```
+
+Without step 2 the alert is silently dropped from the issue pipeline.
+Worth a follow-up to either expose this as an explicit error in the
+plugin's webhook delivery row, or to teach `findByEmail` to surface a
+"not assignable" hint that the resolver can fall through on.
 
 Discussion that led to the decision:
 
