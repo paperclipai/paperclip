@@ -61,6 +61,27 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
  */
 const MAX_RECOVERY_CHAIN_DEPTH = 5;
 
+/**
+ * Maximum open stranded recovery issues per company.
+ * Prevents wide fan-out cascades like the 728-issue incident.
+ * Once the cap is reached, new recovery escalations are suppressed
+ * and logged, but the source issue is still marked blocked.
+ */
+const MAX_COMPANY_OPEN_RECOVERY_ISSUES = 20;
+
+/**
+ * Minimum interval (ms) between successive recovery spawns for a given company.
+ * Spawns within this window on the same heartbeat sweep are throttled.
+ */
+const COMPANY_RECOVERY_SPAWN_INTERVAL_MS = 30 * 1000;
+
+/**
+ * In-memory throttle map keyed by companyId — tracks last recovery spawn time
+ * per heartbeat sweep to prevent burst spawn within a single reconcile pass.
+ * Not persisted across restarts; safe since the company cap covers restart gaps.
+ */
+const lastCompanyRecoverySpawn = new Map<string, number>();
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -412,12 +433,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId: string;
     agentId: string;
     reason: "issue_assignment_recovery" | "issue_continuation_needed";
     retryReason: "assignment_recovery" | "issue_continuation_needed";
     source: string;
     retryOfRunId?: string | null;
   }) {
+    // Per-company rate limiter: throttle successive spawns on the same heartbeat sweep
+    const now = Date.now();
+    const lastSpawn = lastCompanyRecoverySpawn.get(input.companyId) ?? 0;
+    if (now - lastSpawn < COMPANY_RECOVERY_SPAWN_INTERVAL_MS) {
+      logger.info(
+        {
+          companyId: input.companyId,
+          issueId: input.issueId,
+          lastSpawnTimestamp: new Date(lastSpawn).toISOString(),
+          throttleMs: COMPANY_RECOVERY_SPAWN_INTERVAL_MS,
+        },
+        "recovery spawn throttled — skipping enqueue until interval elapses",
+      );
+      return null;
+    }
+    lastCompanyRecoverySpawn.set(input.companyId, now);
+
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -1385,6 +1424,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return null;
     }
 
+    // Company-wide cap: prevent wide fan-out cascades. Count open recovery issues
+    // for this company across all source issues.
+    const openRecoveryCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.issue.companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .then((rows) => rows.length);
+    if (openRecoveryCount >= MAX_COMPANY_OPEN_RECOVERY_ISSUES) {
+      logger.warn(
+        {
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          openRecoveryCount,
+          maxOpen: MAX_COMPANY_OPEN_RECOVERY_ISSUES,
+        },
+        "recovery company cap reached -- refusing to spawn another recovery issue",
+      );
+      return null;
+    }
+
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
 
@@ -1626,6 +1692,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    // Instance-level kill switch — gates all stranded issue auto-recovery
+    const experimentalSettings = await instanceSettings.getExperimental();
+    const autoRecoveryEnabled = asBoolean(experimentalSettings.enableStrandedIssueAutoRecovery, true);
+    if (!autoRecoveryEnabled) {
+      return {
+        dispatchRequeued: 0,
+        continuationRequeued: 0,
+        orphanBlockersAssigned: 0,
+        escalated: 0,
+        skipped: 0,
+        killSwitched: true,
+        issueIds: [] as string[],
+      };
+    }
+
     const candidates = await db
       .select()
       .from(issues)
@@ -1646,6 +1727,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       escalated: 0,
       skipped: 0,
+      killSwitched: false,
       issueIds: [] as string[],
     };
 
@@ -1742,6 +1824,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -1797,6 +1880,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
+        companyId: issue.companyId,
         agentId,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
@@ -2386,6 +2470,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           maxDepth: MAX_RECOVERY_CHAIN_DEPTH,
         },
         "liveness escalation circuit breaker tripped -- refusing to spawn escalation",
+      );
+      return { kind: "skipped" as const };
+    }
+
+    // Company-wide cap: shared with stranded recovery issues.
+    const openRecoveryCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .then((rows) => rows.length);
+    if (openRecoveryCount >= MAX_COMPANY_OPEN_RECOVERY_ISSUES) {
+      logger.warn(
+        {
+          companyId: issue.companyId,
+          findingState: input.finding.state,
+          openRecoveryCount,
+          maxOpen: MAX_COMPANY_OPEN_RECOVERY_ISSUES,
+        },
+        "liveness escalation company cap reached -- refusing to spawn escalation",
       );
       return { kind: "skipped" as const };
     }
