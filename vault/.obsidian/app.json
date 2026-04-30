@@ -1,0 +1,16 @@
+{
+  "showLineNumber": true,
+  "spellcheck": true,
+  "spellcheckLanguages": ["en-US"],
+  "useTab": false,
+  "tabSize": 2,
+  "promptDelete": true,
+  "alwaysUpdateLinks": true,
+  "newFileFolderPath": "",
+  "newFileLocation": "current",
+  "attachmentFolderPath": "_attachments",
+  "userIgnoreFilters": [
+    "^\\..*",
+    "^node_modules"
+  ]
+}
