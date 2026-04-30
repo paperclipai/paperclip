@@ -72,7 +72,7 @@ export const updateRt2BoardCardSchema = z.object({
   qualityStatus: rt2BoardQualityStatusSchema.optional(),
   priceGold: z.number().int().min(0).nullable().optional(),
   detailNotes: z.string().trim().max(2000).nullable().optional(),
-});
+}).strict();
 
 export type UpdateRt2BoardCard = z.infer<typeof updateRt2BoardCardSchema>;
 

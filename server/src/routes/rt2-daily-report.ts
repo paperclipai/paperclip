@@ -4,6 +4,11 @@ import type { Db } from "@paperclipai/db";
 import {
   listRt2DailyBoardSchema,
   rt2DailyReportDateSchema,
+  updateRt2DailyCardLaneSchema,
+  updateRt2DailyCardOkrSchema,
+  updateRt2DailyCardQualitySchema,
+  updateRt2DailyCardTitleSchema,
+  upsertRt2DailyCardDeliverableSchema,
   upsertRt2DailyReportCardSchema,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
@@ -18,6 +23,15 @@ const queryRt2DailyWikiRequestSchema = z.object({
   reportDate: rt2DailyReportDateSchema,
   question: z.literal("오늘 뭐 했지?"),
 });
+const dailyCardEditContextSchema = z.object({
+  projectId: z.string().uuid(),
+  reportDate: rt2DailyReportDateSchema,
+});
+const updateRt2DailyCardTitleRequestSchema = dailyCardEditContextSchema.merge(updateRt2DailyCardTitleSchema);
+const updateRt2DailyCardLaneRequestSchema = dailyCardEditContextSchema.merge(updateRt2DailyCardLaneSchema);
+const upsertRt2DailyCardDeliverableRequestSchema = dailyCardEditContextSchema.merge(upsertRt2DailyCardDeliverableSchema);
+const updateRt2DailyCardQualityRequestSchema = dailyCardEditContextSchema.merge(updateRt2DailyCardQualitySchema);
+const updateRt2DailyCardOkrRequestSchema = dailyCardEditContextSchema.merge(updateRt2DailyCardOkrSchema);
 
 function assertBoardActor(req: Request): string {
   if (req.actor.type !== "board" || !req.actor.userId) {
@@ -95,6 +109,101 @@ export function rt2DailyReportRoutes(db: Db) {
         card: saved.card,
         wikiPage,
       });
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/rt2/daily-report/cards/:todoIssueId/title",
+    validate(updateRt2DailyCardTitleRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = assertBoardActor(req);
+      const { todoIssueId } = req.params as { todoIssueId: string };
+      const saved = await svc.updateCardTitle(companyId, actorUserId, todoIssueId, req.body);
+      res.json(saved);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/rt2/daily-report/cards/:todoIssueId/lane",
+    validate(updateRt2DailyCardLaneRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = assertBoardActor(req);
+      const { todoIssueId } = req.params as { todoIssueId: string };
+      const saved = await svc.updateCardLane(companyId, actorUserId, todoIssueId, req.body);
+      const wikiPage = await svc.materializeDailyWikiPage(
+        companyId,
+        req.body.projectId,
+        actorUserId,
+        req.body.reportDate,
+      );
+
+      emitLiveEventSafely({
+        companyId,
+        type: "rt2.daily-report.updated",
+        payload: {
+          projectId: req.body.projectId,
+          reportDate: req.body.reportDate,
+          todoIssueId,
+          userId: actorUserId,
+          mutation: "lane_saved",
+        },
+      });
+      emitLiveEventSafely({
+        companyId,
+        type: "rt2.daily-wiki.updated",
+        payload: {
+          projectId: wikiPage.projectId,
+          reportDate: wikiPage.reportDate,
+          pageKey: wikiPage.pageKey,
+          userId: actorUserId,
+          mutation: "materialized",
+        },
+      });
+
+      res.json({ ...saved, wikiPage });
+    },
+  );
+
+  router.put(
+    "/companies/:companyId/rt2/daily-report/cards/:todoIssueId/deliverable",
+    validate(upsertRt2DailyCardDeliverableRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = assertBoardActor(req);
+      const { todoIssueId } = req.params as { todoIssueId: string };
+      const saved = await svc.upsertCardDeliverable(companyId, actorUserId, todoIssueId, req.body);
+      res.json(saved);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/rt2/daily-report/cards/:todoIssueId/quality",
+    validate(updateRt2DailyCardQualityRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = assertBoardActor(req);
+      const { todoIssueId } = req.params as { todoIssueId: string };
+      const saved = await svc.updateCardQuality(companyId, actorUserId, todoIssueId, req.body);
+      res.json(saved);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/rt2/daily-report/cards/:todoIssueId/okr",
+    validate(updateRt2DailyCardOkrRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = assertBoardActor(req);
+      const { todoIssueId } = req.params as { todoIssueId: string };
+      const saved = await svc.updateCardOkr(companyId, actorUserId, todoIssueId, req.body);
+      res.json(saved);
     },
   );
 

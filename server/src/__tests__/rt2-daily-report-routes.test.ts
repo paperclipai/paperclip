@@ -104,6 +104,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       companyId,
       name: "Daily Report Project",
       status: "in_progress",
+      goalId,
     });
 
     await db.insert(companyMemberships).values({
@@ -412,7 +413,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
         qualityLabel: "없음",
         approvalWaiting: false,
         approvalWaitingSource: "deliverable_review",
-        okrSource: "task",
+        okrSource: "direct_task",
         directGoalId: expect.any(String),
         directGoalTitle: "Improve daily operating cadence",
         inheritedGoalId: null,
@@ -486,7 +487,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       .expect((response) => {
         expect(response.body.card).toEqual(
           expect.objectContaining({
-            okrSource: "project",
+            okrSource: "inherited_project",
             directGoalId: null,
           }),
         );

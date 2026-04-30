@@ -12,19 +12,29 @@ import {
   rt2V33TaskProfiles,
 } from "@paperclipai/db";
 import type {
+  Rt2BoardQualityStatus,
   Rt2DailyCockpit,
   Rt2DailyActivityEntry,
+  Rt2DailyApprovalWaitingSource,
+  Rt2DailyDeliverableOwner,
   Rt2DailyGapFlag,
   Rt2DailyActivityType,
   Rt2DailyBoard,
   Rt2DailyLane,
+  Rt2DailyOkrSource,
   Rt2DailyOkrNode,
   Rt2DailyReportCard,
   Rt2DailyWikiAnswer,
   Rt2DailyWikiPage,
+  UpdateRt2DailyCardLane,
+  UpdateRt2DailyCardOkr,
+  UpdateRt2DailyCardQuality,
+  UpdateRt2DailyCardTitle,
+  UpsertRt2DailyCardDeliverable,
   UpsertRt2DailyReportCard,
 } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
+import { rt2WorkBoardService } from "./rt2-work-board.js";
 
 type TodoRow = {
   todoIssueId: string;
@@ -100,15 +110,93 @@ function readBasePrice(row: WorkProductRow) {
   return typeof metadata?.rt2BasePrice === "number" ? metadata.rt2BasePrice : 0;
 }
 
+function readDeliverableType(row: WorkProductRow) {
+  const metadata = readRt2WorkProductMetadata(row);
+  if (metadata?.rt2Type === "document" || metadata?.rt2Type === "artifact") return metadata.rt2Type;
+  if (row.type === "document" || row.type === "artifact") return row.type;
+  return null;
+}
+
+function readDeliverableRequired(row: WorkProductRow) {
+  const metadata = readRt2WorkProductMetadata(row);
+  return typeof metadata?.rt2Required === "boolean" ? metadata.rt2Required : true;
+}
+
+function readDeliverableOwner(row: WorkProductRow): Rt2DailyDeliverableOwner | null {
+  const metadata = readRt2WorkProductMetadata(row);
+  if (metadata?.rt2Owner === "task" || metadata?.rt2Owner === "todo") return metadata.rt2Owner;
+  return null;
+}
+
 function isSubmittedDeliverable(row: WorkProductRow) {
   const metadata = readRt2WorkProductMetadata(row);
   return row.status === "submitted" || metadata?.rt2State === "submitted";
 }
 
-function resolveQualityStatus(rows: WorkProductRow[]): Rt2DailyReportCard["qualityStatus"] {
-  if (rows.length === 0) return "none";
+function resolveDeliverableQualityStatus(rows: WorkProductRow[]): Rt2BoardQualityStatus {
+  if (rows.some((row) => row.reviewState === "needs_work" || row.reviewState === "changes_requested")) return "needs_work";
   if (rows.some((row) => row.reviewState !== "none")) return "reviewed";
-  return "pending_review";
+  if (rows.some(isSubmittedDeliverable)) return "pending_review";
+  return "none";
+}
+
+function resolveQualityStatus(rows: WorkProductRow[], boardStatus?: Rt2BoardQualityStatus): Rt2BoardQualityStatus {
+  if (boardStatus && boardStatus !== "none") return boardStatus;
+  return resolveDeliverableQualityStatus(rows);
+}
+
+function qualityLabel(status: Rt2BoardQualityStatus) {
+  switch (status) {
+    case "pending_review":
+      return "검토 대기";
+    case "reviewed":
+      return "검토 완료";
+    case "needs_work":
+      return "수정 필요";
+    case "none":
+    default:
+      return "없음";
+  }
+}
+
+function approvalWaitingFor(status: Rt2BoardQualityStatus): { approvalWaiting: boolean; approvalWaitingSource: Rt2DailyApprovalWaitingSource } {
+  return {
+    approvalWaiting: status === "pending_review" || status === "needs_work",
+    approvalWaitingSource: "deliverable_review",
+  };
+}
+
+function pickPrimaryDeliverable(input: {
+  taskDeliverables: WorkProductRow[];
+  todoDeliverables: WorkProductRow[];
+}) {
+  const todoPrimary = input.todoDeliverables.find((row) => row.isPrimary) ?? input.todoDeliverables[0] ?? null;
+  const taskPrimary = input.taskDeliverables.find((row) => row.isPrimary) ?? input.taskDeliverables[0] ?? null;
+  return todoPrimary ?? taskPrimary;
+}
+
+function buildSearchText(input: {
+  taskTitle: string;
+  todoTitle: string;
+  assigneeUserId: string;
+  deliverableTitle: string | null;
+  qualityLabel: string;
+  directGoalTitle: string | null;
+  inheritedGoalTitle: string | null;
+  status: string;
+}) {
+  return [
+    input.taskTitle,
+    input.todoTitle,
+    input.assigneeUserId,
+    input.deliverableTitle,
+    input.qualityLabel,
+    input.directGoalTitle,
+    input.inheritedGoalTitle,
+    input.status,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
 }
 
 function summarizeGoldImpact(basePriceTotal: number) {
@@ -284,7 +372,7 @@ export function rt2DailyReportService(db: Db) {
       deliverablesByIssueId.set(deliverable.issueId, bucket);
     }
 
-    const [taskProfiles, projectGoalRows, projectRow] = await Promise.all([
+    const [taskProfiles, projectGoalRows, projectRow, workBoardOverview] = await Promise.all([
       db
         .select({
           taskIssueId: rt2V33TaskProfiles.issueId,
@@ -307,9 +395,26 @@ export function rt2DailyReportService(db: Db) {
         .from(projects)
         .where(and(eq(projects.companyId, companyId), eq(projects.id, projectId)))
         .then((rows) => rows[0] ?? null),
+      rt2WorkBoardService(db).getBoardOverview(companyId, todos.map((todo) => todo.todoIssueId)),
     ]);
     const taskGoalIdByIssueId = new Map(taskProfiles.map((profile) => [profile.taskIssueId, profile.goalId ?? null]));
     const projectFallbackGoalId = projectRow?.goalId ?? projectGoalRows[0]?.goalId ?? null;
+    const goalIds = [
+      ...new Set(
+        [
+          ...taskProfiles.map((profile) => profile.goalId).filter((goalId): goalId is string => Boolean(goalId)),
+          projectFallbackGoalId,
+        ].filter((goalId): goalId is string => Boolean(goalId)),
+      ),
+    ];
+    const goalRows = goalIds.length > 0
+      ? await db
+          .select({ id: goals.id, title: goals.title })
+          .from(goals)
+          .where(and(eq(goals.companyId, companyId), inArray(goals.id, goalIds)))
+      : [];
+    const goalTitleById = new Map(goalRows.map((goal) => [goal.id, goal.title]));
+    const boardMetaByIssueId = new Map(workBoardOverview.cards.map((card) => [card.issueId, card]));
 
     const persistedByTodoId = new Map(persistedRows.map((row) => [row.todoIssueId, row]));
     return todos.map((todo) => {
@@ -320,9 +425,18 @@ export function rt2DailyReportService(db: Db) {
       const deliverableCount = allDeliverables.length;
       const submittedDeliverableCount = allDeliverables.filter(isSubmittedDeliverable).length;
       const basePriceTotal = allDeliverables.reduce((total, deliverable) => total + readBasePrice(deliverable), 0);
+      const primaryDeliverable = pickPrimaryDeliverable({ taskDeliverables, todoDeliverables });
+      const directGoalId = taskGoalIdByIssueId.get(todo.taskIssueId) ?? null;
+      const inheritedGoalId = directGoalId ? null : projectFallbackGoalId;
+      const okrSource: Rt2DailyOkrSource = directGoalId ? "direct_task" : inheritedGoalId ? "inherited_project" : "none";
+      const boardMeta = boardMetaByIssueId.get(todo.todoIssueId);
+      const resolvedQualityStatus = resolveQualityStatus(allDeliverables, boardMeta?.qualityStatus);
+      const resolvedQualityLabel = qualityLabel(resolvedQualityStatus);
+      const approval = approvalWaitingFor(resolvedQualityStatus);
+      const deliverableTitle = primaryDeliverable?.title ?? null;
       const gapFlags: Rt2DailyGapFlag[] = [];
       if (deliverableCount === 0) gapFlags.push("missing_deliverable");
-      if (!(taskGoalIdByIssueId.get(todo.taskIssueId) ?? projectFallbackGoalId)) gapFlags.push("missing_okr_context");
+      if (!(directGoalId ?? inheritedGoalId)) gapFlags.push("missing_okr_context");
       return {
         taskIssueId: todo.taskIssueId,
         todoIssueId: todo.todoIssueId,
@@ -339,9 +453,50 @@ export function rt2DailyReportService(db: Db) {
         deliverableCount,
         submittedDeliverableCount,
         taskDeliverableCount: taskDeliverables.length,
+        deliverableId: primaryDeliverable?.id ?? null,
+        deliverableTitle,
+        deliverableType: primaryDeliverable ? readDeliverableType(primaryDeliverable) : null,
+        deliverableRequired: primaryDeliverable ? readDeliverableRequired(primaryDeliverable) : false,
+        deliverableOwner: primaryDeliverable
+          ? primaryDeliverable.issueId === todo.taskIssueId
+            ? "task"
+            : "todo"
+          : null,
+        deliverableSource: primaryDeliverable ? readDeliverableOwner(primaryDeliverable) : null,
+        deliverableMissing: deliverableCount === 0,
         basePriceTotal,
-        qualityStatus: resolveQualityStatus(allDeliverables),
-        okrContextStatus: (taskGoalIdByIssueId.get(todo.taskIssueId) ?? projectFallbackGoalId) ? "connected" : "missing_goal",
+        qualityStatus: resolvedQualityStatus,
+        qualityLabel: resolvedQualityLabel,
+        ...approval,
+        okrContextStatus: (directGoalId ?? inheritedGoalId) ? "connected" : "missing_goal",
+        okrSource,
+        directGoalId,
+        directGoalTitle: directGoalId ? goalTitleById.get(directGoalId) ?? null : null,
+        inheritedGoalId,
+        inheritedGoalTitle: inheritedGoalId ? goalTitleById.get(inheritedGoalId) ?? null : null,
+        reportDateMatchesBoard: todo.todoUpdatedAt.toISOString().slice(0, 10) === reportDate,
+        actorMatchesAssignee: todo.assigneeUserId === userId,
+        assigneeDisplayName: todo.assigneeUserId,
+        searchText: buildSearchText({
+          taskTitle: todo.taskTitle,
+          todoTitle: todo.todoTitle,
+          assigneeUserId: todo.assigneeUserId,
+          deliverableTitle,
+          qualityLabel: resolvedQualityLabel,
+          directGoalTitle: directGoalId ? goalTitleById.get(directGoalId) ?? null : null,
+          inheritedGoalTitle: inheritedGoalId ? goalTitleById.get(inheritedGoalId) ?? null : null,
+          status: persisted?.status ?? todo.todoStatus,
+        }),
+        searchableLabels: [
+          todo.taskTitle,
+          todo.todoTitle,
+          todo.assigneeUserId,
+          deliverableTitle,
+          resolvedQualityLabel,
+          directGoalId ? goalTitleById.get(directGoalId) ?? null : null,
+          inheritedGoalId ? goalTitleById.get(inheritedGoalId) ?? null : null,
+        ].filter((value): value is string => Boolean(value)),
+        dueDate: boardMeta?.dueDate ?? null,
         gapFlags,
       } satisfies Rt2DailyReportCard;
     });
@@ -618,21 +773,46 @@ export function rt2DailyReportService(db: Db) {
     };
   }
 
+  async function assertDailyCardMutationContext(
+    txDb: Db,
+    companyId: string,
+    actorUserId: string,
+    todoIssueId: string,
+    projectId: string,
+  ) {
+    const todo = await getTodoContext(txDb, companyId, todoIssueId);
+    if (todo.assigneeUserId !== actorUserId) {
+      throw forbidden("RT2_DAILY_REPORT_CARD_REQUIRES_BOARD_ASSIGNEE");
+    }
+    if (todo.projectId !== projectId) {
+      throw notFound("RT2 daily report todo not found");
+    }
+    return todo;
+  }
+
+  async function getUpdatedDailyCard(
+    companyId: string,
+    actorUserId: string,
+    projectId: string,
+    reportDate: string,
+    todoIssueId: string,
+  ) {
+    const card = (await listCards(companyId, projectId, actorUserId, reportDate)).find(
+      (candidate) => candidate.todoIssueId === todoIssueId,
+    );
+    if (!card) throw notFound("RT2 daily report todo not found");
+    return card;
+  }
+
   async function saveDailyCard(
     companyId: string,
     actorUserId: string,
     todoIssueId: string,
     input: UpsertRt2DailyReportCard,
   ) {
-    return db.transaction(async (tx) => {
+    await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      const todo = await getTodoContext(txDb, companyId, todoIssueId);
-      if (todo.assigneeUserId !== actorUserId) {
-        throw forbidden("RT2_DAILY_REPORT_CARD_REQUIRES_BOARD_ASSIGNEE");
-      }
-      if (todo.projectId !== input.projectId) {
-        throw notFound("RT2 daily report todo not found");
-      }
+      const todo = await assertDailyCardMutationContext(txDb, companyId, actorUserId, todoIssueId, input.projectId);
 
       const reportKey = dailyReportKey(input.projectId, actorUserId, input.reportDate);
       const previousRow = await txDb
@@ -728,64 +908,12 @@ export function rt2DailyReportService(db: Db) {
         },
       });
 
-      const deliverableRows = await txDb
-        .select()
-        .from(issueWorkProducts)
-        .where(
-          and(
-            eq(issueWorkProducts.companyId, companyId),
-            inArray(issueWorkProducts.issueId, [todo.taskIssueId, todoIssueId]),
-          ),
-        );
-      const rt2Deliverables = deliverableRows.filter(isRt2Deliverable);
-      const taskDeliverables = rt2Deliverables.filter((deliverable) => deliverable.issueId === todo.taskIssueId);
-      const submittedDeliverableCount = rt2Deliverables.filter(isSubmittedDeliverable).length;
-      const basePriceTotal = rt2Deliverables.reduce((total, deliverable) => total + readBasePrice(deliverable), 0);
-      const [taskProfile, projectGoalRows, projectRow] = await Promise.all([
-        txDb
-          .select({ goalId: rt2V33TaskProfiles.goalId })
-          .from(rt2V33TaskProfiles)
-          .where(eq(rt2V33TaskProfiles.issueId, todo.taskIssueId))
-          .then((rows) => rows[0] ?? null),
-        txDb
-          .select({ goalId: projectGoals.goalId })
-          .from(projectGoals)
-          .where(and(eq(projectGoals.companyId, companyId), eq(projectGoals.projectId, input.projectId))),
-        txDb
-          .select({ goalId: projects.goalId })
-          .from(projects)
-          .where(and(eq(projects.companyId, companyId), eq(projects.id, input.projectId)))
-          .then((rows) => rows[0] ?? null),
-      ]);
-      const usableGoalId = taskProfile?.goalId ?? projectRow?.goalId ?? projectGoalRows[0]?.goalId ?? null;
-      const gapFlags: Rt2DailyGapFlag[] = [];
-      if (rt2Deliverables.length === 0) gapFlags.push("missing_deliverable");
-      if (!usableGoalId) gapFlags.push("missing_okr_context");
-
-      return {
-        card: {
-          taskIssueId: savedRow.taskIssueId,
-          todoIssueId: savedRow.todoIssueId,
-          taskTitle: savedRow.taskTitle,
-          todoTitle: savedRow.todoTitle,
-          assigneeUserId: savedRow.assigneeUserId,
-          reportDate: savedRow.reportDate,
-          lane: normalizeDailyLane(savedRow.lane),
-          bucketLabel: savedRow.bucketLabel ?? "",
-          progressPercent: savedRow.progressPercent,
-          note: savedRow.note ?? "",
-          status: savedRow.status as Rt2DailyReportCard["status"],
-          updatedAt: savedRow.updatedAt,
-          deliverableCount: rt2Deliverables.length,
-          submittedDeliverableCount,
-          taskDeliverableCount: taskDeliverables.length,
-          basePriceTotal,
-          qualityStatus: resolveQualityStatus(rt2Deliverables),
-          okrContextStatus: usableGoalId ? "connected" : "missing_goal",
-          gapFlags,
-        } satisfies Rt2DailyReportCard,
-      };
+      void savedRow;
     });
+
+    return {
+      card: await getUpdatedDailyCard(companyId, actorUserId, input.projectId, input.reportDate, todoIssueId),
+    };
   }
 
   async function materializeAndGetDailyWiki(
@@ -807,6 +935,167 @@ export function rt2DailyReportService(db: Db) {
   }
 
   return {
+    updateCardTitle: async (
+      companyId: string,
+      actorUserId: string,
+      todoIssueId: string,
+      input: UpdateRt2DailyCardTitle & { projectId: string; reportDate: string },
+    ) => {
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await assertDailyCardMutationContext(txDb, companyId, actorUserId, todoIssueId, input.projectId);
+        const now = new Date();
+        await txDb
+          .update(issues)
+          .set({ title: input.title, updatedAt: now })
+          .where(and(eq(issues.companyId, companyId), eq(issues.projectId, input.projectId), eq(issues.id, todoIssueId)));
+        await txDb
+          .update(rt2V33DailyReportCards)
+          .set({ todoTitle: input.title, updatedAt: now })
+          .where(
+            and(
+              eq(rt2V33DailyReportCards.companyId, companyId),
+              eq(rt2V33DailyReportCards.projectId, input.projectId),
+              eq(rt2V33DailyReportCards.userId, actorUserId),
+              eq(rt2V33DailyReportCards.reportDate, input.reportDate),
+              eq(rt2V33DailyReportCards.todoIssueId, todoIssueId),
+            ),
+          );
+      });
+
+      return {
+        card: await getUpdatedDailyCard(companyId, actorUserId, input.projectId, input.reportDate, todoIssueId),
+      };
+    },
+
+    updateCardLane: async (
+      companyId: string,
+      actorUserId: string,
+      todoIssueId: string,
+      input: UpdateRt2DailyCardLane & { projectId: string; reportDate: string },
+    ) => {
+      const current = await getUpdatedDailyCard(companyId, actorUserId, input.projectId, input.reportDate, todoIssueId);
+      return saveDailyCard(companyId, actorUserId, todoIssueId, {
+        projectId: input.projectId,
+        reportDate: input.reportDate,
+        lane: input.lane,
+        bucketLabel: current.bucketLabel,
+        progressPercent: current.progressPercent,
+        note: current.note,
+      });
+    },
+
+    upsertCardDeliverable: async (
+      companyId: string,
+      actorUserId: string,
+      todoIssueId: string,
+      input: UpsertRt2DailyCardDeliverable & { projectId: string; reportDate: string },
+    ) => {
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const todo = await assertDailyCardMutationContext(txDb, companyId, actorUserId, todoIssueId, input.projectId);
+        const deliverableRows = await txDb
+          .select()
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, companyId),
+              inArray(issueWorkProducts.issueId, [todo.todoIssueId, todo.taskIssueId]),
+            ),
+          )
+          .orderBy(desc(issueWorkProducts.isPrimary), asc(issueWorkProducts.createdAt));
+        const rt2Deliverables = deliverableRows.filter(isRt2Deliverable);
+        const existing =
+          rt2Deliverables.find((row) => row.issueId === todo.todoIssueId) ??
+          rt2Deliverables.find((row) => row.issueId === todo.taskIssueId) ??
+          null;
+        const metadata = {
+          ...(existing ? readRt2WorkProductMetadata(existing) ?? {} : {}),
+          rt2Deliverable: true,
+          rt2State: existing?.status === "submitted" ? "submitted" : "defined",
+          rt2Type: input.type,
+          rt2Owner: existing?.issueId === todo.taskIssueId ? "task" : "todo",
+          rt2Required: input.required,
+          rt2BasePrice: input.basePrice,
+        };
+        const now = new Date();
+        if (existing) {
+          await txDb
+            .update(issueWorkProducts)
+            .set({
+              title: input.title,
+              type: input.type,
+              metadata,
+              updatedAt: now,
+            })
+            .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.id, existing.id)));
+        } else {
+          await txDb.insert(issueWorkProducts).values({
+            companyId,
+            projectId: input.projectId,
+            issueId: todoIssueId,
+            type: input.type,
+            provider: "paperclip",
+            title: input.title,
+            status: "draft",
+            reviewState: "none",
+            isPrimary: true,
+            summary: null,
+            metadata,
+          });
+        }
+      });
+
+      return {
+        card: await getUpdatedDailyCard(companyId, actorUserId, input.projectId, input.reportDate, todoIssueId),
+      };
+    },
+
+    updateCardQuality: async (
+      companyId: string,
+      actorUserId: string,
+      todoIssueId: string,
+      input: UpdateRt2DailyCardQuality & { projectId: string; reportDate: string },
+    ) => {
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await assertDailyCardMutationContext(txDb, companyId, actorUserId, todoIssueId, input.projectId);
+      });
+      await rt2WorkBoardService(db).updateCard(companyId, todoIssueId, actorUserId, {
+        qualityStatus: input.qualityStatus,
+      });
+
+      return {
+        card: await getUpdatedDailyCard(companyId, actorUserId, input.projectId, input.reportDate, todoIssueId),
+      };
+    },
+
+    updateCardOkr: async (
+      companyId: string,
+      actorUserId: string,
+      todoIssueId: string,
+      input: UpdateRt2DailyCardOkr & { projectId: string; reportDate: string },
+    ) => {
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const todo = await assertDailyCardMutationContext(txDb, companyId, actorUserId, todoIssueId, input.projectId);
+        await txDb
+          .update(rt2V33TaskProfiles)
+          .set({ goalId: input.goalId, updatedAt: new Date() })
+          .where(
+            and(
+              eq(rt2V33TaskProfiles.companyId, companyId),
+              eq(rt2V33TaskProfiles.projectId, input.projectId),
+              eq(rt2V33TaskProfiles.issueId, todo.taskIssueId),
+            ),
+          );
+      });
+
+      return {
+        card: await getUpdatedDailyCard(companyId, actorUserId, input.projectId, input.reportDate, todoIssueId),
+      };
+    },
+
     listDailyBoard: async (companyId: string, userId: string, projectId: string, reportDate: string): Promise<Rt2DailyBoard> => {
       const cards = await listCards(companyId, projectId, userId, reportDate);
       return {

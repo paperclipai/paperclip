@@ -162,6 +162,9 @@ export type {
 } from "./rt2-task.js";
 export type {
   Rt2DailyLane,
+  Rt2DailyDeliverableOwner,
+  Rt2DailyApprovalWaitingSource,
+  Rt2DailyOkrSource,
   Rt2DailyActivityType,
   Rt2DailyGapFlag,
   Rt2DailyOkrNode,

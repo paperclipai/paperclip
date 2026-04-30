@@ -38,6 +38,7 @@ export interface Rt2DailyReportCard {
   deliverableMissing?: boolean;
   basePriceTotal: number;
   qualityStatus: Rt2BoardQualityStatus;
+  qualityLabel?: string;
   approvalWaiting?: boolean;
   approvalWaitingSource?: Rt2DailyApprovalWaitingSource;
   okrContextStatus: "connected" | "missing_goal";
