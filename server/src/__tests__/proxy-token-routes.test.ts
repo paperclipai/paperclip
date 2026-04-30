@@ -120,6 +120,56 @@ describe("proxy token validation routes", () => {
     expect(res.body).toMatchObject({ valid: false, reason: "run_finished" });
   });
 
+  it("rejects a run in terminal status with no finishedAt (crash path)", async () => {
+    mockVerifyLocalAgentJwt.mockReturnValue({
+      sub: "agent-1",
+      company_id: "company-1",
+      run_id: "run-1",
+      adapter_type: "claude_local",
+      iat: 1000,
+      exp: 9999999999,
+    });
+    const app = await createApp(
+      makeDb({
+        id: "run-1",
+        agentId: "agent-1",
+        companyId: "company-1",
+        status: "error",
+        finishedAt: null, // crashed — no finishedAt
+      }),
+    );
+    const res = await request(app)
+      .post("/api/proxy/validate-run-token")
+      .send({ token: "token-for-crashed-run" });
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ valid: false, reason: "run_finished" });
+  });
+
+  it("rejects a cancelled run with no finishedAt (crash path)", async () => {
+    mockVerifyLocalAgentJwt.mockReturnValue({
+      sub: "agent-1",
+      company_id: "company-1",
+      run_id: "run-1",
+      adapter_type: "claude_local",
+      iat: 1000,
+      exp: 9999999999,
+    });
+    const app = await createApp(
+      makeDb({
+        id: "run-1",
+        agentId: "agent-1",
+        companyId: "company-1",
+        status: "cancelled",
+        finishedAt: null,
+      }),
+    );
+    const res = await request(app)
+      .post("/api/proxy/validate-run-token")
+      .send({ token: "token-for-cancelled-run" });
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ valid: false, reason: "run_finished" });
+  });
+
   it("returns 401 when token agent does not match run agent", async () => {
     mockVerifyLocalAgentJwt.mockReturnValue({
       sub: "agent-WRONG",
