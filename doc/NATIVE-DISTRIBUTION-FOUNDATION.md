@@ -130,6 +130,59 @@ Official Tauri reference points:
 - Tauri supports Windows signing through certificate paths, Azure Key Vault, Azure Code Signing, and custom sign commands.
 - Cross-compiling Windows installers generally requires a custom sign command because the default implementation works on Windows hosts.
 
+## Phase 60 Signing Evidence Gate
+
+Phase 60 adds a deterministic native signing gate:
+
+```sh
+pnpm run rt2:native-signing-gate -- --manifest path/to/native-signing-evidence.json
+```
+
+The gate validates macOS and Windows evidence manifests and writes durable evidence under `.planning/native-signing-runs/`:
+
+- `summary.json` - machine-readable pass/blocker status, platform checks, and blocker codes
+- `report.md` - operator-readable blocker table and passed checks
+
+The command exits non-zero when signing or trust evidence is incomplete.
+
+### Manifest Shape
+
+```json
+{
+  "platforms": {
+    "macos": {
+      "artifact": "dist/RealTycoon2.dmg",
+      "developerIdApplication": "Developer ID Application: iSens Corp. (TEAMID1234)",
+      "appleTeamId": "TEAMID1234",
+      "hardenedRuntime": { "status": "passed", "evidence": "evidence/macos-hardened-runtime.txt" },
+      "codesign": { "status": "passed", "evidence": "evidence/macos-codesign.txt" },
+      "notarization": { "status": "passed", "submissionId": "notary-submission-id", "evidence": "evidence/macos-notarization.json" },
+      "stapling": { "status": "passed", "evidence": "evidence/macos-stapling.txt" },
+      "gatekeeper": { "status": "passed", "evidence": "evidence/macos-gatekeeper.txt" }
+    },
+    "windows": {
+      "artifact": "dist/RealTycoon2.msix",
+      "installerFormat": "msix",
+      "trustPath": "azure_artifact_signing",
+      "certificateSource": "secret-ref:WINDOWS_SIGNING_CERTIFICATE",
+      "signing": { "status": "passed", "evidence": "evidence/windows-signing.txt" },
+      "timestamping": { "status": "passed", "tsa": "https://timestamp.example", "evidence": "evidence/windows-timestamp.txt" },
+      "signatureVerification": { "status": "passed", "evidence": "evidence/windows-verify.txt" },
+      "installTrust": { "status": "passed", "evidence": "evidence/windows-install-trust.txt" }
+    }
+  }
+}
+```
+
+Supported Windows `trustPath` values are `store_resigning`, `store`, `msix_store`, `azure_artifact_signing`, `azure_trusted_signing`, `azure_code_signing`, `azure_key_vault`, `ev_certificate`, `ov_certificate`, and `custom_sign_command`.
+
+### Required Blocking Behavior
+
+- macOS blocks on missing artifact, Developer ID Application identity, Apple Team ID, hardened runtime, codesign, notarization submission ID/evidence, stapling, or Gatekeeper evidence.
+- Windows blocks on missing artifact, installer format, selected trust path, certificate source, signing, timestamping/TSA, signature verification, or install trust evidence.
+- Evidence fields may reference local evidence files, URLs, CI artifact references, or inline command output objects.
+- Raw private keys, passwords, provider tokens, and certificate private material are rejected. Use `secret-ref:...`, `env:...`, `github-secret:...`, `azure-key-vault:...`, `keychain:...`, or equivalent secret references.
+
 ## Updater Key Material
 
 Updater signing is separate from OS code signing.
