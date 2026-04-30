@@ -24,7 +24,26 @@ export interface InstanceGeneralSettings {
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /**
+   * Shell command fired when an adapter run reports `provider_quota_exhausted`.
+   * Typical use: `ccrotate next --yes` to rotate to a non-rate-limited account.
+   * Reactive — runs after the failure surfaces. Debounced to once per 60s.
+   */
   quotaExhaustedCmd: string | null;
+  /**
+   * Shell command fired before every agent run, after the run has been queued
+   * but before the adapter spawns the agent process. Typical use:
+   * `ccrotate snap --force; ccrotate next --yes` to refresh and rotate creds.
+   * Synchronous — the run waits for this to exit (timeout 30s) before
+   * proceeding. Set to null to disable.
+   */
+  preRunCmd: string | null;
+  /**
+   * Shell command fired after every agent run finishes (regardless of exit
+   * status). Typical use: `ccrotate refresh-one` to keep the tier-cache warm
+   * for the next run. Asynchronous — does not block run finalization.
+   */
+  postRunCmd: string | null;
 }
 
 export interface InstanceExperimentalSettings {

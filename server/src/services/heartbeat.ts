@@ -111,6 +111,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
+import { runLifecycleHook } from "./lifecycle-hook.js";
 import {
   createCcrotateTierGate,
   createDefaultCcrotateSwitcher,
@@ -5533,6 +5534,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: "run started",
       });
 
+      // Pre-run lifecycle hook (instance setting `general.preRunCmd`).
+      // Awaited synchronously so credential rotation lands before the agent
+      // process spawns. Bounded to 30s by lifecycle-hook.ts so a hung hook
+      // can't stall the run indefinitely.
+      try {
+        await runLifecycleHook({
+          db,
+          kind: "preRun",
+          agentId: agent.id,
+          companyId: agent.companyId,
+          runId: run.id,
+          adapterType: agent.adapterType,
+        });
+      } catch (hookErr) {
+        logger.warn(
+          { err: hookErr, runId: run.id, agentId: agent.id },
+          "preRun lifecycle hook threw; continuing with run",
+        );
+      }
+
       handle = await runLogStore.begin({
         companyId: run.companyId,
         agentId: run.agentId,
@@ -6103,6 +6124,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          // Post-run lifecycle hook (instance setting `general.postRunCmd`).
+          // Fire-and-forget — does not block run finalization or release of
+          // the next queued run. Latest run + agent are read here so we can
+          // pass the agent process exit code and adapter type to the hook
+          // for branching (e.g. only refresh the cache on success, or only
+          // for `_k8s` adapters).
+          {
+            const latestRunForHook = await getRun(run.id).catch(() => null);
+            const agentForHook = await getAgent(run.agentId).catch(() => null);
+            const exitCode = (() => {
+              const raw = latestRunForHook?.exitCode;
+              return typeof raw === "number" ? raw : null;
+            })();
+            void runLifecycleHook({
+              db,
+              kind: "postRun",
+              agentId: run.agentId,
+              companyId: run.companyId,
+              runId: run.id,
+              adapterType: agentForHook?.adapterType ?? "unknown",
+              exitCode,
+            }).catch((hookErr) => {
+              logger.warn(
+                { err: hookErr, runId: run.id, agentId: run.agentId },
+                "postRun lifecycle hook threw",
+              );
+            });
+          }
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }

@@ -26,6 +26,8 @@ function mockSettings(quotaExhaustedCmd: string | null) {
       feedbackDataSharingPreference: "prompt",
       backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       quotaExhaustedCmd,
+      preRunCmd: null,
+      postRunCmd: null,
     }),
   } as any);
 }

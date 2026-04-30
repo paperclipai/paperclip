@@ -16,7 +16,7 @@ import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
 
-function normalizeQuotaExhaustedCmd(raw: unknown): string | null {
+function normalizeShellCmd(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -31,7 +31,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
-      quotaExhaustedCmd: normalizeQuotaExhaustedCmd(parsed.data.quotaExhaustedCmd),
+      quotaExhaustedCmd: normalizeShellCmd(parsed.data.quotaExhaustedCmd),
+      preRunCmd: normalizeShellCmd(parsed.data.preRunCmd),
+      postRunCmd: normalizeShellCmd(parsed.data.postRunCmd),
     };
   }
   return {
@@ -40,6 +42,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
     quotaExhaustedCmd: null,
+    preRunCmd: null,
+    postRunCmd: null,
   };
 }
 
