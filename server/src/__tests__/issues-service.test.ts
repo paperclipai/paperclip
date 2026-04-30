@@ -310,6 +310,43 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
   });
 
+  it("treats escaped wildcard characters as literals in issue search", async () => {
+    const companyId = randomUUID();
+    const percentMatchId = randomUUID();
+    const wildcardOnlyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: percentMatchId,
+        companyId,
+        title: "CPU reached 100% during search",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: wildcardOnlyId,
+        companyId,
+        title: "CPU reached 100x during search",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      q: "100%",
+      limit: 2,
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([percentMatchId]);
+  });
+
   it("ranks comment matches ahead of description-only matches", async () => {
     const companyId = randomUUID();
     const commentMatchId = randomUUID();
