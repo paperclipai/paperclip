@@ -105,6 +105,7 @@ None - plan executed exactly as written.
 ## Issues Encountered
 
 - Initial test run missed camelCase sensitive field detection (`applePassword`). The secret detection regex was tightened before the task commit and the focused suite then passed.
+- Post-completion `pnpm test` surfaced one unrelated timeout in `server/src/__tests__/workspace-runtime.test.ts`; the exact timed-out test passed when rerun directly.
 
 ## User Setup Required
 

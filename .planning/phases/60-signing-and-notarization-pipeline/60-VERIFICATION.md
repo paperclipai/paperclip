@@ -34,6 +34,10 @@ Phase 60 delivered a native signing evidence gate that validates macOS Developer
 | `pnpm typecheck` | passed |
 | `git diff -- pnpm-lock.yaml` | clean |
 
+## Workspace Check Note
+
+After Phase 60 completion, `pnpm test` was run as a broader workspace check. It failed with one timeout in `server/src/__tests__/workspace-runtime.test.ts` for `runs a configured provision command inside the derived worktree`; the failing test passed when rerun directly with `pnpm --filter @paperclipai/server exec vitest run src/__tests__/workspace-runtime.test.ts -t "runs a configured provision command inside the derived worktree"`. No Phase 60 files were implicated by that timeout.
+
 ## Coverage Notes
 
 - Complete fixture manifests pass and write `summary.json` plus `report.md`.
