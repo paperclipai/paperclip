@@ -2008,6 +2008,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
+  async function releaseEnvironmentLeasesForRun(input: {
+    runId: string;
+    companyId: string;
+    agentId: string;
+    status: string | null | undefined;
+    failureReason?: string | null;
+  }) {
+    const releaseResult = await envOrchestrator.releaseForRun({
+      heartbeatRunId: input.runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: leaseReleaseStatusForRunStatus(input.status),
+      failureReason: input.failureReason ?? undefined,
+    }).catch((err) => {
+      logger.warn({ err, runId: input.runId }, "failed to release environment leases for heartbeat run");
+      return null;
+    });
+    for (const releaseError of releaseResult?.errors ?? []) {
+      logger.warn(
+        { err: releaseError.error, leaseId: releaseError.leaseId, runId: input.runId },
+        "failed to release environment lease for heartbeat run",
+      );
+    }
+  }
+
   async function hasUnsafeTextProjectionDatabase() {
     if (!unsafeTextProjectionPromise) {
       unsafeTextProjectionPromise = db
@@ -2647,7 +2672,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const existing = await getRuntimeState(agent.id);
     if (existing) return existing;
 
-    return db
+    const inserted = await db
       .insert(agentRuntimeState)
       .values({
         agentId: agent.id,
@@ -2655,8 +2680,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterType: agent.adapterType,
         stateJson: {},
       })
+      .onConflictDoNothing({
+        target: agentRuntimeState.agentId,
+      })
       .returning()
-      .then((rows) => rows[0]);
+      .then((rows) => rows[0] ?? null);
+    if (inserted) return inserted;
+
+    const ensured = await getRuntimeState(agent.id);
+    if (!ensured) {
+      throw new Error(`Failed to ensure runtime state for agent ${agent.id}`);
+    }
+    return ensured;
   }
 
   async function setRunStatus(
@@ -4448,6 +4483,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+      await releaseEnvironmentLeasesForRun({
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: finalizedRun.agentId,
+        status: finalizedRun.status,
+        failureReason: finalizedRun.error ?? undefined,
+      });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       if (shouldRetry) {
@@ -5894,22 +5936,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
-          const releaseResult = await envOrchestrator.releaseForRun({
-            heartbeatRunId: run.id,
+          await releaseEnvironmentLeasesForRun({
+            runId: run.id,
             companyId: run.companyId,
             agentId: run.agentId,
-            status: leaseReleaseStatusForRunStatus(latestRun?.status),
+            status: latestRun?.status,
             failureReason: latestRun?.error ?? undefined,
-          }).catch((err) => {
-            logger.warn({ err, runId: run.id }, "failed to release environment leases for heartbeat run");
-            return null;
           });
-          for (const releaseError of releaseResult?.errors ?? []) {
-            logger.warn(
-              { err: releaseError.error, leaseId: releaseError.leaseId, runId: run.id },
-              "failed to release environment lease for heartbeat run",
-            );
-          }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
