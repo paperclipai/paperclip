@@ -14,6 +14,28 @@ sources:
   - https://workspace.google.com/products/notebooklm/
   - https://one.google.com/about/ai-premium
   - https://support.google.com/notebooklm
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Students Can Now Create Personal Class Notebooks with NotebookLM in Google Classroom — Google Workspace Updates"
+    url: http://workspaceupdates.googleblog.com/2026/04/students-can-now-create-personal-class-notebooks-with-NotebookLM-in-Google-Classroom.html
+    retrieved: 2026-04-30
+  - n: 2
+    title: "Audio Overviews in NotebookLM — Google Blog"
+    url: https://blog.google/technology/ai/notebooklm-audio-overviews/
+    retrieved: 2026-04-30
+  - n: 3
+    title: "NotebookLM Product Page — Google Workspace"
+    url: https://workspace.google.com/products/notebooklm/
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Google AI Pro Plan — Google One"
+    url: https://one.google.com/about/ai-premium
+    retrieved: 2026-04-30
+  - n: 5
+    title: "NotebookLM Help Center — Google Support"
+    url: https://support.google.com/notebooklm
+    retrieved: 2026-04-30
 whats_new:
   - NotebookLM now integrates with Google Classroom — higher-ed students can build personal study notebooks grounded entirely in their educator's course materials, with Audio Overviews, Video Overviews, flashcards, and study guides in a single Studio panel
 learning_objectives:
