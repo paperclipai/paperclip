@@ -502,12 +502,13 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+      expect(String(payload?.message ?? "")).toContain("\"latestCommentId\":\"comment-2\"");
+      // Regression guard: OpenClaw gateway's AgentParamsSchema sets
+      // additionalProperties:false. A root `paperclip` key trips
+      // `invalid agent params: at root: unexpected property 'paperclip'`.
+      // Fixed in #606 (commit 6c9e639a) and re-introduced by 91e040a6;
+      // this assertion locks the absence of that envelope.
+      expect(payload).not.toHaveProperty("paperclip");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {
