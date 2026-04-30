@@ -40,7 +40,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
-          username: ${{ secrets.BLOCKCAST_REGISTRY_USERNAME }}
+          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
           password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
 
       - name: Set up Docker Buildx
