@@ -1,0 +1,124 @@
+name: Ollama integration
+
+# Second leg of the M3 CI matrix for @paperclipai/adapter-ollama-local.
+#
+# The mock-backed integration suite (packages/adapters/ollama-local/src/server/
+# integration/ollama-local.integration.test.ts) runs on every PR through the
+# shared `pnpm test:run` invocation in pr.yml. This workflow adds the optional
+# real-backend leg: it boots an `ollama/ollama` service container, pulls a
+# small model, and runs the gated `real-ollama.integration.test.ts` file.
+#
+# It intentionally does not run on every PR to keep runner cost predictable —
+# a real ollama container download + model pull is heavy. It runs on pushes to
+# master when the adapter source or this workflow changes, and can be
+# dispatched manually against any branch. If/when the board approves broader
+# coverage, move the `push` trigger to a scheduled job or flip the `pull_request`
+# trigger on.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/adapters/ollama-local/**'
+      - '.github/workflows/ollama-integration.yml'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Ollama model tag to pull and test against'
+        default: 'qwen2.5:0.5b'
+        required: false
+
+concurrency:
+  group: ollama-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mock:
+    # Re-run the mock-backed suite in isolation. pnpm test:run in pr.yml already
+    # covers this on PR, but this job gives us a single status check when the
+    # workflow is triggered manually and on master pushes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        # post-merge leg: tolerate a not-yet-refreshed lockfile so a master push
+        # that races refresh-lockfile.yml does not break this workflow. pr.yml is
+        # the strict-reproducibility gate; this leg runs after merge.
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck ollama-local
+        run: pnpm --filter @paperclipai/adapter-ollama-local typecheck
+
+      - name: Run mock integration suite
+        run: pnpm --filter @paperclipai/adapter-ollama-local test
+
+  real-ollama:
+    # Gated real-backend leg. Uses a service container so the HTTP endpoint is
+    # reachable as http://ollama:11434. We pull a small model before the test
+    # step so model latency doesn't flake the first request.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+        # No healthcheck in the official image; we poll in a step below.
+
+    env:
+      OLLAMA_INTEGRATION_BASE_URL: http://127.0.0.1:11434
+      OLLAMA_INTEGRATION_MODEL: ${{ github.event.inputs.model || 'qwen2.5:0.5b' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Wait for Ollama to accept traffic
+        run: |
+          for i in $(seq 1 60); do
+            if curl --silent --fail --max-time 2 "$OLLAMA_INTEGRATION_BASE_URL/api/version" >/dev/null; then
+              echo "Ollama is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Ollama service container never became reachable on $OLLAMA_INTEGRATION_BASE_URL"
+          curl -sS -o /tmp/ollama-version.log "$OLLAMA_INTEGRATION_BASE_URL/api/version" || true
+          exit 1
+
+      - name: Pull test model
+        run: |
+          curl -sS -X POST "$OLLAMA_INTEGRATION_BASE_URL/api/pull" \
+            -H 'content-type: application/json' \
+            -d "{\"name\":\"$OLLAMA_INTEGRATION_MODEL\",\"stream\":false}" \
+            --max-time 600
+
+      - name: Run real-ollama integration suite
+        # Scope to the gated real-backend file so we do not redundantly re-run
+        # the mock suite the `mock` job already covered. vitest accepts a
+        # filename filter as a positional arg; -- forwards it through pnpm.
+        run: pnpm --filter @paperclipai/adapter-ollama-local test -- src/server/integration/real-ollama.integration.test.ts

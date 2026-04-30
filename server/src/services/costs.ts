@@ -2,6 +2,8 @@ import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { logActivity } from "./activity-log.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
 export interface CostDateRange {
@@ -96,6 +98,36 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      try {
+        await logActivity(db, {
+          companyId,
+          actorType: "agent",
+          actorId: event.agentId,
+          action: "cost_event.created",
+          entityType: "cost_event",
+          entityId: event.id,
+          agentId: event.agentId,
+          runId: event.heartbeatRunId ?? null,
+          details: {
+            provider: event.provider,
+            biller: event.biller,
+            billingType: event.billingType,
+            model: event.model,
+            inputTokens: event.inputTokens,
+            cachedInputTokens: event.cachedInputTokens,
+            outputTokens: event.outputTokens,
+            costCents: event.costCents,
+            occurredAt: event.occurredAt instanceof Date
+              ? event.occurredAt.toISOString()
+              : event.occurredAt,
+            issueId: event.issueId ?? null,
+            projectId: event.projectId ?? null,
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, costEventId: event.id }, "failed to log cost_event.created activity");
+      }
 
       return event;
     },

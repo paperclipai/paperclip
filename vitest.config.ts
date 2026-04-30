@@ -10,6 +10,7 @@ export default defineConfig({
       "packages/adapters/codex-local",
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
+      "packages/adapters/ollama-local",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "server",

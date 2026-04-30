@@ -66,19 +66,49 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
+// Module-level gate for loopback access from plugin fetch. Off by default so
+// cloud / authenticated deployments keep the strict SSRF posture. Enabled only
+// on fully-local deployments (local_trusted + private) via
+// configurePluginHostFetch() so plugins can talk to same-host services such as
+// local Ollama / LM Studio / llama.cpp. The rest of the private ranges
+// (RFC 1918, link-local, ULA, unspecified) stay blocked regardless — a plugin
+// can reach its own host, never the LAN.
+let pluginHostAllowLoopback = false;
+
+export function configurePluginHostFetch(opts: { allowLoopback: boolean }): void {
+  pluginHostAllowLoopback = Boolean(opts.allowLoopback);
+}
+
+export function __resetPluginHostFetchConfigForTests(): void {
+  pluginHostAllowLoopback = false;
+}
+
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that plugins should never be able to reach.
  *
- * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
- * dns.lookup may return depending on OS configuration.
+ * Handles IPv4-mapped IPv6 addresses in both dotted (::ffff:127.0.0.1) and
+ * all-hex (::ffff:7f00:1) forms, since either may appear depending on the
+ * resolver / OS configuration.
  */
 function isPrivateIP(ip: string): boolean {
   const lower = ip.toLowerCase();
 
-  // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
-  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
+  // Unwrap IPv4-mapped IPv6 addresses in dotted form (::ffff:x.x.x.x)
+  const v4MappedDotted = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedDotted && v4MappedDotted[1]) return isPrivateIP(v4MappedDotted[1]);
+
+  // Unwrap IPv4-mapped IPv6 addresses in all-hex form (::ffff:HHHH:HHHH)
+  const v4MappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (v4MappedHex && v4MappedHex[1] && v4MappedHex[2]) {
+    const high = parseInt(v4MappedHex[1], 16);
+    const low = parseInt(v4MappedHex[2], 16);
+    const a = (high >> 8) & 0xff;
+    const b = high & 0xff;
+    const c = (low >> 8) & 0xff;
+    const d = low & 0xff;
+    return isPrivateIP(`${a}.${b}.${c}.${d}`);
+  }
 
   // IPv4 patterns
   if (ip.startsWith("10.")) return true;
@@ -87,12 +117,12 @@ function isPrivateIP(ip: string): boolean {
     if (second >= 16 && second <= 31) return true;
   }
   if (ip.startsWith("192.168.")) return true;
-  if (ip.startsWith("127.")) return true;                   // loopback
+  if (ip.startsWith("127.")) return !pluginHostAllowLoopback;  // loopback (gated)
   if (ip.startsWith("169.254.")) return true;               // link-local
   if (ip === "0.0.0.0") return true;
 
   // IPv6 patterns
-  if (lower === "::1") return true;                          // loopback
+  if (lower === "::1") return !pluginHostAllowLoopback;        // loopback (gated)
   if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
   if (lower.startsWith("fe80")) return true;                 // link-local
   if (lower === "::") return true;

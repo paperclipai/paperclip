@@ -3,7 +3,8 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import { activityLog, createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
 import {
@@ -349,6 +350,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(financeEvents);
     await db.delete(costEvents);
     await db.delete(projects);
@@ -433,6 +435,60 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("writes a cost_event.created activity_log row after createEvent (GEM-19)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plugin Event Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const event = await costs.createEvent(companyId, {
+      agentId,
+      provider: "ollama",
+      biller: "ollama",
+      billingType: "metered_api",
+      model: "llama3",
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 50,
+      costCents: 0,
+      occurredAt: new Date("2026-04-12T00:00:00.000Z"),
+    });
+
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, event.id));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.action).toBe("cost_event.created");
+    expect(rows[0]?.entityType).toBe("cost_event");
+    expect(rows[0]?.agentId).toBe(agentId);
+    expect(rows[0]?.companyId).toBe(companyId);
+    expect(rows[0]?.details).toMatchObject({
+      provider: "ollama",
+      model: "llama3",
+      inputTokens: 100,
+      outputTokens: 50,
+      costCents: 0,
+    });
   });
 
   it("aggregates finance event sums above int32 without raising Postgres integer overflow", async () => {
