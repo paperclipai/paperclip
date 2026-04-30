@@ -745,23 +745,29 @@ sync into plugin state. V3 = pluggable resolver protocol.
 
 ### Q4 — Webhook authentication
 
-**Status: Resolved (V1) at the design level; implementation gap on the live
-cluster.** Static bearer is the V1 design. The manifest schema supports both
+**Status: Resolved (V1) — live cluster runs `webhookTokenRef`-only auth.**
+Static bearer is the V1 design. The manifest schema supports both
 `webhookTokenRef` (paperclip secrets-store UUID, production posture) and
-`webhookToken` (inline string, dev-mode fallback). The Alertmanager side
-already reads its credential from the K8s `alertmanager-receivers` Secret
-via `credentials_file`.
+`webhookToken` (inline string, dev-mode fallback); the Alertmanager side
+reads its credential from the K8s `alertmanager-receivers` Secret via
+`credentials_file`. The live cluster's `plugin_config.config_json` carries
+`webhookTokenRef` only — the inline `webhookToken` was stripped on
+2026-04-30 after the bootstrap-fix image landed (see commit history;
+the `autoConfigureAlertmanagerFromEnv` helper now short-circuits when an
+operator has wired the secret-ref path).
 
-Live cluster currently uses the inline `webhookToken` path (the bearer
-value is duplicated between `paperclip.plugin_config.config_json` and the
-K8s `paperclip-alertmanager-webhook-token` Secret). This works but is dev-
-mode posture; remediation is to:
+The bearer therefore lives in three places that must rotate together:
 
-1. Create a paperclip `company_secrets` row holding the bearer value
-   (REST: `POST /api/companies/:companyId/secrets`).
-2. Update `plugin_config.config_json` to set `webhookTokenRef = <secret_uuid>`
-   and remove `webhookToken`.
-3. Restart the paperclip pod and confirm the webhook-handler still authenticates.
+1. `company_secrets` row in paperclip's own DB (single source of truth
+   resolved through `ctx.secrets.resolve()`).
+2. K8s `monitoring/alertmanager-receivers` Secret (mounted by AM as
+   `credentials_file`).
+3. K8s `paperclip/paperclip-alertmanager-webhook-token` Secret (env-
+   injected for `autoConfigureAlertmanagerFromEnv` to seed fresh
+   deploys).
+
+The plugin README's "Bearer rotation in a Kubernetes deployment" section
+spells out the rotation order.
 
 V2 path is mTLS (deferred — heavier operational lift). IP allowlist at
 ingress is documented as defense-in-depth but is not required for V1
