@@ -26,8 +26,10 @@ import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRa
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { usePageForegrounded } from "../hooks/usePageForegrounded";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const DASHBOARD_RECENT_ISSUE_LIMIT = 25;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -38,6 +40,7 @@ export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const isForegrounded = usePageForegrounded();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
@@ -46,7 +49,7 @@ export function Dashboard() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   useEffect(() => {
@@ -56,31 +59,31 @@ export function Dashboard() {
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: activity } = useQuery({
     queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }],
     queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "dashboard-recent", DASHBOARD_RECENT_ISSUE_LIMIT],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { limit: DASHBOARD_RECENT_ISSUE_LIMIT }),
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && isForegrounded,
   });
 
   const userProfileMap = useMemo(

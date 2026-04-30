@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
@@ -11,6 +11,7 @@ import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { usePageForegrounded } from "../hooks/usePageForegrounded";
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -48,27 +49,36 @@ export function ActiveAgentsPanel({
   queryScope = "dashboard",
   showMoreLink = true,
 }: ActiveAgentsPanelProps) {
+  const isForegrounded = usePageForegrounded();
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
+    enabled: isForegrounded,
   });
 
   const runs = liveRuns ?? [];
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
-  const { data: issues } = useQuery({
-    queryKey: [...queryKeys.issues.list(companyId), "with-routine-executions"],
-    queryFn: () => issuesApi.list(companyId, { includeRoutineExecutions: true }),
-    enabled: visibleRuns.length > 0,
+  const visibleIssueIds = useMemo(
+    () => [...new Set(visibleRuns.map((run) => run.issueId).filter((id): id is string => Boolean(id)))],
+    [visibleRuns],
+  );
+  const issueQueries = useQueries({
+    queries: visibleIssueIds.map((issueId) => ({
+      queryKey: queryKeys.issues.detail(issueId),
+      queryFn: () => issuesApi.get(issueId),
+      enabled: isForegrounded,
+      staleTime: 30_000,
+    })),
   });
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
-    for (const issue of issues ?? []) {
-      map.set(issue.id, issue);
+    for (const query of issueQueries) {
+      if (query.data) map.set(query.data.id, query.data);
     }
     return map;
-  }, [issues]);
+  }, [issueQueries]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: visibleRuns,
