@@ -54,7 +54,8 @@ export function proxyRoutes(db: Db): Router {
       return res.status(401).json({ valid: false, reason: "run_not_found" });
     }
 
-    if (run.finishedAt !== null) {
+    const TERMINAL_STATUSES = new Set(["done", "cancelled", "failed", "error"]);
+    if (run.finishedAt !== null || TERMINAL_STATUSES.has(run.status)) {
       return res.status(401).json({ valid: false, reason: "run_finished" });
     }
 
