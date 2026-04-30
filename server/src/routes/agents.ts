@@ -339,11 +339,30 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const base = options?.restricted
+      ? redactForRestrictedAgentView(agent)
+      : redactAgentForResponse(agent);
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...base,
       chainOfCommand,
       access: accessState,
     };
+  }
+
+  function redactAgentForResponse<
+    T extends { adapterConfig: unknown; runtimeConfig: unknown } | null | undefined,
+  >(agent: T): T {
+    if (!agent) return agent;
+    return {
+      ...(agent as object),
+      adapterConfig: redactEventPayload(
+        (agent.adapterConfig as Record<string, unknown> | null) ?? null,
+      ),
+      runtimeConfig: redactEventPayload(
+        (agent.runtimeConfig as Record<string, unknown> | null) ?? null,
+      ),
+    } as T;
   }
 
   async function applyDefaultAgentTaskAssignGrant(
@@ -1277,7 +1296,7 @@ export function agentRoutes(
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentForResponse(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2345,7 +2364,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -2371,7 +2390,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -2395,7 +2414,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -2430,7 +2449,7 @@ export function agentRoutes(
       details: { source: "agent_detail" },
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -2456,7 +2475,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
