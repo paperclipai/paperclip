@@ -1801,7 +1801,7 @@ export function heartbeatService(db: Db) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
       } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        await releaseIssueExecutionAndPromote(finalizedRun, { aborted: true });
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -1961,7 +1961,7 @@ export function heartbeatService(db: Db) {
         error: "Agent not found",
       });
       const failedRun = await getRun(runId);
-      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      if (failedRun) await releaseIssueExecutionAndPromote(failedRun, { aborted: true });
       return;
     }
 
@@ -2687,7 +2687,7 @@ export function heartbeatService(db: Db) {
             exitCode: adapterResult.exitCode,
           },
         });
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        await releaseIssueExecutionAndPromote(finalizedRun, { aborted: outcome !== "succeeded" });
       }
 
       if (finalizedRun) {
@@ -2753,7 +2753,7 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
-        await releaseIssueExecutionAndPromote(failedRun);
+        await releaseIssueExecutionAndPromote(failedRun, { aborted: true });
 
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
@@ -2804,7 +2804,7 @@ export function heartbeatService(db: Db) {
               level: "error",
               message,
             }).catch(() => undefined);
-            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(failedRun, { aborted: true }).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
@@ -2816,7 +2816,11 @@ export function heartbeatService(db: Db) {
         }
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options: { aborted?: boolean } = {},
+  ) {
+    const aborted = options.aborted ?? false;
     const promotedRun = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
@@ -2826,6 +2830,8 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
         })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
@@ -2833,12 +2839,27 @@ export function heartbeatService(db: Db) {
 
       if (!issue) return;
 
+      // When the run aborted (process loss, adapter failure, cancellation) the agent never
+      // got to release its checkout. Roll the issue back to a recoverable "todo" so the
+      // routine scheduler can coalesce future fires onto it and the assignee can re-claim
+      // it via adoptStaleCheckoutRun. Without this reset the orphan loses its slot in
+      // issues_open_routine_execution_uq (which requires execution_run_id IS NOT NULL)
+      // and the routine creates duplicate fires every tick.
+      const issueResetPatch =
+        aborted && issue.status === "in_progress"
+          ? {
+              status: "todo" as const,
+              checkoutRunId: null,
+            }
+          : {};
+
       await tx
         .update(issues)
         .set({
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
+          ...issueResetPatch,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
@@ -3598,7 +3619,7 @@ export function heartbeatService(db: Db) {
         level: "warn",
         message: "run cancelled",
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, { aborted: true });
     }
 
     runningProcesses.delete(run.id);
@@ -3630,7 +3651,7 @@ export function heartbeatService(db: Db) {
         running.child.kill("SIGTERM");
         runningProcesses.delete(run.id);
       }
-      await releaseIssueExecutionAndPromote(run);
+      await releaseIssueExecutionAndPromote(run, { aborted: true });
     }
 
     return runs.length;

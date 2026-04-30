@@ -1281,6 +1281,32 @@ export function issueService(db: Db) {
       });
     },
 
+    forceRelease: async (id: string) => {
+      const existing = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
+      const updated = await db
+        .update(issues)
+        .set({
+          status: existing.status === "in_progress" ? "todo" : existing.status,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
       const existing = await db
         .select()

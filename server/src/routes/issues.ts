@@ -1242,6 +1242,54 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(released);
   });
 
+  router.post("/issues/:id/force-release", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== existing.companyId || actorAgent.role !== "ceo") {
+        res.status(403).json({ error: "Only the CEO agent can force-release issues" });
+        return;
+      }
+    }
+
+    const released = await svc.forceRelease(id);
+    if (!released) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: released.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.force_released",
+      entityType: "issue",
+      entityId: released.id,
+      details: {
+        previousStatus: existing.status,
+        previousCheckoutRunId: existing.checkoutRunId,
+        previousExecutionRunId: existing.executionRunId,
+        previousAssigneeAgentId: existing.assigneeAgentId,
+      },
+    });
+
+    res.json(released);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
