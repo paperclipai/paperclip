@@ -13,7 +13,9 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./routine-checks": "./src/services/routine-checks/boot.ts",
+    "./routine-checks/runner": "./src/services/routine-checks/runner.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -21,6 +23,14 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./routine-checks": {
+        "types": "./dist/services/routine-checks/boot.d.ts",
+        "import": "./dist/services/routine-checks/boot.js"
+      },
+      "./routine-checks/runner": {
+        "types": "./dist/services/routine-checks/runner.d.ts",
+        "import": "./dist/services/routine-checks/runner.js"
       }
     },
     "main": "./dist/index.js",
