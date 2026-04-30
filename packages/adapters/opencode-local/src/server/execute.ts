@@ -10,6 +10,7 @@ import {
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
   adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   prepareAdapterExecutionTargetRuntime,
@@ -18,6 +19,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asString,
@@ -234,7 +236,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
-    const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+    let loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
@@ -259,6 +261,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let localSkillsDir: string | null = null;
+    let remoteRuntimeRootDir: string | null = null;
+    let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTargetIsRemote) {
       localSkillsDir = await buildOpenCodeSkillsDir(config);
@@ -285,6 +289,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ],
       });
       restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
       if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
         preparedRuntimeConfig.env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
@@ -309,6 +314,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
           { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
         );
+      }
+    }
+    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId,
+        target: executionTarget,
+        runtimeRootDir: remoteRuntimeRootDir,
+        adapterKey: "opencode",
+        hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
+        onLog,
+      });
+      if (paperclipBridge) {
+        Object.assign(preparedRuntimeConfig.env, paperclipBridge.env);
+        loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+          runtimeEnv: Object.fromEntries(
+            Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
+            ),
+          ),
+          includeRuntimeKeys: ["HOME"],
+          resolvedCommand,
+        });
       }
     }
 
@@ -538,6 +565,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toResult(initial);
     } finally {
       await Promise.all([
+        paperclipBridge?.stop(),
         restoreRemoteWorkspace?.(),
         localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
       ]);
