@@ -1,10 +1,11 @@
 ---
 phase: 56
 slug: messaging-capture-source-installation
-status: draft
+status: complete
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-04-30
+updated: 2026-04-30
 ---
 
 # Phase 56 — Validation Strategy
@@ -38,10 +39,10 @@ created: 2026-04-30
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 56-01-01 | 01 | 1 | MSG-01, MSG-02 | T-56-01 / T-56-02 | Source evidence and inbound payload contracts preserve metadata without exposing secrets | unit | `pnpm exec vitest run packages/shared/src/rt2-task.test.ts` | ✅ W0 | ⬜ pending |
-| 56-01-02 | 01 | 1 | MSG-01, MSG-02, MSG-03 | T-56-01 / T-56-03 / T-56-04 | Public inbound route verifies source/signature and persists success/failure evidence | integration | `pnpm exec vitest run server/src/__tests__/rt2-task-routes.test.ts` | ✅ W0 | ⬜ pending |
-| 56-01-03 | 01 | 1 | MSG-01 | T-56-02 | Operator setup shows callback/status and never displays saved secret material | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` plus any added setup test | ✅ W0 | ⬜ pending |
-| 56-01-04 | 01 | 1 | MSG-03 | T-56-05 | Board inbox distinguishes duplicate, unauthorized/signature, and malformed messaging failures | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ W0 | ⬜ pending |
+| 56-01-01 | 01 | 1 | MSG-01, MSG-02 | T-56-01 / T-56-02 | Source evidence and inbound payload contracts preserve metadata without exposing secrets | unit | `pnpm exec vitest run packages/shared/src/rt2-task.test.ts` | ✅ W0 | ✅ green |
+| 56-01-02 | 01 | 1 | MSG-01, MSG-02, MSG-03 | T-56-01 / T-56-03 / T-56-04 | Public inbound route verifies source/signature and persists success/failure evidence | integration | `$env:PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS='true'; pnpm exec vitest run server/src/__tests__/rt2-task-routes.test.ts` | ✅ W0 | ✅ green |
+| 56-01-03 | 01 | 1 | MSG-01 | T-56-02 | Operator setup shows callback/status and never displays saved secret material | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ W0 | ✅ green |
+| 56-01-04 | 01 | 1 | MSG-03 | T-56-05 | Board inbox distinguishes duplicate, unauthorized/signature, and malformed messaging failures | component | `pnpm exec vitest run ui/src/components/Rt2DailyBoard.test.tsx` | ✅ W0 | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -76,4 +77,9 @@ Existing infrastructure covers the phase requirements:
 - [x] Feedback latency target defined
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending execution
+**Approval:** passed on 2026-04-30
+
+## Evidence Source
+
+- `.planning/phases/56-messaging-capture-source-installation/56-01-SUMMARY.md`
+- `.planning/phases/56-messaging-capture-source-installation/56-VERIFICATION.md`
