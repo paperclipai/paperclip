@@ -3474,7 +3474,7 @@ export function issueRoutes(
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
     if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {
-      const reopenedIssue = await svc.update(id, { status: "todo" });
+      const reopenedIssue = await svc.update(id, { status: "todo", allowTerminalReopen: true });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;
