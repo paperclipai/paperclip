@@ -52,7 +52,7 @@ import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
@@ -1239,6 +1239,7 @@ function AdapterTypeDropdown({
   disabledTypes: Set<string>;
 }) {
   const [open, setOpen] = useState(false);
+  const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(
     () =>
       listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
@@ -1251,9 +1252,10 @@ function AdapterTypeDropdown({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span>{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+            <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+            {selectedDisplay.experimental && <ExperimentalBadge />}
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
@@ -1280,6 +1282,7 @@ function AdapterTypeDropdown({
             <span className="inline-flex items-center gap-1.5">
               {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
               <span>{item.label}</span>
+              {item.experimental && <ExperimentalBadge />}
             </span>
             {item.comingSoon && (
               <span className="text-[10px] text-muted-foreground">Coming soon</span>
@@ -1288,6 +1291,14 @@ function AdapterTypeDropdown({
         ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ExperimentalBadge() {
+  return (
+    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-200">
+      Experimental
+    </span>
   );
 }
 
