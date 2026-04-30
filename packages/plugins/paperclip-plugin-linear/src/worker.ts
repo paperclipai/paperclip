@@ -381,9 +381,18 @@ const plugin = definePlugin({
         }
         // Token resolved successfully — connected even without team info
         return { connected: true, ...info };
-      } catch {
-        // Token may be expired — still show cached info if we have state
-        if (connectedRaw) return { connected: true, ...info };
+      } catch (err) {
+        // Token resolution / live API call failed. Surface as disconnected so
+        // the settings UI doesn't keep claiming "Connected" while every Linear
+        // call 401s — that mismatch caused real operator confusion when a
+        // long-lived OAuth token was server-side revoked but the cached
+        // `connected` state row stayed truthy. Cached team metadata is
+        // preserved under `lastConnectedAs` so the UI can render
+        // "previously connected to team X" next to a reconnect prompt.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (connectedRaw) {
+          return { connected: false, error: errMsg, lastConnectedAs: info };
+        }
         return { connected: false, error: "Token expired or invalid" };
       }
     });
