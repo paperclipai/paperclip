@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.koenig.watchdog</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/vardaankoenig/.nvm/versions/node/v24.14.1/bin/node</string>
+    <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/watchdog/watchdog.mjs</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/vardaankoenig/.nvm/versions/node/v24.14.1/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PAPERCLIP_HOST</key>
+    <string>http://localhost:3100</string>
+    <key>WATCHDOG_INTERVAL_MS</key>
+    <string>600000</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/watchdog/watchdog.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/watchdog/watchdog.err.log</string>
+</dict>
+</plist>

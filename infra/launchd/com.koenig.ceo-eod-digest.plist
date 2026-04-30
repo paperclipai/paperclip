@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.koenig.ceo-eod-digest</string>
+
+  <!-- Fires at 18:00 IST = 12:30 UTC every day -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>12</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <!-- POST to Paperclip heartbeat/invoke for the CEO agent -->
+  <!-- CEO agent UUID: 760165ec-337b-4e3f-a364-ee7f2e0993b6          -->
+  <!-- local_trusted mode — no auth header required                   -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/curl</string>
+    <string>-s</string>
+    <string>-o</string>
+    <string>/dev/null</string>
+    <string>-w</string>
+    <string>%{http_code}</string>
+    <string>-X</string>
+    <string>POST</string>
+    <string>-H</string>
+    <string>content-type: application/json</string>
+    <string>http://localhost:3100/api/agents/760165ec-337b-4e3f-a364-ee7f2e0993b6/heartbeat/invoke</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/infra/launchd/.logs/ceo-eod-digest.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/infra/launchd/.logs/ceo-eod-digest.err.log</string>
+</dict>
+</plist>

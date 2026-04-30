@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.koenig.publish-action</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts/publish-action.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/vardaankoenig/.paperclip/logs/publish-action.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vardaankoenig/.paperclip/logs/publish-action.stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/vardaankoenig/.nvm/versions/node/v24.14.1/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org</string>
+</dict>
+</plist>
