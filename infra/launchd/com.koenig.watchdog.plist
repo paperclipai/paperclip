@@ -7,8 +7,8 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/vardaankoenig/.nvm/versions/node/v24.14.1/bin/node</string>
-    <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/watchdog/watchdog.mjs</string>
+    <string>/bin/bash</string>
+    <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/watchdog/start-watchdog.sh</string>
   </array>
 
   <key>EnvironmentVariables</key>

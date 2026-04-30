@@ -18,6 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = path.join(__dirname, ".state");
 
 const PAPERCLIP_HOST = process.env.PAPERCLIP_HOST ?? "http://localhost:3100";
+const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY ?? "";
 const COMPANY_ID = process.env.KOENIG_COMPANY_ID ?? "2a77f89b-33f0-4133-a20c-77ddaac5e744"; // learnova-academy (Docker stack 2026-04-30)
 const INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS ?? 10 * 60 * 1000); // 10 min
 const NO_DELTA_LIMIT = Number(process.env.WATCHDOG_NO_DELTA_LIMIT ?? 5);
@@ -44,10 +45,14 @@ async function saveState(agentId, state) {
   await fs.writeFile(path.join(STATE_DIR, `${agentId}.json`), JSON.stringify(state, null, 2));
 }
 
+function authHeaders() {
+  return PAPERCLIP_API_KEY ? { authorization: `Bearer ${PAPERCLIP_API_KEY}` } : {};
+}
+
 async function fetchAgents() {
   // 2026-04-30: company-scoped endpoint. Old `/api/agents` returned 404 for 13+ hours.
   const url = `${PAPERCLIP_HOST}/api/companies/${COMPANY_ID}/agents`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`paperclip ${url} → ${res.status}`);
   const data = await res.json();
   // Response shape: array directly, OR { agents: [...] }
@@ -57,7 +62,7 @@ async function fetchAgents() {
 async function pauseAgent(agentId, reason) {
   const res = await fetch(`${PAPERCLIP_HOST}/api/agents/${agentId}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ status: "paused", pauseReason: reason }),
   });
   if (!res.ok) {
