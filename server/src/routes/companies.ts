@@ -9,6 +9,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  putClaudeOauthProfilesSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -407,6 +408,30 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  router.get("/:companyId/claude-oauth-profiles", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const profiles = await svc.getClaudeOauthProfiles(companyId);
+    if (profiles === null) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json({ profiles });
+  });
+
+  router.put("/:companyId/claude-oauth-profiles", validate(putClaudeOauthProfilesSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const ok = await svc.setClaudeOauthProfiles(companyId, req.body.profiles);
+    if (!ok) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const profiles = await svc.getClaudeOauthProfiles(companyId);
+    res.json({ profiles });
   });
 
   return router;
