@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
@@ -90,6 +91,7 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
@@ -1420,6 +1422,65 @@ export async function ensurePaperclipSkillSymlink(
   return "repaired";
 }
 
+async function hashSkillDirectory(root: string): Promise<string> {
+  const hash = createHash("sha256");
+
+  async function visit(candidate: string, relativePath: string): Promise<void> {
+    const stat = await fs.lstat(candidate);
+    if (stat.isSymbolicLink()) {
+      hash.update(`symlink:${relativePath}\n`);
+      return;
+    }
+    if (stat.isDirectory()) {
+      hash.update(`dir:${relativePath}\n`);
+      const entries = await fs.readdir(candidate, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await visit(path.join(candidate, entry.name), childRelativePath);
+      }
+      return;
+    }
+    if (stat.isFile()) {
+      hash.update(`file:${relativePath}:${stat.mode}\n`);
+      hash.update(await fs.readFile(candidate));
+      hash.update("\n");
+      return;
+    }
+    hash.update(`other:${relativePath}:${stat.mode}\n`);
+  }
+
+  await visit(root, "");
+  return hash.digest("hex");
+}
+
+async function materializedSkillFingerprintMatches(targetRoot: string, sourceFingerprint: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(targetRoot, MATERIALIZED_SKILL_SENTINEL), "utf8")) as unknown;
+    const parsed = parseObject(raw);
+    return parsed.version === 1 && parsed.sourceFingerprint === sourceFingerprint;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireMaterializeLock(lockDir: string): Promise<() => Promise<void>> {
+  await fs.mkdir(path.dirname(lockDir), { recursive: true });
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      await fs.mkdir(lockDir);
+      return async () => {
+        await fs.rm(lockDir, { recursive: true, force: true });
+      };
+    } catch (err) {
+      const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+      if (code !== "EEXIST" || Date.now() >= deadline) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 export async function materializePaperclipSkillCopy(
   source: string,
   target: string,
@@ -1450,7 +1511,10 @@ export async function materializePaperclipSkillCopy(
     skippedSymlinks: [],
   };
 
-  await fs.rm(targetRoot, { recursive: true, force: true });
+  const sourceFingerprint = await hashSkillDirectory(sourceRoot);
+  const lockDir = `${targetRoot}.lock`;
+  const releaseLock = await acquireMaterializeLock(lockDir);
+  const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
 
   async function copyEntry(sourcePath: string, targetPath: string, relativePath: string): Promise<void> {
     const stat = await fs.lstat(sourcePath);
@@ -1480,8 +1544,27 @@ export async function materializePaperclipSkillCopy(
     }
   }
 
-  await copyEntry(sourceRoot, targetRoot, "");
-  return result;
+  try {
+    if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    await copyEntry(sourceRoot, tempRoot, "");
+    await fs.writeFile(
+      path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
+      `${JSON.stringify({
+        version: 1,
+        sourceFingerprint,
+        copiedFiles: result.copiedFiles,
+        skippedSymlinks: result.skippedSymlinks,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    await fs.rm(targetRoot, { recursive: true, force: true });
+    await fs.rename(tempRoot, targetRoot);
+    return result;
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    await releaseLock();
+  }
 }
 
 export async function removeMaintainerOnlySkillSymlinks(

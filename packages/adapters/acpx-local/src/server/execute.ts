@@ -88,7 +88,6 @@ interface AcpxPreparedRuntime {
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
-let envLock: Promise<void> = Promise.resolve();
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -525,7 +524,8 @@ async function writeAgentWrapper(input: {
   stateDir: string;
   acpxAgent: string;
   agentCommandShell: string;
-}): Promise<string> {
+  env: Record<string, string>;
+}): Promise<{ wrapperPath: string; envFilePath: string }> {
   const wrappersDir = path.join(input.stateDir, "wrappers");
   await fs.mkdir(wrappersDir, { recursive: true });
   const wrapperHash = shortHash({
@@ -533,9 +533,22 @@ async function writeAgentWrapper(input: {
     command: input.agentCommandShell,
   });
   const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
+  const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
+  const envLines = Object.entries(input.env)
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  await fs.writeFile(envFilePath, `${envLines.join("\n")}\n`, "utf8");
+  await fs.chmod(envFilePath, 0o600);
   const script = [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
+    `env_file=${shellQuote(envFilePath)}`,
+    "if [[ -f \"$env_file\" ]]; then",
+    "  set -a",
+    "  source \"$env_file\"",
+    "  set +a",
+    "fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
   ].join("\n");
@@ -545,11 +558,12 @@ async function writeAgentWrapper(input: {
   const staleWrappers = await fs.readdir(wrappersDir).catch(() => []);
   await Promise.all(
     staleWrappers.map(async (name) => {
-      if (!name.startsWith(stalePrefix) || !name.endsWith(".sh") || name === path.basename(wrapperPath)) return;
+      const isManagedWrapperFile = name.startsWith(stalePrefix) && (name.endsWith(".sh") || name.endsWith(".env"));
+      if (!isManagedWrapperFile || name === path.basename(wrapperPath) || name === path.basename(envFilePath)) return;
       await fs.rm(path.join(wrappersDir, name), { force: true });
     }),
   );
-  return wrapperPath;
+  return { wrapperPath, envFilePath };
 }
 
 async function buildRuntime(input: {
@@ -655,13 +669,15 @@ async function buildRuntime(input: {
   const builtInCommand = resolveBuiltInAgentCommand(acpxAgent);
   const agentCommand = configuredCommand || builtInCommand || null;
   const agentCommandShell = configuredCommand || (builtInCommand ? shellQuote(builtInCommand) : "");
-  const wrapperPath = agentCommand
+  const wrapper = agentCommand
     ? await writeAgentWrapper({
         stateDir,
         acpxAgent,
         agentCommandShell,
+        env,
       })
     : null;
+  const wrapperPath = wrapper?.wrapperPath ?? null;
   const overrides = wrapperPath ? { [acpxAgent]: wrapperPath } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const executionTarget = readAdapterExecutionTarget({
@@ -881,29 +897,6 @@ function isResumeFailure(err: unknown): boolean {
   return /resume|load|not found|no session|unknown session|conversation/i.test(message);
 }
 
-async function withProcessEnv<T>(env: Record<string, string>, fn: () => Promise<T>): Promise<T> {
-  let release!: () => void;
-  const previous = envLock;
-  envLock = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
-  const oldValues = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(env)) {
-    oldValues.set(key, process.env[key]);
-    process.env[key] = value;
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [key, oldValue] of oldValues) {
-      if (oldValue === undefined) delete process.env[key];
-      else process.env[key] = oldValue;
-    }
-    release();
-  }
-}
-
 async function cleanupIdleHandles(input: {
   handles: Map<string, RuntimeCacheEntry>;
   now: number;
@@ -958,33 +951,31 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     let clearSession = false;
 
     try {
-      await withProcessEnv(prepared.env, async () => {
-        if (!handle) {
-          try {
-            handle = await runtime.ensureSession({
-              sessionKey: prepared.sessionKey,
-              agent: prepared.acpxAgent,
-              mode: prepared.mode,
-              cwd: prepared.cwd,
-              resumeSessionId,
-            });
-          } catch (err) {
-            if (!resumeSessionId || !isResumeFailure(err)) throw err;
-            clearSession = true;
-            resumedSession = false;
-            await ctx.onLog(
-              "stdout",
-              `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
-            );
-            handle = await runtime.ensureSession({
-              sessionKey: prepared.sessionKey,
-              agent: prepared.acpxAgent,
-              mode: prepared.mode,
-              cwd: prepared.cwd,
-            });
-          }
+      if (!handle) {
+        try {
+          handle = await runtime.ensureSession({
+            sessionKey: prepared.sessionKey,
+            agent: prepared.acpxAgent,
+            mode: prepared.mode,
+            cwd: prepared.cwd,
+            resumeSessionId,
+          });
+        } catch (err) {
+          if (!resumeSessionId || !isResumeFailure(err)) throw err;
+          clearSession = true;
+          resumedSession = false;
+          await ctx.onLog(
+            "stdout",
+            `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+          );
+          handle = await runtime.ensureSession({
+            sessionKey: prepared.sessionKey,
+            agent: prepared.acpxAgent,
+            mode: prepared.mode,
+            cwd: prepared.cwd,
+          });
         }
-      });
+      }
     } catch (err) {
       const classified = classifyError(err);
       const message = err instanceof Error ? err.message : String(err);
@@ -1064,24 +1055,22 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           void cancelActiveTurn?.(`Timed out after ${prepared.timeoutSec}s`).catch(() => {});
         }, timeoutMs);
       }
-      const terminal = await withProcessEnv(prepared.env, async () => {
-        const turn = runtime.startTurn({
-          handle: sessionHandle,
-          text: runPrompt,
-          mode: "prompt",
-          requestId: ctx.runId,
-          timeoutMs,
-          signal: controller?.signal,
-        });
-        cancelActiveTurn = async (reason: string) => {
-          await turn.cancel({ reason });
-        };
-        for await (const event of turn.events) {
-          if (event.type === "text_delta") textParts.push(event.text);
-          await emitRuntimeEvent(ctx, event);
-        }
-        return await turn.result;
+      const turn = runtime.startTurn({
+        handle: sessionHandle,
+        text: runPrompt,
+        mode: "prompt",
+        requestId: ctx.runId,
+        timeoutMs,
+        signal: controller?.signal,
       });
+      cancelActiveTurn = async (reason: string) => {
+        await turn.cancel({ reason });
+      };
+      for await (const event of turn.events) {
+        if (event.type === "text_delta") textParts.push(event.text);
+        await emitRuntimeEvent(ctx, event);
+      }
+      const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         warmHandles.delete(prepared.sessionKey);

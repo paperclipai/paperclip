@@ -234,14 +234,20 @@ describe("acpx_local runtime skill isolation", () => {
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
     expect(wrappers.filter((name) => name.startsWith("custom-") && name.endsWith(".sh"))).toHaveLength(1);
-    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrappers[0]!), "utf8");
+    expect(wrappers.filter((name) => name.startsWith("custom-") && name.endsWith(".env"))).toHaveLength(1);
+    const wrapperPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".sh"))!);
+    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".env"))!);
+    const wrapper = await fs.readFile(wrapperPath, "utf8");
+    const env = await fs.readFile(envPath, "utf8");
     expect(wrapper).toContain("node ./fake-acp.js");
     expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
     expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
+    expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
+    expect(env).not.toContain("old-key");
   });
 
-  it("keeps Paperclip env available while ACPX lazily streams a turn", async () => {
+  it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {
     let observedApiKeyDuringStream: string | undefined;
     const execute = createAcpxLocalExecutor({
       createRuntime: () => ({
@@ -281,7 +287,7 @@ describe("acpx_local runtime skill isolation", () => {
       } as never);
 
       expect(result.exitCode).toBe(0);
-      expect(observedApiKeyDuringStream).toBe("runtime-key");
+      expect(observedApiKeyDuringStream).toBeUndefined();
     } finally {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;

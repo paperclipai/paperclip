@@ -76,6 +76,26 @@ describe("materializePaperclipSkillCopy", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("does not delete and recopy an unchanged materialized skill target", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+      await fs.writeFile(path.join(target, "local-marker.txt"), "keep\n", "utf8");
+
+      const second = await materializePaperclipSkillCopy(source, target);
+      expect(second.copiedFiles).toBe(0);
+      await expect(fs.readFile(path.join(target, "local-marker.txt"), "utf8")).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runChildProcess", () => {
