@@ -235,7 +235,9 @@ describe("acpx_local runtime skill isolation", () => {
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
     expect(wrappers.filter((name) => name.startsWith("custom-") && name.endsWith(".sh"))).toHaveLength(1);
     const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrappers[0]!), "utf8");
-    expect(wrapper).toContain("new-key");
+    expect(wrapper).toContain("node ./fake-acp.js");
+    expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
+    expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
   });
 });

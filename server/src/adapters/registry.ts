@@ -8,7 +8,7 @@ import {
   listAcpxSkills,
   syncAcpxSkills,
 } from "@paperclipai/adapter-acpx-local/server";
-import { agentConfigurationDoc as acpxAgentConfigurationDoc, models as acpxModels } from "@paperclipai/adapter-acpx-local";
+import { agentConfigurationDoc as acpxAgentConfigurationDoc } from "@paperclipai/adapter-acpx-local";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -171,7 +171,6 @@ const acpxLocalAdapter: ServerAdapterModule = {
   syncSkills: syncAcpxSkills,
   sessionCodec: acpxSessionCodec,
   sessionManagement: getAdapterSessionManagement("acpx_local") ?? undefined,
-  models: acpxModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",

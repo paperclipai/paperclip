@@ -1,7 +1,6 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
-  DEFAULT_ACPX_LOCAL_GRACE_SEC,
   DEFAULT_ACPX_LOCAL_MODE,
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
@@ -88,7 +87,6 @@ export function buildAcpxLocalConfig(v: CreateConfigValues): Record<string, unkn
     nonInteractivePermissions:
       schemaValues.nonInteractivePermissions || DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
     timeoutSec: readNumber(schemaValues.timeoutSec, DEFAULT_ACPX_LOCAL_TIMEOUT_SEC),
-    graceSec: readNumber(schemaValues.graceSec, DEFAULT_ACPX_LOCAL_GRACE_SEC),
   };
 
   for (const key of [
@@ -98,8 +96,6 @@ export function buildAcpxLocalConfig(v: CreateConfigValues): Record<string, unkn
     "instructionsFilePath",
     "promptTemplate",
     "bootstrapPromptTemplate",
-    "model",
-    "thinkingEffort",
   ]) {
     const value = schemaValues[key];
     if (typeof value === "string" && value.trim()) ac[key] = value.trim();
@@ -109,8 +105,6 @@ export function buildAcpxLocalConfig(v: CreateConfigValues): Record<string, unkn
   if (!ac.instructionsFilePath && v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (!ac.promptTemplate && v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (!ac.bootstrapPromptTemplate && v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
-  if (!ac.model && v.model) ac.model = v.model;
-  if (!ac.thinkingEffort && v.thinkingEffort) ac.thinkingEffort = v.thinkingEffort;
 
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

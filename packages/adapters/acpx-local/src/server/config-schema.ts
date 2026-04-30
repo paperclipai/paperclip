@@ -1,13 +1,11 @@
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
-  DEFAULT_ACPX_LOCAL_GRACE_SEC,
   DEFAULT_ACPX_LOCAL_MODE,
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
   DEFAULT_ACPX_LOCAL_TIMEOUT_SEC,
   acpxAgentOptions,
-  models,
 } from "../index.js";
 
 export function getConfigSchema(): AdapterConfigSchema {
@@ -60,26 +58,6 @@ export function getConfigSchema(): AdapterConfigSchema {
         ],
       },
       {
-        key: "model",
-        label: "Model",
-        type: "combobox",
-        options: models.map((model) => ({ value: model.id, label: model.label, group: model.group })),
-        hint: "Optional model override passed to the selected ACP agent when supported.",
-      },
-      {
-        key: "thinkingEffort",
-        label: "Thinking effort",
-        type: "select",
-        options: [
-          { value: "", label: "Adapter default" },
-          { value: "minimal", label: "Minimal" },
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "Extra high" },
-        ],
-      },
-      {
         key: "cwd",
         label: "Working directory",
         type: "text",
@@ -112,12 +90,6 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "Timeout seconds",
         type: "number",
         default: DEFAULT_ACPX_LOCAL_TIMEOUT_SEC,
-      },
-      {
-        key: "graceSec",
-        label: "Grace seconds",
-        type: "number",
-        default: DEFAULT_ACPX_LOCAL_GRACE_SEC,
       },
       {
         key: "env",

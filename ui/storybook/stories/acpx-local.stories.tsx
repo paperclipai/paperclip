@@ -75,32 +75,6 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
       ],
     },
     {
-      key: "model",
-      label: "Model",
-      type: "combobox",
-      options: [
-        { value: "claude-opus-4-6", label: "Claude Opus 4.6", group: "Claude" },
-        { value: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Claude" },
-        { value: "gpt-5.4", label: "gpt-5.4", group: "Codex" },
-        { value: "gpt-5.3-codex", label: "gpt-5.3-codex", group: "Codex" },
-        { value: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark", group: "Codex" },
-      ],
-      hint: "Optional model override passed to the selected ACP agent when supported.",
-    },
-    {
-      key: "thinkingEffort",
-      label: "Thinking effort",
-      type: "select",
-      options: [
-        { value: "", label: "Adapter default" },
-        { value: "minimal", label: "Minimal" },
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
-        { value: "high", label: "High" },
-        { value: "xhigh", label: "Extra high" },
-      ],
-    },
-    {
       key: "cwd",
       label: "Working directory",
       type: "text",
@@ -121,7 +95,6 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
     { key: "promptTemplate", label: "Prompt template", type: "textarea" },
     { key: "bootstrapPromptTemplate", label: "Bootstrap prompt template", type: "textarea" },
     { key: "timeoutSec", label: "Timeout seconds", type: "number", default: 0 },
-    { key: "graceSec", label: "Grace seconds", type: "number", default: 15 },
     {
       key: "env",
       label: "Environment JSON",
@@ -167,7 +140,6 @@ function AcpxLocalConfigStory() {
     icon: "code",
     adapterType: "acpx_local",
     command: "",
-    model: "",
     promptTemplate: "",
     bootstrapPromptTemplate: "",
     instructionsFilePath: "",

@@ -513,7 +513,9 @@ describe("acpx_local execute", () => {
       expect(result.exitCode).toBe(0);
       await expect(fs.lstat(path.join(codexHome, "skills", skill.runtimeName))).resolves.toMatchObject({});
       const wrapperPath = runtime?.options.agentRegistry.resolve("codex");
-      await expect(fs.readFile(wrapperPath!, "utf8")).resolves.toContain(`export CODEX_HOME='${codexHome}'`);
+      const wrapper = await fs.readFile(wrapperPath!, "utf8");
+      expect(wrapper).not.toContain("CODEX_HOME");
+      expect(wrapper).not.toContain(codexHome);
       expect((meta?.env as Record<string, string>).CODEX_HOME).toBe(codexHome);
       expect(result.sessionParams?.skills).toMatchObject({
         mode: "codex",

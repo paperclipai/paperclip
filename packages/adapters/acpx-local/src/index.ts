@@ -6,21 +6,12 @@ export const DEFAULT_ACPX_LOCAL_MODE = "persistent";
 export const DEFAULT_ACPX_LOCAL_PERMISSION_MODE = "approve-all";
 export const DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS = "deny";
 export const DEFAULT_ACPX_LOCAL_TIMEOUT_SEC = 0;
-export const DEFAULT_ACPX_LOCAL_GRACE_SEC = 15;
 
 export const acpxAgentOptions = [
   { id: "claude", label: "Claude via ACPX" },
   { id: "codex", label: "Codex via ACPX" },
   { id: "custom", label: "Custom ACP command" },
 ] as const;
-
-export const models = [
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6", group: "Claude" },
-  { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", group: "Claude" },
-  { id: "gpt-5.4", label: "gpt-5.4", group: "Codex" },
-  { id: "gpt-5.3-codex", label: "gpt-5.3-codex", group: "Codex" },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark", group: "Codex" },
-];
 
 export const agentConfigurationDoc = `# acpx_local agent configuration
 
@@ -41,8 +32,6 @@ Core fields:
 - agentCommand (string, optional): custom ACP command when agent=custom, or an override for a built-in ACP agent command.
 - mode (string, optional): persistent or oneshot. Defaults to persistent.
 - cwd (string, optional): default absolute working directory fallback for the agent process.
-- model (string, optional): model string passed through to the selected ACP agent when supported.
-- thinkingEffort (string, optional): Codex-style reasoning effort or agent-specific thinking setting.
 - permissionMode (string, optional): defaults to approve-all, meaning ACPX permission requests are auto-approved.
 - nonInteractivePermissions (string, optional): fallback behavior when ACPX cannot ask interactively. Supported values are deny and fail.
 - stateDir (string, optional): ACPX state directory. Defaults to a Paperclip-managed company/agent scoped location.
@@ -50,7 +39,6 @@ Core fields:
 - promptTemplate (string, optional): run prompt template.
 - bootstrapPromptTemplate (string, optional): first-run bootstrap prompt template.
 - timeoutSec (number, optional): run timeout in seconds. Defaults to 0, meaning no adapter timeout.
-- graceSec (number, optional): cancellation grace period in seconds. Defaults to 15.
 - env (object, optional): KEY=VALUE environment variables or secret bindings.
 
 Dependency decision:

@@ -40,7 +40,6 @@ import {
 } from "acpx/runtime";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
-  DEFAULT_ACPX_LOCAL_GRACE_SEC,
   DEFAULT_ACPX_LOCAL_MODE,
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
@@ -79,7 +78,6 @@ interface AcpxPreparedRuntime {
   permissionMode: "approve-all" | "approve-reads" | "deny-all";
   nonInteractivePermissions: "deny" | "fail";
   timeoutSec: number;
-  graceSec: number;
   sessionKey: string;
   fingerprint: string;
   agentCommand: string | null;
@@ -527,23 +525,17 @@ async function writeAgentWrapper(input: {
   stateDir: string;
   acpxAgent: string;
   agentCommandShell: string;
-  env: Record<string, string>;
 }): Promise<string> {
   const wrappersDir = path.join(input.stateDir, "wrappers");
   await fs.mkdir(wrappersDir, { recursive: true });
   const wrapperHash = shortHash({
     agent: input.acpxAgent,
     command: input.agentCommandShell,
-    env: input.env,
   });
   const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
-  const exports = Object.entries(input.env)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
   const script = [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
-    ...exports,
     `exec ${input.agentCommandShell} "$@"`,
     "",
   ].join("\n");
@@ -585,7 +577,6 @@ async function buildRuntime(input: {
   const permissionMode = normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
   const timeoutSec = asNumber(config.timeoutSec, DEFAULT_ACPX_LOCAL_TIMEOUT_SEC);
-  const graceSec = asNumber(config.graceSec, DEFAULT_ACPX_LOCAL_GRACE_SEC);
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
 
@@ -669,7 +660,6 @@ async function buildRuntime(input: {
         stateDir,
         acpxAgent,
         agentCommandShell,
-        env,
       })
     : null;
   const overrides = wrapperPath ? { [acpxAgent]: wrapperPath } : undefined;
@@ -712,7 +702,6 @@ async function buildRuntime(input: {
     permissionMode,
     nonInteractivePermissions,
     timeoutSec,
-    graceSec,
     sessionKey,
     fingerprint,
     agentCommand,
@@ -1007,7 +996,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         errorMessage: message,
         ...classified,
         provider: "acpx",
-        model: asString(ctx.config.model, "") || null,
+        model: null,
         clearSession,
         resultJson: { phase: "ensure_session" },
         summary: message,
@@ -1022,7 +1011,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         errorMessage: "ACPX did not return a runtime session handle.",
         errorCode: "acpx_runtime_error",
         provider: "acpx",
-        model: asString(ctx.config.model, "") || null,
+        model: null,
         resultJson: { phase: "ensure_session" },
         summary: "ACPX did not return a runtime session handle.",
       };
@@ -1130,7 +1119,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         provider: "acpx",
-        model: asString(ctx.config.model, "") || null,
+        model: null,
         billingType: "unknown",
         costUsd: null,
         resultJson: {
@@ -1163,7 +1152,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
         provider: "acpx",
-        model: asString(ctx.config.model, "") || null,
+        model: null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },
         summary: message,

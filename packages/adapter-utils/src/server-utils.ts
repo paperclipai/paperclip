@@ -1427,8 +1427,14 @@ export async function materializePaperclipSkillCopy(
   const sourceRoot = path.resolve(source);
   const targetRoot = path.resolve(target);
   const relativeTarget = path.relative(sourceRoot, targetRoot);
-  if (!relativeTarget || (!relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget))) {
-    throw new Error("Refusing to materialize a skill into itself or one of its descendants.");
+  const relativeSource = path.relative(targetRoot, sourceRoot);
+  if (
+    !relativeTarget ||
+    (!relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget)) ||
+    !relativeSource ||
+    (!relativeSource.startsWith("..") && !path.isAbsolute(relativeSource))
+  ) {
+    throw new Error("Refusing to materialize a skill into itself, an ancestor, or one of its descendants.");
   }
 
   const rootStat = await fs.lstat(sourceRoot);

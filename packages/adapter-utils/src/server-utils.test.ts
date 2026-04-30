@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  materializePaperclipSkillCopy,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -53,6 +57,24 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
     );
+  });
+});
+
+describe("materializePaperclipSkillCopy", () => {
+  it("refuses to materialize into an ancestor of the source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "parent", "skill");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      await expect(materializePaperclipSkillCopy(source, path.join(root, "parent"))).rejects.toThrow(
+        /ancestor/,
+      );
+      await expect(fs.readFile(path.join(source, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 
