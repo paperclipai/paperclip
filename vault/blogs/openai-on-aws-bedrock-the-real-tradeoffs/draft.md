@@ -18,6 +18,28 @@ sources:
   - https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html
   - https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring-cloudwatch.html
   - https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-iam-cost-allocation/
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "OpenAI on AWS — OpenAI Announcement"
+    url: https://openai.com/index/openai-on-aws/
+    retrieved: 2026-04-30
+  - n: 2
+    title: "What Is Amazon Bedrock — AWS Documentation"
+    url: https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html
+    retrieved: 2026-04-30
+  - n: 3
+    title: "Amazon Bedrock Data Protection — AWS Documentation"
+    url: https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html
+    retrieved: 2026-04-30
+  - n: 4
+    title: "Monitoring Amazon Bedrock with CloudWatch — AWS Documentation"
+    url: https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring-cloudwatch.html
+    retrieved: 2026-04-30
+  - n: 5
+    title: "Cost Allocation by IAM User and Role in Amazon Bedrock — AWS What's New"
+    url: https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-iam-cost-allocation/
+    retrieved: 2026-04-30
 assumed_reading_time: 12 min
 ---
 
