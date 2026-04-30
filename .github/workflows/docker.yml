@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     concurrency:
       group: docker-${{ github.ref }}
