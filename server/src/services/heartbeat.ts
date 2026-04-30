@@ -269,6 +269,15 @@ const EXTERNAL_LIFECYCLE_ADAPTERS = new Set([
   "claude_k8s",
   "opencode_k8s",
 ]);
+// External-lifecycle (k8s Job) runs that haven't appended output in this
+// window are presumed dead — the underlying Job pod was killed (helm
+// upgrade, node drain, manual delete, etc.) and isn't writing log lines
+// anymore. The reaper marks them `process_lost` so the agent can pick up
+// new queued work. Threshold is intentionally generous to avoid clobbering
+// healthy long-running Claude sessions; tighten only after a Job-liveness
+// check via the k8s API replaces this heuristic. (TODO: add kube client
+// query so we don't need a 15-min wait window.)
+const EXTERNAL_LIFECYCLE_STALE_MS = 15 * 60 * 1000;
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -4548,7 +4557,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await hasAdapterInvocationEvent(run.id)
         : false;
       const externalLifecyclePreAdapter = externalLifecycleRun && !externalLifecycleStarted;
-      if (externalLifecycleRun && externalLifecycleStarted) continue;
+      if (externalLifecycleRun && externalLifecycleStarted) {
+        // Was: unconditional skip — let the cluster manage Job lifecycle.
+        // Reality: helm restarts of paperclip-0 + manual orphan-Job deletes
+        // leave heartbeat_runs rows in `running` forever, blocking the
+        // agent's queue. As a soft signal we treat a long output-quiet
+        // window as `process_lost`; the Job is presumed dead and the
+        // queue must move on. Healthy in-flight runs pin `last_output_at`
+        // via streamed log events, so 15 min of silence is a safe floor.
+        const lastSignalRef = run.lastOutputAt
+          ? new Date(run.lastOutputAt).getTime()
+          : run.startedAt
+          ? new Date(run.startedAt).getTime()
+          : 0;
+        if (lastSignalRef && now.getTime() - lastSignalRef < EXTERNAL_LIFECYCLE_STALE_MS) continue;
+      }
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {

@@ -389,6 +389,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    lastOutputAt?: Date | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -430,6 +431,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       claimedAt: now,
     });
 
+    // Default lastOutputAt to "real now" so external-lifecycle staleness
+    // checks (15-min window in heartbeat.ts) treat the seeded run as
+    // currently active. Tests that want to exercise the staleness path can
+    // pass an older Date explicitly.
+    const lastOutputAt = input?.lastOutputAt === undefined ? new Date() : input.lastOutputAt;
+
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -446,6 +453,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       error: input?.runError ?? null,
       startedAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      lastOutputAt,
     });
 
     if (input?.includeIssue !== false) {
@@ -892,6 +900,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.errorCode).toBeNull();
+  });
+
+  it("reaps external-lifecycle runs whose Job has gone silent past the staleness window", async () => {
+    // 16 min ago — past the 15-min EXTERNAL_LIFECYCLE_STALE_MS threshold.
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
   });
 
   it("retries external-lifecycle runs claimed before adapter invocation", async () => {
