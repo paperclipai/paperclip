@@ -46,6 +46,13 @@ vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
 
+const mockListLiveAgentJobRunIds = vi.hoisted(() =>
+  vi.fn<() => Promise<Set<string> | null>>(async () => null),
+);
+vi.mock("../services/k8s-job-liveness.ts", () => ({
+  listLiveAgentJobRunIds: mockListLiveAgentJobRunIds,
+}));
+
 vi.mock("@paperclipai/shared/telemetry", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
     "@paperclipai/shared/telemetry",
@@ -903,6 +910,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.errorCode).toBeNull();
+  });
+
+  it("does not reap external-lifecycle runs whose kube-API Job is still live (even past staleness window)", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+  });
+
+  it("reaps external-lifecycle runs whose kube-API Job is gone (no staleness wait)", async () => {
+    // Recent output — the staleness window would NOT reap this. The kube
+    // probe returning an empty set is what makes the reaper act.
+    const recent = new Date(Date.now() - 30 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: recent,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
   });
 
   it("reaps external-lifecycle runs whose Job has gone silent past the staleness window", async () => {

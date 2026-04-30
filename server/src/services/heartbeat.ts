@@ -48,6 +48,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { listLiveAgentJobRunIds } from "./k8s-job-liveness.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -269,14 +270,12 @@ const EXTERNAL_LIFECYCLE_ADAPTERS = new Set([
   "claude_k8s",
   "opencode_k8s",
 ]);
-// External-lifecycle (k8s Job) runs that haven't appended output in this
-// window are presumed dead — the underlying Job pod was killed (helm
-// upgrade, node drain, manual delete, etc.) and isn't writing log lines
-// anymore. The reaper marks them `process_lost` so the agent can pick up
-// new queued work. Threshold is intentionally generous to avoid clobbering
-// healthy long-running Claude sessions; tighten only after a Job-liveness
-// check via the k8s API replaces this heuristic. (TODO: add kube client
-// query so we don't need a 15-min wait window.)
+// Fallback staleness window for external-lifecycle (k8s Job) runs when the
+// kube API is unavailable (local dev, RBAC misconfig, transient failure).
+// In-cluster the reaper uses listLiveAgentJobRunIds() to identify dead
+// Jobs immediately; this threshold only applies when that probe returns
+// null. Kept generous so a slow probe + a healthy long-running Claude
+// session don't collide.
 const EXTERNAL_LIFECYCLE_STALE_MS = 15 * 60 * 1000;
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
@@ -4545,6 +4544,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const reaped: string[] = [];
 
+    // If any external-lifecycle (k8s Job) runs are in flight, query the
+    // kube API once for the namespace-wide set of live agent Jobs. Returns
+    // null when the API is unavailable (local dev, RBAC missing, transient
+    // failure) — the loop then falls back to the time-based staleness
+    // window for those runs.
+    const hasExternalCandidates = activeRuns.some((row) => hasExternalLifecycle(row.adapterType));
+    const liveJobRunIds = hasExternalCandidates ? await listLiveAgentJobRunIds() : null;
+
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
@@ -4558,19 +4565,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : false;
       const externalLifecyclePreAdapter = externalLifecycleRun && !externalLifecycleStarted;
       if (externalLifecycleRun && externalLifecycleStarted) {
-        // Was: unconditional skip — let the cluster manage Job lifecycle.
-        // Reality: helm restarts of paperclip-0 + manual orphan-Job deletes
-        // leave heartbeat_runs rows in `running` forever, blocking the
-        // agent's queue. As a soft signal we treat a long output-quiet
-        // window as `process_lost`; the Job is presumed dead and the
-        // queue must move on. Healthy in-flight runs pin `last_output_at`
-        // via streamed log events, so 15 min of silence is a safe floor.
-        const lastSignalRef = run.lastOutputAt
-          ? new Date(run.lastOutputAt).getTime()
-          : run.startedAt
-          ? new Date(run.startedAt).getTime()
-          : 0;
-        if (lastSignalRef && now.getTime() - lastSignalRef < EXTERNAL_LIFECYCLE_STALE_MS) continue;
+        if (liveJobRunIds !== null) {
+          // Authoritative kube-API path: keep this run if its Job exists in
+          // the cluster, reap immediately if it's gone. The Job-deleted
+          // case is exactly what helm restarts and manual cleanups produce.
+          if (liveJobRunIds.has(run.id)) continue;
+        } else {
+          // Fallback: kube API unavailable (local dev or transient failure).
+          // Treat a long output-quiet window as `process_lost`; healthy
+          // in-flight runs pin `last_output_at` via streamed log events,
+          // so 15 min of silence is a safe floor.
+          const lastSignalRef = run.lastOutputAt
+            ? new Date(run.lastOutputAt).getTime()
+            : run.startedAt
+            ? new Date(run.startedAt).getTime()
+            : 0;
+          if (lastSignalRef && now.getTime() - lastSignalRef < EXTERNAL_LIFECYCLE_STALE_MS) continue;
+        }
       }
 
       // Apply staleness threshold to avoid false positives
