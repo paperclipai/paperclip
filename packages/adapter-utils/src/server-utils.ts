@@ -850,7 +850,16 @@ export function buildPaperclipEnv(
   // reachable from a same-host process. The public PAPERCLIP_RUNTIME_API_URL is
   // intended for remote consumers and may not resolve from the local agent
   // process, so we only fall back to it when the listener cannot be derived.
-  const preferListener = options.preferLocalListener && listenHost !== undefined && listenPort !== undefined;
+  //
+  // Activate the listener-prefer path only when the Paperclip-specific listener
+  // vars are present, not when generic HOST/PORT alone are set. PORT is
+  // commonly set by cloud runtimes and HOST is often the system hostname; if we
+  // treated those as the listener config we would silently produce a wrong URL
+  // in environments where Paperclip is not actually serving on HOST:PORT.
+  const preferListener =
+    options.preferLocalListener &&
+    process.env.PAPERCLIP_LISTEN_HOST !== undefined &&
+    process.env.PAPERCLIP_LISTEN_PORT !== undefined;
   const apiUrl = preferListener
     ? derivedFromListener
     : process.env.PAPERCLIP_RUNTIME_API_URL ??

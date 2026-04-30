@@ -117,6 +117,24 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://desktop.tail302fee.ts.net:3100");
   });
 
+  it("with preferLocalListener=true and only generic HOST/PORT (no Paperclip listener vars), still falls back to runtime URL", () => {
+    // Cloud runtimes routinely set PORT, and HOST is often the system hostname;
+    // those are not the Paperclip listener and must not activate the prefer path.
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://desktop.tail302fee.ts.net:3100";
+    delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_LISTEN_HOST;
+    delete process.env.PAPERCLIP_LISTEN_PORT;
+    process.env.HOST = "some-cloud-hostname";
+    process.env.PORT = "8080";
+
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { preferLocalListener: true },
+    );
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://desktop.tail302fee.ts.net:3100");
+  });
+
   it("with preferLocalListener omitted, keeps existing runtime URL precedence (no behavior change)", () => {
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://desktop.tail302fee.ts.net:3100";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
