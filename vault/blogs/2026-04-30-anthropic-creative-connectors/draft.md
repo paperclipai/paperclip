@@ -17,6 +17,12 @@ status: g0-passed
 reading_time_min: 4
 sources:
   - https://www.anthropic.com/news/claude-for-creative-work
+hero_image: auto:flux
+references:
+  - n: 1
+    title: "Claude for Creative Work — Anthropic Announcement"
+    url: https://www.anthropic.com/news/claude-for-creative-work
+    retrieved: 2026-04-30
 ---
 
 # How to use Anthropic’s 9 new creative connectors in your workflow
