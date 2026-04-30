@@ -523,6 +523,153 @@ describe("IssuesList", () => {
     });
   });
 
+  it("hides the workflow blocker chip when a sub-issue is blocked only by its previous sibling", async () => {
+    const firstChild = createIssue({
+      id: "issue-first-child",
+      identifier: "PAP-1",
+      parentId: "issue-parent",
+      title: "First child",
+      status: "todo",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const secondChild = createIssue({
+      id: "issue-second-child",
+      identifier: "PAP-2",
+      parentId: "issue-parent",
+      title: "Second child",
+      status: "blocked",
+      blockedBy: [
+        {
+          id: "issue-first-child",
+          identifier: "PAP-1",
+          title: "First child",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[secondChild, firstChild]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.getAttribute("data-step"))).toEqual(["1", "2"]);
+      expect(container.textContent).not.toContain("blocked by PAP-1");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("collapses multiple workflow blocker chips to the first blocker and a count", async () => {
+    const issueDone = createIssue({
+      id: "issue-done",
+      identifier: "PAP-1",
+      title: "Done first",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const firstBlocker = createIssue({
+      id: "issue-first-blocker",
+      identifier: "PAP-2",
+      title: "First blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const secondBlocker = createIssue({
+      id: "issue-second-blocker",
+      identifier: "PAP-3",
+      title: "Second blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const thirdBlocker = createIssue({
+      id: "issue-third-blocker",
+      identifier: "PAP-4",
+      title: "Third blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-04T00:00:00.000Z"),
+    });
+    const issueBlocked = createIssue({
+      id: "issue-blocked",
+      identifier: "PAP-5",
+      title: "Blocked issue",
+      status: "blocked",
+      blockedBy: [
+        {
+          id: "issue-first-blocker",
+          identifier: "PAP-2",
+          title: "First blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-second-blocker",
+          identifier: "PAP-3",
+          title: "Second blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-third-blocker",
+          identifier: "PAP-4",
+          title: "Third blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      createdAt: new Date("2026-04-05T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issueBlocked, thirdBlocker, secondBlocker, firstBlocker, issueDone]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("blocked by PAP-2");
+      expect(container.textContent).toContain("... and 2 more");
+      expect(container.textContent).not.toContain("blocked by PAP-3");
+      expect(container.textContent).not.toContain("blocked by PAP-4");
+      const blockerButtons = Array.from(container.querySelectorAll("button"))
+        .filter((button) => button.textContent?.includes("blocked by"));
+      expect(blockerButtons).toHaveLength(1);
+      expect(blockerButtons[0]?.textContent).toBe("blocked by PAP-2 · step 2 ... and 2 more");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("uses hierarchical checklist step numbers when nested rows render inline", async () => {
     const firstRoot = createIssue({
       id: "issue-first-root",
@@ -909,7 +1056,7 @@ describe("IssuesList", () => {
   });
 
   it("waits for the desktop main scroll container before rendering more local rows", async () => {
-    const manyIssues = Array.from({ length: 420 }, (_, index) =>
+    const manyIssues = Array.from({ length: 120 }, (_, index) =>
       createIssue({
         id: `issue-${index + 1}`,
         identifier: `PAP-${index + 1}`,

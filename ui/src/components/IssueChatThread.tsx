@@ -1534,7 +1534,7 @@ function IssueChatAssistantMessage({
                         }}
                       >
                         <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {isStoppingRun ? "Stopping…" : "Stop run"}
+                        {isStoppingRun ? "Stopping..." : "Stop run"}
                       </DropdownMenuItem>
                     ) : null}
                     {runHref ? (
@@ -3102,6 +3102,7 @@ export function IssueChatThread({
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
   const latestSettleTimeoutsRef = useRef<number[]>([]);
+  const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -3147,6 +3148,8 @@ export function IssueChatThread({
       window.clearTimeout(timeout);
     }
     latestSettleTimeoutsRef.current = [];
+    latestSettleCleanupRef.current?.();
+    latestSettleCleanupRef.current = null;
   }, []);
 
   useEffect(() => clearLatestSettleTimeouts, [clearLatestSettleTimeouts]);
@@ -3204,6 +3207,8 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
+  latestMessagesRef.current = messages;
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -3236,9 +3241,14 @@ export function IssueChatThread({
   function scrollToThreadAnchor(
     anchorId: string,
     options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    messageSnapshot: readonly ThreadMessage[] = messages,
   ) {
-    const virtualIndex = messageAnchorIndex.get(anchorId);
-    if (useVirtualizedThread && virtualIndex !== undefined) {
+    const snapshotUsesVirtualizer = messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const virtualIndex =
+      messageSnapshot === messages
+        ? messageAnchorIndex.get(anchorId)
+        : findMessageAnchorIndex(messageSnapshot, anchorId);
+    if (snapshotUsesVirtualizer && virtualIndex !== undefined && virtualIndex >= 0) {
       if (!virtualizedThreadRef.current) return false;
       virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
         align: options?.align ?? "center",
@@ -3366,26 +3376,35 @@ export function IssueChatThread({
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
-  // Walks the thread by anchor and lands on the latest `comment-*` row, with
-  // a short series of settle passes. The virtualizer estimates row sizes for
-  // unmeasured rows, and that estimate undershoots tall markdown comments —
-  // so the first scroll often lands above the actual bottom and the user
-  // ends up clicking Jump to latest repeatedly to converge. Re-issuing the
-  // scroll after measurements catch up lets one click reach the actual
-  // latest comment (PAP-2672 follow-up).
-  function scrollToLatestCommentWithSettle() {
-    const latestCommentIndex = findLatestCommentMessageIndex(messages);
+  // Lands on the latest `comment-*` row and then drives the scroll the rest
+  // of the way home as the virtualizer's per-row measurements arrive.
+  //
+  // The virtualizer estimates 220px for unmeasured rows. On long threads
+  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
+  // underestimated until rows render and get measured. A single scroll
+  // lands above the actual bottom; rendered rows then expand, the layout
+  // grows, and the user has to keep clicking Jump-to-latest to walk closer
+  // to the real bottom. The convergence loop below issues `scrollIntoView`
+  // on the latest comment element on every tick until the DOM bottom of
+  // that element is at the scroll container's bottom (or scroll position
+  // and content height stop changing).
+  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
     }
-    const latestCommentAnchor = issueChatMessageAnchorId(messages[latestCommentIndex]);
+    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
     if (!latestCommentAnchor) {
       jumpToLatestFallback();
       return;
     }
 
-    const initial = scrollToThreadAnchor(latestCommentAnchor, { align: "end", behavior: "smooth" });
+    const initial = scrollToThreadAnchor(
+      latestCommentAnchor,
+      { align: "end", behavior: "smooth" },
+      messageSnapshot,
+    );
     if (!initial) {
       jumpToLatestFallback();
       return;
@@ -3393,44 +3412,123 @@ export function IssueChatThread({
 
     if (typeof window === "undefined") return;
 
+    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const MAX_DURATION_MS = 4000;
+    const TICK_MS = 80;
+    const TOLERANCE_PX = 4;
+
     clearLatestSettleTimeouts();
-    const settleDelays = [380, 760, 1140];
-    settleDelays.forEach((delay) => {
+    const resolveScrollContainer = (): HTMLElement | null =>
+      (document.getElementById("main-content") as HTMLElement | null);
+    const cancelTarget = resolveScrollContainer() ?? window;
+
+    let lastScrollTop = -1;
+    let lastScrollHeight = -1;
+    let stableTicks = 0;
+    let cancelled = false;
+
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    const cleanup = () => {
+      cancelTarget.removeEventListener("wheel", cancel);
+      cancelTarget.removeEventListener("touchstart", cancel);
+    };
+
+    cancelTarget.addEventListener("wheel", cancel, { once: true, passive: true });
+    cancelTarget.addEventListener("touchstart", cancel, { once: true, passive: true });
+    latestSettleCleanupRef.current = cleanup;
+
+    const finish = () => {
+      cleanup();
+      latestSettleCleanupRef.current = null;
+      for (const timeout of latestSettleTimeoutsRef.current) {
+        window.clearTimeout(timeout);
+      }
+      latestSettleTimeoutsRef.current = [];
+    };
+
+    const scheduleTick = (delay: number) => {
       const timeout = window.setTimeout(() => {
-        if (typeof document === "undefined") return;
-        const el = document.getElementById(latestCommentAnchor);
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "end" });
-          return;
-        }
-        // The row may still be outside the virtualizer's render buffer; nudge
-        // the offset so it gets mounted, then the next pass can align with
-        // real DOM measurements.
+        latestSettleTimeoutsRef.current = latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
+        tick();
+      }, delay);
+      latestSettleTimeoutsRef.current.push(timeout);
+    };
+
+    const tick = () => {
+      const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      if (cancelled || now - startedAt > MAX_DURATION_MS) {
+        finish();
+        return;
+      }
+
+      const el = document.getElementById(latestCommentAnchor);
+      if (!el) {
+        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
+        // the offset (instant) so it gets mounted, then keep settling.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
           align: "end",
           behavior: "auto",
         });
-      }, delay);
-      latestSettleTimeoutsRef.current.push(timeout);
-    });
+        scheduleTick(TICK_MS);
+        return;
+      }
+
+      const container = resolveScrollContainer();
+      const containerBottom = container
+        ? container.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const elBottom = el.getBoundingClientRect().bottom;
+      const offBottom = elBottom - containerBottom;
+
+      if (Math.abs(offBottom) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      const currentScrollTop = container?.scrollTop ?? window.scrollY;
+      const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
+      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
+      const heightStable = currentScrollHeight === lastScrollHeight;
+      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atBottom) {
+        stableTicks += 1;
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+      } else {
+        stableTicks = 0;
+      }
+      lastScrollTop = currentScrollTop;
+      lastScrollHeight = currentScrollHeight;
+      scheduleTick(TICK_MS);
+    };
+
+    // Hold the first iteration off for one frame so the initial smooth
+    // scroll has begun (and the virtualizer has rendered the buffer around
+    // the target) before we start settling.
+    scheduleTick(120);
   }
 
   function handleJumpToLatest() {
     if (onRefreshLatestComments) {
-      // Refetching from page 0 (newest first) brings any comments that
-      // arrived after the initial load into the cache before we scroll —
-      // otherwise we'd land on the latest *loaded* row rather than the
-      // absolute newest, which is what PAP-2672 reopened on.
+      // Refetching the comments query (page 0 first) brings any comment that
+      // arrived after the initial load — including ones live updates may
+      // have missed during reconnects — into the loaded set before we
+      // resolve the latest target. Otherwise we'd land on the latest
+      // *loaded* comment but not the absolute newest. (PAP-2672 follow-up.)
       const refreshed = onRefreshLatestComments();
       if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
         (refreshed as Promise<unknown>).then(
-          () => scrollToLatestCommentWithSettle(),
-          () => scrollToLatestCommentWithSettle(),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
         );
         return;
       }
     }
-    scrollToLatestCommentWithSettle();
+    scrollToLatestCommentWithSettle(latestMessagesRef.current);
   }
 
   const stableOnVote = useStableEvent(onVote);
