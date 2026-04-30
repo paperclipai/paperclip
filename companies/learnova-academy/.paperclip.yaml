@@ -196,7 +196,9 @@ agents:
     adapter:
       type: codex_local
       config:
-        model: gpt-5
+        # Locked 2026-04-30: gpt-5.3-codex (NOT plain gpt-5). Codex CLI's coding-tuned
+        # variant gives an independent perspective vs Planner+Executor (both Opus 4.7).
+        model: gpt-5.3-codex
         cwd: /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org
     inputs:
       env:

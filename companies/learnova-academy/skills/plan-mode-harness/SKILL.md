@@ -28,7 +28,31 @@ You explore + decide. You don't implement. You run with `--permission-mode plan`
 
 Verify success criteria are testable. If unclear → BLOCK + ask Chief Engineering for clarification (don't guess).
 
-### 2. Read relevant code
+### 2. Sync the repo BEFORE reading any code
+
+The Executor and Code Reviewer will check out the same `main` your plan
+was authored against — so it has to be current. Always:
+
+```bash
+cd /Users/vardaankoenig/Documents/Paperclip/learnovaBeast    # if frontend ticket
+# or
+cd /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org    # if agents/skills ticket
+git fetch --all --prune
+git checkout main || git checkout master || git checkout academy/redesign-v1
+git pull --ff-only
+```
+
+Note in the plan's frontmatter the SHA you planned against:
+```yaml
+planned_against_sha: <git rev-parse HEAD>
+planned_against_branch: <branch>
+```
+
+The Executor reads this and `git checkout <sha>` before starting, so any
+work that landed during planning gets rebased on top — never silently
+overwritten.
+
+### 3. Read relevant code
 
 Use Filesystem MCP. Common paths:
 - `learnovaBeast/learnova-academy/src/`

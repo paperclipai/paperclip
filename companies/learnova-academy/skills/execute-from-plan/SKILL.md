@@ -29,13 +29,22 @@ You implement what the plan says. You don't re-plan.
 
 If anything is unclear → STOP and route back to Planner with a re-plan request comment. Do NOT improvise.
 
-### 2. Create or check out a feature branch
+### 2. Create or check out a feature branch — pin to the planner's SHA
+
+The plan's frontmatter has `planned_against_sha:`. Branch FROM that exact SHA
+so the implementation is on the same code the planner reasoned about. Any
+commits that landed on `main` while the plan was being written are picked up
+via rebase at the end (so we don't quietly overwrite parallel work).
 
 ```bash
 cd <repo>
-git checkout main
-git pull
+git fetch --all --prune
+git checkout "${planned_against_sha}"          # exact SHA the plan was written against
 git checkout -b koe-<ticket-id>/<plan-slug>
+# ... implement ...
+# At the end, rebase onto the latest mainline:
+git fetch origin
+git rebase origin/main || git rebase origin/master || git rebase origin/academy/redesign-v1
 ```
 
 Never push to main directly.
