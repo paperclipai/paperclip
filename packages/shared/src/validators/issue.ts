@@ -10,6 +10,7 @@ import {
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
@@ -44,6 +45,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
+    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z.record(z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })

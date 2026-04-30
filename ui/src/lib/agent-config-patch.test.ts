@@ -77,6 +77,92 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("writes the cheap profile under runtimeConfig.modelProfiles, never on primary adapterConfig", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: { model: "claude-haiku-4-5" },
+          },
+        },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 300,
+        },
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: { model: "claude-haiku-4-5" },
+          },
+        },
+      },
+    });
+    // The primary adapterConfig is untouched.
+    expect(patch.adapterConfig).toBeUndefined();
+  });
+
+  it("merges cheap profile changes onto existing runtimeConfig.modelProfiles state", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: {
+          enabled: false,
+          adapterConfig: { model: "old-cheap" },
+        },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+          },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      cheap: {
+        enabled: true,
+        adapterConfig: { model: "old-cheap" },
+      },
+    });
+  });
+
+  it("clears the cheap profile when the overlay marks it cleared", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: { model: "claude-haiku-4-5" },
+        },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: { cheap: { cleared: true } },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({
+      heartbeat: { enabled: true, intervalSec: 300 },
+    });
+  });
+
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

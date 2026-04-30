@@ -76,6 +76,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     status: string;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    originKind?: string | null;
+    originId?: string | null;
+    originFingerprint?: string | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -87,6 +90,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       priority: "medium",
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
+      originKind: input.originKind ?? "manual",
+      originId: input.originId ?? null,
+      originFingerprint: input.originFingerprint ?? "default",
     });
     return id;
   }
@@ -353,6 +359,52 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       stalledBlockerCount: 1,
       attentionBlockerCount: 1,
       sampleStalledBlockerIdentifier: "PBQ-2",
+    });
+  });
+
+  it("treats open liveness escalation blockers as covered waiting paths", async () => {
+    const { companyId, agentId } = await createCompany("PBL");
+    const parentId = await insertIssue({ companyId, identifier: "PBL-1", title: "Parent", status: "blocked" });
+    const cancelledLeafId = await insertIssue({
+      companyId,
+      identifier: "PBL-2",
+      title: "Cancelled blocker",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      parentId,
+      "blocked_by_cancelled_issue",
+      cancelledLeafId,
+    ].join(":");
+    const escalationId = await insertIssue({
+      companyId,
+      identifier: "PBL-3",
+      title: "Liveness escalation",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      originFingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_by_cancelled_issue",
+        cancelledLeafId,
+      ].join(":"),
+    });
+    await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: escalationId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked,todo" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 2,
+      attentionBlockerCount: 0,
     });
   });
 
