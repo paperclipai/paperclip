@@ -1,6 +1,6 @@
 # Paperclip Routine Checks — Migration aus Hermes/Openclaw
 
-**Status:** Draft
+**Status:** Draft (rev 2 — addresses spec-review)
 **Date:** 2026-04-30
 **Owner:** marco
 **Scope:** paperclip-Server, hermes-agent, openclaw workspace
@@ -109,24 +109,40 @@ interface CheckCtx {
 
 ```sql
 CREATE TABLE routine_check_runs (
-  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  check_name    text NOT NULL,
-  run_at        timestamptz NOT NULL,
-  status        text NOT NULL,           -- ok | warn | error
-  findings      int  NOT NULL,
-  payload_json  jsonb NOT NULL,
-  notified      bool NOT NULL DEFAULT false,
-  duration_ms   int,
-  error_text    text
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  check_name      text NOT NULL,
+  scheduled_for   timestamptz NOT NULL,    -- soll-Zeitpunkt aus cron-expression
+  run_at          timestamptz NOT NULL,    -- ist-Start (kann durch catch-up != scheduled_for sein)
+  status          text NOT NULL,           -- ok | warn | error
+  findings        int  NOT NULL,
+  notify_channel  text NOT NULL,           -- silent | threshold | telegram
+  payload_json    jsonb NOT NULL,
+  notified        bool NOT NULL DEFAULT false,
+  duration_ms     int,
+  error_text      text,
+  UNIQUE (check_name, scheduled_for)        -- verhindert Doppel-Insert bei Runner-Doppelfeuer
 );
 CREATE INDEX ON routine_check_runs(check_name, run_at DESC);
+CREATE INDEX ON routine_check_runs(check_name, status, run_at DESC);  -- "letzter Fehler"
 ```
+
+### Catch-up-Policy
+
+Beim Boot des paperclip-Servers (oder nach längerer Downtime) iteriert der Runner pro Check und vergleicht `max(scheduled_for)` in DB mit der erwarteten Schedule-Sequenz. Wenn ein Slot fehlt (Differenz > 1 schedule period + 60s grace):
+
+1. Catch-up nur für **letzten** verpassten Slot (kein Bulk-Replay um Telegram-Spam zu vermeiden)
+2. Catch-up-Run setzt `run_at = NOW()`, `scheduled_for = <missed slot>`
+3. Notify-Dispatcher rechnet Catch-up wie normalen Run, aber mit Suffix `(catch-up)` im Summary
+
+Boot-Hook in `services/cron.ts` ruft `routineCheckRunner.catchUpAll()` einmalig nach Schedule-Registrierung.
 
 ### Notify-Dispatcher
 
-- `silent` → INSERT, fertig
-- `threshold` → INSERT; wenn `status >= thresholdSeverity` POST an Hermes-Webhook
-- `telegram` → INSERT; wenn `findings > 0` POST an Hermes-Webhook
+- `silent` → INSERT only
+- `threshold` → INSERT; wenn `status >= thresholdSeverity` POST an Hermes-Webhook (immer auch bei state-change ok→warn und warn→ok)
+- `telegram` → INSERT; wenn `findings > 0` ODER state-change POST an Hermes-Webhook
+
+**State-change-Recovery:** Wenn vorheriger Run `warn|error` war und aktueller `ok` → IMMER notify, damit Marco sieht "Drift weg". Recovery-Message hat Präfix `✅ recovery —`.
 
 ### Webhook-Payload (paperclip → hermes)
 
@@ -134,12 +150,28 @@ CREATE INDEX ON routine_check_runs(check_name, run_at DESC);
 {
   "check": "workspace-drift-guard",
   "status": "warn",
+  "previous_status": "ok",
+  "findings": 3,
   "summary": "HAPPYGANG: 3 cwd outside prefix, TechOps: clean",
+  "content_hash": "sha256-of-summary+findings+top-3-examples",
+  "scheduled_for": "2026-04-30T09:00:00+02:00",
   "details_url": "http://localhost:<paperclip-ui-port>/checks/<run-id>"
 }
 ```
 
-Hermes-Endpoint: `POST /paperclip/notify` mit Dedupe-Key `<check>-<YYYY-MM-DD>` (12h-Window).
+**Auth:** `Authorization: Bearer <PAPERCLIP_NOTIFY_TOKEN>` Pflicht. Hermes 401 bei Fehlen/Mismatch.
+
+**Dedupe (hermes-side):** SQLite `~/.hermes/cron/paperclip_notify_dedupe.db` mit Tabelle `(check_name, content_hash, last_sent_at)`. Persistiert über Hermes-Restart. Kein TTL-Window — Key `(check_name, content_hash)`. Reihenfolge:
+
+1. POST kommt rein, validate Bearer
+2. Compute key = `(check_name, content_hash)`
+3. Wenn Key existiert UND `previous_status == status` (kein state-change): 200 noop, kein Telegram
+4. Sonst: Telegram-Send, INSERT/UPDATE Dedupe-Row, 200 ok
+
+Damit:
+- 3×/Tag drift-guard mit selbem Drift → 1 Telegram, weitere stumm bis Drift-Set sich ändert
+- state-change ok→warn oder warn→ok → immer durch
+- Inhalts-Änderung (anderes Beispiel-Path) → neue Telegram (neuer hash)
 
 ### CLI
 
@@ -168,9 +200,10 @@ paperclip checks history <name> --limit 20
 
 - **Ersetzt:** hermes job `673c5760a64a` + openclaw `paperclip-subscription-shadow-sync.sh`
 - **Schedule:** `*/30 * * * *`
-- **Notify:** `threshold` (error = Sync-Fehler ODER inserted_shadow_events > 0)
-- **Logik:** Shell-Script-Body in TS portiert (DB-Query + insert)
-- **Payload:** `{ inserted_shadow_events: int, utilization: [{company, used, limit}] }`
+- **Notify:** `silent` für Normalbetrieb (Inserts sind erwartet, ~48 Runs/Tag); status `error` mit threshold-notify nur bei: SQL-Failure, DB-Connection-Loss, ODER `inserted_shadow_events > P95_baseline * 3` (Spike-Detection).
+- **Threshold-Konfig:** `P95_baseline` als ENV `PAPERCLIP_SHADOW_SYNC_P95=<int>`, default 50. Spec Sub-Issue: nach 1 Woche Telemetrie aus `routine_check_runs` neu kalibrieren.
+- **Logik:** Shell-Script-Body in TS portiert (DB-Query + insert), DB-Zugriff via vorhandener drizzle-Connection des paperclip-Servers (gleiche DB)
+- **Payload:** `{ inserted_shadow_events: int, utilization: [{company, used, limit}], spike: bool }`
 - **Openclaw-Stub:** Shell-Script wird zu `exec paperclip checks run subscription-shadow-sync` (1 Woche Backwards-Compat, dann löschen)
 
 ### 3. creative-lint-nightly.ts
@@ -187,6 +220,7 @@ paperclip checks history <name> --limit 20
 - **Neu**
 - **Schedule:** `*/15 * * * *`
 - **Notify:** `silent`
+- **Klassifikation:** Marker ist Bestandteil der paperclip-creative Drive-Upload-Policy (siehe `~/.agents/skills/paperclip-creative/SKILL.md` "Drive-Uploads"). TTL-Enforcement gehört zur Skill-Domäne, nicht zur openclaw-Workspace-Meta. Pfad liegt zwar unter `~/.openclaw/workspace/projects/happygang/...`, aber Semantik (60-min-Drive-Approval) ist paperclip-creative.
 - **Logik:** Glob `~/.openclaw/workspace/projects/happygang/**/.drive-approved-*`, mtime > 60min → unlink
 - **Findings:** Anzahl entfernter Marker (informativ, nicht warn)
 - **Payload:** `{ removed: string[] }`
@@ -229,14 +263,18 @@ Eine atomare Session, ~30 min Implementierung + 5 min Cutover.
 
 3. **Hermes-Webhook:**
    - `/paperclip/notify` POST-Handler in Hermes deployen (FastAPI, Telegram-Send-Logik wie bisheriger cronjob_tools)
-   - Payload-Validation, Dedupe `<check>-<YYYY-MM-DD>` mit 12h-Window
-   - Test: `curl -X POST localhost:<port>/paperclip/notify -d '{...}'` → Telegram kommt
+   - Bearer-Auth via `PAPERCLIP_NOTIFY_TOKEN` ENV (in beiden Repos), bind localhost-only
+   - SQLite-Dedupe-Tabelle `paperclip_notify_dedupe` initial leer
+   - Tests: `curl ohne Token → 401`, `curl mit Token → 200 + Telegram`, `zweiter curl mit gleichem hash → 200 noop`
+   - LaunchAgent `de.marcoschmid.paperclip-server.plist` prüfen/erstellen — KeepAlive=true, RunAtLoad=true (Pre-Cutover Voraussetzung, Blocker wenn nicht da)
 
 4. **Cutover (5min Fenster):**
-   - paperclip-Cron enablen (DB-Flag `routine_checks_enabled = true` oder ENV)
-   - Hermes-Jobs `d2c9532bbc77` + `673c5760a64a` löschen via `hermes cron rm <id>`
+   - paperclip-Cron enablen via ENV `PAPERCLIP_ROUTINE_CHECKS=1` (in `de.marcoschmid.paperclip-server.plist` EnvironmentVariables, Server-Reload)
+   - Hermes-Jobs `d2c9532bbc77` + `673c5760a64a` **pausieren** (nicht löschen!) via `hermes cron pause <id>` mit reason `migrated-to-paperclip-2026-04-30`
+   - Nach 7 Tagen stabilem Lauf: Jobs löschen via separatem Cleanup-Schritt
    - Openclaw-Script `paperclip-subscription-shadow-sync.sh` → 1-Zeilen Stub
    - Openclaw `paperclip_phase0_check.sh` + LaunchAgent löschen
+   - Openclaw `paperclip-heartbeat-check.sh` deployen + LaunchAgent registrieren (siehe Heartbeat-Section unten)
 
 5. **Verification (1h später):**
    - `paperclip checks history workspace-drift-guard --limit 3` → Run um nächstem geplanten Slot gelaufen
@@ -253,10 +291,35 @@ git -C ~/Code/hermes-agent tag pre-paperclip-routine-migration
 
 ### Rollback
 
-- paperclip-Cron disablen via ENV
-- Hermes-Jobs aus Git-History wiederherstellen: `git show <commit>:.hermes/cron/jobs.json > ~/.hermes/cron/jobs.json`
-- Hermes-Reload
-- Recovery ~5min
+Während 7-Tage-Pausenfenster (warm rollback):
+
+1. paperclip-Cron disablen: `unset PAPERCLIP_ROUTINE_CHECKS` in plist + `launchctl unload/load` ODER nur Server-Restart mit Flag aus
+2. Hermes-Jobs reaktivieren: `hermes cron resume d2c9532bbc77 && hermes cron resume 673c5760a64a`
+3. Verify: `hermes cron list` zeigt beide Jobs als `scheduled` mit nächstem Run
+4. Recovery ~2min, kein Datenverlust
+
+Nach 7-Tage-Cleanup (cold rollback, wenn Jobs schon gelöscht):
+
+1. paperclip-Cron disablen wie oben
+2. Snapshot-Restore: `cp ~/.hermes/cron/jobs.json.pre-paperclip-migration ~/.hermes/cron/jobs.json`
+3. Hermes-Service-Reload (cron-Scheduler liest jobs.json neu)
+4. Verify: `hermes cron list` zeigt beide Jobs
+5. Recovery ~5min
+
+(`git show <commit>:.hermes/cron/jobs.json` ist KEIN Pfad — `~/.hermes/` liegt nicht in einem Git-Repo. Snapshot-File ist die einzige Quelle.)
+
+### Heartbeat-Check (in openclaw)
+
+Da paperclip-Server nun Single-Point-of-Failure für 5 Routine-Checks ist, neuer openclaw-Check:
+
+```bash
+# ~/.openclaw/workspace/scripts/paperclip-heartbeat-check.sh
+# Cron via LaunchAgent: alle 30 min
+# Query: SELECT max(run_at) FROM routine_check_runs WHERE check_name = 'subscription-shadow-sync'
+# Wenn max(run_at) < NOW() - INTERVAL '70 minutes' → Telegram-Alarm "paperclip-cron stuck"
+```
+
+Begründung: subscription-shadow-sync läuft alle 30min, also wenn 70min keine Row → Server tot oder Cron broken. Heartbeat in openclaw, nicht paperclip — sonst könnte ausgefallener paperclip nicht selber Alarm schlagen.
 
 ## Tests
 
@@ -283,8 +346,17 @@ Coverage-Ziel: 80% pro Check, 100% notify-dispatcher (alarm-kritisch).
 
 ### Hermes-Webhook (pytest)
 
-- POST `/paperclip/notify` mit `{check, status: warn}` → Telegram-Mock erhält Message
-- Dedupe: zweite Anfrage 30s später → kein zweiter Send
+- POST `/paperclip/notify` ohne Bearer → 401, Telegram-Mock NICHT aufgerufen
+- POST `/paperclip/notify` mit ungültigem Token → 401
+- POST mit `{check, status: warn, content_hash: 'abc'}` + Token → 200, Telegram-Mock aufgerufen
+- POST gleicher payload zweite Anfrage → 200 noop (Dedupe greift), Telegram-Mock genau 1× aufgerufen
+- POST mit `{previous_status: 'warn', status: 'ok'}` (state-change) → 200, Telegram-Mock aufgerufen mit "✅ recovery —" prefix, auch wenn content_hash existiert
+- POST mit `status: warn` aber neuer content_hash → 200, Telegram aufgerufen (Inhalt geändert)
+- SQLite-Dedupe-DB persistiert über Hermes-Restart: Test-Restart, gleicher hash → noop
+
+### SQL-Schema-Drift (integration)
+
+- Drift-guard fixtures gegen reale paperclip-DB-Migration mit allen referenzierten Spalten (`agents.adapter_config`, `execution_workspaces.provider_ref`, `issues.project_id`, `heartbeat_run_events.payload`). Test failt early wenn Spalte umbenannt/entfernt — verhindert silent breakage.
 
 ## Akzeptanzkriterien
 
@@ -294,26 +366,43 @@ Coverage-Ziel: 80% pro Check, 100% notify-dispatcher (alarm-kritisch).
 | workspace-drift-guard liefert gleichen Drift-Count wie letzter Hermes-Run am Cutover-Tag | manueller diff |
 | subscription-shadow-sync `inserted_shadow_events` matcht ±1 letzten Hermes-Run | manueller diff |
 | Telegram-Drift-Alarm kommt bei warn-Status, nicht bei silent | Telegram-Inbox check |
-| Kein Hermes-Job mit `paperclip-` Prefix in `~/.hermes/cron/jobs.json` | `jq '.jobs[].name' \| grep ^paperclip` → empty |
+| Webhook-Auth: POST ohne Bearer → 401 | `curl -i -X POST localhost:<port>/paperclip/notify -d '{}'` |
+| Webhook-Dedupe: zweiter POST mit gleichem `content_hash` → 200 noop, kein Telegram | curl 2× + Telegram-Inbox |
+| Webhook-State-change: `previous_status=warn → status=ok` → Telegram mit `✅ recovery —` Präfix | scripted POST + Telegram-Inbox |
+| Hermes-Jobs `d2c9532bbc77` + `673c5760a64a` haben `state=paused` mit reason `migrated-to-paperclip-2026-04-30` | `hermes cron list` |
+| Nach 7 Tagen Cleanup: keine Hermes-Jobs mit `paperclip-` Prefix | `jq '.jobs[].name' ~/.hermes/cron/jobs.json \| grep ^paperclip` → empty |
 | `paperclip_phase0_check.sh` + LaunchAgent weg | `ls ~/.openclaw/workspace/scripts/paperclip_phase0_check.sh` → no such file |
 | `paperclip checks list` zeigt 5 Einträge mit nächstem Run-Zeitpunkt | manueller call |
 | `nightly_workspace_consistency_audit.sh` ohne paperclip-spezifische Logik | `grep paperclip ~/.openclaw/workspace/scripts/nightly_workspace_consistency_audit.sh` → empty |
+| Heartbeat-Check `paperclip-heartbeat-check.sh` läuft alle 30min via LaunchAgent | `launchctl list \| grep paperclip-heartbeat` |
+| paperclip-Server LaunchAgent KeepAlive=true, RunAtLoad=true | `plutil -p ~/Library/LaunchAgents/de.marcoschmid.paperclip-server.plist` |
+| Catch-up: Server-Stop für 35min während scheduled-slot, nach Restart genau 1 catch-up-row in DB | scripted: `launchctl unload`, sleep 35m, `launchctl load`, query DB |
 
 ## Risiken
 
 | Risiko | Mitigation |
 |---|---|
-| paperclip-Server crasht → keine Checks laufen | LaunchAgent KeepAlive auf paperclip-Server (prüfen ob bereits aktiv); silent monitor-check `paperclip-heartbeat` in openclaw, alarmiert bei >1h Lücke |
-| Webhook-Endpoint unerreichbar bei Cutover | Pre-Cutover Step 3 testet vorher mit curl; Rollback via Git-Tag |
-| DB-Migration kollidiert mit anderen Drizzle-Migrationen | Migration in eigenem Branch zuerst auf staging-DB, dann main |
-| Schedule-Drift (paperclip-Cron timing ≠ Hermes-Cron) | beide Schedules identisch übernommen; Verification nach 24h |
-| Hermes-Webhook fehlt Auth | Shared Secret via ENV `PAPERCLIP_NOTIFY_TOKEN`, paperclip sendet `Authorization: Bearer <token>`, hermes validiert |
+| paperclip-Server crasht → keine Checks laufen | LaunchAgent KeepAlive=true (Voraussetzung Pre-Cutover); openclaw `paperclip-heartbeat-check.sh` (alle 30min); Catch-up-Policy beim Boot rekonstruiert letzten verpassten Slot |
+| Webhook-Endpoint unerreichbar bei Cutover | Pre-Cutover Step 3 testet mit curl + Auth + Dedupe; Rollback via 7-Tage-paused-Hermes-Jobs (warm) oder Snapshot-Restore (cold) |
+| DB-Migration kollidiert mit anderen Drizzle-Migrationen | Migration in eigenem Branch zuerst auf staging-DB, dann main; reservierter Migration-Slot vorab via `db:generate --review` |
+| Schedule-Drift (paperclip-Cron timing ≠ Hermes-Cron) | beide Schedules identisch übernommen; Verification 24h nach Cutover via DB-Query |
+| paperclip-DB-Schema-Drift bricht drift-guard SQL silent | Integration-Test exercises real schema; CI-Job blockt PR wenn referenzierte Spalten umbenannt werden ohne Spec-Update |
+| Hermes-SQLite-Dedupe-DB korrupt | bei Mismatch fallback: Telegram senden (false-positive duplicate ist OK, false-negative miss ist nicht OK) |
+| `PAPERCLIP_NOTIFY_TOKEN` leak via process-list/env-dump | Token aus `~/.paperclip/secrets/notify-token`, gelesen via fs (nicht ENV exportieren); Hermes-Side gleiches Pattern |
 
-## Open Questions
+## Decisions (formerly Open Questions)
 
-- **Hermes-Webhook-Auth:** Shared Secret reicht (lokal-only) oder mTLS?
-- **paperclip-Server Boot-Reliability:** existiert LaunchAgent für `pnpm dev`/Production-Build? Falls nicht, separater Spec.
-- **UI-Findings-View:** in welchem Sprint? Aktueller Spec liefert nur DB + CLI.
+- **Hermes-Webhook-Auth:** Bearer Token via Shared Secret. Localhost-bind (`127.0.0.1:<port>`), kein mTLS — Single-User, Single-Host Setup. Token in File `~/.paperclip/secrets/notify-token` (mode 0600), beide Repos lesen daraus.
+- **paperclip-Server Boot-Reliability:** Pre-Cutover Voraussetzung — LaunchAgent muss vor Cutover existieren mit KeepAlive=true, RunAtLoad=true. Falls aktuell nur `pnpm dev` läuft, vorab plist erstellen (außerhalb dieses Specs, aber Cutover-Blocker).
+- **Catch-up bei missed runs:** Boot-Hook in `services/cron.ts` ruft `runner.catchUpAll()`, holt nur **letzten** verpassten Slot pro Check.
+- **shadow-sync DB-Connection:** Vorhandene drizzle-Connection des paperclip-Servers wiederverwenden (gleiche DB, gleicher Pool). Kein zweiter Connection-String.
+- **Feature-Flag-Pattern:** Neue ENV `PAPERCLIP_ROUTINE_CHECKS=1`, gelesen in `services/cron.ts` Boot-Hook. Wenn `0`/unset, Registry skippt Schedule-Registrierung. Default `0` für Tests, in production-plist `1`.
+- **creative-lint-nightly Eskalation:** Bleibt `silent` solange UI fehlt. Sobald UI-Findings-View live (separater Spec), Upgrade auf `threshold` mit Schwelle "violations > 0 für > 3 Tage in Folge".
+
+## Open (für Folge-Spec)
+
+- **UI-Findings-View** für `routine_check_runs` (Liste, Filter, Letztes-Result-pro-Check) — separater Spec
+- **paperclip-Server LaunchAgent** plist-Definition — separater Spec wenn nicht bereits existent
 
 ## References
 
