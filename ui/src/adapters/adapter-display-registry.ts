@@ -52,6 +52,11 @@ export interface AdapterDisplayInfo {
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
+  acpx_local: {
+    label: "ACPX",
+    description: "Local ACPX multi-agent adapter",
+    icon: Bot,
+  },
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",

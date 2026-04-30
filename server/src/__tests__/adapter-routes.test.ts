@@ -225,6 +225,31 @@ describe("adapter routes", () => {
     });
   });
 
+  it("serves the built-in acpx_local config schema", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/acpx_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "agent",
+          default: "claude",
+          options: expect.arrayContaining([
+            expect.objectContaining({ value: "claude" }),
+            expect.objectContaining({ value: "codex" }),
+            expect.objectContaining({ value: "custom" }),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "permissionMode",
+          default: "approve-all",
+        }),
+      ]),
+    );
+  });
+
   it("rejects signed-in users without org access", async () => {
     const app = createApp({
       userId: "outsider-1",
