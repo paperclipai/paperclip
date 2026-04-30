@@ -6779,26 +6779,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // A wake is "user-comment driven" when it originates from a new comment on
+        // the issue (or an @-mention via comment, or a reopen-via-comment). Without
+        // this carve-out, after a transient failure the issue lock is held by a
+        // scheduled_retry run on the SAME assignee — so every subsequent comment
+        // gets coalesced into that dead lock and the assignee never wakes to read
+        // it. The retry, when it eventually runs, executes the original failed
+        // task, not the user's reply. Letting comment-driven wakes preempt the
+        // stale retry releases the lock and lets a fresh run answer the comment.
+        const isUserCommentDrivenWake =
+          reason === "issue_commented" ||
+          reason === "issue_reopened_via_comment" ||
+          reason === "issue_comment_mentioned" ||
+          enrichedContextSnapshot?.wakeReason === "issue_commented" ||
+          enrichedContextSnapshot?.wakeReason === "issue_reopened_via_comment" ||
+          enrichedContextSnapshot?.wakeReason === "issue_comment_mentioned";
+
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
           const issueCancelled = issue.status === "cancelled";
+          // Only protect a same-assignee scheduled retry from cancellation when
+          // there is NO user comment driving this wake. A user reply must take
+          // priority over re-running the previously failed task.
           if (
             scheduledRun.status !== "scheduled_retry" ||
-            (scheduledRun.agentId === issue.assigneeAgentId && !issueCancelled)
+            (scheduledRun.agentId === issue.assigneeAgentId && !issueCancelled && !isUserCommentDrivenWake)
           ) {
             return false;
           }
 
           const now = new Date();
-          const reason = issueCancelled
+          const cancelMessage = issueCancelled
             ? "Cancelled because the issue was cancelled before the scheduled retry became due"
-            : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            : isUserCommentDrivenWake
+              ? "Cancelled because a new user comment must be answered before retrying the previously failed run"
+              : "Cancelled because the issue was reassigned before the scheduled retry became due";
+          const cancelErrorCode = issueCancelled
+            ? "issue_cancelled"
+            : isUserCommentDrivenWake
+              ? "issue_comment_preempt"
+              : "issue_reassigned";
           const cancelled = await tx
             .update(heartbeatRuns)
             .set({
               status: "cancelled",
               finishedAt: now,
-              error: reason,
-              errorCode: issueCancelled ? "issue_cancelled" : "issue_reassigned",
+              error: cancelMessage,
+              errorCode: cancelErrorCode,
               updatedAt: now,
             })
             .where(and(eq(heartbeatRuns.id, scheduledRun.id), eq(heartbeatRuns.status, "scheduled_retry")))
@@ -6813,7 +6839,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .set({
                 status: "cancelled",
                 finishedAt: now,
-                error: reason,
+                error: cancelMessage,
                 updatedAt: now,
               })
               .where(eq(agentWakeupRequests.id, scheduledRun.wakeupRequestId));
@@ -6846,7 +6872,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             level: "warn",
             message: issueCancelled
               ? "Scheduled retry cancelled because issue was cancelled before it became due"
-              : "Scheduled retry cancelled because issue ownership changed before it became due",
+              : isUserCommentDrivenWake
+                ? "Scheduled retry cancelled because a new user comment must be answered before retrying the previously failed run"
+                : "Scheduled retry cancelled because issue ownership changed before it became due",
             payload: {
               issueId: issue.id,
               issueStatus: issue.status,
