@@ -4,6 +4,8 @@ import {
   definePlugin,
   runWorker,
   type PaperclipPlugin,
+  type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginEnvironmentAcquireLeaseParams,
   type PluginEnvironmentDestroyLeaseParams,
@@ -21,7 +23,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { parseDriverConfig } from "./config.js";
 import { runSshCommand, rsyncToRemote, shellQuote } from "./ssh.js";
-import type { CcrotateDriverConfig, CcrotateLeaseState } from "./types.js";
+import type { CcrotateDriverConfig, CcrotateLeaseState, CcrotateSshConfig, CcrotateTarget } from "./types.js";
 
 const leases = new Map<string, CcrotateLeaseState>();
 let currentContext: PluginContext | null = null;
@@ -157,6 +159,183 @@ async function executeOnce(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Plugin API route handlers
+//
+// Routes are mounted under /api/plugins/kkroo.ccrotate/api/* and dispatched
+// here via `onApiRequest`. They take the SSH config in the request body so
+// one plugin install can operate against multiple ccrotate hosts.
+// ---------------------------------------------------------------------------
+
+function parseSshFromBody(body: unknown): CcrotateSshConfig {
+  if (!body || typeof body !== "object") {
+    throw new Error("body must be an object containing { ssh: { host, user, identityFile, ... } }");
+  }
+  const sshRaw = (body as Record<string, unknown>).ssh;
+  if (!sshRaw || typeof sshRaw !== "object") {
+    throw new Error("body.ssh must be an object with host/user/identityFile");
+  }
+  const ssh = sshRaw as Record<string, unknown>;
+  const host = ssh.host;
+  const user = ssh.user;
+  const identityFile = ssh.identityFile;
+  if (typeof host !== "string" || host.trim().length === 0) throw new Error("body.ssh.host required");
+  if (typeof user !== "string" || user.trim().length === 0) throw new Error("body.ssh.user required");
+  if (typeof identityFile !== "string" || identityFile.trim().length === 0) {
+    throw new Error("body.ssh.identityFile required");
+  }
+  const portRaw = ssh.port;
+  const port = typeof portRaw === "number" && Number.isFinite(portRaw)
+    ? Math.max(1, Math.floor(portRaw))
+    : 22;
+  return {
+    host: host.trim(),
+    user: user.trim(),
+    port,
+    identityFile: identityFile.trim(),
+    strictHostKeyChecking: ssh.strictHostKeyChecking !== false,
+  };
+}
+
+function pickTarget(body: unknown, fallback: CcrotateTarget = "claude"): CcrotateTarget {
+  const t = body && typeof body === "object" ? (body as Record<string, unknown>).target : null;
+  if (t === "claude" || t === "codex") return t;
+  return fallback;
+}
+
+/**
+ * Route: POST /pools
+ * Body: { ssh, targets?: ("claude" | "codex")[] }   (default targets = ["claude", "codex"])
+ *
+ * Runs `ccrotate tier-cache --target X` on the SSH host for each requested
+ * target and returns the cached tier data verbatim (one key per target). The
+ * cache is whatever the host's last `ccrotate refresh{,-one}` wrote — calling
+ * this route does NOT hit Anthropic. Use POST /refresh first if the cache is
+ * stale.
+ */
+async function handlePoolsRoute(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  let ssh: CcrotateSshConfig;
+  try {
+    ssh = parseSshFromBody(input.body);
+  } catch (error) {
+    return { status: 400, body: { error: describeError(error) } };
+  }
+  const requestedTargets = (() => {
+    const raw = input.body && typeof input.body === "object"
+      ? (input.body as Record<string, unknown>).targets
+      : null;
+    if (!Array.isArray(raw)) return ["claude", "codex"] as CcrotateTarget[];
+    const filtered = raw.filter((t): t is CcrotateTarget => t === "claude" || t === "codex");
+    return filtered.length > 0 ? filtered : (["claude", "codex"] as CcrotateTarget[]);
+  })();
+
+  const pools: Record<string, unknown> = {};
+  for (const target of requestedTargets) {
+    try {
+      const result = await runSshCommand(ssh, {
+        command: "ccrotate",
+        args: ["tier-cache", "--target", target],
+        timeoutMs: 10_000,
+      });
+      if (result.exitCode !== 0) {
+        pools[target] = {
+          error: `ccrotate tier-cache --target ${target} exited ${result.exitCode}`,
+          stderr: result.stderr.trim().slice(0, 500),
+        };
+        continue;
+      }
+      const stdout = result.stdout.trim();
+      if (stdout.length === 0) {
+        pools[target] = { error: "empty tier-cache; run /refresh first" };
+        continue;
+      }
+      try {
+        pools[target] = JSON.parse(stdout);
+      } catch {
+        pools[target] = { error: "tier-cache output was not valid JSON", raw: stdout.slice(0, 500) };
+      }
+    } catch (error) {
+      pools[target] = { error: describeError(error) };
+    }
+  }
+  return { status: 200, body: { pools, fetchedAt: new Date().toISOString() } };
+}
+
+/**
+ * Route: POST /switch
+ * Body: { ssh, email, target?: "claude" | "codex" }
+ *
+ * Runs `ccrotate switch <email> --target <target>` on the SSH host. ccrotate's
+ * switchTo auto-refreshes the access token when the saved snapshot's expiresAt
+ * is < now+5min, so the resulting credentials.json/auth.json is always usable
+ * if the saved refresh token is still valid.
+ */
+async function handleSwitchRoute(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  let ssh: CcrotateSshConfig;
+  try {
+    ssh = parseSshFromBody(input.body);
+  } catch (error) {
+    return { status: 400, body: { error: describeError(error) } };
+  }
+  const target = pickTarget(input.body);
+  const emailRaw = input.body && typeof input.body === "object"
+    ? (input.body as Record<string, unknown>).email
+    : null;
+  if (typeof emailRaw !== "string" || !emailRaw.includes("@")) {
+    return { status: 400, body: { error: "body.email is required and must look like an email" } };
+  }
+  const result = await runSshCommand(ssh, {
+    command: "ccrotate",
+    args: ["switch", emailRaw, "--target", target],
+    timeoutMs: 30_000,
+  });
+  return {
+    status: result.exitCode === 0 ? 200 : 500,
+    body: {
+      target,
+      email: emailRaw,
+      exitCode: result.exitCode,
+      stdout: result.stdout.trim(),
+      stderr: result.stderr.trim(),
+    },
+  };
+}
+
+/**
+ * Route: POST /refresh
+ * Body: { ssh, target?: "claude" | "codex", account?: string }
+ *
+ * For target=claude, runs `ccrotate refresh-one` (cron-friendly single-account
+ * refresh). For target=codex, runs `ccrotate refresh --target codex` (no
+ * refresh-one in codex mode per ccrotate README). Both write back to the
+ * tier-cache that GET /pools reads from.
+ */
+async function handleRefreshRoute(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  let ssh: CcrotateSshConfig;
+  try {
+    ssh = parseSshFromBody(input.body);
+  } catch (error) {
+    return { status: 400, body: { error: describeError(error) } };
+  }
+  const target = pickTarget(input.body);
+  const args = target === "claude" ? ["refresh-one"] : ["refresh", "--target", "codex"];
+  const result = await runSshCommand(ssh, {
+    command: "ccrotate",
+    args,
+    timeoutMs: 60_000,
+  });
+  return {
+    status: result.exitCode === 0 ? 200 : 500,
+    body: {
+      target,
+      command: ["ccrotate", ...args].join(" "),
+      exitCode: result.exitCode,
+      stdout: result.stdout.trim().slice(0, 4000),
+      stderr: result.stderr.trim().slice(0, 4000),
+    },
+  };
+}
+
 async function rotateAndLog(config: CcrotateDriverConfig, reason: string): Promise<string | null> {
   logger()?.info("ccrotate rotating account", { reason, target: config.target });
   try {
@@ -185,6 +364,27 @@ const plugin: PaperclipPlugin = definePlugin({
 
   async onShutdown() {
     leases.clear();
+  },
+
+  async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+    try {
+      switch (input.routeKey) {
+        case "pools":
+          return await handlePoolsRoute(input);
+        case "switch":
+          return await handleSwitchRoute(input);
+        case "refresh":
+          return await handleRefreshRoute(input);
+        default:
+          return { status: 404, body: { error: `unknown routeKey: ${input.routeKey}` } };
+      }
+    } catch (error) {
+      logger()?.warn("ccrotate api route handler failed", {
+        routeKey: input.routeKey,
+        error: describeError(error),
+      });
+      return { status: 500, body: { error: describeError(error) } };
+    }
   },
 
   async onEnvironmentValidateConfig(
