@@ -117,6 +117,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       summary: "Stale-queue invalidation test run.",
       provider: "test",
       model: "test-model",
+      resultJson: { summary: "Stale-queue invalidation test run." },
     }));
     runningProcesses.clear();
     let idlePolls = 0;
