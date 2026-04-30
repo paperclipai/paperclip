@@ -935,9 +935,16 @@ export function pluginLoader(
       // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests.
       // Wrap absolute paths in a file:// URL so Node's ESM loader accepts them
       // on Windows (where C:\... is not a valid ESM specifier).
-      const importTarget = path.isAbsolute(manifestPath)
+      // Append a cache-bust query so a reinstalled local-path plugin whose
+      // dist/manifest.js has been rebuilt is actually re-parsed by Node's
+      // ESM loader instead of served from the in-process module cache.
+      // Without this, `paperclipai plugin uninstall <key>; install --local <path>`
+      // silently keeps the stale manifest because Node's import cache is
+      // keyed by URL — same file path = same cached module.
+      const baseUrl = path.isAbsolute(manifestPath)
         ? pathToFileURL(manifestPath).href
         : manifestPath;
+      const importTarget = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}t=${Date.now()}`;
       const mod = await import(importTarget) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;

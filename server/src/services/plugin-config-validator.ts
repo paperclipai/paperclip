@@ -38,6 +38,12 @@ export function validateInstanceConfig(
   // hold a Paperclip secret UUID rather than a raw value. The format is a UI
   // hint only — UUID validation happens in the secrets handler at resolve time.
   ajv.addFormat("secret-ref", { validate: () => true });
+  // Register the company-id format used to tag arrays of company UUIDs so the
+  // frontend renders a multi-select picker. Like secret-ref, this is a UI hint
+  // only; "*" (portfolio-wide) and any string are accepted at the validator
+  // level — actual access enforcement happens in the plugin worker via
+  // assertCompanyAccess(runCtx.companyId).
+  ajv.addFormat("company-id", { validate: () => true });
   const validate = ajv.compile(schema);
   const valid = validate(configJson);
 

@@ -639,6 +639,20 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
     const validationErrors = validateJsonSchemaForm(schema, values);
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors);
+      const count = Object.keys(validationErrors).length;
+      const fieldList = Object.keys(validationErrors)
+        .map((path) => path.replace(/^\//, "").replace(/\//g, " › "))
+        .slice(0, 5)
+        .join(", ");
+      setSaveMessage({
+        type: "error",
+        text:
+          count === 1
+            ? `Can't save — fix the field flagged below: ${fieldList}.`
+            : `Can't save — ${count} field${count > 1 ? "s" : ""} need attention${
+                count > 5 ? " (first 5)" : ""
+              }: ${fieldList}.`,
+      });
       return;
     }
     setErrors({});
