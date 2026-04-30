@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -31,6 +33,149 @@ function nodeVersionMeetsMinimum(version: string): boolean {
   if (minor > MIN_NODE_MINOR) return true;
   if (minor < MIN_NODE_MINOR) return false;
   return patch >= MIN_NODE_PATCH;
+}
+
+function isNonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function getStringEnv(configEnv: Record<string, string>, key: string): string | undefined {
+  const configured = configEnv[key];
+  if (typeof configured === "string") return configured;
+  return process.env[key];
+}
+
+function credentialSource(configEnv: Record<string, string>, key: string): string {
+  return typeof configEnv[key] === "string" ? "adapter config env" : "server environment";
+}
+
+async function readJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readNestedString(record: Record<string, unknown>, pathSegments: string[]): string | null {
+  let current: unknown = record;
+  for (const segment of pathSegments) {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return isNonEmpty(current) ? current.trim() : null;
+}
+
+async function hasClaudeSubscriptionCredentials(configDir: string): Promise<boolean> {
+  for (const filename of [".credentials.json", "credentials.json"]) {
+    const credentials = await readJsonObject(path.join(configDir, filename));
+    if (!credentials) continue;
+    if (readNestedString(credentials, ["claudeAiOauth", "accessToken"])) return true;
+  }
+  return false;
+}
+
+async function hasCodexNativeCredentials(codexHome: string): Promise<boolean> {
+  const auth = await readJsonObject(path.join(codexHome, "auth.json"));
+  if (!auth) return false;
+  return Boolean(
+    readNestedString(auth, ["accessToken"]) ||
+    readNestedString(auth, ["tokens", "access_token"]) ||
+    readNestedString(auth, ["OPENAI_API_KEY"]),
+  );
+}
+
+async function buildCredentialHintChecks(
+  agent: string,
+  configEnv: Record<string, string>,
+): Promise<AdapterEnvironmentCheck[]> {
+  if (agent === "claude") {
+    const bedrockFlag = getStringEnv(configEnv, "CLAUDE_CODE_USE_BEDROCK");
+    const bedrockBaseUrl = getStringEnv(configEnv, "ANTHROPIC_BEDROCK_BASE_URL");
+    const hasBedrock =
+      bedrockFlag === "1" ||
+      /^true$/i.test(bedrockFlag ?? "") ||
+      isNonEmpty(bedrockBaseUrl);
+    const bedrockSourceKey = isNonEmpty(bedrockFlag)
+      ? "CLAUDE_CODE_USE_BEDROCK"
+      : "ANTHROPIC_BEDROCK_BASE_URL";
+    const anthropicApiKey = getStringEnv(configEnv, "ANTHROPIC_API_KEY");
+    const claudeConfigDir = isNonEmpty(getStringEnv(configEnv, "CLAUDE_CONFIG_DIR"))
+      ? path.resolve(getStringEnv(configEnv, "CLAUDE_CONFIG_DIR") as string)
+      : path.join(os.homedir(), ".claude");
+
+    if (hasBedrock) {
+      return [{
+        code: "acpx_claude_bedrock_auth_detected",
+        level: "info",
+        message: "Claude credential hint: Bedrock auth indicators are configured.",
+        detail: `Detected in ${credentialSource(configEnv, bedrockSourceKey)}.`,
+        hint: "Ensure AWS credentials and AWS_REGION are available to the ACPX-launched Claude agent.",
+      }];
+    }
+
+    if (isNonEmpty(anthropicApiKey)) {
+      return [{
+        code: "acpx_claude_anthropic_api_key_detected",
+        level: "info",
+        message: "Claude credential hint: ANTHROPIC_API_KEY is set.",
+        detail: `Detected in ${credentialSource(configEnv, "ANTHROPIC_API_KEY")}.`,
+      }];
+    }
+
+    if (await hasClaudeSubscriptionCredentials(claudeConfigDir)) {
+      return [{
+        code: "acpx_claude_subscription_auth_detected",
+        level: "info",
+        message: "Claude credential hint: local Claude subscription credentials were found.",
+        detail: `Credentials found in ${claudeConfigDir}.`,
+      }];
+    }
+
+    return [{
+      code: "acpx_claude_credentials_missing",
+      level: "info",
+      message: "Claude credential hint: no Claude API, Bedrock, or local subscription credentials were detected.",
+      hint: "Set ANTHROPIC_API_KEY, configure Bedrock, or run `claude login` before starting an ACPX Claude agent.",
+    }];
+  }
+
+  if (agent === "codex") {
+    const openAiApiKey = getStringEnv(configEnv, "OPENAI_API_KEY");
+    const codexHome = isNonEmpty(getStringEnv(configEnv, "CODEX_HOME"))
+      ? path.resolve(getStringEnv(configEnv, "CODEX_HOME") as string)
+      : path.join(os.homedir(), ".codex");
+
+    if (isNonEmpty(openAiApiKey)) {
+      return [{
+        code: "acpx_codex_openai_api_key_detected",
+        level: "info",
+        message: "Codex credential hint: OPENAI_API_KEY is set.",
+        detail: `Detected in ${credentialSource(configEnv, "OPENAI_API_KEY")}.`,
+      }];
+    }
+
+    if (await hasCodexNativeCredentials(codexHome)) {
+      return [{
+        code: "acpx_codex_native_auth_detected",
+        level: "info",
+        message: "Codex credential hint: local Codex auth configuration was found.",
+        detail: `Credentials found in ${path.join(codexHome, "auth.json")}.`,
+      }];
+    }
+
+    return [{
+      code: "acpx_codex_credentials_missing",
+      level: "info",
+      message: "Codex credential hint: no OpenAI API key or local Codex auth configuration was detected.",
+      hint: "Set OPENAI_API_KEY or run `codex login` before starting an ACPX Codex agent.",
+    }];
+  }
+
+  return [];
 }
 
 function resolvePackage(name: string): AdapterEnvironmentCheck {
@@ -77,6 +222,11 @@ export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const config = parseObject(ctx.config);
+  const envConfig = parseObject(config.env);
+  const configEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") configEnv[key] = value;
+  }
   const checks: AdapterEnvironmentCheck[] = [];
   const nodeVersion = process.version;
 
@@ -109,6 +259,7 @@ export async function testEnvironment(
       level: "info",
       message: `ACP agent selected: ${agent}`,
     });
+    checks.push(...await buildCredentialHintChecks(agent, configEnv));
   }
 
   if (agent === "custom" && !asString(config.agentCommand, "")) {
