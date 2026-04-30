@@ -38,6 +38,8 @@ import {
   approvalService,
   companySkillService,
   budgetService,
+  HeartbeatRunsListLimitError,
+  clampHeartbeatRunsListLimit,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -46,7 +48,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -2811,9 +2813,20 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    // Express's qs parser binds repeated keys to a `string[]`; the service-side
+    // `parseStatusFilter` normalizes single, CSV, array, and mixed shapes
+    // (#4628). Pre-fix, `?status=` was silently dropped (#4568).
+    const statusInput = req.query.status as string | string[] | undefined;
+    let limit: number;
+    try {
+      limit = clampHeartbeatRunsListLimit(req.query.limit);
+    } catch (err) {
+      if (err instanceof HeartbeatRunsListLimitError) {
+        throw badRequest(err.message);
+      }
+      throw err;
+    }
+    const runs = await heartbeat.list(companyId, agentId, limit, statusInput);
     res.json(runs);
   });
 
