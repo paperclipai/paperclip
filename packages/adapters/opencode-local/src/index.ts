@@ -1,3 +1,5 @@
+import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
@@ -9,6 +11,19 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+];
+
+export const modelProfiles: AdapterModelProfileDefinition[] = [
+  {
+    key: "cheap",
+    label: "Cheap",
+    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    adapterConfig: {
+      model: "openai/gpt-5.1-codex-mini",
+      variant: "low",
+    },
+    source: "adapter_default",
+  },
 ];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
