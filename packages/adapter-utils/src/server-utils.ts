@@ -76,6 +76,16 @@ export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const REDACTED_LOG_VALUE = "***REDACTED***";
+const COMMAND_CLI_SECRET_OPTION_RE =
+  /(\B-{1,2}(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\s+|=)(["']?))[^\s"'`]+(\2)/gi;
+const COMMAND_ENV_SECRET_ASSIGNMENT_RE =
+  /(\b[A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|JWT)[A-Za-z0-9_]*\s*=\s*)[^\s"'`]+/gi;
+const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
+const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
+const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_JWT_RE =
+  /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -785,9 +795,19 @@ export function renderPaperclipWakePrompt(
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
+    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? REDACTED_LOG_VALUE : value;
   }
   return redacted;
+}
+
+export function redactCommandTextForLogs(command: string): string {
+  return command
+    .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${REDACTED_LOG_VALUE}`)
+    .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${REDACTED_LOG_VALUE}$3`)
+    .replace(COMMAND_ENV_SECRET_ASSIGNMENT_RE, `$1${REDACTED_LOG_VALUE}`)
+    .replace(COMMAND_OPENAI_KEY_RE, REDACTED_LOG_VALUE)
+    .replace(COMMAND_GITHUB_TOKEN_RE, REDACTED_LOG_VALUE)
+    .replace(COMMAND_JWT_RE, REDACTED_LOG_VALUE);
 }
 
 export function buildInvocationEnvForLogs(
@@ -811,7 +831,7 @@ export function buildInvocationEnvForLogs(
 
   const resolvedCommand = options.resolvedCommand?.trim();
   if (resolvedCommand) {
-    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = resolvedCommand;
+    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = redactCommandTextForLogs(resolvedCommand);
   }
 
   return redactEnvForLogs(merged);

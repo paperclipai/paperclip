@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   renderPaperclipWakePrompt,
   runningProcesses,
@@ -38,6 +39,22 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
   }
   return read().match(pattern);
 }
+
+describe("buildInvocationEnvForLogs", () => {
+  it("redacts inline secrets from resolved command metadata", () => {
+    const loggedEnv = buildInvocationEnvForLogs(
+      { SAFE_VALUE: "visible" },
+      {
+        resolvedCommand: "env OPENAI_API_KEY=sk-live-example custom-acp --token ghp_example_secret",
+      },
+    );
+
+    expect(loggedEnv.SAFE_VALUE).toBe("visible");
+    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
+      "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
+    );
+  });
+});
 
 describe("runChildProcess", () => {
   it("does not arm a timeout when timeoutSec is 0", async () => {

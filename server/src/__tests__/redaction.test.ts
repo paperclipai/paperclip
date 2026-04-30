@@ -84,4 +84,33 @@ describe("redaction", () => {
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
   });
+
+  it("redacts inline secrets from command metadata without hiding safe command text", () => {
+    const input = {
+      command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",
+      commandArgs: ["--safe", "ok", "--token", "ghp_arg_secret", "--api-key=sk-inline-example"],
+      env: {
+        PAPERCLIP_RESOLVED_COMMAND: "env OPENAI_API_KEY=sk-live-example custom-acp --token ghp_example_secret",
+        SAFE_VALUE: "visible",
+      },
+    };
+
+    const result = redactEventPayload(input);
+
+    expect(result?.command).toBe(
+      `custom-acp --token ${REDACTED_EVENT_VALUE} env OPENAI_API_KEY=${REDACTED_EVENT_VALUE} custom-acp`,
+    );
+    expect(result?.commandArgs).toEqual([
+      "--safe",
+      "ok",
+      "--token",
+      REDACTED_EVENT_VALUE,
+      `--api-key=${REDACTED_EVENT_VALUE}`,
+    ]);
+    expect(result?.env).toEqual({
+      PAPERCLIP_RESOLVED_COMMAND:
+        `env OPENAI_API_KEY=${REDACTED_EVENT_VALUE} custom-acp --token ${REDACTED_EVENT_VALUE}`,
+      SAFE_VALUE: "visible",
+    });
+  });
 });
