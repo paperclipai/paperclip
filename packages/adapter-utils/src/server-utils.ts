@@ -1706,6 +1706,12 @@ export async function runChildProcess(
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        // VOG-330: decode stdout/stderr as UTF-8 at the stream level so multi-byte
+        // characters that straddle chunk boundaries are joined correctly instead
+        // of being stringified as Buffer→String per chunk (which produces FFFD
+        // replacement characters when a UTF-8 codepoint splits across reads).
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 

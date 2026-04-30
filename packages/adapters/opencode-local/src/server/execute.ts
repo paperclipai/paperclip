@@ -123,6 +123,35 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
   return target;
 }
 
+// VOG-330 — wrap a local Windows opencode-cli spawn with `cmd.exe /D /S /C
+// "chcp 65001 >nul && <command> <args...>"` so the cmd session and every
+// subprocess opencode-cli forks (curl/bash/python/etc.) writes UTF-8 to its
+// console instead of the system ANSI codepage (936 on zh-CN, which mangles
+// Chinese into GBK→UTF-8 garbage).
+//
+// No-op on non-Windows or remote (sandbox/SSH) execution targets — the host
+// codepage is irrelevant there.
+export function wrapWindowsUtf8(
+  command: string,
+  args: string[],
+  isRemote: boolean,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } {
+  if (isRemote || platform !== "win32") {
+    return { command, args };
+  }
+  // cmd.exe /D /S /C contract: with /S, cmd preserves the entire string
+  // following /C verbatim (no outer-quote stripping), so we can quote the
+  // command and each arg with double quotes and escape any interior `"` as
+  // `""` per cmd.exe's parsing rules. /D suppresses AutoRun registry hooks.
+  const quote = (value: string): string => `"${value.replace(/"/g, '""')}"`;
+  const inner = [quote(command), ...args.map(quote)].join(" ");
+  return {
+    command: "cmd.exe",
+    args: ["/D", "/S", "/C", `chcp 65001 >nul && ${inner}`],
+  };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -456,7 +485,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
+      // VOG-330: on local Windows, wrap opencode spawn so the cmd.exe session
+      // and any subprocess opencode-cli forks (curl/bash/etc.) inherit UTF-8
+      // codepage 65001. Without this, the default ANSI codepage (936/GBK on
+      // zh-CN systems) corrupts Chinese output written to stdout/stderr —
+      // POSIX `LANG=en_US.UTF-8` env vars don't apply to Windows-native
+      // processes that read GetConsoleOutputCP().
+      const { command: spawnCommand, args: spawnArgs } = wrapWindowsUtf8(command, args, executionTargetIsRemote);
+      const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, spawnCommand, spawnArgs, {
         cwd,
         env: preparedRuntimeConfig.env,
         stdin: prompt,
