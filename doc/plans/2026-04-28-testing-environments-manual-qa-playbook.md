@@ -14,7 +14,7 @@ In scope:
 
 - adapters: `claude_local`, `codex_local`, `cursor`, `gemini_local`, `opencode_local`, `pi_local`
 - environment drivers/providers: `ssh`, `sandbox:e2b`
-- UI surfaces: Plugins, Company Settings, Projects, Agents, Issues, Agent Detail
+- UI surfaces: Plugins, Company Environments, Projects, Agents, Issues, Agent Detail
 
 Out of scope:
 
@@ -142,7 +142,7 @@ Do not point this project at the main Paperclip repo checkout. Use the throwaway
 
 ## 5. Create the Environments
 
-Open Company Settings and create these environments.
+Open the dedicated `Company Settings -> Environments` page and create these environments. Use the `Environments` sidebar entry, not the general company settings form.
 
 ### SSH environment
 
@@ -167,7 +167,7 @@ Create a sandbox environment named `QA_E2B_ENV_NAME` with:
 - timeoutMs: `QA_E2B_TIMEOUT_MS`
 - reuseLease: `QA_E2B_REUSE_LEASE`
 
-If `E2B_API_KEY` is already exported before `pnpm dev`, you can leave the provider `apiKey` field blank and let the plugin read the host env var. If you do not want to rely on host env, create a Paperclip secret and use the secret-ref field instead.
+The E2B API key field accepts either a pasted key or an existing Paperclip secret reference. Saved pasted values are stored as company secrets. If `E2B_API_KEY` is already exported before `pnpm dev`, you can also leave the provider `apiKey` field blank and let the plugin use the host-level fallback instead.
 
 Then click `Test provider`. Do not continue until it passes.
 
@@ -239,6 +239,18 @@ Adapter notes:
 - `cursor` is the real adapter type. Do not look for `cursor_local`.
 - `opencode_local` requires an explicit discovered model in `provider/model` format.
 - For the others, use the normal UI defaults unless a known-good team preset already exists.
+
+Before creating any issues, add this gate:
+
+1. Open each matrix agent's detail page and go to `Configuration`.
+2. Confirm the `Default environment` matches the intended SSH or E2B environment.
+3. Click the inline adapter `Test` action in the `Adapter` card and wait for it to finish.
+4. Record the result immediately:
+   - continue only if the test passes or returns an acceptable warning
+   - if it fails because of missing login, missing CLI, missing API key, or missing remote access, mark that matrix row `blocked/prereq`
+   - if it fails for any product reason, stop creating issues for that row and record it as `fail`
+
+Why this gate exists: the adapter environment test now runs against the selected `environmentId`, so it is the fastest way to prove each agent can actually execute inside its configured remote target before the issue matrix is created.
 
 ## 8. Create All Issues Before Running Anything
 
