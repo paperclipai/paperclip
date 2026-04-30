@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "kkroo.ccrotate";
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.2.1";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -14,13 +14,11 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["automation", "connector"],
   capabilities: [
     "api.routes.register",
-    "instance.settings.register",
     "plugin.state.read",
     "plugin.state.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
-    ui: "./dist/ui",
   },
   apiRoutes: [
     {
@@ -48,16 +46,6 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "body", key: "companyId" },
     },
   ],
-  ui: {
-    slots: [
-      {
-        type: "settingsPage",
-        id: "ccrotate-pools",
-        displayName: "ccrotate Pools",
-        exportName: "CcrotatePoolsPage",
-      },
-    ],
-  },
 };
 
 export default manifest;

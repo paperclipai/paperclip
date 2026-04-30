@@ -621,6 +621,7 @@ function BudgetFinanceMatrix() {
             <CaseFrame title="Healthy provider" detail="Anthropic subscription usage still has room in short and weekly windows." tone="healthy">
               <ProviderQuotaCard
                 provider="anthropic"
+                companyId="00000000-0000-0000-0000-000000000000"
                 rows={providerRowsByProvider.anthropic}
                 budgetMonthlyCents={250_000}
                 totalCompanySpendCents={83_000}
@@ -634,6 +635,7 @@ function BudgetFinanceMatrix() {
             <CaseFrame title="Warning provider" detail="Codex weekly usage is high and subscription overage has started." tone="warning">
               <ProviderQuotaCard
                 provider="openai"
+                companyId="00000000-0000-0000-0000-000000000000"
                 rows={providerRowsByProvider.openai}
                 budgetMonthlyCents={250_000}
                 totalCompanySpendCents={218_000}
@@ -647,6 +649,7 @@ function BudgetFinanceMatrix() {
             <CaseFrame title="Critical biller" detail="OpenRouter credits are beyond the monthly allocation and show deficit treatment." tone="critical">
               <ProviderQuotaCard
                 provider="openrouter"
+                companyId="00000000-0000-0000-0000-000000000000"
                 rows={providerRowsByProvider.openrouter}
                 budgetMonthlyCents={250_000}
                 totalCompanySpendCents={286_000}

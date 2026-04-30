@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
+import { CcrotatePoolSection } from "./CcrotatePoolSection";
 import {
   billingTypeDisplayName,
   formatCents,
@@ -18,6 +19,8 @@ const ROLLING_WINDOWS = ["5h", "24h", "7d"] as const;
 
 interface ProviderQuotaCardProps {
   provider: string;
+  /** UUID of the active company; passed through to nested ccrotate-pool section. */
+  companyId: string;
   rows: CostByProviderModel[];
   /** company monthly budget in cents (0 means unlimited) */
   budgetMonthlyCents: number;
@@ -37,6 +40,7 @@ interface ProviderQuotaCardProps {
 
 export function ProviderQuotaCard({
   provider,
+  companyId,
   rows,
   budgetMonthlyCents,
   totalCompanySpendCents,
@@ -378,6 +382,16 @@ export function ProviderQuotaCard({
               )}
             </div>
           </>
+        )}
+
+        {/* ccrotate pool — multi-account view (one row per snapped account).
+            Only renders when the kkroo.ccrotate plugin is installed and has at
+            least one account snapped for the relevant target. */}
+        {isClaudeQuotaPanel && (
+          <CcrotatePoolSection companyId={companyId} target="claude" />
+        )}
+        {isCodexQuotaPanel && (
+          <CcrotatePoolSection companyId={companyId} target="codex" />
         )}
       </CardContent>
     </Card>

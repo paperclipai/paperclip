@@ -1,7 +1,7 @@
 {
   "name": "@kkroo/paperclip-plugin-ccrotate",
-  "version": "0.2.0",
-  "description": "Paperclip sandbox provider plugin that runs agents through ccrotate-managed Claude/Codex accounts over SSH, with automatic mid-run rotation on rate limits.",
+  "version": "0.2.1",
+  "description": "Paperclip plugin that exposes ccrotate-snapped Claude/Codex account pools to the UI for visualization, and persists the latest export blob to plugin state for Job-pod hooks to re-import.",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -10,12 +10,11 @@
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js",
-    "ui": "./dist/ui/"
+    "worker": "./dist/worker.js"
   },
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
-    "build": "tsc && node ./scripts/build-ui.mjs",
+    "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
@@ -24,11 +23,6 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "@types/react": "^19.0.8",
-    "@types/react-dom": "^19.0.3",
-    "esbuild": "^0.27.3",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "typescript": "^5.7.3"
   }
 }

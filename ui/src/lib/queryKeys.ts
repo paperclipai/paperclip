@@ -174,4 +174,7 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  ccrotate: {
+    snapshot: (companyId: string) => ["ccrotate", "snapshot", companyId] as const,
+  },
 };
