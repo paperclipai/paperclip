@@ -342,21 +342,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let depth = 0;
     let cursor: string | null = issueId;
     let rootIssueId = issueId;
+    let ancestor = {
+      parentId: currentIssue.parentId,
+      originKind: currentIssue.originKind,
+    };
     for (let i = 0; i < SAFETY_LIMIT && cursor !== null; i++) {
-      const rows = await db
-        .select({ parentId: issues.parentId, originKind: issues.originKind })
-        .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)));
-      const ancestor = rows[0] ?? null;
-      if (!ancestor) break;
-      rootIssueId = cursor;
       if (
         ancestor.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND ||
         ancestor.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
       ) {
         depth++;
       }
+      rootIssueId = cursor;
       cursor = ancestor.parentId;
+      if (cursor === null) break;
+      const rows = await db
+        .select({ parentId: issues.parentId, originKind: issues.originKind })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)));
+      const next = rows[0] ?? null;
+      if (!next) break;
+      ancestor = next;
     }
 
     return { depth, rootIssueId };
@@ -455,7 +461,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
       return null;
     }
-    lastCompanyRecoverySpawn.set(input.companyId, now);
 
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
@@ -476,6 +481,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
       },
     });
+    lastCompanyRecoverySpawn.set(input.companyId, now);
 
     if (queued && input.retryOfRunId) {
       return db
@@ -2477,7 +2483,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "skipped" as const };
     }
 
-    // Company-wide cap: shared with stranded recovery issues.
+    // Company-wide cap: independent from stranded recovery cap (separate originKind).
     const openRecoveryCount = await db
       .select({ id: issues.id })
       .from(issues)
