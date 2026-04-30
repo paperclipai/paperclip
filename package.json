@@ -52,7 +52,8 @@
     "rt2:embedded-postgres-host-ready": "node scripts/rt2-embedded-postgres-host-ready.mjs",
     "test:release-host-verify": "node scripts/rt2-release-host-verify.test.mjs",
     "rt2:runtime-confidence": "node scripts/rt2-runtime-confidence.mjs",
-    "test:runtime-confidence": "node scripts/rt2-runtime-confidence.test.mjs"
+    "test:runtime-confidence": "node scripts/rt2-runtime-confidence.test.mjs",
+    "test:native-distribution-foundation": "node scripts/rt2-native-distribution-foundation.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
