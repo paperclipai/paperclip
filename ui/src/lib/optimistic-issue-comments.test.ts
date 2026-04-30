@@ -9,6 +9,7 @@ import {
   flattenIssueCommentPages,
   getNextIssueCommentPageParam,
   isQueuedIssueComment,
+  loadRemainingIssueCommentPages,
   matchesIssueRef,
   mergeIssueComments,
   removeIssueCommentFromPages,
@@ -232,6 +233,31 @@ describe("optimistic issue comments", () => {
         2,
       ),
     ).toBe("comment-1");
+  });
+
+  it("loads remaining comment pages until the terminal partial page", async () => {
+    const fetchPage = vi.fn(async (afterCommentId: string) => {
+      if (afterCommentId === "comment-3") return [{ id: "comment-2" }, { id: "comment-1" }];
+      if (afterCommentId === "comment-1") return [{ id: "comment-0" }];
+      return [];
+    });
+
+    const loaded = await loadRemainingIssueCommentPages({
+      pages: [[{ id: "comment-4" }, { id: "comment-3" }]],
+      pageParams: [null],
+      pageSize: 2,
+      fetchPage,
+    });
+
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(fetchPage).toHaveBeenNthCalledWith(1, "comment-3");
+    expect(fetchPage).toHaveBeenNthCalledWith(2, "comment-1");
+    expect(loaded.pages.map((page) => page.map((comment) => comment.id))).toEqual([
+      ["comment-4", "comment-3"],
+      ["comment-2", "comment-1"],
+      ["comment-0"],
+    ]);
+    expect(loaded.pageParams).toEqual([null, "comment-3", "comment-1"]);
   });
 
   it("autoloads older chat comments while the initial thread is still under the threshold", () => {
