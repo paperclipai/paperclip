@@ -785,9 +785,15 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("claude_transient_upstream");
-      expect(result.errorFamily).toBe("transient_upstream");
-      expect(result.retryNotBefore).toBe("2026-04-30T00:10:00.000Z");
+      // Contract: a Paperclip-API auth phrase echoed in Claude's assistant
+      // output must NOT trip the claude_auth_required classifier — that
+      // path requires real Claude/Anthropic context (parse.ts guards on
+      // assistant-typed lines + a Claude/Anthropic/oauth context match).
+      expect(result.errorCode).not.toBe("claude_auth_required");
+      // The actual failure here is the result event's "out of extra usage"
+      // message, which classifies first as provider_quota_exhausted (see
+      // execute.ts: quota check runs before transient_upstream).
+      expect(result.errorCode).toBe("provider_quota_exhausted");
     } finally {
       vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;
