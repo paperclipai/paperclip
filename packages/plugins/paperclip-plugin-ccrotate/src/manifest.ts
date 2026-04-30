@@ -24,6 +24,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/snapshot",
       auth: "board",
       capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
     },
     {
       routeKey: "state-get",
@@ -31,6 +32,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/state",
       auth: "board",
       capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
     },
     {
       routeKey: "state-put",
@@ -38,6 +40,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/state",
       auth: "board",
       capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
     },
   ],
   ui: {

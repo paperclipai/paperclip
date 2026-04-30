@@ -156,15 +156,19 @@ interface FetchState {
   data: SnapshotResponse | null;
 }
 
-export function CcrotatePoolsPage(_props: PluginSettingsPageProps) {
+export function CcrotatePoolsPage(props: PluginSettingsPageProps) {
+  const companyId = props.context.companyId;
   const [state, setState] = useState<FetchState>({ loading: true, error: null, data: null });
 
   async function load() {
+    if (!companyId) {
+      setState({ loading: false, error: "No active company in context", data: null });
+      return;
+    }
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
-      const res = await fetch(`/api/plugins/${PLUGIN_ID}/api/snapshot`, {
-        credentials: "same-origin",
-      });
+      const url = `/api/plugins/${PLUGIN_ID}/api/snapshot?companyId=${encodeURIComponent(companyId)}`;
+      const res = await fetch(url, { credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as SnapshotResponse;
       setState({ loading: false, error: null, data });
@@ -181,7 +185,8 @@ export function CcrotatePoolsPage(_props: PluginSettingsPageProps) {
     load();
     const id = window.setInterval(load, 30_000);
     return () => window.clearInterval(id);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId]);
 
   return (
     <div style={wrap}>
