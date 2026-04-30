@@ -3098,6 +3098,7 @@ export function IssueChatThread({
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
   const pendingSubmitScrollRef = useRef(false);
+  const settleScrollTimeoutsRef = useRef<number[]>([]);
   const lastUserMessageIdRef = useRef<string | null>(null);
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
@@ -3348,6 +3349,13 @@ export function IssueChatThread({
     };
   }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
+  useEffect(() => {
+    return () => {
+      settleScrollTimeoutsRef.current.forEach((timeout) => window.clearTimeout(timeout));
+      settleScrollTimeoutsRef.current = [];
+    };
+  }, []);
+
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
       virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
@@ -3383,9 +3391,13 @@ export function IssueChatThread({
 
     if (typeof window === "undefined") return;
 
+    settleScrollTimeoutsRef.current.forEach((timeout) => window.clearTimeout(timeout));
+    settleScrollTimeoutsRef.current = [];
+
     const settleDelays = [380, 760, 1140];
     settleDelays.forEach((delay) => {
-      window.setTimeout(() => {
+      const timeout = window.setTimeout(() => {
+        if (typeof document === "undefined") return;
         const el = document.getElementById(latestCommentAnchor);
         if (el) {
           el.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -3399,6 +3411,7 @@ export function IssueChatThread({
           behavior: "auto",
         });
       }, delay);
+      settleScrollTimeoutsRef.current.push(timeout);
     });
   }
 
