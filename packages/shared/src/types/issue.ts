@@ -386,6 +386,8 @@ export interface AskUserQuestionsAnswer {
 export interface AskUserQuestionsResult {
   version: 1;
   answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
   summaryMarkdown?: string | null;
 }
 
