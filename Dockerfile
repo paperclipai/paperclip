@@ -62,13 +62,18 @@ COPY --chown=node:node --from=build /app /app
 # /paperclip/.claude on the shared RWX PVC, so a single `ccrotate refresh` from
 # inside this pod populates the gate's tier-cache in place.
 #
-# Vendored from ~/src/ccrotate@1.1.0 (upstream somersby10ml/ccrotate). 1.1.0 adds
-# `--target codex`, `tier-cache` JSON output, and the `serviceTier` reporting the
-# gate depends on — npm latest (1.0.13) lacks all three. Upgrade procedure:
+# Vendored from ~/src/ccrotate@1.1.1-kkroo.1 (upstream somersby10ml/ccrotate +
+# kkroo patch). 1.1.0 added `--target codex`, `tier-cache` JSON output, and
+# `serviceTier` reporting that the gate depends on. 1.1.1-kkroo.1 fixes a
+# crash in `ccrotate next` when probing accounts whose profile lacks
+# credentials (e.g. cache says "no per-account data"): writeClaudeFiles
+# would receive accountData.credentials=undefined and throw "data argument
+# must be of type string..." — see lib/commands/next.js skip guard +
+# writeCredentials defensive check. Upgrade procedure:
 #   cd ~/src/ccrotate && npm run build && cd dist && npm pack
 #   mv ccrotate-<NEW>.tgz <kkroo>/vendor/
-#   bump ARG CCROTATE_TARBALL below
-COPY vendor/ccrotate-1.1.0.tgz /tmp/ccrotate.tgz
+#   bump COPY line below
+COPY vendor/ccrotate-1.1.1-kkroo.1.tgz /tmp/ccrotate.tgz
 # Vendored patched k8s adapter tarballs are installed into the image, not the
 # PVC. Keep exactly one tarball per adapter package under
 # vendor/paperclip-adapter-*.tgz; the wildcard avoids hardcoding version
