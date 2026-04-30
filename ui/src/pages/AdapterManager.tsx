@@ -266,7 +266,7 @@ export function AdapterManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/one-liner" },
+      { label: selectedCompany?.name ?? "Company", href: "/daily-work" },
       { label: "Settings", href: "/instance/settings/general" },
       { label: "Adapters" },
     ]);

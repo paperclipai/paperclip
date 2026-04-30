@@ -199,7 +199,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
         todoIssueId: fixture.todoIssueId,
         taskIssueId: fixture.taskIssueId,
         reportDate,
-        lane: "today",
+        lane: "todo",
         progressPercent: 100,
         status: "done",
         deliverableCount: 1,
@@ -231,7 +231,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       .send({
         projectId: fixture.projectId,
         reportDate,
-        lane: "support_1",
+        lane: "doing",
         bucketLabel: "blocked on copy",
         progressPercent: 65,
         note: "Drafted the daily report loop and wired the board read path.",
@@ -242,7 +242,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       expect.objectContaining({
         card: expect.objectContaining({
           todoIssueId: fixture.todoIssueId,
-          lane: "support_1",
+          lane: "doing",
           progressPercent: 65,
         }),
         wikiPage: expect.objectContaining({
@@ -264,7 +264,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
         projectId: fixture.projectId,
         userId: fixture.boardUserId,
         reportDate,
-        lane: "support_1",
+        lane: "doing",
         bucketLabel: "blocked on copy",
         progressPercent: 65,
         note: "Drafted the daily report loop and wired the board read path.",
@@ -291,7 +291,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
     expect(boardAfterSave.body.cards[0]).toEqual(
       expect.objectContaining({
         todoIssueId: fixture.todoIssueId,
-        lane: "support_1",
+        lane: "doing",
         bucketLabel: "blocked on copy",
         progressPercent: 65,
         note: "Drafted the daily report loop and wired the board read path.",
@@ -303,7 +303,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       .send({
         projectId: fixture.projectId,
         reportDate,
-        lane: "support_2",
+        lane: "done",
         bucketLabel: "waiting on review",
         progressPercent: 90,
         note: "Refreshed the report after the first pass and updated the summary.",
@@ -314,7 +314,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       expect.objectContaining({
         card: expect.objectContaining({
           todoIssueId: fixture.todoIssueId,
-          lane: "support_2",
+          lane: "done",
           progressPercent: 90,
           note: "Refreshed the report after the first pass and updated the summary.",
         }),
@@ -322,7 +322,7 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
           history: expect.arrayContaining([
             expect.objectContaining({
               todoIssueId: fixture.todoIssueId,
-              lane: "support_2",
+              lane: "done",
               progressPercent: 90,
             }),
           ]),
@@ -347,14 +347,14 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
     expect(wikiResponse.body.history[1]).toEqual(
       expect.objectContaining({
         todoIssueId: fixture.todoIssueId,
-        lane: "support_2",
+        lane: "done",
         progressPercent: 90,
         evidenceTag: "EXTRACTED",
       }),
     );
     expect(wikiResponse.body.shortSummary).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("support_2"),
+        expect.stringContaining("done"),
         expect.stringContaining("90%"),
         expect.stringContaining("Refreshed the report after the first pass"),
       ]),
@@ -379,14 +379,14 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
     expect(queryResponse.body.evidence[1]).toEqual(
       expect.objectContaining({
         todoIssueId: fixture.todoIssueId,
-        lane: "support_2",
+        lane: "done",
         progressPercent: 90,
         evidenceTag: "EXTRACTED",
       }),
     );
     expect(queryResponse.body.answerLines).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("support_2"),
+        expect.stringContaining("done"),
         expect.stringContaining("90%"),
         expect.stringContaining("Refreshed the report after the first pass"),
       ]),

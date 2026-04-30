@@ -139,7 +139,7 @@ export function PluginPage() {
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="sm" asChild>
-          <Link to={companyPrefix ? `/${companyPrefix}/one-liner` : "/one-liner"}>
+          <Link to={companyPrefix ? `/${companyPrefix}/daily-work` : "/daily-work"}>
             <ArrowLeft className="h-4 w-4 mr-1" />
             Back
           </Link>

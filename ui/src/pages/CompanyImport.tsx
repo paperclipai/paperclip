@@ -867,7 +867,7 @@ export function CompanyImport() {
         body: `${result.company.name}: ${result.agents.length} agent${result.agents.length === 1 ? "" : "s"} processed.`,
       });
       // Force a fresh RT2 shell load so the imported company opens on the new canonical landing page.
-      window.location.assign(`/${importedCompany.issuePrefix}/one-liner`);
+      window.location.assign(`/${importedCompany.issuePrefix}/daily-work`);
     },
     onError: (err) => {
       pushToast({

@@ -74,7 +74,7 @@ export function PluginManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/one-liner" },
+      { label: selectedCompany?.name ?? "Company", href: "/daily-work" },
       { label: "Settings", href: "/instance/settings/heartbeats" },
       { label: "Plugins" },
     ]);

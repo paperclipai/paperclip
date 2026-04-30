@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const rt2DailyLaneSchema = z.enum(["today", "support_1", "support_2"]);
+export const rt2DailyLaneSchema = z.enum(["todo", "doing", "done"]);
 const rt2DailyReportDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 
 function isValidCalendarDate(value: string): boolean {

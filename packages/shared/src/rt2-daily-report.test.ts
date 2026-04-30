@@ -20,10 +20,11 @@ const evidenceTagSmoke: Rt2DailyActivityEntry["evidenceTag"][] = ["EXTRACTED", "
 void evidenceTagSmoke;
 
 describe("RT2 daily report shared contracts", () => {
-  it("accepts today/support_1/support_2 lanes and rejects archive", () => {
-    expect(rt2DailyLaneSchema.parse("today")).toBe("today");
-    expect(rt2DailyLaneSchema.parse("support_1")).toBe("support_1");
-    expect(rt2DailyLaneSchema.parse("support_2")).toBe("support_2");
+  it("accepts todo/doing/done lanes and rejects legacy or unknown lanes", () => {
+    expect(rt2DailyLaneSchema.parse("todo")).toBe("todo");
+    expect(rt2DailyLaneSchema.parse("doing")).toBe("doing");
+    expect(rt2DailyLaneSchema.parse("done")).toBe("done");
+    expect(() => rt2DailyLaneSchema.parse("today")).toThrow();
     expect(() => rt2DailyLaneSchema.parse("archive")).toThrow();
   });
 
@@ -32,7 +33,7 @@ describe("RT2 daily report shared contracts", () => {
       upsertRt2DailyReportCardSchema.parse({
         projectId: "550e8400-e29b-41d4-a716-446655440000",
         reportDate: "2026-04-17",
-        lane: "today",
+        lane: "todo",
         progressPercent: 120,
       }),
     ).toThrow();

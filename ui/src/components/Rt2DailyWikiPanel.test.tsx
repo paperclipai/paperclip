@@ -55,7 +55,7 @@ describe("Rt2DailyWikiPanel", () => {
                 activityType: "todo_moved",
                 summary: "오늘 할 일 -> 진행중",
                 todoIssueId: "todo-1",
-                lane: "support_1",
+                lane: "doing",
                 bucketLabel: "진행중",
                 progressPercent: 70,
                 evidenceTag: "EXTRACTED",

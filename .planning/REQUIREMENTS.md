@@ -14,9 +14,9 @@
 
 ### Daily Work Board
 
-- [ ] **BOARD-01**: 운영자는 일일업무일지 중심 3단 칸반보드를 첫 번째 작업 화면으로 사용할 수 있다.
-- [ ] **BOARD-02**: 운영자는 업무 카드를 To-Do, Doing, Done 사이에서 이동하고 즉시 저장된 상태를 확인할 수 있다.
-- [ ] **BOARD-03**: 운영자는 카드에서 Task/To-Do/Deliverable 구분, 담당자, 마감, OKR/KPI 연결, 가격/품질 상태를 한눈에 볼 수 있다.
+- [x] **BOARD-01**: 운영자는 일일업무일지 중심 3단 칸반보드를 첫 번째 작업 화면으로 사용할 수 있다. - Phase 49
+- [x] **BOARD-02**: 운영자는 업무 카드를 To-Do, Doing, Done 사이에서 이동하고 즉시 저장된 상태를 확인할 수 있다. - Phase 49
+- [x] **BOARD-03**: 운영자는 카드에서 Task/To-Do/Deliverable 구분, 담당자, 마감, OKR/KPI 연결, 가격/품질 상태를 한눈에 볼 수 있다. - Phase 49
 - [ ] **BOARD-04**: 운영자는 카드 quick edit로 제목, 상태, 산출물, 기준가, 품질 평가, OKR badge를 별도 깊은 화면 이동 없이 수정할 수 있다.
 - [ ] **BOARD-05**: 운영자는 board filter/sort/search를 사용해 오늘 업무, 내 업무, 산출물 누락, 승인 대기, 품질 이슈 카드를 빠르게 찾을 수 있다.
 
@@ -64,9 +64,9 @@
 | IDENT-02 | Phase 48 | Complete |
 | IDENT-03 | Phase 48 | Complete |
 | IDENT-04 | Phase 48 | Complete |
-| BOARD-01 | Phase 49 | Pending |
-| BOARD-02 | Phase 49 | Pending |
-| BOARD-03 | Phase 49 | Pending |
+| BOARD-01 | Phase 49 | Complete |
+| BOARD-02 | Phase 49 | Complete |
+| BOARD-03 | Phase 49 | Complete |
 | BOARD-04 | Phase 50 | Pending |
 | BOARD-05 | Phase 50 | Pending |
 | CAPTURE-01 | Phase 51 | Pending |

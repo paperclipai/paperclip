@@ -22,7 +22,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
-  const oneLinerHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/one-liner` : "/";
+  const dailyWorkHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/daily-work` : "/";
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
@@ -51,9 +51,9 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
 
         <div className="mt-5 flex flex-wrap gap-2">
           <Button asChild>
-            <Link to={oneLinerHref}>
+            <Link to={dailyWorkHref}>
               <Compass className="mr-1.5 h-4 w-4" />
-              일일 업무 기록 열기
+              일일 업무 보드 열기
             </Link>
           </Button>
           <Button variant="outline" asChild>

@@ -28,7 +28,7 @@ export const rt2V33DailyReportCards = pgTable(
   (table) => ({
     laneCheck: check(
       "rt2_v33_daily_report_cards_lane_check",
-      sql`${table.lane} in ('today', 'support_1', 'support_2')`,
+      sql`${table.lane} in ('todo', 'doing', 'done')`,
     ),
     progressCheck: check(
       "rt2_v33_daily_report_cards_progress_percent_check",

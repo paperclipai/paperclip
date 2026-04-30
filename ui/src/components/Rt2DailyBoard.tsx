@@ -3,9 +3,9 @@ import type { Rt2DailyBoard as Rt2DailyBoardData, Rt2DailyLane, UpsertRt2DailyRe
 import { Button } from "@/components/ui/button";
 
 const BOARD_LANES: Array<{ key: Rt2DailyLane; label: string }> = [
-  { key: "today", label: "오늘 할 일" },
-  { key: "support_1", label: "보조창 1" },
-  { key: "support_2", label: "보조창 2" },
+  { key: "todo", label: "할 일" },
+  { key: "doing", label: "진행 중" },
+  { key: "done", label: "완료" },
 ];
 
 const BUCKET_OPTIONS = ["진행중", "내일 할 일", "아이디어", "미룬일"] as const;
@@ -34,10 +34,12 @@ function buildDrafts(board: Rt2DailyBoardData): Record<string, CardDraft> {
 export function Rt2DailyBoard({
   board,
   pendingTodoIssueId,
+  failedTodoIssueId = null,
   onSaveCard,
 }: {
   board: Rt2DailyBoardData;
   pendingTodoIssueId: string | null;
+  failedTodoIssueId?: string | null;
   onSaveCard: (todoIssueId: string, data: UpsertRt2DailyReportCard) => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, CardDraft>>(() => buildDrafts(board));
@@ -181,13 +183,27 @@ export function Rt2DailyBoard({
                       }}
                     >
                     <div className="space-y-1">
-                      <div className="text-sm font-medium">{card.todoTitle}</div>
-                      <div className="text-xs text-muted-foreground">{card.taskTitle}</div>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">{card.todoTitle}</div>
+                          <div className="text-xs text-muted-foreground">{card.taskTitle}</div>
+                        </div>
+                        <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                          To-Do
+                        </span>
+                      </div>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1">
+                      <StatusPill label="Task" tone="muted" />
+                      <StatusPill label={`담당 ${card.assigneeUserId}`} tone="muted" />
                       <StatusPill label={`${card.deliverableCount} 산출물`} tone={card.deliverableCount > 0 ? "ok" : "warn"} />
                       <StatusPill label={card.okrContextStatus === "connected" ? "OKR 연결" : "OKR 없음"} tone={card.okrContextStatus === "connected" ? "ok" : "warn"} />
+                      <StatusPill label={card.basePriceTotal > 0 ? `${formatGold(card.basePriceTotal)} Gold` : "가격 미정"} tone={card.basePriceTotal > 0 ? "ok" : "muted"} />
                       <StatusPill label={card.qualityStatus === "reviewed" ? "검토됨" : card.qualityStatus === "pending_review" ? "검토 대기" : "품질 없음"} tone={card.qualityStatus === "reviewed" ? "ok" : "muted"} />
+                      {card.submittedDeliverableCount > 0 ? (
+                        <StatusPill label={`${card.submittedDeliverableCount} 제출`} tone="ok" />
+                      ) : null}
+                      {card.status === "blocked" ? <StatusPill label="막힘" tone="warn" /> : null}
                     </div>
 
                     <div className="mt-3 space-y-2">
@@ -280,7 +296,11 @@ export function Rt2DailyBoard({
 
                     <div className="mt-3 flex items-center justify-between gap-3">
                       <span className="text-[11px] text-muted-foreground">
-                        {pendingTodoIssueId === card.todoIssueId ? "저장중" : "기억됨"}
+                        {pendingTodoIssueId === card.todoIssueId
+                          ? "저장중"
+                          : failedTodoIssueId === card.todoIssueId
+                            ? "저장 실패"
+                            : "저장됨"}
                       </span>
                       <Button
                         size="sm"
@@ -357,4 +377,8 @@ function qualityLabel(value: "none" | "pending_review" | "reviewed") {
   if (value === "reviewed") return "검토됨";
   if (value === "pending_review") return "검토 대기";
   return "없음";
+}
+
+function formatGold(value: number): string {
+  return new Intl.NumberFormat("ko-KR").format(value);
 }

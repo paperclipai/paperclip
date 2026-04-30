@@ -40,7 +40,7 @@ type SavedCardRow = typeof rt2V33DailyReportCards.$inferSelect;
 type ActivityRow = typeof activityLog.$inferSelect;
 type WorkProductRow = typeof issueWorkProducts.$inferSelect;
 
-const DEFAULT_DAILY_LANE: Rt2DailyLane = "today";
+const DEFAULT_DAILY_LANE: Rt2DailyLane = "todo";
 const DAILY_ACTIVITY_TYPES = new Set<Rt2DailyActivityType>([
   "todo_added",
   "todo_moved",
@@ -77,6 +77,14 @@ function defaultProgressPercent(todoStatus: Rt2DailyReportCard["status"], persis
     return persistedProgressPercent;
   }
   return todoStatus === "done" ? 100 : 0;
+}
+
+function normalizeDailyLane(value: unknown): Rt2DailyLane {
+  if (value === "todo" || value === "doing" || value === "done") return value;
+  if (value === "today") return "todo";
+  if (value === "support_1") return "doing";
+  if (value === "support_2") return "done";
+  return DEFAULT_DAILY_LANE;
 }
 
 function readRt2WorkProductMetadata(row: WorkProductRow) {
@@ -139,10 +147,7 @@ function buildHistoryEntry(row: ActivityRow): Rt2DailyActivityEntry | null {
     ? (row.action as Rt2DailyActivityType)
     : "todo_progress_updated";
   const todoIssueId = details && typeof details.todoIssueId === "string" ? details.todoIssueId : "";
-  const lane =
-    details && (details.lane === "today" || details.lane === "support_1" || details.lane === "support_2")
-      ? (details.lane as Rt2DailyLane)
-      : DEFAULT_DAILY_LANE;
+  const lane = normalizeDailyLane(details?.lane);
   const bucketLabel = details && typeof details.bucketLabel === "string" ? details.bucketLabel : "";
   const progressPercent = details && typeof details.progressPercent === "number" ? details.progressPercent : 0;
 
@@ -325,7 +330,7 @@ export function rt2DailyReportService(db: Db) {
         todoTitle: todo.todoTitle,
         assigneeUserId: todo.assigneeUserId,
         reportDate,
-        lane: (persisted?.lane as Rt2DailyLane | undefined) ?? DEFAULT_DAILY_LANE,
+        lane: persisted ? normalizeDailyLane(persisted.lane) : DEFAULT_DAILY_LANE,
         bucketLabel: persisted?.bucketLabel ?? "",
         progressPercent: defaultProgressPercent(todo.todoStatus, persisted?.progressPercent ?? null),
         note: persisted?.note ?? "",
@@ -765,7 +770,7 @@ export function rt2DailyReportService(db: Db) {
           todoTitle: savedRow.todoTitle,
           assigneeUserId: savedRow.assigneeUserId,
           reportDate: savedRow.reportDate,
-          lane: savedRow.lane as Rt2DailyLane,
+          lane: normalizeDailyLane(savedRow.lane),
           bucketLabel: savedRow.bucketLabel ?? "",
           progressPercent: savedRow.progressPercent,
           note: savedRow.note ?? "",

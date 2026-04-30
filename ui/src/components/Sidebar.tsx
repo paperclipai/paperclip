@@ -12,6 +12,7 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  SquareChartGantt,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -79,6 +80,7 @@ export function Sidebar() {
             <SquarePen className="h-4 w-4 shrink-0" />
             <span className="truncate">업무 추가</span>
           </button>
+          <SidebarNavItem to="/daily-work" label="일일 업무" icon={SquareChartGantt} />
           <SidebarNavItem to="/dashboard" label="운영 현황" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"

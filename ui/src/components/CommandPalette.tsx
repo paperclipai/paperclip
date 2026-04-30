@@ -120,11 +120,11 @@ export function CommandPalette() {
         <CommandGroup heading="빠른 실행">
           <CommandItem
             onSelect={() => {
-              go("/one-liner");
+              go("/daily-work");
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            업무 기록
+            일일 업무
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
           <CommandItem
@@ -145,6 +145,10 @@ export function CommandPalette() {
         <CommandSeparator />
 
         <CommandGroup heading="RT2">
+          <CommandItem onSelect={() => go("/daily-work")}>
+            <SquarePen className="mr-2 h-4 w-4" />
+            일일 업무 보드
+          </CommandItem>
           <CommandItem onSelect={() => go("/one-liner")}>
             <SquarePen className="mr-2 h-4 w-4" />
             일일 업무 기록

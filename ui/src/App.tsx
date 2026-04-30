@@ -54,6 +54,7 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { OneLinerPage } from "./pages/rt2/OneLinerPage";
+import { DailyWorkPage } from "./pages/rt2/DailyWorkPage";
 import { KnowledgePage } from "./pages/rt2/KnowledgePage";
 import { MarketplacePage } from "./pages/rt2/MarketplacePage";
 import { PnlPage } from "./pages/rt2/PnlPage";
@@ -137,7 +138,8 @@ function CloudAccessGate() {
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="one-liner" replace />} />
+      <Route index element={<Navigate to="daily-work" replace />} />
+      <Route path="daily-work" element={<DailyWorkPage />} />
       <Route path="one-liner" element={<OneLinerPage />} />
       <Route path="knowledge" element={<KnowledgePage />} />
       <Route path="marketplace" element={<MarketplacePage />} />
@@ -288,7 +290,7 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/one-liner`} replace />;
+  return <Navigate to={`/${targetCompany.issuePrefix}/daily-work`} replace />;
 }
 
 function UnprefixedBoardRedirect() {
@@ -363,6 +365,7 @@ export function App() {
             <Route path="adapters" element={<AdapterManager />} />
           </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          <Route path="daily-work" element={<UnprefixedBoardRedirect />} />
           <Route path="one-liner" element={<UnprefixedBoardRedirect />} />
           <Route path="knowledge" element={<UnprefixedBoardRedirect />} />
           <Route path="marketplace" element={<UnprefixedBoardRedirect />} />

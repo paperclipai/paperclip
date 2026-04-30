@@ -120,6 +120,8 @@ describe("Sidebar", () => {
     });
     await flushReact();
 
+    const dailyWorkLink = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "일일 업무");
+    expect(dailyWorkLink?.getAttribute("href")).toBe("/daily-work");
     expect(container.textContent).not.toContain("작업공간");
 
     await act(async () => {

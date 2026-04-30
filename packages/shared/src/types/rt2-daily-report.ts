@@ -1,4 +1,4 @@
-export type Rt2DailyLane = "today" | "support_1" | "support_2";
+export type Rt2DailyLane = "todo" | "doing" | "done";
 
 export type Rt2DailyActivityType =
   | "todo_added"

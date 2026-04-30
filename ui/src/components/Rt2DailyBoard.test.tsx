@@ -57,7 +57,7 @@ describe("Rt2DailyBoard", () => {
                 todoTitle: "주간 보고서 작성",
                 assigneeUserId: "user-1",
                 reportDate: "2026-04-17",
-                lane: "today",
+                lane: "todo",
                 bucketLabel: "",
                 progressPercent: 30,
                 note: "오전 착수",
@@ -114,10 +114,14 @@ describe("Rt2DailyBoard", () => {
       );
     });
 
-    expect(container.textContent).toContain("오늘 할 일");
-    expect(container.textContent).toContain("보조창 1");
-    expect(container.textContent).toContain("보조창 2");
+    expect(container.textContent).toContain("할 일");
+    expect(container.textContent).toContain("진행 중");
+    expect(container.textContent).toContain("완료");
     expect(container.textContent).toContain("주간 보고서 작성");
+    expect(container.textContent).toContain("담당 user-1");
+    expect(container.textContent).toContain("1 산출물");
+    expect(container.textContent).toContain("1,000 Gold");
+    expect(container.textContent).toContain("검토 대기");
 
     const laneSelect = container.querySelector('select[aria-label="todo-1-lane"]');
     const saveButton = container.querySelector('button[aria-label="todo-1-save"]');
@@ -127,7 +131,7 @@ describe("Rt2DailyBoard", () => {
 
     act(() => {
       if (laneSelect instanceof HTMLSelectElement) {
-        laneSelect.value = "support_1";
+        laneSelect.value = "doing";
         laneSelect.dispatchEvent(new Event("change", { bubbles: true }));
       }
       saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -138,7 +142,7 @@ describe("Rt2DailyBoard", () => {
       expect.objectContaining({
         projectId: "project-1",
         reportDate: "2026-04-17",
-        lane: "support_1",
+        lane: "doing",
       }),
     );
 
@@ -151,7 +155,7 @@ describe("Rt2DailyBoard", () => {
       effectAllowed: "move",
     };
     const card = container.querySelector('article[draggable="true"]');
-    const supportLane = container.querySelector('section[aria-label="보조창 2 lane"]');
+    const supportLane = container.querySelector('section[aria-label="완료 lane"]');
 
     expect(card).toBeDefined();
     expect(supportLane).toBeDefined();
@@ -167,7 +171,7 @@ describe("Rt2DailyBoard", () => {
       expect.objectContaining({
         projectId: "project-1",
         reportDate: "2026-04-17",
-        lane: "support_2",
+        lane: "done",
       }),
     );
 

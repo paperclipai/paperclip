@@ -1,4 +1,5 @@
 const BOARD_ROUTE_ROOTS = new Set([
+  "daily-work",
   "one-liner",
   "knowledge",
   "marketplace",

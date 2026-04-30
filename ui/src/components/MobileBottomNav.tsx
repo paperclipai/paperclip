@@ -27,7 +27,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
 
   const items = useMemo<MobileNavItem[]>(
     () => [
-      { to: "/one-liner", label: "기록", icon: SquarePen },
+      { to: "/daily-work", label: "업무", icon: SquarePen },
       { to: "/knowledge", label: "지식", icon: BookOpen },
       { to: "/pnl", label: "정산", icon: DollarSign },
       { to: "/org", label: "조직", icon: Network },
