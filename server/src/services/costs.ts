@@ -1,4 +1,5 @@
-import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -131,6 +132,64 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+      };
+    },
+
+    issueTreeSummary: async (companyId: string, issueId: string) => {
+      // Callers must resolve and authorize a visible root issue before invoking this.
+      // The route does that so zero counts are not mistaken for a missing root.
+      const childIssues = alias(issues, "child");
+      const issueTreeCondition = sql<boolean>`
+        ${issues.id} IN (
+          WITH RECURSIVE issue_tree(id) AS (
+            SELECT ${issues.id}
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.id} = ${issueId}
+              AND ${issues.hiddenAt} IS NULL
+            UNION ALL
+            SELECT ${childIssues.id}
+            FROM ${issues} ${childIssues}
+            JOIN issue_tree ON ${childIssues.parentId} = issue_tree.id
+            WHERE ${childIssues.companyId} = ${companyId}
+              AND ${childIssues.hiddenAt} IS NULL
+          )
+          SELECT id FROM issue_tree
+        )
+      `;
+
+      const [row] = await db
+        .select({
+          issueCount: sql<number>`count(distinct ${issues.id})::int`,
+          costCents: sumAsNumber(costEvents.costCents),
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+        })
+        .from(issues)
+        .leftJoin(
+          costEvents,
+          and(
+            eq(costEvents.companyId, companyId),
+            eq(costEvents.issueId, issues.id),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            issueTreeCondition,
+          ),
+        );
+
+      return {
+        issueId,
+        issueCount: Number(row?.issueCount ?? 0),
+        includeDescendants: true,
+        costCents: Number(row?.costCents ?? 0),
+        inputTokens: Number(row?.inputTokens ?? 0),
+        cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
+        outputTokens: Number(row?.outputTokens ?? 0),
       };
     },
 

@@ -282,6 +282,51 @@ function buildChecklistStepNumberMap(issues: Issue[], nestingEnabled: boolean): 
   return stepNumberByIssueId;
 }
 
+function buildPreviousSiblingIssueIdMap(issues: Issue[], nestingEnabled: boolean): Map<string, string> {
+  const previousSiblingByIssueId = new Map<string, string>();
+
+  if (!nestingEnabled) {
+    const previousByParentId = new Map<string, Issue>();
+    for (const issue of issues) {
+      if (!issue.parentId) continue;
+      const previousSibling = previousByParentId.get(issue.parentId);
+      if (previousSibling) {
+        previousSiblingByIssueId.set(issue.id, previousSibling.id);
+      }
+      previousByParentId.set(issue.parentId, issue);
+    }
+    return previousSiblingByIssueId;
+  }
+
+  const { roots, childMap } = buildIssueTree(issues);
+  const visit = (siblings: Issue[]) => {
+    siblings.forEach((issue, index) => {
+      const previousSibling = index > 0 ? siblings[index - 1] : null;
+      if (issue.parentId && previousSibling?.parentId === issue.parentId) {
+        previousSiblingByIssueId.set(issue.id, previousSibling.id);
+      }
+      visit(childMap.get(issue.id) ?? []);
+    });
+  };
+  visit(roots);
+
+  return previousSiblingByIssueId;
+}
+
+function shouldSuppressSinglePreviousSiblingBlockerChip(
+  issue: Issue,
+  unresolvedVisibleBlockerIds: string[],
+  previousSiblingIssueId: string | undefined,
+): boolean {
+  return Boolean(
+    issue.parentId
+      && previousSiblingIssueId
+      && (issue.blockedBy ?? []).length === 1
+      && unresolvedVisibleBlockerIds.length === 1
+      && unresolvedVisibleBlockerIds[0] === previousSiblingIssueId,
+  );
+}
+
 /* ── Component ── */
 
 interface Agent {
@@ -878,6 +923,7 @@ export function IssuesList({
 
     const visibleIssueIds = new Set(filtered.map((issue) => issue.id));
     const stepNumberByIssueId = buildChecklistStepNumberMap(filtered, viewState.nestingEnabled);
+    const previousSiblingIssueIdByIssueId = buildPreviousSiblingIssueIdMap(filtered, viewState.nestingEnabled);
     const unresolvedVisibleBlockersByIssueId = new Map<string, string[]>();
 
     filtered.forEach((issue) => {
@@ -889,7 +935,12 @@ export function IssuesList({
           if (!blockerIssue) return false;
           return blockerIssue.status !== "done" && blockerIssue.status !== "cancelled";
         });
-      unresolvedVisibleBlockersByIssueId.set(issue.id, unresolvedVisible);
+      const shouldSuppressChip = shouldSuppressSinglePreviousSiblingBlockerChip(
+        issue,
+        unresolvedVisible,
+        previousSiblingIssueIdByIssueId.get(issue.id),
+      );
+      unresolvedVisibleBlockersByIssueId.set(issue.id, shouldSuppressChip ? [] : unresolvedVisible);
     });
 
     const firstActionable = filtered.find((issue) => isActionableWorkflowStatus(issue.status)) ?? null;
@@ -1388,36 +1439,49 @@ export function IssuesList({
                   const doneRowTitleClass = checklistMeta && issue.status === "done"
                     ? "text-muted-foreground"
                     : undefined;
-                  const checklistDependencyChips = checklistMeta && unresolvedVisibleBlockers.length > 0 ? (
-                    <>
-                      {unresolvedVisibleBlockers.map((blockerId) => {
-                        const blockerIssue = issueById.get(blockerId);
-                        if (!blockerIssue) return null;
-                        const label = blockerIssue.identifier ?? blockerIssue.id.slice(0, 8);
-                        const blockerStep = checklistMeta.stepNumberByIssueId.get(blockerId);
-                        const blockerStepSuffix = blockerStep ? ` \u00b7 step ${blockerStep}` : "";
-                        const chipLabel = `blocked by ${label}${blockerStepSuffix}`;
-                        return (
-                          <button
-                            key={blockerId}
-                            type="button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              const target = document.getElementById(`issue-workflow-row-${blockerId}`);
-                              if (!target) return;
-                              target.scrollIntoView({ behavior: "smooth", block: "nearest" });
-                              target.focus?.();
-                            }}
-                            className="inline-flex items-center rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-100/80 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                            title={chipLabel}
-                            aria-label={chipLabel}
-                          >
-                            {chipLabel}
-                          </button>
-                        );
-                      })}
-                    </>
+                  const visibleBlockerChips = unresolvedVisibleBlockers
+                    .map((blockerId) => {
+                      const blockerIssue = issueById.get(blockerId);
+                      if (!blockerIssue) return null;
+                      const label = blockerIssue.identifier ?? blockerIssue.id.slice(0, 8);
+                      const blockerStep = checklistMeta?.stepNumberByIssueId.get(blockerId);
+                      const blockerStepSuffix = blockerStep ? ` \u00b7 step ${blockerStep}` : "";
+                      return { blockerId, chipLabel: `blocked by ${label}${blockerStepSuffix}` };
+                    })
+                    .filter((chip): chip is { blockerId: string; chipLabel: string } => chip !== null);
+                  const firstVisibleBlockerChip = visibleBlockerChips[0] ?? null;
+                  const additionalVisibleBlockerCount = Math.max(visibleBlockerChips.length - 1, 0);
+                  const additionalVisibleBlockerLabel = additionalVisibleBlockerCount > 0
+                    ? ` ... and ${additionalVisibleBlockerCount} more`
+                    : "";
+                  const firstVisibleBlockerDisplayLabel = firstVisibleBlockerChip
+                    ? `${firstVisibleBlockerChip.chipLabel}${additionalVisibleBlockerLabel}`
+                    : "";
+                  const hiddenVisibleBlockerLabels = visibleBlockerChips
+                    .slice(1)
+                    .map((chip) => chip.chipLabel)
+                    .join(", ");
+                  const firstVisibleBlockerTitle = additionalVisibleBlockerCount > 0
+                    ? `${firstVisibleBlockerDisplayLabel}: ${hiddenVisibleBlockerLabels}`
+                    : firstVisibleBlockerDisplayLabel;
+                  const checklistDependencyChips = checklistMeta && firstVisibleBlockerChip ? (
+                    <button
+                      key={firstVisibleBlockerChip.blockerId}
+                      type="button"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const target = document.getElementById(`issue-workflow-row-${firstVisibleBlockerChip.blockerId}`);
+                        if (!target) return;
+                        target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                        target.focus?.();
+                      }}
+                      className="inline-flex items-center rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-100/80 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+                      title={firstVisibleBlockerTitle}
+                      aria-label={firstVisibleBlockerTitle}
+                    >
+                      {firstVisibleBlockerDisplayLabel}
+                    </button>
                   ) : null;
 
                   return (
