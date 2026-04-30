@@ -16,24 +16,28 @@ export function resolveRawGitHubUrl(hostname: string, owner: string, repo: strin
     : `https://${hostname}/raw/${owner}/${repo}/${ref}/${p}`;
 }
 
+/**
+ * Attaches `Authorization: Bearer ${GITHUB_TOKEN}` (with `GH_TOKEN` as fallback)
+ * to outgoing requests when a token is set in the environment.
+ *
+ * `ghFetch` is the GitHub-specific fetch helper for this module: every URL
+ * passed in originates from `gitHubApiBase()` or `resolveRawGitHubUrl()`,
+ * which produce either `api.github.com` / `raw.githubusercontent.com` (for
+ * github.com) or `https://<host>/api/v3` / `https://<host>/raw/...` (for
+ * GitHub Enterprise). We therefore attach the token unconditionally rather
+ * than gating on a github.com allowlist that would silently skip GHE.
+ * Caller-supplied `Authorization` headers always win.
+ */
 function authHeadersForGitHub(url: string, init?: RequestInit): RequestInit | undefined {
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
   if (!token) return init;
-  let host: string;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    new URL(url);
   } catch {
     return init;
   }
-  const isGitHubHost =
-    host === "api.github.com" ||
-    host === "github.com" ||
-    host === "www.github.com" ||
-    host === "raw.githubusercontent.com" ||
-    host === "codeload.github.com";
-  if (!isGitHubHost) return init;
   const headers = new Headers(init?.headers);
-  if (!headers.has("Authorization") && !headers.has("authorization")) {
+  if (!headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
   return { ...(init ?? {}), headers };

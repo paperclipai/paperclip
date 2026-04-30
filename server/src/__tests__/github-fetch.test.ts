@@ -61,13 +61,16 @@ describe("ghFetch GitHub authentication", () => {
     expect(getAuthHeader(init)).toBe("Bearer ghp_raw_token");
   });
 
-  it("does not attach Authorization header for non-GitHub hosts even when token is set", async () => {
-    process.env.GITHUB_TOKEN = "ghp_test_token_value";
+  it("attaches Authorization header for GitHub Enterprise hosts", async () => {
+    // gitHubApiBase()/resolveRawGitHubUrl() route GHE traffic to <host>/api/v3
+    // and <host>/raw paths. ghFetch is the GitHub-specific helper, so the
+    // token must reach those hosts too — not just *.github.com.
+    process.env.GITHUB_TOKEN = "ghp_ghe_token";
 
-    await ghFetch("https://example.com/some/resource");
+    await ghFetch("https://github.example.com/api/v3/repos/acme/widgets");
 
     const init = getInitForCall(vi.mocked(fetch).mock.calls[0]);
-    expect(getAuthHeader(init)).toBeNull();
+    expect(getAuthHeader(init)).toBe("Bearer ghp_ghe_token");
   });
 
   it("does not overwrite a caller-supplied Authorization header", async () => {
