@@ -28,6 +28,16 @@ export interface CostSummary {
   utilizationPercent: number;
 }
 
+export interface IssueCostSummary {
+  issueId: string;
+  issueCount: number;
+  includeDescendants: boolean;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
 export interface CostByAgent {
   agentId: string;
   agentName: string | null;
