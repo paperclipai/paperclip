@@ -112,10 +112,22 @@ jobs:
         id: sha
         run: echo "short=$(git rev-parse --short=8 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
 
-      # The self-hosted runner is expected to ship with kubectl + helm + a
-      # kubeconfig that has access to the target namespace. The pve* runners
-      # are inside the same network as the cluster API — no extra networking
-      # needed. To opt out, unset `vars.PAPERCLIP_CI_DEPLOY`.
+      - name: Write kubeconfig
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_KKROO }}
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/.kube"
+          printf '%s' "$KUBECONFIG_DATA" > "$RUNNER_TEMP/.kube/config"
+          chmod 600 "$RUNNER_TEMP/.kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> "$GITHUB_ENV"
+
+      # The self-hosted runner is expected to ship with kubectl + helm. The
+      # pve* runners are inside the same network as the cluster API — no
+      # extra networking needed. The kubeconfig comes from secrets.KUBECONFIG_KKROO
+      # (an SA token kubeconfig scoped to the paperclip namespace via a
+      # RoleBinding to the admin ClusterRole). To opt out, unset
+      # `vars.PAPERCLIP_CI_DEPLOY`.
       - name: Verify tooling + cluster reach
         env:
           NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
