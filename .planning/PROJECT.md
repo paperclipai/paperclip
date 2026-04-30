@@ -18,14 +18,14 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **최근 완료:** v2.9는 persistent draft revision, PWA/mobile quick capture, Slack/Teams/webhook signed inbound, review operations reliability, Phase 58 traceability closure를 완료했다. DRAFT/NATIVE/MSG/REVIEW capture reliability는 shipped baseline이다.
 
-**현재 진행:** v3.0은 full app-store 수준 signing/updater/release-channel/notarization pipeline과 OS-level global shortcut, resident tray app, mobile push notification을 production distribution readiness로 만든다. v2.9 capture reliability는 regression gate로만 보호한다.
+**현재 진행:** v3.0은 Phase 59에서 native distribution foundation을 완료했고, 다음으로 full app-store 수준 signing/updater/release-channel/notarization pipeline과 OS-level global shortcut, resident tray app, mobile push notification을 production distribution readiness로 만든다. v2.9 capture reliability는 regression gate로만 보호한다.
 
 ## Current Milestone: v3.0 Native Distribution Readiness
 
 **Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
 
 **Target features:**
-- Native shell packaging 후보, signing credential inventory, platform capability boundary를 확정한다.
+- Native shell packaging 후보, signing credential inventory, platform capability boundary를 확정한다. - Phase 59 완료
 - macOS Developer ID signing, hardened runtime, notarization, ticket stapling/Gatekeeper verification을 release gate에 넣는다.
 - Windows MSIX/installer signing, timestamping, Store re-signing 또는 trusted signing path를 release gate에 넣는다.
 - Internal/beta/stable release channel, signed updater feed, rollback candidate, rollout evidence를 관리한다.
@@ -184,7 +184,7 @@ v2.0-v2.2에서 완료한 것:
 
 ### 진행 중
 
-- [ ] v3.0 Native Distribution Readiness 요구사항 12개. Phase 59-64 planned.
+- [ ] v3.0 Native Distribution Readiness 요구사항 12개 중 1개 완료. Phase 59 complete, Phase 60-64 planned.
 
 ### 범위 밖
 
@@ -210,7 +210,7 @@ v2.0-v2.2에서 완료한 것:
 - v2.8은 RealTycoon2 product-facing identity와 한국어 daily work UX를 완료했다. Daily board가 primary work surface가 되었고 One-Liner capture, card quick edit, support evidence, identity regression gate가 연결됐다. Audit은 `passed`다.
 - v2.8 close verification에서 `pnpm typecheck`, focused Vitest 26 tests, identity gate test/scan은 통과했다. Broad `pnpm test`는 `server/src/__tests__/workspace-runtime.test.ts` provision-command case timeout으로 실패해 accepted debt로 남겼다.
 - v2.9는 persistent draft revision, PWA/mobile quick capture, signed messaging inbound, capture review operations, source-level reliability report를 완료했다. Phase 58이 validation/verification artifact drift와 traceability를 닫았다.
-- 현재 repo는 Electron/Tauri 같은 native shell dependency가 없는 web/PWA-first 상태다. v3.0 Phase 59는 native shell packaging 후보와 platform capability boundary를 먼저 확정해야 한다.
+- 현재 repo는 Electron/Tauri 같은 native shell dependency가 없는 web/PWA-first 상태다. v3.0 Phase 59는 Tauri v2를 native shell baseline으로 선택하고 `apps/desktop` future package layout, signing/updater/channel inventory, v2.9 regression gate boundary를 확정했다.
 - macOS 배포는 Developer ID signing, hardened runtime, notarization, ticket stapling/Gatekeeper verification이 release gate에 들어가야 한다.
 - Windows 배포는 MSIX/installer signing, timestamping, Store re-signing 또는 trusted signing path를 release gate에 반영해야 한다.
 - Mobile push는 APNs/Web Push/device token을 company/user/device scope로 관리하고 최소 payload/deep-link 방식으로 board review target에 연결해야 한다.
@@ -240,10 +240,11 @@ v2.0-v2.2에서 완료한 것:
 | v2.7은 release-host와 runtime confidence를 generated evidence로 분리 | full-suite timeout/skip을 숨기지 않고 blocker, accepted debt, deferred scope로 구분해야 했다 | 좋음 - 운영자가 release confidence를 한 곳에서 확인 가능 |
 | v2.8은 RealTycoon2 제품 얼굴과 daily work loop를 federation/autonomy/native 확장보다 먼저 닫음 | 사용자가 앱을 켰을 때 Paperclip 잔재나 영문 control-plane 느낌이 보이면 제품 신뢰가 깨진다 | 좋음 - Korean-first board, One-Liner review, support evidence, identity gate가 같은 흐름으로 묶임 |
 | v2.9 capture reliability를 v3.0 distribution의 shipped baseline으로 고정 | signing/updater/tray/push 작업 중 DRAFT/NATIVE/MSG/REVIEW를 다시 열면 검증된 입력 루프가 흔들린다 | 진행 중 - v3.0은 regression gate로만 v2.9를 보호 |
+| Phase 59에서 Tauri v2 native shell baseline과 `apps/desktop` future package layout을 선택 | 현재 repo는 Vite/PWA-first이고 Tauri가 updater/tray/shortcut/notification/deep-link/mobile-capable boundary를 가장 작게 제공한다 | 좋음 - Phase 60 signing/notarization pipeline이 concrete inventory에서 시작 가능 |
 
 ## 다음 마일스톤 목표
 
-v3.0은 Native Distribution Readiness다. full app-store signing/updater/release-channel/notarization pipeline과 OS-level global shortcut, resident tray app, mobile push notification을 구현하되, v2.9 capture reliability는 shipped baseline으로 보호한다.
+v3.0은 Native Distribution Readiness다. Phase 59에서 확정한 Tauri v2/native distribution foundation을 기준으로 full app-store signing/updater/release-channel/notarization pipeline과 OS-level global shortcut, resident tray app, mobile push notification을 구현하되, v2.9 capture reliability는 shipped baseline으로 보호한다.
 
 ## Evolution
 

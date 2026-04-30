@@ -9,7 +9,7 @@ Requirements for `v3.0 Native Distribution Readiness`. v2.9 DRAFT/NATIVE/MSG/REV
 
 ### Distribution Pipeline
 
-- [ ] **DIST-01**: 운영자는 native shell packaging 후보와 platform capability 범위를 확인하고, macOS/Windows signing identity, certificate source, entitlement, updater key material을 release evidence로 관리할 수 있다.
+- [x] **DIST-01**: 운영자는 native shell packaging 후보와 platform capability 범위를 확인하고, macOS/Windows signing identity, certificate source, entitlement, updater key material을 release evidence로 관리할 수 있다. - Phase 59
 - [ ] **DIST-02**: 운영자는 macOS release artifact가 Developer ID signing, hardened runtime, notarization submission, ticket stapling, Gatekeeper verification 상태를 통과했는지 pipeline에서 볼 수 있다.
 - [ ] **DIST-03**: 운영자는 Windows MSIX/installer artifact가 Store re-signing, Azure Artifact Signing, OV/EV certificate, timestamping 중 선택된 trust path로 서명되고 install trust evidence를 남기는 것을 확인할 수 있다.
 - [ ] **DIST-04**: 운영자는 internal, beta, stable release channel을 분리하고 각 channel의 version, artifact URL, checksum, signature, rollout policy, rollback candidate를 관리할 수 있다.
@@ -59,7 +59,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DIST-01 | Phase 59 | Pending |
+| DIST-01 | Phase 59 | Complete |
 | DIST-02 | Phase 60 | Pending |
 | DIST-03 | Phase 60 | Pending |
 | DIST-04 | Phase 61 | Pending |
@@ -76,8 +76,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 - v3.0 requirements: 12 total
 - Mapped to phases: 12
 - Unmapped: 0
-- Complete: 0
-- Pending: 12
+- Complete: 1
+- Pending: 11
 
 ---
 *Requirements defined: 2026-04-30*

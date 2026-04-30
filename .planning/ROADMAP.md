@@ -12,7 +12,7 @@
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
-- [active] **v3.0 Native Distribution Readiness** - Phase 59-64 planned
+- [active] **v3.0 Native Distribution Readiness** - Phase 59 complete, Phase 60-64 planned
 
 ## 완료됨
 
@@ -128,13 +128,13 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v3.0 Native Distribution Readiness (Phase 59-64) - planned</summary>
+<summary>v3.0 Native Distribution Readiness (Phase 59 complete, Phase 60-64 planned)</summary>
 
 **Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 59 | Native Distribution Foundation | DIST-01 | Planned |
+| 59 | Native Distribution Foundation | DIST-01 | Complete |
 | 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Planned |
 | 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Planned |
 | 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
@@ -157,6 +157,8 @@ Success criteria:
 1. Native shell approach and package layout are documented with the smallest viable implementation path.
 2. macOS/Windows signing identities, certificate source, secret storage, updater key material, and CI evidence owners are identified.
 3. v2.9 DRAFT/NATIVE/MSG/REVIEW behaviors are listed as regression gates, not implementation scope.
+
+Completion status: `passed` on 2026-04-30. Tauri v2 was selected as the native shell baseline, `apps/desktop` was reserved as the future package boundary, signing/updater/channel inventories were documented, and v2.9 capture reliability was fixed as regression gate scope in `doc/NATIVE-DISTRIBUTION-FOUNDATION.md`.
 
 **Phase 60: Signing and Notarization Pipeline**
 Goal: macOS and Windows release artifacts are signed, notarized or trusted through the selected platform path, and blocked when signing evidence is incomplete.
@@ -392,7 +394,7 @@ Success criteria:
 | 56. Messaging Capture Source Installation | v2.9 | 1/1 | Complete | 2026-04-30 |
 | 57. Capture Review Operations and Reliability | v2.9 | 1/1 | Complete | 2026-04-30 |
 | 58. v2.9 Verification and Distribution Readiness Closure | v2.9 | 1/1 | Complete | 2026-04-30 |
-| 59. Native Distribution Foundation | v3.0 | 0/1 | Planned | - |
+| 59. Native Distribution Foundation | v3.0 | 1/1 | Complete | 2026-04-30 |
 | 60. Signing and Notarization Pipeline | v3.0 | 0/1 | Planned | - |
 | 61. Release Channels and Signed Updater | v3.0 | 0/1 | Planned | - |
 | 62. Resident Tray and Global Shortcut | v3.0 | 0/1 | Planned | - |

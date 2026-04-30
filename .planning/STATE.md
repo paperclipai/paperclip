@@ -3,30 +3,30 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Native Distribution Readiness
 status: planning
-last_updated: "2026-04-30T19:00:00+09:00"
-last_activity: 2026-04-30 -- Milestone v3.0 started
+last_updated: "2026-04-30T19:38:00+09:00"
+last_activity: 2026-04-30 -- Phase 59 Native Distribution Foundation completed
 progress:
   total_phases: 6
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 1
+  percent: 17
 ---
 
 # RealTycoon2 Planning State
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 60 Signing and Notarization Pipeline
 Plan: -
-Status: Defining requirements
-Last activity: 2026-04-30 -- Milestone v3.0 started
+Status: Ready for discussion/planning
+Last activity: 2026-04-30 -- Phase 59 Native Distribution Foundation completed
 
 ## 현재 위치
 
-v3.0 Native Distribution Readiness milestone이 시작됐다. v2.9 Native Capture and Draft Reliability는 shipped baseline으로 취급하며 DRAFT/NATIVE/MSG/REVIEW 기능은 regression gate 실패를 고치는 경우에만 다시 연다.
+v3.0 Native Distribution Readiness milestone이 진행 중이다. Phase 59는 native distribution foundation을 완료했고, v2.9 Native Capture and Draft Reliability는 shipped baseline으로 취급하며 DRAFT/NATIVE/MSG/REVIEW 기능은 regression gate 실패를 고치는 경우에만 다시 연다.
 
-이번 milestone은 `DIST-01` app-store 수준 signing/updater/release-channel/notarization pipeline과 `DIST-02` OS-level global shortcut, resident tray app, mobile push notification을 production distribution readiness로 끌어올린다.
+이번 milestone은 `DIST-01` native distribution foundation을 완료했고, 다음으로 macOS/Windows signing/notarization/trust pipeline, release channels/updater, OS-level global shortcut, resident tray app, mobile push notification을 production distribution readiness로 끌어올린다.
 
 ## 최근 완료한 마일스톤
 
@@ -50,7 +50,7 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 59 | Native Distribution Foundation | DIST-01 | Planned |
+| 59 | Native Distribution Foundation | DIST-01 | Complete |
 | 60 | Signing and Notarization Pipeline | DIST-02, DIST-03 | Planned |
 | 61 | Release Channels and Signed Updater | DIST-04, DIST-05 | Planned |
 | 62 | Resident Tray and Global Shortcut | RES-01, RES-02, RES-03 | Planned |
@@ -63,7 +63,7 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 - 사용자는 앱을 구동했을 때 Paper Company나 영문 기본값이 보이는 것을 특히 우려한다.
 - v2.8은 Korean-first daily work board와 One-Liner review flow를 제품 전면으로 만들었다.
 - v2.9는 persistent draft revision, PWA/mobile quick capture, Slack/Teams/webhook signed inbound, review operations reliability를 닫았다.
-- 현재 repo는 Electron/Tauri 같은 native shell dependency가 없는 web/PWA-first 상태다. Phase 59는 native host wrapper와 platform capability boundary를 먼저 확정해야 한다.
+- 현재 repo는 Electron/Tauri 같은 native shell dependency가 없는 web/PWA-first 상태다. Phase 59는 Tauri v2를 native shell baseline으로 선택하고 `apps/desktop` future package layout, signing/updater/channel inventory, v2.9 regression gate boundary를 확정했다.
 - macOS 배포는 Developer ID signing, hardened runtime, notarization, ticket stapling/Gatekeeper verification이 release gate에 들어가야 한다.
 - Windows 배포는 MSIX/installer signing, timestamping, Store re-signing 또는 external trusted signing path를 release gate에 반영해야 한다.
 - Push는 APNs/Web Push/device token을 company/user/device scope로 관리하고 최소 payload/deep-link 방식으로 board review target에 연결해야 한다.
@@ -82,9 +82,9 @@ v2.9 Native Capture and Draft Reliability는 2026-04-30에 완료되었다.
 
 ## 다음 단계
 
-Phase 59 Native Distribution Foundation을 논의하고 계획한다. native shell 선택, package layout, signing credential inventory, v2.9 regression gate boundary를 먼저 확정해야 Phase 60 signing/notarization pipeline이 안전하게 진행된다.
+Phase 60 Signing and Notarization Pipeline을 논의하고 계획한다. Phase 59의 `doc/NATIVE-DISTRIBUTION-FOUNDATION.md`와 `59-CONTEXT.md`를 기준으로 macOS Developer ID/hardened runtime/notarization/stapling/Gatekeeper evidence와 Windows MSIX/installer signing/timestamping/trust path evidence를 구현해야 한다.
 
-다음 세션 지시어: `$gsd-discuss-phase 59`로 native distribution foundation 범위를 확정한다. 바로 계획하려면 `$gsd-plan-phase 59`를 실행한다.
+다음 세션 지시어: `$gsd-discuss-phase 60 --auto --chain`으로 signing/notarization pipeline 범위를 확정하고 자동 계획/실행한다. 바로 계획하려면 `$gsd-plan-phase 60 --auto`를 실행한다.
 
 ---
-*상태 업데이트: 2026-04-30, v3.0 milestone initialized*
+*상태 업데이트: 2026-04-30, Phase 59 completed*
