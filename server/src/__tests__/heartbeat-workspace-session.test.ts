@@ -15,6 +15,7 @@ import {
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
+  shouldAutoCheckoutIssueForWake,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -355,6 +356,71 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldAutoCheckoutIssueForWake", () => {
+  it("does not auto-checkout a parked todo issue for a plain comment wake", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_commented" },
+        issueStatus: "todo",
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps auto-checkout for in-progress comment wakes", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_commented" },
+        issueStatus: "in_progress",
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("allows explicit resume intents to auto-checkout after a comment wake", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: {
+          wakeReason: "issue_commented",
+          resumeIntent: true,
+        },
+        issueStatus: "todo",
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not auto-checkout a parked todo issue on a child-completed wake", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_children_completed" },
+        issueStatus: "todo",
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps auto-checkout for in-progress child-completed wakes", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: { wakeReason: "issue_children_completed" },
+        issueStatus: "in_progress",
+        issueAssigneeAgentId: "agent-1",
+        isDependencyReady: true,
+        agentId: "agent-1",
+      }),
+    ).toBe(true);
   });
 });
 

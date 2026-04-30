@@ -87,6 +87,9 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const adminForceReleaseRouteSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -728,8 +731,36 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+    return true;
+  }
+
+  async function assertCanForceReleaseIssue(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+  ) {
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "board") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+    const allowedByGrant = await access.hasPermission(
+      issue.companyId,
+      "agent",
+      actorAgentId,
+      "tasks:manage_active_checkouts",
+    );
+    if (allowedByGrant) return true;
+    if (issue.assigneeAgentId && await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
     }
+    res.status(403).json({ error: "Manager or admin checkout override required" });
+    return false;
+  }
 
     res.status(403).json({
       error: "Agent cannot request follow-up for another agent's issue",
@@ -2839,22 +2870,15 @@ export function issueRoutes(
     res.json(released);
   });
 
-  router.post("/issues/:id/admin/force-release", async (req, res) => {
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board access required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      throw forbidden("Board user context required");
-    }
-
+  router.post("/issues/:id/admin/force-release", validate(adminForceReleaseRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertCanForceReleaseIssue(req, res, existing))) return;
+    const reason = String(req.body.reason).trim();
 
     const clearAssignee = req.query.clearAssignee === "true";
     const result = await svc.adminForceRelease(id, { clearAssignee });
@@ -2875,10 +2899,11 @@ export function issueRoutes(
       entityId: result.issue.id,
       details: {
         issueId: result.issue.id,
-        actorUserId: req.actor.userId,
+        actorUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
         prevCheckoutRunId: result.previous.checkoutRunId,
         prevExecutionRunId: result.previous.executionRunId,
         clearAssignee,
+        reason,
       },
     });
 
