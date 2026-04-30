@@ -7,6 +7,7 @@ import { runRt2IdentityGate } from "./rt2-identity-gate.mjs";
 function fixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), "rt2-identity-gate-"));
   mkdirSync(join(root, "ui", "src", "components"), { recursive: true });
+  mkdirSync(join(root, "ui", "public"), { recursive: true });
   return root;
 }
 
@@ -69,6 +70,23 @@ function run(root, targets = ["ui/src/components"]) {
 
   const result = run(root);
   assert.equal(result.code, 0);
+}
+
+{
+  const root = fixtureRoot();
+  writeFileSync(
+    join(root, "ui", "public", "site.webmanifest"),
+    JSON.stringify({
+      name: "Paperclip",
+      short_name: "Paperclip",
+      description: "Legacy install metadata",
+    }),
+  );
+
+  const result = run(root, ["ui/public/site.webmanifest"]);
+  assert.equal(result.code, 1);
+  assert.match(result.errors.join("\n"), /legacy-product-name/);
+  assert.match(result.errors.join("\n"), /site\.webmanifest/);
 }
 
 console.log("rt2-identity-gate tests passed");

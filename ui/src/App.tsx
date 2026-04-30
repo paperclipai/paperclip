@@ -55,6 +55,7 @@ import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { OneLinerPage } from "./pages/rt2/OneLinerPage";
 import { DailyWorkPage } from "./pages/rt2/DailyWorkPage";
+import { QuickCapturePage } from "./pages/rt2/QuickCapturePage";
 import { KnowledgePage } from "./pages/rt2/KnowledgePage";
 import { MarketplacePage } from "./pages/rt2/MarketplacePage";
 import { PnlPage } from "./pages/rt2/PnlPage";
@@ -141,6 +142,7 @@ function boardRoutes() {
       <Route index element={<Navigate to="daily-work" replace />} />
       <Route path="daily-work" element={<DailyWorkPage />} />
       <Route path="one-liner" element={<OneLinerPage />} />
+      <Route path="quick-capture" element={<QuickCapturePage />} />
       <Route path="knowledge" element={<KnowledgePage />} />
       <Route path="marketplace" element={<MarketplacePage />} />
       <Route path="pnl" element={<PnlPage />} />
@@ -367,6 +369,7 @@ export function App() {
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="daily-work" element={<UnprefixedBoardRedirect />} />
           <Route path="one-liner" element={<UnprefixedBoardRedirect />} />
+          <Route path="quick-capture" element={<UnprefixedBoardRedirect />} />
           <Route path="knowledge" element={<UnprefixedBoardRedirect />} />
           <Route path="marketplace" element={<UnprefixedBoardRedirect />} />
           <Route path="pnl" element={<UnprefixedBoardRedirect />} />

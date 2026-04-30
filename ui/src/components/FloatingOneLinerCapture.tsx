@@ -127,7 +127,7 @@ export function FloatingOneLinerCapture({
   const createDraft = useMutation({
     mutationFn: async (reviewedDraft: OneLinerDraft) => {
       if (!selectedCompanyId) {
-        throw new Error("Company context is required.");
+        throw new Error("회사 연결이 필요합니다.");
       }
       return rt2TasksApi.createInboundDraft(selectedCompanyId, {
         source: voiceState === "listening" ? "voice" : "floating",
@@ -268,14 +268,14 @@ export function FloatingOneLinerCapture({
                 onClick={toggleVoice}
               >
                 {voiceState === "listening" ? <MicOff className="mr-2 h-4 w-4" /> : <Mic className="mr-2 h-4 w-4" />}
-                {voiceState === "listening" ? "Stop" : "Voice"}
+                {voiceState === "listening" ? "중지" : "음성"}
               </Button>
               <span className={cn("text-xs text-muted-foreground", voiceState === "error" && "text-destructive")}>
                 {voiceState === "unsupported"
                   ? "이 브라우저는 음성 인식을 지원하지 않습니다."
                   : voiceState === "error"
                     ? "음성 입력을 시작하지 못했습니다."
-                    : "Shortcut: c"}
+                    : "빠른 기록 단축키 c"}
               </span>
             </div>
 
@@ -292,14 +292,14 @@ export function FloatingOneLinerCapture({
                   value={draft.taskTitle}
                   onChange={(event) => setDraft({ ...draft, taskTitle: event.target.value })}
                   className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none"
-                  placeholder="Task title"
+                  placeholder="업무 제목"
                 />
                 <input
                   aria-label="Floating deliverable title"
                   value={draft.deliverableTitle}
                   onChange={(event) => setDraft({ ...draft, deliverableTitle: event.target.value })}
                   className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none"
-                  placeholder="Deliverable"
+                  placeholder="산출물"
                 />
                 <div className="grid grid-cols-2 gap-2">
                   <input
@@ -314,15 +314,15 @@ export function FloatingOneLinerCapture({
                       })
                     }
                     className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none"
-                    placeholder="Base price"
+                    placeholder="기준가"
                   />
                   <select
                     value={draft.taskMode}
                     onChange={(event) => setDraft({ ...draft, taskMode: event.target.value as "solo" | "collab" })}
                     className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none"
                   >
-                    <option value="solo">Solo</option>
-                    <option value="collab">Collab</option>
+                    <option value="solo">개인</option>
+                    <option value="collab">협업</option>
                   </select>
                 </div>
 

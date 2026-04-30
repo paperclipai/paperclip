@@ -345,6 +345,35 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     });
   });
 
+  it("preserves mobile quick-capture event context for review drafts", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+
+    const response = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "mobile",
+        channel: `quick-capture:${fixture.projectId}`,
+        externalUserId: fixture.managerUserId,
+        eventId: "qc-mobile-1",
+        eventTimestamp: "2026-04-30T00:00:00.000Z",
+        text: "task: Mobile field note; todo: Review capture; deliverable: Field note; price: 90000",
+      })
+      .expect(201);
+
+    expect(response.body.inbound).toEqual(expect.objectContaining({
+      source: "mobile",
+      channel: `quick-capture:${fixture.projectId}`,
+      status: "review_required",
+      reviewRequired: true,
+      sourceEvidence: expect.objectContaining({
+        eventId: "qc-mobile-1",
+        eventTimestamp: "2026-04-30T00:00:00.000Z",
+        signingStatus: "unsigned",
+      }),
+    }));
+  });
+
   it("persists capture draft revisions and promotes the latest reviewed snapshot", async () => {
     fixture = await seedFixture();
     const app = await createApp(fixture.companyId, fixture.managerUserId);

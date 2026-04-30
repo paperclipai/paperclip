@@ -19,6 +19,8 @@ const DEFAULT_TARGETS = [
   "ui/src/pages/rt2/DailyWorkPage.tsx",
   "ui/src/pages/rt2/KnowledgePage.tsx",
   "ui/src/pages/rt2/OneLinerPage.tsx",
+  "ui/src/pages/rt2/QuickCapturePage.tsx",
+  "ui/public/site.webmanifest",
 ];
 
 const EXCLUDED_SEGMENTS = [
@@ -61,7 +63,7 @@ function normalizePath(path) {
 function isScannableFile(path) {
   const normalized = normalizePath(path);
   if (EXCLUDED_SEGMENTS.some((segment) => normalized.includes(segment))) return false;
-  return [".ts", ".tsx", ".js", ".jsx"].includes(extname(path));
+  return [".ts", ".tsx", ".js", ".jsx", ".json", ".webmanifest"].includes(extname(path));
 }
 
 function collectFiles(targets, cwd = process.cwd()) {

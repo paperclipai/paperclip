@@ -1,14 +1,29 @@
 {
   "id": "/",
-  "name": "Paperclip",
-  "short_name": "Paperclip",
-  "description": "AI-powered project management and agent coordination platform",
+  "name": "RealTycoon2",
+  "short_name": "RealTycoon2",
+  "description": "OKR, 업무 산출물, Jarvis 에이전트를 연결하는 RealTycoon2 운영 플랫폼",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "theme_color": "#18181b",
   "background_color": "#18181b",
+  "shortcuts": [
+    {
+      "name": "빠른 업무 기록",
+      "short_name": "업무 기록",
+      "description": "모바일에서 업무 신호를 기기 큐에 저장하고 검수함으로 보냅니다.",
+      "url": "/quick-capture",
+      "icons": [
+        {
+          "src": "/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
   "icons": [
     {
       "src": "/android-chrome-192x192.png",

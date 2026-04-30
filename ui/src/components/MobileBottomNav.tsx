@@ -6,6 +6,7 @@ import {
   DollarSign,
   Network,
   ShieldCheck,
+  PlusCircle,
 } from "lucide-react";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
@@ -28,6 +29,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const items = useMemo<MobileNavItem[]>(
     () => [
       { to: "/daily-work", label: "업무", icon: SquarePen },
+      { to: "/quick-capture", label: "기록", icon: PlusCircle },
       { to: "/knowledge", label: "지식", icon: BookOpen },
       { to: "/pnl", label: "정산", icon: DollarSign },
       { to: "/org", label: "조직", icon: Network },
@@ -44,7 +46,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
       )}
       aria-label="모바일 내비게이션"
     >
-      <div className="grid h-16 grid-cols-5 px-1">
+      <div className="grid h-16 grid-cols-6 px-1">
         {items.map((item) => {
           const Icon = item.icon;
           return (

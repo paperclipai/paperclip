@@ -1,4 +1,4 @@
-const CACHE_NAME = "paperclip-v2";
+const CACHE_NAME = "realtycoon2-v1";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -17,12 +17,12 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip non-GET requests and API calls
+  // Skip non-GET requests and API calls.
   if (request.method !== "GET" || url.pathname.startsWith("/api")) {
     return;
   }
 
-  // Network-first for everything — cache is only an offline fallback
+  // Network-first for everything; cache is only an offline fallback.
   event.respondWith(
     fetch(request)
       .then((response) => {
@@ -34,7 +34,7 @@ self.addEventListener("fetch", (event) => {
       })
       .catch(() => {
         if (request.mode === "navigate") {
-          return caches.match("/") || new Response("Offline", { status: 503 });
+          return caches.match("/") || new Response("RealTycoon2 오프라인 상태입니다.", { status: 503 });
         }
         return caches.match(request);
       })
