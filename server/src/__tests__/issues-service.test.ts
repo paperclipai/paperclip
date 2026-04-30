@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -1500,6 +1500,41 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     expect(child.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("allows creating child issue #26 via createChild helper for the same parent", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Run log parent",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    for (let i = 1; i <= 26; i += 1) {
+      const { issue: child } = await svc.createChild(parentIssueId, {
+        title: `Child ${i}`,
+        status: "todo",
+      });
+      expect(child.parentId).toBe(parentIssueId);
+    }
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.parentId, parentIssueId)));
+
+    expect(count).toBe(26);
   });
 });
 
