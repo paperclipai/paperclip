@@ -10,7 +10,7 @@
 - [shipped] **v2.5 Semantic Knowledge Intelligence** - Phase 33-38 완료, 2026-04-29 ([archive](milestones/v2.5-ROADMAP.md), [requirements](milestones/v2.5-REQUIREMENTS.md), [audit](milestones/v2.5-MILESTONE-AUDIT.md), [re-audit](milestones/v2.5-MILESTONE-REAUDIT.md))
 - [shipped] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 완료, 2026-04-29 ([archive](milestones/v2.6-ROADMAP.md), [requirements](milestones/v2.6-REQUIREMENTS.md), [audit](milestones/v2.6-MILESTONE-AUDIT.md))
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
-- [active] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-52 계획됨
+- [active] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 진행 중
 
 ## 완료됨
 
@@ -126,7 +126,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 </details>
 
 <details open>
-<summary>v2.8 RealTycoon2 Product Identity and Daily Work UX (Phase 48-52) - 진행 중</summary>
+<summary>v2.8 RealTycoon2 Product Identity and Daily Work UX (Phase 48-53) - 진행 중</summary>
 
 **Goal:** 앱을 구동했을 때 RealTycoon2가 Paperclip-derived 도구가 아니라 한국어 일일 업무 운영 시스템으로 즉시 인식되도록 제품 정체성과 핵심 보드 UX를 완성한다.
 
@@ -135,8 +135,9 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 | 48 | RT2 Identity and Korean Shell | IDENT-01, IDENT-02, IDENT-03, IDENT-04 | Complete |
 | 49 | Daily Work Kanban Core | BOARD-01, BOARD-02, BOARD-03 | Complete |
 | 50 | Work Card Editing and Board Controls | BOARD-04, BOARD-05 | Complete |
-| 51 | One-Liner to Board Capture Flow | CAPTURE-01, CAPTURE-02, CAPTURE-03 | Planned |
-| 52 | Supporting Surfaces and Identity Regression Gate | SUPPORT-01, SUPPORT-02, SUPPORT-03 | Planned |
+| 51 | One-Liner to Board Capture Flow | CAPTURE-01, CAPTURE-02, CAPTURE-03 | Complete |
+| 52 | Supporting Surfaces and Identity Regression Gate | SUPPORT-01, SUPPORT-02, SUPPORT-03 | Complete |
+| 53 | v2.8 Verification and Traceability Closure | BOARD-01..05, CAPTURE-01..03, SUPPORT-01..03 | Planned |
 
 ### Phase Details
 
@@ -180,6 +181,16 @@ Success criteria:
 1. Jarvis, wiki, graph, and economy surfaces support the board instead of competing with it.
 2. Recommendations and citations appear as contextual evidence on cards/details.
 3. A focused verification path detects product-facing Paperclip naming, English default copy, and identity regressions.
+
+**Phase 53: v2.8 Verification and Traceability Closure**  
+Goal: v2.8 milestone audit에서 발견된 verification, validation, ROADMAP/REQUIREMENTS traceability drift를 닫아 milestone archive gate를 통과 가능한 상태로 만든다.  
+Requirements: BOARD-01, BOARD-02, BOARD-03, BOARD-04, BOARD-05, CAPTURE-01, CAPTURE-02, CAPTURE-03, SUPPORT-01, SUPPORT-02, SUPPORT-03  
+Gap Closure: Closes `.planning/milestones/v2.8-MILESTONE-AUDIT.md` gaps for missing Phase 49-52 verification artifacts, Phase 51-52 validation artifacts, SUPPORT traceability drift, and Phase 50 validation status drift.  
+Success criteria:
+1. Phase 49, 50, 51, and 52 each have current `*-VERIFICATION.md` artifacts mapping requirements to evidence.
+2. Phase 51 and 52 have `*-VALIDATION.md`; Phase 50 validation frontmatter and task rows reflect completed evidence.
+3. `.planning/ROADMAP.md` and `.planning/REQUIREMENTS.md` agree on Phase 51-52 completion and Phase 53 closure status.
+4. Re-running `$gsd-audit-milestone v2.8` no longer reports missing verification or traceability blocker gaps.
 
 </details>
 
@@ -237,8 +248,9 @@ Success criteria:
 | 48. RT2 Identity and Korean Shell | v2.8 | 3/3 | Complete | 2026-04-30 |
 | 49. Daily Work Kanban Core | v2.8 | 1/1 | Complete | 2026-04-30 |
 | 50. Work Card Editing and Board Controls | v2.8 | 4/4 | Complete | 2026-04-30 |
-| 51. One-Liner to Board Capture Flow | v2.8 | 0/1 | Planned | - |
-| 52. Supporting Surfaces and Identity Regression Gate | v2.8 | 0/1 | Planned | - |
+| 51. One-Liner to Board Capture Flow | v2.8 | 4/4 | Complete | 2026-04-30 |
+| 52. Supporting Surfaces and Identity Regression Gate | v2.8 | 1/1 | Complete | 2026-04-30 |
+| 53. v2.8 Verification and Traceability Closure | v2.8 | 0/1 | Planned | - |
 
 ## Archive
 
@@ -269,4 +281,4 @@ Success criteria:
 - [v2.7 milestone audit](milestones/v2.7-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-30, Phase 50 completed*
+*마지막 업데이트: 2026-04-30, Phase 53 gap closure planned from v2.8 audit*

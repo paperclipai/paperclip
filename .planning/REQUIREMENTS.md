@@ -14,23 +14,23 @@
 
 ### Daily Work Board
 
-- [x] **BOARD-01**: 운영자는 일일업무일지 중심 3단 칸반보드를 첫 번째 작업 화면으로 사용할 수 있다. - Phase 49
-- [x] **BOARD-02**: 운영자는 업무 카드를 To-Do, Doing, Done 사이에서 이동하고 즉시 저장된 상태를 확인할 수 있다. - Phase 49
-- [x] **BOARD-03**: 운영자는 카드에서 Task/To-Do/Deliverable 구분, 담당자, 마감, OKR/KPI 연결, 가격/품질 상태를 한눈에 볼 수 있다. - Phase 49
-- [x] **BOARD-04**: 운영자는 카드 quick edit로 제목, 상태, 산출물, 기준가, 품질 평가, OKR badge를 별도 깊은 화면 이동 없이 수정할 수 있다. - Phase 50
-- [x] **BOARD-05**: 운영자는 board filter/sort/search를 사용해 오늘 업무, 내 업무, 산출물 누락, 승인 대기, 품질 이슈 카드를 빠르게 찾을 수 있다. - Phase 50
+- [ ] **BOARD-01**: 운영자는 일일업무일지 중심 3단 칸반보드를 첫 번째 작업 화면으로 사용할 수 있다. - Original Phase 49; audit closure Phase 53
+- [ ] **BOARD-02**: 운영자는 업무 카드를 To-Do, Doing, Done 사이에서 이동하고 즉시 저장된 상태를 확인할 수 있다. - Original Phase 49; audit closure Phase 53
+- [ ] **BOARD-03**: 운영자는 카드에서 Task/To-Do/Deliverable 구분, 담당자, 마감, OKR/KPI 연결, 가격/품질 상태를 한눈에 볼 수 있다. - Original Phase 49; audit closure Phase 53
+- [ ] **BOARD-04**: 운영자는 카드 quick edit로 제목, 상태, 산출물, 기준가, 품질 평가, OKR badge를 별도 깊은 화면 이동 없이 수정할 수 있다. - Original Phase 50; audit closure Phase 53
+- [ ] **BOARD-05**: 운영자는 board filter/sort/search를 사용해 오늘 업무, 내 업무, 산출물 누락, 승인 대기, 품질 이슈 카드를 빠르게 찾을 수 있다. - Original Phase 50; audit closure Phase 53
 
 ### Capture Flow
 
-- [x] **CAPTURE-01**: 운영자는 One-Liner 입력 후 새 업무가 보드의 적절한 lane 또는 inbox에 즉시 나타나는 것을 볼 수 있다. - Phase 51
-- [x] **CAPTURE-02**: 운영자는 One-Liner에서 업무 유형, 산출물 후보, 가격/품질 힌트, OKR/KPI 후보를 확인하고 승인하거나 수정할 수 있다. - Phase 51
-- [x] **CAPTURE-03**: 운영자는 mobile/native/inbound draft도 동일한 보드 검수 흐름에서 중복 경고와 source evidence를 보고 처리할 수 있다. - Phase 51
+- [ ] **CAPTURE-01**: 운영자는 One-Liner 입력 후 새 업무가 보드의 적절한 lane 또는 inbox에 즉시 나타나는 것을 볼 수 있다. - Original Phase 51; audit closure Phase 53
+- [ ] **CAPTURE-02**: 운영자는 One-Liner에서 업무 유형, 산출물 후보, 가격/품질 힌트, OKR/KPI 후보를 확인하고 승인하거나 수정할 수 있다. - Original Phase 51; audit closure Phase 53
+- [ ] **CAPTURE-03**: 운영자는 mobile/native/inbound draft도 동일한 보드 검수 흐름에서 중복 경고와 source evidence를 보고 처리할 수 있다. - Original Phase 51; audit closure Phase 53
 
 ### Supporting Surfaces
 
-- [ ] **SUPPORT-01**: 운영자는 Jarvis, wiki, graph, economy 기능을 핵심 보드 옆 보조 패널이나 카드 상세 evidence로 접근할 수 있다.
-- [ ] **SUPPORT-02**: 운영자는 Jarvis 추천이나 지식 citation이 업무 카드와 산출물 맥락을 흐리지 않고 보조 정보로 표시되는 것을 볼 수 있다.
-- [ ] **SUPPORT-03**: 운영자는 RealTycoon2 Korean UX/identity regression을 잡는 focused verification 또는 lint/report를 실행할 수 있다.
+- [ ] **SUPPORT-01**: 운영자는 Jarvis, wiki, graph, economy 기능을 핵심 보드 옆 보조 패널이나 카드 상세 evidence로 접근할 수 있다. - Original Phase 52; audit closure Phase 53
+- [ ] **SUPPORT-02**: 운영자는 Jarvis 추천이나 지식 citation이 업무 카드와 산출물 맥락을 흐리지 않고 보조 정보로 표시되는 것을 볼 수 있다. - Original Phase 52; audit closure Phase 53
+- [ ] **SUPPORT-03**: 운영자는 RealTycoon2 Korean UX/identity regression을 잡는 focused verification 또는 lint/report를 실행할 수 있다. - Original Phase 52; audit closure Phase 53
 
 ## Future Requirements
 
@@ -64,23 +64,25 @@
 | IDENT-02 | Phase 48 | Complete |
 | IDENT-03 | Phase 48 | Complete |
 | IDENT-04 | Phase 48 | Complete |
-| BOARD-01 | Phase 49 | Complete |
-| BOARD-02 | Phase 49 | Complete |
-| BOARD-03 | Phase 49 | Complete |
-| BOARD-04 | Phase 50 | Complete |
-| BOARD-05 | Phase 50 | Complete |
-| CAPTURE-01 | Phase 51 | Complete |
-| CAPTURE-02 | Phase 51 | Complete |
-| CAPTURE-03 | Phase 51 | Complete |
-| SUPPORT-01 | Phase 52 | Pending |
-| SUPPORT-02 | Phase 52 | Pending |
-| SUPPORT-03 | Phase 52 | Pending |
+| BOARD-01 | Phase 53 | Pending |
+| BOARD-02 | Phase 53 | Pending |
+| BOARD-03 | Phase 53 | Pending |
+| BOARD-04 | Phase 53 | Pending |
+| BOARD-05 | Phase 53 | Pending |
+| CAPTURE-01 | Phase 53 | Pending |
+| CAPTURE-02 | Phase 53 | Pending |
+| CAPTURE-03 | Phase 53 | Pending |
+| SUPPORT-01 | Phase 53 | Pending |
+| SUPPORT-02 | Phase 53 | Pending |
+| SUPPORT-03 | Phase 53 | Pending |
 
 **Coverage:**
 - v2.8 requirements: 15 total
 - Mapped to phases: 15
 - Unmapped: 0
+- Complete: 4
+- Pending audit closure: 11
 
 ---
 *Requirements defined: 2026-04-30*
-*Last updated: 2026-04-30 after Phase 51 completion; CAPTURE-01 through CAPTURE-03 complete across shared/server/UI behavior*
+*Last updated: 2026-04-30 after v2.8 audit; BOARD/CAPTURE/SUPPORT items reset to Phase 53 pending audit closure until verification artifacts are reconciled*
