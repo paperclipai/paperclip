@@ -1,0 +1,22 @@
+language variant
+name female3
+gender female
+
+pitch 140 240
+formant 0 105  80 150
+formant 1 120  75 150 -50
+formant 2 135  70 150 -250
+formant 3 125  80 150
+formant 4 125  80 150
+formant 5 125  80 150
+formant 6 120  70 150
+formant 7 110  70 150
+formant 8 110  70 150
+
+stressAmp 18 18 20 20 20 20 20 20
+//breath 0 2 4 4 4 4 4 4
+breath 0 2 3 3 3 3 3 2
+echo 120 10
+roughness 4
+
+

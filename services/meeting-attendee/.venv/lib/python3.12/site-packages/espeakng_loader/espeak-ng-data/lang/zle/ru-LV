@@ -1,0 +1,16 @@
+name Russian (Latvia)
+language ru-lv 2
+
+maintainer Valdis Vitolins <valdis.vitolins@odo.lv>
+status testing
+
+phonemes ru-lv
+dictrules 2
+dict_min  20000
+speed 95
+
+words 0 2
+tone 150 220 450 255 750 20 3500 255
+stressAmp 12 10 8 8 0 0 16 17
+stressLength 160 140 200 140 0 0 240 160
+

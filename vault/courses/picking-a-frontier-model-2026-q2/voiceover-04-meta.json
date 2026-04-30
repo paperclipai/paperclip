@@ -1,0 +1,11 @@
+{
+  "tool": "macos-say-fallback",
+  "voice_preset": "moira",
+  "duration_sec": 185.635,
+  "lufs": -16,
+  "bitrate_kbps": 128,
+  "channels": "mono",
+  "sample_rate_hz": 48000,
+  "produced_at": "2026-04-30T16:26:00Z",
+  "notes": "Kokoro and OmniVoice installation failed; used macOS native say command with Moira voice. Loudness normalized to -16 LUFS via ffmpeg loudnorm filter."
+}

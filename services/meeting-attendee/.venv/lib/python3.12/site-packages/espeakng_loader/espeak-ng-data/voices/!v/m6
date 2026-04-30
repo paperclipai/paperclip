@@ -1,0 +1,13 @@
+language variant
+name male6
+gender male
+
+pitch 82 117
+
+formant 0 100  90 120
+formant 1 100  90 140
+formant 2 100  70 140
+formant 3 100  75 140
+formant 4 100  80 140
+formant 5 100  80 140
+

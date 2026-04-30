@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.koenig.notifier</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>cd /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/services/notifier &amp;&amp; if [ ! -d .venv ]; then /opt/homebrew/bin/python3 -m venv .venv &amp;&amp; .venv/bin/pip install -q -r requirements.txt; fi &amp;&amp; set -a; . /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/.env.koenig 2&gt;/dev/null; set +a; export NOTIFIER_STATE_DIR=/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/services/notifier/.state; mkdir -p "$NOTIFIER_STATE_DIR"; .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8300</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/infra/launchd/.logs/notifier.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/infra/launchd/.logs/notifier.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PAPERCLIP_BASE_URL</key>
+    <string>http://localhost:3100</string>
+    <key>KOENIG_COMPANY_ID</key>
+    <string>2a77f89b-33f0-4133-a20c-77ddaac5e744</string>
+    <key>NOTIFIER_TICK_SECONDS</key>
+    <string>30</string>
+    <key>NOTIFIER_DAILY_DIGEST_HOUR</key>
+    <string>9</string>
+  </dict>
+</dict>
+</plist>

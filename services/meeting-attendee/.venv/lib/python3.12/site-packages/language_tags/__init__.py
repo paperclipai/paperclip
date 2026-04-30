@@ -1,0 +1,1 @@
+from language_tags.tags import tags

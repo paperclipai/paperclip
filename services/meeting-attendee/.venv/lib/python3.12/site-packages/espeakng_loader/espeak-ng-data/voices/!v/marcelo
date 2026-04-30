@@ -1,0 +1,17 @@
+language variant
+name Marcelo
+
+pitch  65 115
+
+formant 0 65 161 35
+formant 1 75 131 65
+formant 2 90 60 40
+formant 3 59 50 55
+formant 4 69 65 35
+formant 5 69 60 25
+formant 6 59 60 35
+formant 7 149 0 10
+formant 8 199 0 90
+voicing 135
+consonants 115 120
+

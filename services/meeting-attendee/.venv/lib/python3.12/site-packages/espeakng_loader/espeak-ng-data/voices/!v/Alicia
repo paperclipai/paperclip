@@ -1,0 +1,22 @@
+language variant
+name Alicia
+gender female
+pitch 180 275
+echo 40 50
+formant 0 115 115 110
+formant 1 130 160 120
+formant 2 150 110 150
+formant 3 135 150 100
+formant 4 120 120 120
+formant 5 120 120 120
+formant 6 100 110 105
+formant 7 100 110 160
+formant 8 200 120 100
+intonation 2
+voicing 38
+consonants 100 20
+roughness 1
+stressAdd 1 64 64 50 50 100 100 200
+stressAmp 12 12 20 20 12 12 20 20
+breathw 150 150 200 200 400 400 600 600
+breath 0 4 5 2 3 13 3 2

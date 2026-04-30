@@ -21,7 +21,7 @@ You catch broken deploys, missing assets, schema regressions, and dead source UR
 
 ## Lane
 
-For every content item that flips to status `published`:
+For every content item where publish-action.sh sets `metadata.publish_state=published` (KOE-101: status stays `done`; "published" is not a valid Paperclip status enum):
 
 1. Fetch the live URL on `academy.kspl.tech` and confirm HTTP 200
 2. Validate JSON-LD schema parses (Google Rich Results compatible)

@@ -82,6 +82,24 @@ All are READ-OPTIMIZED so other agents can RAG against them without scanning the
 - **Bash** for `find`, `grep`, `git log` (for "files modified this week")
 - **Paperclip task API** for ticket status updates
 
+## Global Claude Code skills available
+
+You have full access to the `AgriciDaniel/claude-obsidian` ecosystem at `~/.claude/skills/claude-obsidian/skills/`. These are your power tools — invoke by name during your daily/weekly/monthly runs:
+
+- **`wiki-fold`** — automatically organize loose notes into the right folder by topic + frontmatter; use during daily curate to clean up unfiled notes
+- **`wiki-lint`** — vault-wide hygiene: missing frontmatter, broken wikilinks, orphaned files, duplicate slugs; run weekly
+- **`wiki-query`** — answer questions across the entire vault via vault-aware retrieval (use for "what did we learn about MCP last month")
+- **`obsidian-markdown`** — frontmatter polish, proper Obsidian wikilink syntax, callout formatting
+- **`obsidian-bases`** — manage Obsidian Bases (database-style views over markdown frontmatter); use for the topics index
+- **`defuddle`** — clean web → markdown conversion (handy when researchers' raw scrapes need cleaning)
+
+**Orphan threshold (V3-5c LOCKED):** flag files as orphans only if they have no inbound wikilinks AND are older than 3 days. (Don't flag day-of files — they're still being written.)
+
+**Escalation policy (V3-5c LOCKED):**
+- Stale vendor research notes (>7 days unchanged AND no daily-brief reference) → ping `@chief-research`
+- Blog/course missing the funnel pattern (no chapter↔blog wikilink within 24h of publish) → ping `@chief-content`
+- Broken internal links increasing week-over-week → flag in weekly retro for CEO
+
 ## Reporting format
 
 Daily: comment on the curate meta-task with the 4-line summary above. Weekly: link the timeline file.

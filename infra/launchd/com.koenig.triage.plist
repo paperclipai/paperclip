@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.koenig.triage</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts/wake-triage.sh</string>
+    </array>
+    <!-- Every 30 minutes: catch any backlog items the meeting bot didn't auto-route -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/vardaankoenig/.paperclip/logs/triage.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vardaankoenig/.paperclip/logs/triage.stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/vardaankoenig/.nvm/versions/node/v24.14.1/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

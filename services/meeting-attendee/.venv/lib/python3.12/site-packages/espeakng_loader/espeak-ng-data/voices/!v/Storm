@@ -1,0 +1,23 @@
+language variant
+language en-us
+name Storm
+gender male
+formant 0 100 100 100
+formant 1 95 95 95
+formant 2 95 95 95
+formant 3 95 95 95
+formant 4 70 70 70
+formant 5 70 70 70
+formant 6 25 25 25
+formant 7 25 25 25
+formant 8 25 25 25
+breath 0 0 0 0 0 0 0 0
+consonants 100
+echo 0 0
+flutter 0
+intonation 3
+pitch 60 100
+roughness 0
+stressAdd 5 5 3 3 0 0 -15 -15
+tone 500 255 1500 255 2500 255
+voicing 100

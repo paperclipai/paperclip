@@ -1,0 +1,21 @@
+name Māori
+language mi
+status testing
+
+// https://github.com/espeak-ng/espeak-ng/blob/master/docs/voices.md#words
+words 1 2
+
+// taken from Jacky
+pitch  115 130
+
+formant 0 150 155 100
+formant 1 90 155 70
+formant 2 95 70 64
+formant 3 15 20 30
+formant 4 20 30 40
+formant 5 65 20 65
+formant 6 70 80 100
+formant 7 20 80 100
+formant 8 100 95 80
+voicing 135
+consonants 110

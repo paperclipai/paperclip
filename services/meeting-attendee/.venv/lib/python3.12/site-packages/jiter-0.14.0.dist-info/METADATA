@@ -1,0 +1,148 @@
+Metadata-Version: 2.4
+Name: jiter
+Version: 0.14.0
+Classifier: Development Status :: 4 - Beta
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: Implementation :: CPython
+Classifier: Programming Language :: Python :: Implementation :: GraalPy
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Information Technology
+Classifier: Intended Audience :: System Administrators
+Classifier: Operating System :: Unix
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Environment :: Console
+Classifier: Environment :: MacOS X
+Classifier: Topic :: File Formats :: JSON
+Classifier: Framework :: Pydantic :: 2
+License-File: LICENSE
+Summary: Fast iterable JSON parser.
+Home-Page: https://github.com/pydantic/jiter/
+Author-email: Samuel Colvin <s@muelcolvin.com>
+License-Expression: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown; charset=UTF-8; variant=GFM
+
+# jiter
+
+[![CI](https://github.com/pydantic/jiter/workflows/CI/badge.svg?event=push)](https://github.com/pydantic/jiter/actions?query=event%3Apush+branch%3Amain+workflow%3ACI)
+[![pypi](https://img.shields.io/pypi/v/jiter.svg)](https://pypi.python.org/pypi/jiter)
+[![versions](https://img.shields.io/pypi/pyversions/jiter.svg)](https://github.com/pydantic/jiter)
+[![license](https://img.shields.io/github/license/pydantic/jiter.svg)](https://github.com/pydantic/jiter/blob/main/LICENSE)
+
+This is a standalone version of the JSON parser used in `pydantic-core`. The recommendation is to only use this package directly if you do not use `pydantic`.
+
+The API is extremely minimal:
+
+```python
+def from_json(
+    json_data: bytes,
+    /,
+    *,
+    allow_inf_nan: bool = True,
+    cache_mode: Literal[True, False, 'all', 'keys', 'none'] = 'all',
+    partial_mode: Literal[True, False, 'off', 'on', 'trailing-strings'] = False,
+    catch_duplicate_keys: bool = False,
+    float_mode: Literal['float', 'decimal', 'lossless-float'] = 'float',
+) -> Any:
+    """
+    Parse input bytes into a JSON object.
+
+    Arguments:
+        json_data: The JSON data to parse
+        allow_inf_nan: Whether to allow infinity (`Infinity` an `-Infinity`) and `NaN` values to float fields.
+            Defaults to True.
+        cache_mode: cache Python strings to improve performance at the cost of some memory usage
+            - True / 'all' - cache all strings
+            - 'keys' - cache only object keys
+            - False / 'none' - cache nothing
+        partial_mode: How to handle incomplete strings:
+            - False / 'off' - raise an exception if the input is incomplete
+            - True / 'on' - allow incomplete JSON but discard the last string if it is incomplete
+            - 'trailing-strings' - allow incomplete JSON, and include the last incomplete string in the output
+        catch_duplicate_keys: if True, raise an exception if objects contain the same key multiple times
+        float_mode: How to return floats: as a `float`, `Decimal` or `LosslessFloat`
+
+    Returns:
+        Python object built from the JSON input.
+    """
+
+
+def cache_clear() -> None:
+    """
+    Reset the string cache.
+    """
+
+
+def cache_usage() -> int:
+    """
+    get the size of the string cache.
+
+    Returns:
+        Size of the string cache in bytes.
+    """
+
+```
+## Examples
+
+The main function provided by Jiter is `from_json()`, which accepts a bytes object containing JSON and returns a Python dictionary, list or other value.
+
+```python
+import jiter
+
+json_data = b'{"name": "John", "age": 30}'
+parsed_data = jiter.from_json(json_data)
+print(parsed_data)  # Output: {'name': 'John', 'age': 30}
+```
+
+### Handling Partial JSON
+
+Incomplete JSON objects can be parsed using the `partial_mode=` parameter.
+
+```python
+import jiter
+
+partial_json = b'{"name": "John", "age": 30, "city": "New Yor'
+
+# Raise error on incomplete JSON
+try:
+    jiter.from_json(partial_json, partial_mode=False)
+except ValueError as e:
+    print(f'Error: {e}')
+
+# Parse incomplete JSON, discarding incomplete last field
+result = jiter.from_json(partial_json, partial_mode=True)
+print(result)  # Output: {'name': 'John', 'age': 30}
+
+# Parse incomplete JSON, including incomplete last field
+result = jiter.from_json(partial_json, partial_mode='trailing-strings')
+print(result)  # Output: {'name': 'John', 'age': 30, 'city': 'New Yor'}
+```
+
+### Catching Duplicate Keys
+
+The `catch_duplicate_keys=True` option can be used to raise a `ValueError` if an object contains duplicate keys.
+
+```python
+import jiter
+
+json_with_dupes = b'{"foo": 1, "foo": 2}'
+
+# Default behavior (last value wins)
+result = jiter.from_json(json_with_dupes)
+print(result)  # Output: {'foo': 2}
+
+# Catch duplicate keys
+try:
+    jiter.from_json(json_with_dupes, catch_duplicate_keys=True)
+except ValueError as e:
+    print(f'Error: {e}')
+```
+

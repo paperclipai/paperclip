@@ -1,0 +1,6 @@
+name Lang Belta
+language qdb
+
+numbers 4 3
+
+replace 1 t ?

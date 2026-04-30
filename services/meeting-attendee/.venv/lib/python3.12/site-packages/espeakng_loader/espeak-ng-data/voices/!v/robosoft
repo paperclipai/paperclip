@@ -1,0 +1,26 @@
+language variant
+name Robosoft
+echo 30 1000
+klatt 5
+
+pitch 60 90
+formant 0 100 125 100
+formant 1 96 90 80
+formant 2 97 70 90
+formant 3 97 60 90
+formant 4 97 60 90
+formant 5  100 50 90
+formant 6  90 50 100
+formant 7 100 50 100
+formant 8 100 50 100
+
+roughness 50
+
+intonation 0
+voicing 80
+consonants 110 120
+stressLength 0 1 2 3 4 5 6 7
+stressAdd 130 140 140 100 0 0 130 160
+stressAmp 16 16 24 24 16 16 20 24
+
+tone 100 255 600 70 1200 22 2000 66 3000 12

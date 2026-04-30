@@ -1,0 +1,14 @@
+// Last updated: 14 October 2010, Jason Ong (jason@portalgroove.com)
+name Malay
+language ms
+phonemes id
+
+stressLength 160 200  180 180  0 0  220 240
+stressAmp    16  18   18  18   0 0  22  21
+intonation	3	// Less intonation, and comma does not raise the pitch.
+
+// Nuance - Peninsula Malaysia
+// replace	3 a	@	// change 'saya' to 'saye'
+				// (only the last phoneme of a word, only in unstressed syllables)
+				
+consonants 80 80

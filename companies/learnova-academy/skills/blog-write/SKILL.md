@@ -43,12 +43,20 @@ ls vault/research/<vendor>/$(date +%Y-%m-%d).md
 
 Pin 3-5 primary-source URLs. Verify each returns 200 with WebFetch before drafting.
 
-### 3. Draft body using the strict structure
+### 3. Draft body using the strict structure (V3-1b LOCKED 2026-04-30)
+
+**Mandatory structural pattern** (Reviewer BLOCKs anything missing these):
+- **Wikipedia-style lead sentence**: First sentence MUST be `[Topic] is [category] [defined-by]` (e.g., "MCP is an open protocol introduced by Anthropic in November 2024 for connecting AI assistants to data sources.")
+- **Lead paragraph**: 40-80 words. Includes a named entity + a number + a date in the first 2 sentences (these are AI-engine retrieval anchors).
+- **Key facts numbered list**: 3-7 numbered items immediately after the lead paragraph, before any prose. Each fact 1 sentence; numerical or dated where possible.
+- **References footer**: Every post ends with `## References` — numbered `[1]`, `[2]`, etc., format `[N] Title — URL · retrieved YYYY-MM-DD`.
+- **Author**: choose from `src/lib/authors.ts` registry (vardaan-koenig | editorial-team). Frontmatter `author: vardaan-koenig`.
 
 ```markdown
 ---
 date: 2026-04-30
-author: blog-author
+author: vardaan-koenig
+agent_drafted_by: blog-author
 ticket: KOE-N
 vendor_tag: <anthropic|openai|google|community>
 content_type: article
@@ -67,15 +75,20 @@ learning_objectives:
 
 # <Answer-first H1: How to / Why X / What X means for Y>
 
-<Lead paragraph — 50-100 words. Answers the primary_query directly.
-Includes the falsifiable claim. Cites primary source.>
+<Wikipedia-style lead. First sentence: "[Topic] is [category] [defined-by]." 40-80 words total. Includes a named entity + a number + a date in the first 2 sentences.>
 
-<Contrarian-angle paragraph — "Most takes on this miss that..." or
-"The press-release version says X; the engineering reality is Y because Z.">
+## Key facts
+
+1. <One sentence with a date or number; cite as [1].>
+2. <Same.>
+3. <Same.>
+4. <Optional, up to 7.>
 
 ## <Answer-first H2 — first answer in first sentence>
 
-<2-3 paragraphs. Each leads with answer; supports with evidence + citation.>
+<Contrarian-angle paragraph: "Most takes on this miss that..." or "The press-release version says X; the engineering reality is Y because Z [2]."
+
+2-3 paragraphs follow. Each leads with the answer; supports with evidence + citation.>
 
 ## <Answer-first H2>
 
@@ -101,6 +114,12 @@ Includes the falsifiable claim. Cites primary source.>
 <2-3 sentences. Specific, actionable.>
 
 For deeper dive on this topic, our course [[course/<slug>]] walks through <specific outcome>.
+
+## References
+
+[1] <Title of cited primary source> — <https://primary.source/url> · retrieved 2026-04-30
+[2] <Title> — <https://primary.source/url> · retrieved 2026-04-30
+[3] <Title> — <https://primary.source/url> · retrieved 2026-04-30
 ```
 
 ### 4. Citation verification (pre-handoff)

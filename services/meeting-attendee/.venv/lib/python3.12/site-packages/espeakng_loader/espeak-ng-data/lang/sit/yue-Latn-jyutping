@@ -1,0 +1,13 @@
+name Chinese (Cantonese, latin as Jyutping)
+language yue
+language zh-yue
+language zh 8
+
+phonemes yue
+dictionary yue
+
+// interpret English letters as 1=English words, 2=jyutping
+dictrules 2
+
+words 1
+dict_min 10000

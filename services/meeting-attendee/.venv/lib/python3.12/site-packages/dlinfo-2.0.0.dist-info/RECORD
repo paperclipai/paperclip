@@ -1,0 +1,12 @@
+dlinfo-2.0.0.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+dlinfo-2.0.0.dist-info/LICENSE,sha256=H9hqUp3q1-1XMLNmCAu9EGZdWIkT_S2c5Q6zoWEJX7k,1098
+dlinfo-2.0.0.dist-info/METADATA,sha256=OAw2-t1rNPAdqmpKtRN5zSVjtH-f-_QPfHALsKaN8Tg,1070
+dlinfo-2.0.0.dist-info/RECORD,,
+dlinfo-2.0.0.dist-info/WHEEL,sha256=2wepM1nk4DS4eFpYrW1TTqPcoGNfHhhO_i5m4cOimbo,92
+dlinfo-2.0.0.dist-info/top_level.txt,sha256=JZ0mAh2JRPwKUx0iZgbGA9bPo3zUXdZ7JLWl4TAUxiE,7
+dlinfo/__init__.py,sha256=muJlk1jFQBz5e70hI5N8ntlaKybPu4890HoRu1MKZ_M,192
+dlinfo/__pycache__/__init__.cpython-312.pyc,,
+dlinfo/__pycache__/_glibc.cpython-312.pyc,,
+dlinfo/__pycache__/_macosx.cpython-312.pyc,,
+dlinfo/_glibc.py,sha256=PYEb2ZLL29xAodLRHaCcu2Bg3F7lLMyxI1Fqw93dKqo,1278
+dlinfo/_macosx.py,sha256=h8lOieLm7-hoIYhzipyFHuj52JGewYVAvGafwcYoAWI,523

@@ -1,0 +1,4 @@
+name Russian
+language ru
+replace 03 a a#
+dict_min  20000

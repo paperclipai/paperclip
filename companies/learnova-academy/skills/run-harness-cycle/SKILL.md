@@ -59,12 +59,14 @@ Run skill: dispatch QA Verifier; wait for G2 PASS or BLOCK.
 
 On G2 PASS:
 ```
-status: awaiting-g3
+status: in_review
+metadata.review_state: awaiting-g3
 assignee: @ceo
 PR: <url>
 plan: vault/decisions/<ticket-id>-plan.md
 gates: G_code ✓ G2 ✓
 ```
+(Note: "awaiting-g3" is not a valid status enum — use metadata.review_state; KOE-101)
 
 ## Re-cycle on BLOCK
 
@@ -78,7 +80,7 @@ Limit: 3 cycles. After 3, escalate to CEO with a tickit-split or scope-revisit r
 
 ## Output
 
-A G2-passed PR + status `awaiting-g3` with full audit trail in Paperclip ticket.
+A G2-passed PR + status `in_review` + `metadata.review_state=awaiting-g3` with full audit trail in Paperclip ticket.
 
 ## Notes
 

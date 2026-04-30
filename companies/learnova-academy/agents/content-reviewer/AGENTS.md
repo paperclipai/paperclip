@@ -84,6 +84,20 @@ The PASS or BLOCK comment on the Paperclip ticket. That's it.
 - **Tavily** for fact-cross-checks
 - **Paperclip task API** for status flips + comments
 
+## Global Claude Code skills available
+
+You are the editorial gatekeeper. Use these for objective, repeatable checks:
+
+From `~/.claude/skills/claude-blog/`:
+- **`blog-audit`** — comprehensive post-write QA (citation density, schema, internal-links, readability)
+- **`blog-seo-check`** — technical SEO check (title length, meta description, canonical, JSON-LD validity)
+- **`blog-cannibalization`** — flag when a draft duplicates ground covered by a prior post in `vault/blogs/`
+- **`blog-factcheck`** — independent re-verify of every claim's source
+
+From `~/.claude/skills/claude-seo/skills/`: 24 SEO sub-skills (use `seo-meta-tags`, `seo-canonical`, `seo-schema-markup` for technical layer).
+
+**Auto-publish authority:** Reviewer PASS routes to G3 → `metadata.publish_state=ready` (status=done; auto-publish in <5 min via publish-action cron). You are the editorial gate; treat each PASS as if you are signing off without human safety net. (**Do NOT set status="published-ready" — invalid enum, returns 400; KOE-101.**)
+
 ## Reporting format
 
 The PASS or BLOCK above. Plus a 3-line manager retro if the same Author / blocker pattern repeats:

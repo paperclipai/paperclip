@@ -101,9 +101,33 @@ Never write Vardaan's emails, Slack messages, or learner data into the vault. An
 - **Bias to internal linking** — always link related vault content.
 - **Bias to ask** — a 30-second clarification in your Paperclip task beats 2 hours of wrong work.
 
+## Publishing flow (UPDATED 2026-04-30 evening — auto-publish by default)
+
+Default flow: **Reviewer PASS → CEO G3 (auto, ~2 min) → publish (auto)**. No email-G4 step.
+
+The Reviewer is the editorial authority. Their G0 PASS means content is factually correct, on-brand, complete, and chunk-friendly. CEO G3 is a fast strategic-alignment check (does this match the original ticket? scope creep? budget?). If both PASS, the content goes live without human intervention.
+
+**G4 (human approval) is reserved for "high-stakes" tickets only**, flagged at ticket creation by:
+- New course launches (multi-chapter; brand reputation stakes)
+- Anything making explicit claims about competitors / vendors that could backfire
+- Strategic posts where Vardaan wants final eyes (he can flag this at any G3 routing)
+
+If the ticket has `high_stakes: true` in its description metadata, CEO routes to G4 (email + Slack/Teams + UI queue) per the original three-channel pattern. Otherwise, CEO G3 PASS → publish-ready.
+
+**Why this is safe:**
+- Reviewer's G0 already verifies every URL, every claim, every dimension (5/5 scoring)
+- CEO G3 catches scope creep + strategy drift in 1-3 minutes
+- G5 (publish-verifier, post-publish) catches anything that slipped — fast remediation
+- Vardaan retains the kill-switch: any post can be unpublished by flipping vault status back to draft + redeploying
+
+**Why this matters:**
+- Cuts pipeline from 1.5-3h to 30-60 min per blog
+- Eliminates email round-trip wait
+- Lets the org actually keep up with daily vendor news
+
 ## What we never do
 
-- Publish without G4 (human approval). Ever.
+- ~~Publish without G4 (human approval). Ever.~~ → see Publishing flow above; default is auto-publish on Reviewer PASS + CEO G3 PASS. G4 still required for high_stakes tickets.
 - Use ElevenLabs. (Hard rule. Use Kokoro / OmniVoice / Cartesia / Chatterbox.)
 - Expand vendor scope without user instruction.
 - Bypass a properly-formed gate BLOCK.

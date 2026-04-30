@@ -1,0 +1,14 @@
+language variant
+name grandpa
+pitch 80 120
+flutter 20
+formant 0 100 100 100
+formant 1 100 100 100
+formant 2 100 100 100
+formant 3 100 100 100
+formant 4 100 100 100
+formant 5 100 100 100
+formant 6 10 10 10
+formant 7 10 10 10
+formant 8 10 10 10
+intonation 1

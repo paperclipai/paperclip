@@ -1,0 +1,17 @@
+language variant
+name Rob
+
+pitch  50 130
+formant 0 100 100 100
+formant 1 95 100 60
+formant 2 97 90 50
+formant 3 101 70 50
+formant 4 110 65 55 
+formant 5 110 70 65
+formant 6 110 70 65
+formant 7 0 0 0
+formant 8 0 0 0
+
+voicing 115
+consonants 110 120
+

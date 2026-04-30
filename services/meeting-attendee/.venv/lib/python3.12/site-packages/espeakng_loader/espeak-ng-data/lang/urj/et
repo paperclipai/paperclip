@@ -1,0 +1,10 @@
+name Estonian
+language et
+
+stressAmp 18 16 22 22 20 22 22 22
+stressLength 150 180 200 200 0 0 210 250
+stressOpt 1 2 4 6 // (S_NO_DIM + S_FINAL_DIM = S_FINAL_DIM_ONLY), S_FINAL_NO_2, S_2_TO_HEAVY
+stressRule 0
+
+intonation 3
+spellingStress

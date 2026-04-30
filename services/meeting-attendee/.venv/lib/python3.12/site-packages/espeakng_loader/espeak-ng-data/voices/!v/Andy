@@ -1,0 +1,19 @@
+language variant
+name Andy
+gender Male
+
+pitch 85 110
+
+flutter 0
+formant 0 80 80 80 80
+formant 1 100 100 100 120
+formant 2 100 88 100
+formant 3 0 0 0
+formant 4 80 80 80
+formant 5 80 80 80
+formant 6 0 0 0
+formant 7 0 0 0
+formant 8 0 0 0
+stressAdd 0 0 0 0 0 0 0 200
+stressAmp 35 35 35 35 35 35 35 35 35
+

@@ -1,0 +1,6 @@
+name Russian (Classic)
+language ru-cl
+replace 03 a a#
+dict_min  20000
+speed 95
+dictrules 3

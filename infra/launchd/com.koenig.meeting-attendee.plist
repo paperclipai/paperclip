@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.koenig.meeting-attendee</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/services/meeting-attendee/.venv/bin/python</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>main:app</string>
+        <string>--port</string>
+        <string>8200</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/services/meeting-attendee</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/vardaankoenig/.paperclip/logs/meeting-attendee.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vardaankoenig/.paperclip/logs/meeting-attendee.stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/vardaankoenig/.nvm/versions/node/v24.14.1/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>KOENIG_VAULT_ROOT</key>
+        <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/vault</string>
+    </dict>
+</dict>
+</plist>

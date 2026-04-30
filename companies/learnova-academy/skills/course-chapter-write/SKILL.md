@@ -46,7 +46,14 @@ Before writing, decide:
 - The 2 KnowledgeChecks (1 MCQ + 1 free-form)
 - The 1 callout (info/warn/hot)
 
-### 3. Draft using the strict structure
+### 3. Draft using the strict structure (V3-1b LOCKED 2026-04-30)
+
+**Mandatory structural pattern** (Reviewer BLOCKs anything missing these):
+- **Wikipedia-style lead sentence**: chapter must open with a definition matching `[Topic] is [category] [defined-by]` form
+- **Lead paragraph**: 60-120 words. Includes a named entity + a number + a date in the first 2 sentences
+- **Key facts numbered list**: 3-7 items immediately after lead paragraph
+- **References footer**: numbered `[N] Title — URL · retrieved YYYY-MM-DD`
+- **Author**: choose from `src/lib/authors.ts` registry. Frontmatter `author: vardaan-koenig` (default).
 
 `vault/courses/<slug>/<NN>-<chapter-slug>.md`:
 
@@ -57,7 +64,8 @@ chapter_num: 2
 chapter_slug: tools-resources-prompts
 title: "Tools, Resources, Prompts — the three primitives"
 status: draft-for-review
-author: course-author
+author: vardaan-koenig
+agent_drafted_by: course-author
 date: 2026-04-30
 duration_min: 50
 prerequisites_chapters: [1]
@@ -74,12 +82,20 @@ sources:
 
 # Tools, Resources, Prompts — the three primitives
 
+<Wikipedia-style lead. First sentence: "[Topic] is [category] [defined-by]." 60-120 words. Includes a named entity + a number + a date in the first 2 sentences.>
+
 > **Prerequisites**: Chapter 1 (What MCP is and isn't) — you should have a hello-world server running.
 >
 > **Time**: 50 minutes
 >
 > **Learning objectives**: by the end of this chapter, you can define each primitive in 1 sentence,
 > implement all three in your hello-world server, and apply a clear decision rule for which to use when.
+
+## Key facts
+
+1. <One sentence with a date or number; cite as [1].>
+2. <Same.>
+3. <Same.>
 
 ## Why three primitives, not one
 
@@ -140,9 +156,11 @@ A common pitfall: <specific anti-pattern> — <why it bites + how to avoid>.
 
 In Chapter 3, you'll add <next outcome> — building on the primitives you just shipped.
 
-## References cited
-- [MCP spec](https://spec.modelcontextprotocol.io/)
-- [...]
+## References
+
+[1] MCP Specification — https://spec.modelcontextprotocol.io/ · retrieved 2026-04-30
+[2] <Title> — <URL> · retrieved 2026-04-30
+[3] <Title> — <URL> · retrieved 2026-04-30
 ```
 
 ### 4. Word count + structure check

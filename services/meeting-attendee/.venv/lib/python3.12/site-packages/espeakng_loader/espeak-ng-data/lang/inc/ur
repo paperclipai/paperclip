@@ -1,0 +1,7 @@
+name Urdu
+language ur
+maintainer Ejaz Shah <eashah67@gmail.com>
+status testing
+
+stressRule 6
+

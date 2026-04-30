@@ -1,0 +1,20 @@
+{
+  "tool": "macOS-say",
+  "tool_version": "builtin",
+  "note": "Fallback synthesis (Kokoro unavailable, OmniVoice not configured). macOS `say` command used with Nova voice preset. For production, replace with Kokoro or OmniVoice output.",
+  "voice_preset": "nova-warm",
+  "duration_sec": 165.96,
+  "script_word_count": 425,
+  "sample_rate_hz": 22050,
+  "bitrate_kbps": 50,
+  "channels": 1,
+  "format": "mp3",
+  "lufs": -16,
+  "produced_at": "2026-04-30T16:25:00Z",
+  "script_source": "vault/courses/picking-a-frontier-model-2026-q2/voiceover-03.md",
+  "chapter": 3,
+  "chapter_slug": "long-context-behavior",
+  "course_slug": "picking-a-frontier-model-2026-q2",
+  "quality_notes": "macOS builtin TTS for testing only. Spoken duration (166s) exceeds intended brief voiceover (85–110s) due to TTS rendering. Recommended: replace with Kokoro (45–55s) or OmniVoice (variable speed) for production.",
+  "next_action": "Install Kokoro or OmniVoice to replace this with production-grade synthesis"
+}

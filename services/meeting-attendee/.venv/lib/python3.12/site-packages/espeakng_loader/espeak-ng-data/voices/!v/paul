@@ -1,0 +1,17 @@
+language variant
+name Paul
+
+pitch 70 100
+
+formant 0 90 120 100
+formant 1 103 100 75
+formant 2 98 100 75
+formant 3 100 80 75
+formant 4 102 30 100
+formant 5 100 80 100
+formant 6 100 80 75
+formant 7 100 0 75
+formant 8 100 60 75
+consonants 90 60
+voicing 230
+tone 420 255 1300 130 4000 100

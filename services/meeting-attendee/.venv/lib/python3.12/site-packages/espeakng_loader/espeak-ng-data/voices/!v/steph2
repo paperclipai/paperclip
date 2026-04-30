@@ -1,0 +1,21 @@
+language variant
+name Steph2
+gender female
+
+pitch 166 200
+flutter 1
+roughness 0
+tone 100 255 600 70 1200 22 2000 66 3000 12
+
+formant 0 99  100 150
+formant 1 120 80 160
+formant 2 99 90 110 150
+formant 3 116 97 150
+formant 4 9 73 116
+formant 5 100 70 2
+formant 6 104 100 150
+formant 7 110 90 150
+formant 8 110 90 150
+
+stressAmp 16 16 24 24 16 16 20 24
+consonants 55 90

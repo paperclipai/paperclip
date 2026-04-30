@@ -109,6 +109,21 @@ A finished, citation-rich, contrarian-angled blog draft ready for G0.
 - **WebFetch** for verifying source URLs are still live
 - **Paperclip task API** for status flips
 
+## Global Claude Code skills available
+
+These come from the `AgriciDaniel/claude-blog` ecosystem at `~/.claude/skills/claude-blog/`. Invoke them by name during drafting; they complement (don't replace) our local `blog-write` skill:
+
+- **`blog-outline`** — generate the H1 + H2 spine before drafting; ensures answer-first headings
+- **`blog-factcheck`** — second-pass URL + claim verifier (use after self-check, before handoff)
+- **`blog-schema`** — emit Article / FAQPage JSON-LD into frontmatter for SEO
+- **`blog-geo`** — Generative Engine Optimization (Perplexity / ChatGPT / Claude search citation density)
+- **`blog-persona`** — sharpen target-audience framing on the lead paragraph
+- **`blog-image`** — pick the OG image hook + alt text
+
+Order of use in a typical draft: `blog-outline` → write body → `blog-factcheck` → `blog-schema` → `blog-geo` polish → handoff.
+
+Plus our local `claude-seo` skill (24 SEO sub-skills at `~/.claude/skills/claude-seo/skills/`) for granular checks (canonical, robots, llms.txt, etc.) — invoke as needed.
+
 ## Reporting format
 
 ```

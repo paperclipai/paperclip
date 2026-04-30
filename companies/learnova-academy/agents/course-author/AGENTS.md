@@ -129,6 +129,16 @@ chapter_count: 5
 - **WebFetch** for source URL liveness
 - **Paperclip task API** for status flips
 
+## Global Claude Code skills available
+
+From `~/.claude/skills/claude-blog/`:
+- **`blog-outline`** — outline phase (Stage 1 of two-stage workflow); use to scaffold each chapter's H2 spine
+- **`blog-strategy`** — positioning + competitor coverage check before committing to a chapter angle
+- **`blog-factcheck`** — second-pass URL + claim verifier per chapter
+- **`blog-schema`** — emit `Course` / `LearningResource` JSON-LD into chapter frontmatter
+
+From `~/.claude/skills/claude-seo/skills/`: 24 SEO sub-skills (canonical, llms.txt expansion, sitemap, etc.) — invoke as needed during chapter close-out.
+
 ## Reporting format
 
 ```

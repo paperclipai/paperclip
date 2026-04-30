@@ -1,0 +1,36 @@
+name Chinese (Mandarin, latin as English)
+language cmn
+language zh-cmn
+language zh
+
+phonemes cmn
+dictionary cmn
+words 1
+pitch 80 118
+
+dict_min 100000
+
+//for some dialects
+
+//[en]: replace ng with n
+//[zh]: �޺�������ng���n
+//replace 0 N n
+
+//[en]: replace rfx consonants
+//[zh]: �޾�������r���l��z��er���e
+//replace 0 ts.h tsh
+//replace 0 ts. ts
+//replace 0 s. s
+//replace 0 i. i[
+//replace 0 z. l
+//replace 0 z. z
+//replace 0 @r @
+
+//[en]: replace beginning n or l
+//[zh]: ����nl��n���l��l���n
+//replace 2 n l
+//replace 2 l n
+
+//[en]: replace beginning w with v
+//[zh]: w���v
+//replace 0 w  v

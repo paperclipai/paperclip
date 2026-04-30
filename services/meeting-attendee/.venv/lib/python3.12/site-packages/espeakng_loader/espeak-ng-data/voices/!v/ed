@@ -1,0 +1,17 @@
+language variant
+name Ed
+
+pitch 90 145
+
+formant 0 110 120 200 5
+formant 1 102 100 80
+formant 2 101 120 100
+formant 3 100 80 75
+formant 4 150 30 80
+formant 5 95 95 155
+formant 6 167 100 75
+formant 7 100 200 75
+formant 8 60 200 95
+consonants 55 80
+voicing 100
+tone 650 250 1000 130 240 255

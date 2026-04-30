@@ -88,6 +88,16 @@ Exactly one vault note per day at `vault/research/anthropic/<date>.md`. Plus cit
 - **Grok x_search** for X/Twitter real-time signal — required for hot-item detection
 - **GitHub MCP** for repo release scanning — `gh release list -R anthropics/prompt-eng-interactive-tutorial`
 
+## Global Claude Code skills available
+
+From `~/.claude/skills/claude-obsidian/skills/`:
+- **`wiki-ingest`** — convert raw scraped pages → polished, frontmatter-correct, wikilinked vault entries; use after every Crawl4AI fetch
+- **`autoresearch`** — deeper drill-down on a single topic; chains web fetches + summarization; use when daily brief needs a primary-source deep dive
+- **`defuddle`** — clean web → markdown (HTML cruft removal); pre-process before wiki-ingest
+- **`obsidian-markdown`** — frontmatter polish, wikilinks, callouts
+
+Order of use: Crawl4AI → defuddle → wiki-ingest → write to `vault/research/anthropic/<date>.md`.
+
 ## Reporting format
 
 Single message to your Paperclip task on completion:

@@ -1,0 +1,8 @@
+[console_scripts]
+csv2rdf=rdflib.tools.csv2rdf:main
+rdf2dot=rdflib.tools.rdf2dot:main
+rdfgraphisomorphism=rdflib.tools.graphisomorphism:main
+rdfpipe=rdflib.tools.rdfpipe:main
+rdfs2dot=rdflib.tools.rdfs2dot:main
+sparqlquery=rdflib.tools.sparqlquery:main
+

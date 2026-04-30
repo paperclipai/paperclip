@@ -1,0 +1,17 @@
+language variant
+name Gustave
+
+pitch  80 123
+
+formant 0 85 141 135
+formant 1 77 131 45
+formant 2 92 70 55
+formant 3 59 50 65
+formant 4 69 65 65
+formant 5 79 60 75
+formant 6 89 60 75
+formant 7 99 0 100
+formant 8 109 0 100
+voicing 135
+consonants 115 120
+

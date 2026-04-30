@@ -1,0 +1,17 @@
+language variant
+name male3
+gender male
+
+pitch 80 122
+formant 0 100 100 100
+formant 1  96  97 100
+formant 2  96  97 100
+formant 3  96 103 100
+formant 4  95 103 100
+formant 5  95 103 100
+formant 6 100 100 100
+formant 7 100 100 100
+formant 8 100 100 100
+
+consonants 100
+stressAdd 10 10 0 0 0 0 -30 -30

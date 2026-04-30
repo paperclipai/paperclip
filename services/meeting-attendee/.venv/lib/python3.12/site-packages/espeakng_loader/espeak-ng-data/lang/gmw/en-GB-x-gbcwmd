@@ -1,0 +1,12 @@
+name English (West Midlands)
+language en-gb-x-gbcwmd
+language en-gb 9
+language en 9
+
+phonemes en-wm
+
+replace 00 h NULL
+replace 00 o@ O@
+dictrules 6
+intonation 4
+stressAdd 0 0 0 0 0 0 0 20

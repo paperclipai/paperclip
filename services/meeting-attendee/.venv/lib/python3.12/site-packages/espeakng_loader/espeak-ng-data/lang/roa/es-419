@@ -1,0 +1,11 @@
+name Spanish (Latin America)
+language es-419
+language es-mx 6
+
+phonemes es-la
+dictrules 2
+intonation 2
+stressLength 170 200  230 180  0 0  250 280
+
+tunes s6 c6 q6 e6
+

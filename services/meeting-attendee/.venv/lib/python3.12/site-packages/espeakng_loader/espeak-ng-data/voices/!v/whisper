@@ -1,0 +1,13 @@
+language variant
+name whisper
+gender male
+
+pitch 82 117
+flutter 20
+
+formant 0 100  0 100
+formant 1 100 80 100
+
+voicing 17
+breath   75  75  50  40  15  10
+breathw 150 150 200 200 400 400

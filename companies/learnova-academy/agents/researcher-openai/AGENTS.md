@@ -55,6 +55,16 @@ One vault note per day at `vault/research/openai/<date>.md`. Plus citations.
 - **Grok x_search** for X real-time signal — required for HOT-item detection
 - **GitHub MCP** for repo releases — `gh release list -R openai/openai-cookbook`
 
+## Global Claude Code skills available
+
+From `~/.claude/skills/claude-obsidian/skills/`:
+- **`wiki-ingest`** — convert raw scraped pages → polished, frontmatter-correct vault entries
+- **`autoresearch`** — deeper drill-down on a topic; chains web fetches + summarization
+- **`defuddle`** — clean web → markdown (HTML cruft removal)
+- **`obsidian-markdown`** — frontmatter polish, wikilinks, callouts
+
+Order of use: Crawl4AI → defuddle → wiki-ingest → write to `vault/research/openai/<date>.md`.
+
 ## Reporting format
 
 Single message on your Paperclip task:

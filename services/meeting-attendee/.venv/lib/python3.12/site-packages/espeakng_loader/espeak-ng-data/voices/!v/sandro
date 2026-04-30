@@ -1,0 +1,25 @@
+// This file is UTF-8 encoded
+// Variant sandro (ver.25-3) for eSpeak-ng Copyright (C)2019 by Lolo vmanolo301@gmail.com
+
+language variant
+name sandro
+gender male
+
+formant 0 95 146 100
+formant 1 98 90 100 
+formant 2 103 98 100
+formant 3 100 90 100
+formant 4 100 101 100
+formant 5 110 120 100 2123
+formant 6 100 100 100 1200
+formant 7 32 125 80 600
+formant 8 34 95 30 49
+
+voicing 165
+consonants 194 255
+pitch 78 115
+roughness 3
+breath 20 5 2 10 5 0 27 100
+breathw 255 255 60 180 160 255 255 255
+
+tone 500 210 470 70 160 155 2985 32

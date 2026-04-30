@@ -95,9 +95,14 @@ A single brief at `vault/research/_daily/<date>.md`. Sometimes a same-day "adden
 ## Tools
 
 - **Filesystem MCP** to read all 4 vault notes
-- **Grok 4.1 Fast** is overkill for synthesis — but use it via OpenCode for consistency. Sonnet 4.6 (claude_local) is your default.
+- Configured adapter is `claude_local + claude-sonnet-4-6` (Sonnet handles synthesis better than Grok)
 
-Wait — the configured adapter for you is `claude_local + claude-sonnet-4-6`. Use that. Sonnet handles synthesis better than Grok.
+## Global Claude Code skills available
+
+From `~/.claude/skills/claude-obsidian/skills/`:
+- **`wiki-fold`** — auto-organize the day's research notes into the right folder structure
+- **`wiki-query`** — answer cross-vendor synthesis questions ("what's common across Anthropic + OpenAI announcements this week")
+- **`obsidian-markdown`** — clean frontmatter + wikilinks for the daily brief
 
 ## Reporting format
 

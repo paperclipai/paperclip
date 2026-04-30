@@ -1,0 +1,20 @@
+language variant
+name Belinda
+gender female
+
+pitch 200 247  
+flutter 3
+
+formant 0 88 85 154
+formant 1 135 58 169 -30
+formant 2 120 70 150 -260
+formant 3 120 39 150
+formant 4 125 57 80
+formant 5 125 80 150
+formant 6 110 80 150
+formant 7 110 75 150
+formant 8 110 75 150
+
+stressAdd -20 -20 -20 -20 0 3 20 12
+stressAmp 18 16 20 20 10 20 27 20
+

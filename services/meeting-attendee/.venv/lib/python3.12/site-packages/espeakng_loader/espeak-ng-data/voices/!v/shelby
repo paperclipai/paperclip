@@ -1,0 +1,18 @@
+language variant
+name shelby
+flutter 0
+roughness 0
+
+formant 0 100 160 190
+formant 1 90 90 90
+formant 2 140 140 140
+formant 3 130 150 130
+formant 4 110 110 110
+formant 5 120 120 110
+formant 6 10 10 10
+formant 7 10 10 10
+formant 8 10 10 10
+
+pitch 100 210
+voicing 40
+consonants 90 70

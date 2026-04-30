@@ -18,10 +18,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = path.join(__dirname, ".state");
 
 const PAPERCLIP_HOST = process.env.PAPERCLIP_HOST ?? "http://localhost:3100";
+const COMPANY_ID = process.env.KOENIG_COMPANY_ID ?? "2a77f89b-33f0-4133-a20c-77ddaac5e744"; // learnova-academy (Docker stack 2026-04-30)
 const INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS ?? 10 * 60 * 1000); // 10 min
 const NO_DELTA_LIMIT = Number(process.env.WATCHDOG_NO_DELTA_LIMIT ?? 5);
 const ROLLING_AVG_MULTIPLIER = Number(process.env.WATCHDOG_ROLLING_AVG_MULTIPLIER ?? 2);
 const ALERT_SLACK = process.env.WATCHDOG_ALERT_SLACK_WEBHOOK;
+const ALERT_TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const ALERT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const ALERT_EMAIL_TO = process.env.WATCHDOG_ALERT_EMAIL_TO;
 
 async function ensureStateDir() {
@@ -42,23 +45,43 @@ async function saveState(agentId, state) {
 }
 
 async function fetchAgents() {
-  const res = await fetch(`${PAPERCLIP_HOST}/api/agents`);
-  if (!res.ok) throw new Error(`paperclip /api/agents → ${res.status}`);
-  return res.json();
+  // 2026-04-30: company-scoped endpoint. Old `/api/agents` returned 404 for 13+ hours.
+  const url = `${PAPERCLIP_HOST}/api/companies/${COMPANY_ID}/agents`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`paperclip ${url} → ${res.status}`);
+  const data = await res.json();
+  // Response shape: array directly, OR { agents: [...] }
+  return Array.isArray(data) ? data : (data.agents ?? data.items ?? []);
 }
 
 async function pauseAgent(agentId, reason) {
-  const res = await fetch(`${PAPERCLIP_HOST}/api/agents/${agentId}/pause`, {
-    method: "POST",
+  const res = await fetch(`${PAPERCLIP_HOST}/api/agents/${agentId}`, {
+    method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({ status: "paused", pauseReason: reason }),
   });
-  if (!res.ok) console.error(`Failed to pause ${agentId}: ${res.status}`);
+  if (!res.ok) {
+    console.error(`Failed to pause ${agentId}: ${res.status} ${await res.text().catch(() => "")}`);
+    return;
+  }
   console.log(`PAUSED ${agentId}: ${reason}`);
   await alert(`🚨 Watchdog paused agent ${agentId}: ${reason}`);
 }
 
 async function alert(msg) {
+  // Telegram (preferred — Phase M)
+  if (ALERT_TELEGRAM_BOT_TOKEN && ALERT_TELEGRAM_CHAT_ID) {
+    try {
+      await fetch(`https://api.telegram.org/bot${ALERT_TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: ALERT_TELEGRAM_CHAT_ID, text: msg, parse_mode: "Markdown" }),
+      });
+    } catch (err) {
+      console.error("Telegram alert failed:", err);
+    }
+  }
+  // Slack (fallback)
   if (ALERT_SLACK) {
     try {
       await fetch(ALERT_SLACK, {
@@ -74,6 +97,8 @@ async function alert(msg) {
 }
 
 async function checkAgent(agent) {
+  // Skip non-actionable shapes (e.g., archived agents from companies.<id>.agents listings)
+  if (!agent || !agent.id) return;
   const state = await loadState(agent.id);
   if (state.paused || agent.status === "paused") {
     state.paused = true;
@@ -81,8 +106,12 @@ async function checkAgent(agent) {
     return;
   }
 
-  // Loop / no-progress check
-  const statusHash = JSON.stringify({ tasks: agent.activeTaskIds, blocked: agent.blockedReason });
+  // Loop / no-progress check — read whichever fields the API actually returns
+  const statusHash = JSON.stringify({
+    tasks: agent.activeTaskIds ?? agent.activeIssueIds ?? [],
+    blocked: agent.blockedReason ?? agent.pauseReason ?? null,
+    lastHb: agent.lastHeartbeatAt ?? null,
+  });
   if (state.lastStatusHash === statusHash) {
     state.noDeltaCount += 1;
     if (state.noDeltaCount >= NO_DELTA_LIMIT) {
@@ -94,8 +123,8 @@ async function checkAgent(agent) {
     state.lastStatusHash = statusHash;
   }
 
-  // Rolling-avg token check
-  const last = agent.lastTaskTokensIn ?? 0;
+  // Rolling-avg token check — fall back through field-name variants
+  const last = agent.lastTaskTokensIn ?? agent.lastTokensIn ?? agent.lastRunTokensIn ?? 0;
   if (last > 0) {
     state.recentTokensPerTask.push(last);
     if (state.recentTokensPerTask.length > 10) state.recentTokensPerTask.shift();
@@ -116,12 +145,16 @@ async function tick() {
     console.log(new Date().toISOString(), `tick OK — checked ${agents.length} agents`);
   } catch (err) {
     console.error(new Date().toISOString(), "tick error:", err.message);
+    // Don't silently die; alert if Telegram is wired
+    if (err.message.includes("404") || err.message.includes("ECONNREFUSED")) {
+      await alert(`⚠️ Watchdog cannot reach Paperclip: ${err.message}`).catch(() => {});
+    }
   }
 }
 
 async function main() {
   await ensureStateDir();
-  console.log(`Watchdog up — polling ${PAPERCLIP_HOST} every ${INTERVAL_MS / 1000}s`);
+  console.log(`Watchdog up — polling ${PAPERCLIP_HOST}/api/companies/${COMPANY_ID}/agents every ${INTERVAL_MS / 1000}s`);
   await tick();
   setInterval(tick, INTERVAL_MS);
 }

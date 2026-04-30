@@ -1,0 +1,17 @@
+language variant
+name Annie
+gender female
+pitch 120 280
+
+formant 0 105 125 120
+formant 1 120 140 120
+formant 2 120 150 140
+formant 3 130 150 130
+formant 4 120 120 110
+formant 5 120 120 110
+formant 6 120 140 130
+formant 7 120 140 130
+formant 8 120 140 130
+intonation 1
+voicing 30
+consonants 110 120

@@ -4,7 +4,7 @@ description: >
   Publish Verifier's primary skill — G5 post-publish gate. Fetch the live URL,
   validate schema, source URLs, og:image, sitemap presence, performance.
   Route BLOCKs to the right team. Use when ticket lands assigned to
-  @publish-verifier with status published.
+  @publish-verifier with metadata.publish_state=published (KOE-101: status stays "done").
 ---
 
 # Verify Publish
@@ -19,7 +19,7 @@ You verify; others fix.
 
 ## Inputs
 
-- Paperclip ticket with `status: published` and a published URL
+- Paperclip ticket with `metadata.publish_state=published` and `metadata.published_url` set (KOE-101: "published" is not a valid Paperclip status enum)
 - The vault file (for cross-checking citations)
 
 ## Workflow
@@ -148,7 +148,7 @@ PASS/BLOCK comment + vault sidecar.
 
 - Per-task cap $0.20. Most checks are shell + curl; reasoning is light (Haiku 4.5).
 - Auto-trigger: 2 min after publish event (deploy completes ~90s; small buffer for CDN warmup).
-- Don't run on pre-publish drafts. Only `status: published`.
+- Don't run on pre-publish drafts. Only trigger when `metadata.publish_state=published`.
 
 ## Escalation
 

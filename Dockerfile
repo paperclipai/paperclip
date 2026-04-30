@@ -43,7 +43,11 @@ COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
+# Koenig customization 2026-04-30: also build the CLI so `paperclipai` is available inside the container.
+# The CLI package is published as `paperclipai` (not `@paperclipai/cli`) — pnpm filter must match.
+RUN pnpm --filter paperclipai build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
@@ -59,6 +63,11 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Koenig customization 2026-04-30: install `paperclipai` CLI wrapper so company import / onboard
+# work inside the container the same way they would on a host.
+RUN printf '#!/bin/sh\nexec node /app/cli/dist/index.js "$@"\n' > /usr/local/bin/paperclipai \
+    && chmod +x /usr/local/bin/paperclipai
 
 ENV NODE_ENV=production \
   HOME=/paperclip \

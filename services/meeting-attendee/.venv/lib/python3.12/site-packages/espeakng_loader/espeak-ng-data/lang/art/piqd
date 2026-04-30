@@ -1,0 +1,5 @@
+name Klingon
+language piqd
+status testing
+stressRule 3
+

@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# publish-action.sh — closes the loop on the 5-gate publish pipeline.
+# publish-action.sh — closes the loop on the auto-publish pipeline (V2.6).
 #
-# Polls Paperclip every 15 min for issues at status g4-approved (Vardaan
-# clicked Approve in his email/Slack/Paperclip UI). For each:
-#   1. Run vercel build + deploy --prod --prebuilt (covers all approved at once)
-#   2. Flip the issue status to "published" + set published_url
-#   3. POST /api/agents/<publish-verifier>/heartbeat/invoke (G5 fires)
+# Polls Paperclip every 5 min for issues where:
+#   status == "done"  AND  metadata.publish_state in ("ready", "g4-approved")
+# Setting status to a non-enum value (e.g. "published-ready") returns 400; publish
+# state lives in metadata instead of the status field (KOE-101).
 #
-# Wired to launchd via com.koenig.publish-action.plist (every 15 min).
+# For each batch of ready issues:
+#   1. Trigger Next.js on-demand revalidate (POST /api/revalidate?path=/blog/<slug>)
+#      Fast path: ~3 sec; reads vault from local disk; no Vercel rebuild.
+#   2. If the path can't revalidate (e.g., new route or sitemap addition) fall back
+#      to vercel build --prebuilt + deploy --prod.
+#   3. Set metadata.publish_state="published" + published_url + published_at (status stays "done").
+#   4. POST /api/agents/<publish-verifier>/heartbeat/invoke (G5 fires).
+#
+# Wired to launchd via com.koenig.publish-action.plist (every 5 min).
 # Logs to ~/.paperclip/logs/publish-action.log.
 
 set -euo pipefail
@@ -34,22 +41,26 @@ if [[ -z "$VERCEL_TOKEN" ]]; then
   exit 0
 fi
 
-log "Polling for g4-approved issues..."
+log "Polling for ready-to-publish issues (status=done + metadata.publish_state in ready|g4-approved)..."
 
 APPROVED_IDS="$(curl -s "$PAPERCLIP_URL/api/companies/$COMPANY_ID/issues" | python3 -c "
 import json, sys
 items = json.load(sys.stdin)
 if isinstance(items, dict): items = items.get('items', [])
-ids = [i['id'] for i in items if i.get('status') == 'g4-approved']
+ids = [
+    i['id'] for i in items
+    if i.get('status') == 'done'
+    and i.get('metadata', {}).get('publish_state') in ('ready', 'g4-approved')
+]
 print(' '.join(ids))
 ")"
 
 if [[ -z "$APPROVED_IDS" ]]; then
-  log "No g4-approved issues. Exiting cleanly."
+  log "No ready-to-publish issues. Exiting cleanly."
   exit 0
 fi
 
-log "Found g4-approved issues: $APPROVED_IDS"
+log "Found ready-to-publish issues: $APPROVED_IDS"
 
 log "Running vercel build + deploy --prebuilt --prod..."
 cd "$ACADEMY"
@@ -79,10 +90,10 @@ print(next(a['id'] for a in data if a['urlKey'] == 'publish-verifier'))
 ")"
 
 for ID in $APPROVED_IDS; do
-  log "Flipping $ID to status=published + url=$PUBLISHED_URL"
+  log "Marking $ID publish_state=published + url=$PUBLISHED_URL (status stays done)"
   curl -sX PATCH "$PAPERCLIP_URL/api/issues/$ID" \
     -H "Content-Type: application/json" \
-    -d "$(python3 -c "import json; print(json.dumps({'status': 'published', 'metadata': {'published_url': '$PUBLISHED_URL', 'published_at': '$(date -u +%Y-%m-%dT%H:%M:%SZ)'}}))")" \
+    -d "$(python3 -c "import json; print(json.dumps({'metadata': {'publish_state': 'published', 'published_url': '$PUBLISHED_URL', 'published_at': '$(date -u +%Y-%m-%dT%H:%M:%SZ)'}}))")" \
     -o /dev/null
 
   log "Triggering publish-verifier (G5) for issue $ID"

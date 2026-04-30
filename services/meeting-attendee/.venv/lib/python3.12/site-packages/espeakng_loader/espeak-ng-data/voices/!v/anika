@@ -1,0 +1,25 @@
+language variant
+name anika
+gender female
+pitch 200 300
+flutter 6
+stressAmp 20 18  20 20  20 22  22 22
+
+roughness 0
+
+formant 0 105 200 140
+formant 1 95 150 120
+formant 2 100 120 140
+formant 3 95 95 140
+formant 4 120 120 110
+formant 5 120 120 110
+formant 6 110 60 65
+formant 7 100 0 100
+formant 8 100 0 100
+intonation 10
+voicing 30
+consonants 60 40
+stressLength 0 1 2 3 4 5 6 7
+stressAdd 130 140 140 100 0 0 130 160
+stressAmp 16 16 24 24 16 16 20 24
+tone 100 255 600 70 1200 22 2000 66 3000 12

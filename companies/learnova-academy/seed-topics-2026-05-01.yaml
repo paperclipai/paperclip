@@ -1,0 +1,225 @@
+date: 2026-05-01
+seeded_by: chief-content
+quality_bar: v3-citation-authority
+
+# V3 Citation Authority quality bar (per piece — Reviewer BLOCKs anything missing):
+# - Wikipedia-style lead sentence: "[Topic] is [category] [defined-by]"
+# - Lead paragraph 40-80 words with named entity + number + date in first 2 sentences
+# - "## Key facts" numbered list (3-7 items) before any prose H2
+# - "## References" footer with [N] Title — URL · retrieved YYYY-MM-DD
+# - Author from src/lib/authors.ts (vardaan-koenig | editorial-team) — NOT agent slug
+# - ≥5 inline citations to primary sources (vendor blogs, GitHub release notes, papers)
+# - ≥3 internal wikilinks (≥1 chapter, ≥1 glossary term, ≥1 sibling blog)
+# - ONE contrarian or non-obvious angle per piece
+# - Honest publishedDate (today's write date); lead paragraph anchors actual event date
+
+defaults:
+  word_count_blog: [1000, 1800]
+  word_count_chapter: [2500, 5000]
+  min_citations: 5
+  min_internal_wikilinks: 3
+  require_contrarian_angle: true
+  require_runnable_example: true
+  require_wikipedia_lead: true
+  require_key_facts_list: true
+  require_references_footer: true
+  default_author: vardaan-koenig
+  voice: "confident, friendly, source-citing, never hype-y; answer-first H1; no AI tells"
+
+# ────────────────────── COURSES (4) — HUB pages ──────────────────────
+
+topics:
+
+  - kind: course
+    slug: mcp-from-first-principles-to-production
+    title: "MCP from First Principles to Production"
+    vendor_tag: anthropic
+    level: builder
+    priority: hot
+    angle: "Most MCP intros explain WHAT it is. This walks through WHY JSON-RPC over stdio + manifest spec was the right design call vs WebSockets + OpenAPI, and shows you 5 production deployments with OAuth 2.1, gateways, and audit."
+    chapters:
+      - "Why MCP exists — the design problem it actually solves"
+      - "JSON-RPC over stdio: the wire protocol explained"
+      - "Tools, Resources, Prompts — the three primitives + decision rule"
+      - "OAuth 2.1 + DPoP: production auth for MCP servers"
+      - "Gateways, audit logs, and shipping to a 1000-user team"
+    sources_required:
+      - https://spec.modelcontextprotocol.io/
+      - https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/
+    affects_blogs: [mcp-2026-roadmap-explained, anthropic-agent-sdk-april-rebrand]
+
+  - kind: course
+    slug: picking-a-frontier-model-2026-q2
+    title: "Picking a Frontier Model: Opus 4.7 vs GPT-5.5 vs Gemini 3.1 Pro"
+    vendor_tag: community
+    level: builder
+    priority: hot
+    angle: "Vendor comparison posts always look identical. We ran our own determinism benchmark across 10 prompts × 3 models × 5 runs — here's what actually differs."
+    chapters:
+      - "The dimensions that matter — and the ones that don't"
+      - "Tool-use determinism: our 10×3×5 benchmark"
+      - "Long-context behavior: 200K vs 1M token reality"
+      - "Cost-per-task: pricing vs actual bill on real workloads"
+    cites_data: /data/claude-tool-use-determinism/2026-Q2/
+    sources_required:
+      - https://www.anthropic.com/news
+      - https://help.openai.com/en/articles/9624314-model-release-notes
+      - https://ai.google.dev/gemini-api/docs/changelog
+    affects_blogs: [opus-4-7-long-running-coding-benchmark, gpt-5-5-in-codex]
+
+  - kind: course
+    slug: production-agents-claude-agent-sdk-mcp-connector
+    title: "Production Agents with Claude Agent SDK + MCP Connector"
+    vendor_tag: anthropic
+    level: builder
+    priority: hot
+    angle: "Anthropic rebranded Claude Code SDK to Claude Agent SDK in April + shipped Managed Agents beta + MCP connector. This walks through a real production agent using all three."
+    chapters:
+      - "What changed when Claude Code SDK became Claude Agent SDK"
+      - "Managed Agents beta — when to use it, when to roll your own"
+      - "MCP connector: orchestrating multi-server agents"
+      - "Files API + code execution: the complete agent IO surface"
+      - "Production: deploy + observability + cost controls"
+    sources_required:
+      - https://www.anthropic.com/news/agent-capabilities-api
+    affects_blogs: [anthropic-agent-sdk-april-rebrand]
+
+  - kind: course
+    slug: gemini-enterprise-agent-platform-hands-on-tour
+    title: "Gemini Enterprise Agent Platform — hands-on tour"
+    vendor_tag: google
+    level: builder
+    priority: normal
+    angle: "Vertex's agent platform is the first Google offering that bridges 'I built a demo' to 'this runs in prod.' We walk through building a real agent with state persistence, tool calls, and observability."
+    chapters:
+      - "What 'Gemini Enterprise Agent Platform' actually is (and isn't)"
+      - "Hello-world: agent + 1 tool + state persistence"
+      - "Multi-agent orchestration with Vertex"
+      - "Comparing to Claude Agent SDK + Cloudflare Agents"
+    sources_required:
+      - https://cloud.google.com/blog/products/ai-machine-learning/introducing-gemini-enterprise-agent-platform
+
+# ────────────────────── BLOGS (10) — SPOKES + standalone ──────────────────────
+
+  - kind: blog
+    slug: opus-4-7-long-running-coding-benchmark
+    title: "Claude Opus 4.7 in long-running coding tasks — what changed"
+    vendor_tag: anthropic
+    priority: hot
+    angle: "Opus 4.7 (April 16, 2026) ships with extended context retention specifically for multi-hour coding sessions. Here's how it actually behaves across 8-hour engineering tickets — and where it still drifts."
+    runnable_example: "Same 200-step coding task on Opus 4.6 vs 4.7; cite our determinism benchmark dataset"
+    cites_data: /data/claude-tool-use-determinism/2026-Q2/
+    sources_required:
+      - https://www.anthropic.com/news
+    affects_courses: [picking-a-frontier-model-2026-q2]
+
+  - kind: blog
+    slug: cloudflare-agents-week-2026-explained
+    title: "Cloudflare Agents Week — every announcement explained"
+    vendor_tag: community
+    priority: hot
+    angle: "Cloudflare Agents Week (April 13-17, 2026) shipped 22+ features — Dynamic Workers, Sandboxes GA, AI Gateway with 14 providers, Unweight LLM compression. Most coverage hits the highlights; here's the architectural through-line."
+    runnable_example: "Cloudflare Worker AI agent: 50-line example with Dynamic Workers + Sandbox + AI Gateway"
+    sources_required:
+      - https://blog.cloudflare.com/
+    affects_courses: []
+
+  - kind: blog
+    slug: gpt-5-5-in-codex
+    title: "GPT-5.5 in Codex — what changed and why it matters"
+    vendor_tag: openai
+    priority: hot
+    angle: "GPT-5.5 (April 23, 2026) shipped with Codex desktop's 90+ plugin overhaul. The model's multi-step planning is the headline; the plugin ecosystem is the actual moat."
+    runnable_example: "Side-by-side: Codex 5.4 vs 5.5 on same 5-step coding task"
+    sources_required:
+      - https://techcrunch.com/2026/04/23/openai-chatgpt-gpt-5-5-ai-model-superapp/
+      - https://developers.openai.com/codex/changelog
+    affects_courses: [picking-a-frontier-model-2026-q2]
+
+  - kind: blog
+    slug: openai-on-aws-bedrock-the-real-tradeoffs
+    title: "OpenAI on AWS Bedrock — the real tradeoffs"
+    vendor_tag: openai
+    priority: hot
+    angle: "AWS-only orgs that previously couldn't use OpenAI now can — but Bedrock's auth/observability story is non-trivial; this isn't 'OpenAI-on-Azure parity.'"
+    runnable_example: "Bedrock InvokeModel boto3 vs raw OpenAI SDK — IAM-vs-API-key auth, observability gaps"
+    sources_required:
+      - https://openai.com/index/openai-on-aws/
+      - https://docs.aws.amazon.com/bedrock/
+    affects_courses: []
+
+  - kind: blog
+    slug: cursor-3-2-vs-claude-code-workflow
+    title: "Cursor 3.2 vs Claude Code — IDE-as-agent-runtime, two ways"
+    vendor_tag: community
+    priority: normal
+    angle: "Cursor 3.2 (April 24, 2026) reframes the IDE as an agent execution runtime; Claude Code does the same from the terminal. Same goal, opposite ergonomic bets — here's how to pick."
+    runnable_example: "Same 4-hour engineering ticket on Cursor 3.2 vs Claude Code; harness loop stability"
+    sources_required:
+      - https://cursor.com/changelog/3-0
+    affects_courses: [production-agents-claude-agent-sdk-mcp-connector]
+
+  - kind: blog
+    slug: vercel-ai-sdk-6-vs-claude-agent-sdk
+    title: "Vercel AI SDK 6 vs Claude Agent SDK — which to pick when"
+    vendor_tag: community
+    priority: normal
+    angle: "Both ship 'agent abstractions' in April 2026. Vercel's ToolLoopAgent is closer to LangChain ergonomics; Claude's Managed Agents is closer to vendor-managed runtime. Pick by what you're trying to abstract."
+    runnable_example: "Same 5-tool agent in both SDKs; line count, cost, observability comparison"
+    sources_required:
+      - https://vercel.com/blog/ai-sdk-6
+      - https://www.anthropic.com/news/agent-capabilities-api
+    affects_courses: [production-agents-claude-agent-sdk-mcp-connector]
+
+  - kind: blog
+    slug: gemma-4-vs-llama-4-vs-qwen-3-5
+    title: "Gemma 4 vs Llama 4 vs Qwen 3.5 — open-weights state of the art"
+    vendor_tag: community
+    priority: normal
+    angle: "Gemma 4 (April 2, 2026) closes the gap with proprietary mid-tier; Llama 4 + Qwen 3.5 already there. The interesting question is which open-weights model is best for which deployment shape — single-GPU, edge, or cloud-batch."
+    runnable_example: "Same 10-prompt benchmark across all three open-weights models; perf + cost"
+    sources_required:
+      - https://blog.google/technology/developers/gemma-4/
+    affects_courses: []
+
+  - kind: blog
+    slug: notebooklm-as-a-learning-system
+    title: "NotebookLM as a learning system — what it does that nothing else does"
+    vendor_tag: google
+    priority: normal
+    angle: "NotebookLM's April 2026 update adds cinematic videos + auto-categorize flashcards + classroom integration. Most reviews focus on features. The real story: it's the first AI tool designed for learners (not researchers) and that changes everything."
+    runnable_example: "Build a NotebookLM learning module from a single article + audio + flashcard set in 5 minutes"
+    sources_required:
+      - https://workspaceupdates.googleblog.com/2026/04/notebooklm-update.html
+    affects_courses: []
+
+  - kind: blog
+    slug: voice-agents-2026-tts-latency-benchmark
+    title: "Voice agents 2026 — Cartesia Sonic 3 vs Kokoro vs gpt-realtime latency benchmark"
+    vendor_tag: community
+    priority: normal
+    angle: "Voice agent quality is now a latency + naturalness tradeoff. Cartesia Sonic 3 (40ms TTFA) is fastest paid; Kokoro is best free local; gpt-realtime is smoothest streaming. We measured all three."
+    runnable_example: "Same 50-sentence script across 3 TTS engines — TTFA, MOS, cost per minute"
+    cites_data: /data/tts-quality-2026-Q2/
+    sources_required:
+      - https://inworld.ai/resources/best-voice-ai-tts-apis-for-real-time-voice-agents-2026-benchmarks
+    affects_courses: []
+
+  - kind: blog
+    slug: mcp-2026-roadmap-explained
+    title: "MCP 2026 roadmap explained — what changes for builders"
+    vendor_tag: anthropic
+    priority: normal
+    angle: "The MCP 2026 roadmap (published Jan 2026) commits to transport scalability, OAuth 2.1, Gateways, and audit. The interesting bit isn't the features — it's the governance migration to AAIF and what that means for who decides what gets in next."
+    runnable_example: "Implement DPoP token binding on a hello-world MCP server"
+    sources_required:
+      - https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/
+    affects_courses: [mcp-from-first-principles-to-production]
+
+# ────────────────────── DISPATCH ──────────────────────
+
+dispatch_policy:
+  pace: "2 blogs + 1 chapter per day at 07:00 IST"
+  in_flight_cap: 3  # Author + Reviewer simultaneously working
+  hot_first: true   # all priority=hot before any normal
+  total_estimated_days: 14

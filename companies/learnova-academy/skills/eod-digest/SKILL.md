@@ -19,54 +19,74 @@ Used by `ceo`. Runs once daily at 18:00 IST.
    - `GET /api/companies/learnova-academy/tasks?date=<today>` — all today's tickets (created, in-progress, completed, blocked)
    - `GET /api/costs/summary?period=today` — today's spend by agent + total
    - `GET /api/companies/learnova-academy/agents` — current health/pause status
-2. **Pull what shipped** — list Paperclip tickets that flipped to `published` today + the vault path of each (course/blog)
-3. **Pull what's blocked** — tickets in `blocked` or `awaiting-g4` for >24h
-4. **Write the digest** to `vault/decisions/eod-<date>.md`:
+2. **Pull what shipped** — list Paperclip tickets where `metadata.publish_state=published` today + the vault path of each (course/blog)
+3. **Pull what's blocked** — tickets in `blocked` status OR `metadata.publish_state=awaiting-g4` for >24h (KOE-101: "awaiting-g4" lives in metadata, not status enum)
+4. **URL strategy (mobile-safe; LOCKED 2026-04-30 evening V3-6):**
+   - **Published items** → `https://academy.kspl.tech/blog/<slug>` or `/learn/<slug>` (production live URL — works everywhere, including mobile)
+   - **Drafts in G3 review (high-stakes)** → Vercel preview deploy URL `https://academy-pr-<n>.vercel.app/...` (auto-expires 7 days; mobile-safe)
+   - **Paperclip dashboard** → `https://paperclip.kspl.tech/issues/<id>` (Cloudflare Tunnel, when V3-9 lands) OR ngrok URL in interim. **Never use `localhost:3100` in emails — breaks on mobile.**
+
+5. **Per-publish summary block** (one block per item shipped today):
+
+```
+🚀 NEW POST PUBLISHED — https://academy.kspl.tech/blog/<slug>
+
+Title: <title>
+Author: <human author> (drafted by <agent slug>; reviewed by <reviewer slug>)
+Length: <word count> words; <citation count> inline citations; <runprompt count> RunPromptCells; <kc count> KnowledgeChecks
+Reviewer feedback: <count> BLOCKs resolved (<short summaries>)
+Total time: <draft duration> draft + <review duration> review + <publish duration> publish
+```
+
+6. **Write the digest** to `vault/decisions/eod-<date>.md`:
 
 ```markdown
 ---
-date: 2026-04-29
+date: 2026-04-30
 ceo: ceo
-total_spend_usd: 4.20
-total_tickets_completed: 7
-total_tickets_in_flight: 4
-total_blocked: 1
+total_spend_usd: 0.62
+total_tickets_completed: 1
+total_tickets_in_flight: 3
+total_blocked: 0
 ---
 
-# EOD · 2026-04-29
+# EOD · 2026-04-30
 
-## Shipped today (3)
-- 📝 Blog: "Anthropic shipped 7 connectors today" → academy.kspl.tech/blog/anthropic-7-connectors (G4 by Vardaan 16:42)
-- 📚 Course delta: claude-tool-use-from-zero Module 4 updated for 7 connectors (G4 16:55)
-- 🛠️ Bug fix: lesson-page reading-time pill formatting (PR #234 merged)
+## Shipped today (1)
 
-## In flight (4)
-- 🛠️ KOE-119: Add SkillGraph component to lessons (Executor; 60% complete, ETA Wed)
-- ✍️ KOE-118: Course outline "Stripe + Claude" (Author drafting; ETA Tue)
-- 📝 KOE-117: Blog "MCP from first principles" (G0 review with @content-reviewer)
-- 📈 KOE-116: SEO audit of Lesson PDF page (seo-optimizer)
+🚀 NEW POST — https://academy.kspl.tech/blog/anthropic-creative-connectors
+- Title: "Anthropic's 9 creative connectors — what each one unlocks"
+- Author: Vardaan Koenig (drafted by blog-author; reviewed by content-reviewer)
+- Length: 1,140 words; 7 citations; 1 RunPromptCell; 1 KnowledgeCheck
+- Reviewer feedback: 2 BLOCKs resolved (URL 404 → swapped; missing KnowledgeCheck → added)
+- Total time: 1h 12m draft + 24m review + 8m publish (total 1h 44m)
 
-## Blocked (1)
-- 🚧 KOE-115: Voice Producer can't reach OmniVoice API (rate-limited?) — escalating to Chief Content
+## In flight (3)
+- KOE-119: Course "MCP from First Principles to Production" — chapter 2 drafting (ETA tomorrow)
+- KOE-118: Blog "Cursor 3.2 vs Claude Code workflow" — G0 review (@content-reviewer)
+- KOE-117: Blog "OpenAI on AWS Bedrock — the real tradeoffs" — drafting (ETA today)
+
+## Blocked (0)
+None
 
 ## Costs (today)
-- Total: $4.20 (within $25 daily target)
-- Top: chief-engineering $1.20 / executor $0.90 / content-author $0.60
-- All agents within per-task caps
-- 0 budget alerts
+- Total: $0.62 (OpenRouter pay-as-you-go; subscription work uncounted)
+- Top: blog-author $0.34 / content-reviewer $0.18 / 4 researchers $0.10
+- All agents within per-task caps; 0 budget alerts
 
 ## Health
-- All 19 agents nominal
-- Vault: 12 files written today (4 research, 3 daily/synth, 2 courses, 2 blogs, 1 decision)
+- All 23 agents nominal
+- Vault: 14 files (4 research, 1 daily brief, 1 retro, 8 work product)
+- 🔥 vendor moves to seed: 3 (see https://academy.kspl.tech/research/_daily/2026-04-30 once that route lands)
 
-## For your G4 queue (1)
-- 📝 Blog "MCP from first principles" — pending after G0 → expect Tue morning
+## For your G4 queue (0)
+None — auto-publish flow active per V2.6 policy. G4 only fires on `high_stakes:true` tickets.
 ```
 
-5. **Send to all 3 channels**:
-   - **Email** to `vardaan97@gmail.com` via Resend (subject: `KAA EOD · <date> · 3 shipped, 1 blocked, $4.20`)
-   - **Slack/Teams DM** to Vardaan (Phase 3 — for now log)
-   - **Paperclip queue** — flip an `eod-digest-<date>` task to `delivered` with link to vault file
+7. **Send to all channels:**
+   - **Email** to `vardaan97@gmail.com` via Resend (subject: `KAA EOD · <date> · <N> shipped, <M> blocked, $<spend>`)
+   - **Slack/Discord webhook** (when V3-9 lands; for now skip)
+   - **Paperclip queue** — flip an `eod-digest-<date>` task to `delivered` with link to the vault file path
 
 ## Inputs
 

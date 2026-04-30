@@ -1,0 +1,97 @@
+Metadata-Version: 2.3
+Name: anthropic
+Version: 0.97.0
+Summary: The official Python library for the anthropic API
+Project-URL: Homepage, https://github.com/anthropics/anthropic-sdk-python
+Project-URL: Repository, https://github.com/anthropics/anthropic-sdk-python
+Author-email: Anthropic <support@anthropic.com>
+License: MIT
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: OS Independent
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Typing :: Typed
+Requires-Python: >=3.9
+Requires-Dist: anyio<5,>=3.5.0
+Requires-Dist: distro<2,>=1.7.0
+Requires-Dist: docstring-parser<1,>=0.15
+Requires-Dist: httpx<1,>=0.25.0
+Requires-Dist: jiter<1,>=0.4.0
+Requires-Dist: pydantic<3,>=1.9.0
+Requires-Dist: sniffio
+Requires-Dist: typing-extensions<5,>=4.14
+Provides-Extra: aiohttp
+Requires-Dist: aiohttp; extra == 'aiohttp'
+Requires-Dist: httpx-aiohttp>=0.1.9; extra == 'aiohttp'
+Provides-Extra: aws
+Requires-Dist: boto3>=1.28.57; extra == 'aws'
+Requires-Dist: botocore>=1.31.57; extra == 'aws'
+Provides-Extra: bedrock
+Requires-Dist: boto3>=1.28.57; extra == 'bedrock'
+Requires-Dist: botocore>=1.31.57; extra == 'bedrock'
+Provides-Extra: mcp
+Requires-Dist: mcp>=1.0; (python_version >= '3.10') and extra == 'mcp'
+Provides-Extra: vertex
+Requires-Dist: google-auth[requests]<3,>=2; extra == 'vertex'
+Description-Content-Type: text/markdown
+
+# Claude SDK for Python
+
+[![PyPI version](https://img.shields.io/pypi/v/anthropic.svg)](https://pypi.org/project/anthropic/)
+
+The Claude SDK for Python provides access to the [Claude API](https://docs.anthropic.com/en/api/) from Python applications.
+
+## Documentation
+
+Full documentation is available at **[platform.claude.com/docs/en/api/sdks/python](https://platform.claude.com/docs/en/api/sdks/python)**.
+
+## Installation
+
+```sh
+pip install anthropic
+```
+
+## Getting started
+
+```python
+import os
+from anthropic import Anthropic
+
+client = Anthropic(
+    api_key=os.environ.get("ANTHROPIC_API_KEY"),  # This is the default and can be omitted
+)
+
+message = client.messages.create(
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": "Hello, Claude",
+        }
+    ],
+    model="claude-opus-4-6",
+)
+print(message.content)
+```
+
+## Requirements
+
+Python 3.9+
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/anthropics/anthropic-sdk-python/tree/main/./CONTRIBUTING.md).
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/anthropics/anthropic-sdk-python/tree/main/LICENSE) file for details.

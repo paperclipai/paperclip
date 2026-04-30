@@ -1,0 +1,19 @@
+language variant
+name anxiousAndy
+gender Male
+
+pitch 115 110
+
+flutter 0
+formant 0 80 80 80 80
+formant 1 100 100 100 120
+formant 2 100 100 100
+formant 3 0 0 0
+formant 4 0 0 0
+formant 5 100 100 100
+formant 6 100 100 100
+formant 7 100 100 100
+formant 8 100 100 100
+stressAdd 100 100 100 100 100 100 100 300
+stressAmp 35 35 35 35 35 35 35 35 35
+

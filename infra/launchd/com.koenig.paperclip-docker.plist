@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.koenig.paperclip-docker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>cd /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org &amp;&amp; for i in 1 2 3 4 5 6 7 8; do if /usr/local/bin/docker info &gt;/dev/null 2&gt;&amp;1; then break; fi; sleep 10; done &amp;&amp; /usr/local/bin/docker compose -f infra/docker-compose.koenig.yml up -d</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/infra/launchd/.logs/paperclip-docker.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/infra/launchd/.logs/paperclip-docker.err.log</string>
+</dict>
+</plist>

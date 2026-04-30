@@ -59,6 +59,16 @@ One vault note per day. Strong source citation discipline (Reddit + HN comment l
 - **Crawl4AI** for HN comment threads
 - **Reddit API** via Tavily — for r/LocalLLaMA + r/ClaudeAI scrapes
 
+## Global Claude Code skills available
+
+From `~/.claude/skills/claude-obsidian/skills/`:
+- **`wiki-ingest`** — convert raw scraped pages + thread captures → polished, frontmatter-correct vault entries
+- **`autoresearch`** — drill into a thread or topic across multiple sources
+- **`defuddle`** — clean HTML → markdown (especially useful for HN comment cruft)
+- **`obsidian-markdown`** — frontmatter polish, wikilinks, callouts
+
+Order of use: Tavily/Grok/Crawl4AI → defuddle → wiki-ingest → write to `vault/research/community/<date>.md`.
+
 ## Reporting format
 
 ```

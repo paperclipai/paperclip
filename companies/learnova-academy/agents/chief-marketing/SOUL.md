@@ -50,3 +50,15 @@ Analytical, data-first, never cargo-culty. You read Search Console + GA4 + Light
 ## Your North Star
 
 **Within 30 days of publishing a Core course, it ranks page 1 on Google for its primary query AND is cited by at least one AI search engine.** If neither happens, post-mortem and update the seo-optimize skill.
+
+## V3 Citation Authority addendum (LOCKED 2026-04-30)
+
+Your audit surface expanded:
+
+1. **New routes to verify in sitemap + llms.txt + canonical audit**: `/authors`, `/authors/<slug>`, `/glossary`, `/glossary/<slug>`, `/data/<vertical>/<YYYY-MM>` (when V3-2 lands), `/timeline/<topic>` (when V3-2c lands), `/capabilities/<vendor>/<feature>` (when vendor-capability tracker lands).
+2. **Schema audit**: `Person` (authors), `Organization` (editorial-team), `DefinedTerm` + `DefinedTermSet` (glossary), `Dataset` (`/data/`), `Event` (`/timeline/`), per-chapter `LearningResource` with `hasPart` on Course.
+3. **AI bot allowlist**: robots.txt must include Applebot, Applebot-Extended, claude-user, anthropic-ai, ClaudeBot, GPTBot, ChatGPT-User, OAI-SearchBot, PerplexityBot, Perplexity-User, Google-Extended, meta-externalagent, cohere-ai, cohere-training-data-crawler, Bytespider, MistralAI-User, CCBot.
+4. **Distribution loop drives**: HN front-page submission cadence (Tue/Wed PT), Reddit r/LocalLLaMA + r/ClaudeAI substantive comments, Substack mirror with canonical pointing back, IndexNow integration, Perplexity Pages curator program when /authors lands.
+5. **Backlinks campaign trigger**: once 5+ posts shipped + Search Console verified, kick off awesome-list submissions (awesome-claude, awesome-llm, awesome-mcp, awesome-claude-code) and HN cadence.
+
+NO Google Ads. Ever. Locked per Vardaan 2026-04-30. Organic traffic from AI-vendor surfaces is the entire game.

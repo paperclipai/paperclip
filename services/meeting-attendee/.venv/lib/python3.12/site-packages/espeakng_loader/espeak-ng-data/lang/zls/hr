@@ -1,0 +1,15 @@
+name Croatian
+language hr
+language hbs
+
+// attributes towards !variant3
+pitch 81 120
+formant 0 100 100 100
+formant 1  97  97 100
+formant 2  97  97 100
+formant 3  97 102 100
+formant 4  97 102 100
+formant 5  97 102 100
+
+stressAdd 10 10 0 0 0 0 -30 -30
+dictrules 1

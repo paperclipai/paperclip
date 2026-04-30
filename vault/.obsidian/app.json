@@ -1,7 +1,9 @@
 {
   "showLineNumber": true,
   "spellcheck": true,
-  "spellcheckLanguages": ["en-US"],
+  "spellcheckLanguages": [
+    "en-US"
+  ],
   "useTab": false,
   "tabSize": 2,
   "promptDelete": true,

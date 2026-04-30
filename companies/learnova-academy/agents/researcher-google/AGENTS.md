@@ -57,6 +57,16 @@ One vault note per day. Plus citations.
 - **Grok x_search** for X real-time signal — required for HOT-item detection
 - **GitHub MCP** for repo releases — `gh release list -R google-deepmind/gemma`
 
+## Global Claude Code skills available
+
+From `~/.claude/skills/claude-obsidian/skills/`:
+- **`wiki-ingest`** — convert raw scraped pages → polished, frontmatter-correct vault entries
+- **`autoresearch`** — deeper drill-down on a topic; chains web fetches + summarization
+- **`defuddle`** — clean web → markdown (HTML cruft removal)
+- **`obsidian-markdown`** — frontmatter polish, wikilinks, callouts
+
+Order of use: Crawl4AI → defuddle → wiki-ingest → write to `vault/research/google/<date>.md`.
+
 ## Reporting format
 
 ```

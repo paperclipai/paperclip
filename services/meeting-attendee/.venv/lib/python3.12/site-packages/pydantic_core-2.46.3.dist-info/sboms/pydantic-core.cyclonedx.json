@@ -1,0 +1,3969 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:5329a9c5-3cda-4256-a4b7-981b55de340b",
+  "metadata": {
+    "timestamp": "2026-04-20T14:19:12.222220000Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cargo-cyclonedx",
+        "version": "0.5.9"
+      }
+    ],
+    "component": {
+      "type": "library",
+      "bom-ref": "path+file:///Users/runner/work/pydantic/pydantic/pydantic-core#2.46.3",
+      "name": "pydantic-core",
+      "version": "2.46.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/pydantic-core@2.46.3?download_url=file://.",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/pydantic"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pydantic/pydantic.git"
+        }
+      ],
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "path+file:///Users/runner/work/pydantic/pydantic/pydantic-core#2.46.3 bin-target-0",
+          "name": "_pydantic_core",
+          "version": "2.46.3",
+          "purl": "pkg:cargo/pydantic-core@2.46.3?download_url=file://.#src/lib.rs"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "cdx:rustc:sbom:target:all_targets",
+        "value": "true"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ahash@0.8.12",
+      "author": "Tom Kaitchuck <Tom.Kaitchuck@gmail.com>",
+      "name": "ahash",
+      "version": "0.8.12",
+      "description": "A non-cryptographic hash function using AES-NI for high performance",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ahash@0.8.12",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/ahash"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/tkaitchuck/ahash"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.3",
+      "author": "Andrew Gallant <jamslam@gmail.com>",
+      "name": "aho-corasick",
+      "version": "1.1.3",
+      "description": "Fast multiple substring searching.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8e60d3430d3a69478ad0993f19238d2df97c507009a52b3c10addcd7f6bcb916"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/aho-corasick@1.1.3",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/BurntSushi/aho-corasick"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/aho-corasick"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#allocator-api2@0.2.21",
+      "author": "Zakarum <zaq.dev@icloud.com>",
+      "name": "allocator-api2",
+      "version": "0.2.21",
+      "description": "Mirror of Rust's allocator API",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/allocator-api2@0.2.21",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/allocator-api2"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/zakarumych/allocator-api2"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/zakarumych/allocator-api2"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.3.0",
+      "author": "Josh Stone <cuviper@gmail.com>",
+      "name": "autocfg",
+      "version": "1.3.0",
+      "description": "Automatic cfg for Rust compiler features",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0c4b4d0bd25bd0b74681c0ad21497610ce1b7c91b1022cd21c80c6fbdd9476b0"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/autocfg@1.3.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/autocfg/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/cuviper/autocfg"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1",
+      "author": "Marshall Pierce <marshall@mpierce.org>",
+      "name": "base64",
+      "version": "0.22.1",
+      "description": "encodes and decodes base64 as bytes or utf8",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/base64@0.22.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/base64"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/marshallpierce/rust-base64"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.9.1",
+      "author": "The Rust Project Developers",
+      "name": "bitflags",
+      "version": "2.9.1",
+      "description": "A macro to generate structures which behave like bitflags. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bitflags@2.9.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/bitflags"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/bitflags/bitflags"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bitflags/bitflags"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#bitvec@1.0.1",
+      "name": "bitvec",
+      "version": "1.0.1",
+      "description": "Addresses memory by bits, for packed collections and bitfields",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1bc2832c24239b0141d5674bb9174f9d68a8b5b3f2753311927c172ca46f7e9c"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/bitvec@1.0.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/bitvec/latest/bitvec"
+        },
+        {
+          "type": "website",
+          "url": "https://bitvecto-rs.github.io/bitvec"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bitvecto-rs/bitvec"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#bumpalo@3.19.0",
+      "author": "Nick Fitzgerald <fitzgen@gmail.com>",
+      "name": "bumpalo",
+      "version": "3.19.0",
+      "description": "A fast bump allocation arena for Rust.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bumpalo@3.19.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/bumpalo"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/fitzgen/bumpalo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.101",
+      "author": "Alex Crichton <alex@alexcrichton.com>",
+      "name": "cc",
+      "version": "1.0.101",
+      "description": "A build-time dependency for Cargo build scripts to assist in invoking the native C compiler to compile native C code into a static archive to be linked into Rust code. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ac367972e516d45567c7eafc73d24e1c193dcf200a8d94e9db7b3d38b349572d"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cc@1.0.101",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/cc"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-lang/cc-rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/cc-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.0",
+      "author": "Alex Crichton <alex@alexcrichton.com>",
+      "name": "cfg-if",
+      "version": "1.0.0",
+      "description": "A macro to ergonomically define an item depending on a large number of #[cfg] parameters. Structured like an if-else chain, the first matching branch is the item that gets emitted. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cfg-if@1.0.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/cfg-if"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/alexcrichton/cfg-if"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/alexcrichton/cfg-if"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+      "author": "Jane Lusby <jlusby@yaah.dev>",
+      "name": "displaydoc",
+      "version": "0.2.5",
+      "description": "A derive macro for implementing the display Trait via a doc comment and string interpolation ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/displaydoc@0.2.5",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/displaydoc"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/yaahc/displaydoc"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/yaahc/displaydoc"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#enum_dispatch@0.3.13",
+      "author": "Anton Lazarev <https://antonok.com>",
+      "name": "enum_dispatch",
+      "version": "0.3.13",
+      "description": "Near drop-in replacement for dynamic-dispatched method calls with up to 10x the speed",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/enum_dispatch@0.3.13",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://gitlab.com/antonok/enum_dispatch"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2",
+      "name": "equivalent",
+      "version": "1.0.2",
+      "description": "Traits for key comparison in maps.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/equivalent@1.0.2",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/indexmap-rs/equivalent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0",
+      "author": "Orson Peters <orsonpeters@gmail.com>",
+      "name": "foldhash",
+      "version": "0.2.0",
+      "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Zlib"
+        }
+      ],
+      "purl": "pkg:cargo/foldhash@0.2.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/orlp/foldhash"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#form_urlencoded@1.2.2",
+      "author": "The rust-url developers",
+      "name": "form_urlencoded",
+      "version": "1.2.2",
+      "description": "Parser and serializer for the application/x-www-form-urlencoded syntax, as used by HTML forms.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/form_urlencoded@1.2.2",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/servo/rust-url"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#funty@2.0.0",
+      "author": "myrrlyn <self@myrrlyn.dev>",
+      "name": "funty",
+      "version": "2.0.0",
+      "description": "Trait generalization over the primitive types",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/funty@2.0.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/funty"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/myrrlyn/funty"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.3.3",
+      "author": "The Rand Project Developers",
+      "name": "getrandom",
+      "version": "0.3.3",
+      "description": "A small cross-platform library for retrieving random data from system source",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "26145e563e54f2cadc477553f1ec5ee650b00862f0a58bcd12cbdc5f0ea2d2f4"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/getrandom@0.3.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/getrandom"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-random/getrandom"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.16.1",
+      "author": "Amanieu d'Antras <amanieu@gmail.com>",
+      "name": "hashbrown",
+      "version": "0.16.1",
+      "description": "A Rust port of Google's SwissTable hash map",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.16.1",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/hashbrown"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+      "name": "heck",
+      "version": "0.5.0",
+      "description": "heck is a case conversion library.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/heck@0.5.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/withoutboats/heck"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
+      "author": "KokaKiwi <kokakiwi@kokakiwi.net>",
+      "name": "hex",
+      "version": "0.4.3",
+      "description": "Encoding and decoding data into/from hexadecimal representation.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hex@0.4.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/hex/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/KokaKiwi/rust-hex"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_collections@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_collections",
+      "version": "1.5.0",
+      "description": "Collection of API for use in ICU libraries.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "db2fa452206ebee18c4b5c2274dbf1de17008e874b4dc4f0aea9d01ca79e4526"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_collections@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_locid@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_locid",
+      "version": "1.5.0",
+      "description": "API for managing Unicode Language and Locale Identifiers",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "13acbb8371917fc971be86fc8057c41a64b521c184808a698c02acc242dbf637"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_locid@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_locid_transform@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_locid_transform",
+      "version": "1.5.0",
+      "description": "API for Unicode Language and Locale Identifiers canonicalization",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "01d11ac35de8e40fdeda00d9e1e9d92525f3f9d887cdd7aa81d727596788b54e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_locid_transform@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_locid_transform_data@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_locid_transform_data",
+      "version": "1.5.0",
+      "description": "Data for the icu_locid_transform crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fdc8ff3388f852bede6b579ad4e978ab004f139284d7b28715f773507b946f6e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_locid_transform_data@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_normalizer",
+      "version": "1.5.0",
+      "description": "API for normalizing text into Unicode Normalization Forms",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "19ce3e0da2ec68599d193c93d088142efd7f9c5d6fc9b803774855747dc6a84f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_normalizer@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer_data@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_normalizer_data",
+      "version": "1.5.0",
+      "description": "Data for the icu_normalizer crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f8cafbf7aa791e9b22bec55a167906f9e1215fd475cd22adfcf660e03e989516"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_normalizer_data@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_properties@1.5.1",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_properties",
+      "version": "1.5.1",
+      "description": "Definitions for Unicode properties",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "93d6020766cfc6302c15dbbc9c8778c37e62c14427cb7f6e601d849e092aeef5"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_properties@1.5.1",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_properties_data@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_properties_data",
+      "version": "1.5.0",
+      "description": "Data for the icu_properties crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "67a8effbc3dd3e4ba1afa8ad918d5684b8868b3b26500753effea8d2eed19569"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_properties_data@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_provider@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_provider",
+      "version": "1.5.0",
+      "description": "Trait and struct definitions for the ICU data provider",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6ed421c8a8ef78d3e2dbc98a973be2f3770cb42b606e3ab18d6237c4dfde68d9"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_provider@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#icu_provider_macros@1.5.0",
+      "author": "The ICU4X Project Developers",
+      "name": "icu_provider_macros",
+      "version": "1.5.0",
+      "description": "Proc macros for ICU data providers",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1ec89e9337638ecdc08744df490b221a7399bf8d164eb52a665454e60e075ad6"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/icu_provider_macros@1.5.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://icu4x.unicode.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
+      "author": "The rust-url developers",
+      "name": "idna",
+      "version": "1.1.0",
+      "description": "IDNA (Internationalizing Domain Names in Applications) and Punycode.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/idna@1.1.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/servo/rust-url/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#idna_adapter@1.2.0",
+      "author": "The rust-url developers",
+      "name": "idna_adapter",
+      "version": "1.2.0",
+      "description": "Back end adapter for idna",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "daca1df1c957320b2cf139ac61e7bd64fed304c5040df000a745aa1de3b4ef71"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/idna_adapter@1.2.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/idna_adapter/latest/idna_adapter/"
+        },
+        {
+          "type": "website",
+          "url": "https://docs.rs/crate/idna_adapter/latest"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/hsivonen/idna_adapter"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.11",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "itoa",
+      "version": "1.0.11",
+      "description": "Fast integer primitive to string conversion",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/itoa@1.0.11",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/itoa"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/itoa"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#jiter@0.14.0",
+      "author": "Samuel Colvin <samuel@pydantic.dev>",
+      "name": "jiter",
+      "version": "0.14.0",
+      "description": "Fast Iterable JSON parser",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b6f3b5d3f84b36f4ad09fd1da896d23d9852a1aa86556578dd0289f43dce311d"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/jiter@0.14.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/jiter/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pydantic/jiter/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.77",
+      "author": "The wasm-bindgen Developers",
+      "name": "js-sys",
+      "version": "0.3.77",
+      "description": "Bindings for all JS global objects and functions in all JS environments like Node.js and browsers, built on `#[wasm_bindgen]` using the `wasm-bindgen` crate. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1cfaf33c695fc6e08064efbc1f72ec937429614f25eef83af942d0e227c3a28f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/js-sys@0.3.77",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/js-sys"
+        },
+        {
+          "type": "website",
+          "url": "https://rustwasm.github.io/wasm-bindgen/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/js-sys"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-float@1.0.5",
+      "author": "Alex Huszagh <ahuszagh@gmail.com>",
+      "name": "lexical-parse-float",
+      "version": "1.0.5",
+      "description": "Efficient parsing of floats from strings.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "de6f9cb01fb0b08060209a057c048fcbab8717b4c1ecd2eac66ebfe39a65b0f2"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/lexical-parse-float@1.0.5",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Alexhuszagh/rust-lexical"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-integer@1.0.5",
+      "author": "Alex Huszagh <ahuszagh@gmail.com>",
+      "name": "lexical-parse-integer",
+      "version": "1.0.5",
+      "description": "Efficient parsing of integers from strings.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "72207aae22fc0a121ba7b6d479e42cbfea549af1479c3f3a4f12c70dd66df12e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/lexical-parse-integer@1.0.5",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Alexhuszagh/rust-lexical"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#lexical-util@1.0.6",
+      "author": "Alex Huszagh <ahuszagh@gmail.com>",
+      "name": "lexical-util",
+      "version": "1.0.6",
+      "description": "Shared utilities for lexical creates.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5a82e24bf537fd24c177ffbbdc6ebcc8d54732c35b50a3f28cc3f4e4c949a0b3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/lexical-util@1.0.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Alexhuszagh/rust-lexical"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.155",
+      "author": "The Rust Project Developers",
+      "name": "libc",
+      "version": "0.2.155",
+      "description": "Raw FFI bindings to platform libraries like libc. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/libc@0.2.155",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/libc/"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-lang/libc"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/libc"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#litemap@0.7.3",
+      "author": "The ICU4X Project Developers",
+      "name": "litemap",
+      "version": "0.7.3",
+      "description": "A key-value Map implementation based on a flat, sorted Vec.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "643cb0b8d4fcc284004d5fd0d67ccf61dfffadb7f75e1e71bc420f4688a3a704"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/litemap@0.7.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/litemap"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#log@0.4.27",
+      "author": "The Rust Project Developers",
+      "name": "log",
+      "version": "0.4.27",
+      "description": "A lightweight logging facade for Rust ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/log@0.4.27",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/log"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/log"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#lru@0.16.3",
+      "author": "Jerome Froelich <jeromefroelic@hotmail.com>",
+      "name": "lru",
+      "version": "0.16.3",
+      "description": "A LRU cache implementation",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/lru@0.16.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/lru/"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/jeromefroe/lru-rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/jeromefroe/lru-rs.git"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.7.4",
+      "author": "Andrew Gallant <jamslam@gmail.com>, bluss",
+      "name": "memchr",
+      "version": "2.7.4",
+      "description": "Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for 1, 2 or 3 byte search and single substring search. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/memchr@2.7.4",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/memchr/"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/BurntSushi/memchr"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/memchr"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.6",
+      "author": "The Rust Project Developers",
+      "name": "num-bigint",
+      "version": "0.4.6",
+      "description": "Big integer implementation for Rust",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/num-bigint@0.4.6",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/num-bigint"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-num/num-bigint"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-num/num-bigint"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+      "author": "The Rust Project Developers",
+      "name": "num-integer",
+      "version": "0.1.46",
+      "description": "Integer traits and functions",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/num-integer@0.1.46",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/num-integer"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-num/num-integer"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-num/num-integer"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+      "author": "The Rust Project Developers",
+      "name": "num-traits",
+      "version": "0.2.19",
+      "description": "Numeric traits for generic mathematics",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/num-traits@0.2.19",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/num-traits"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-num/num-traits"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-num/num-traits"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3",
+      "author": "Aleksey Kladov <aleksey.kladov@gmail.com>",
+      "name": "once_cell",
+      "version": "1.21.3",
+      "description": "Single assignment cells and lazy values.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/once_cell@1.21.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/once_cell"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/matklad/once_cell"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
+      "author": "The rust-url developers",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "description": "Percent encoding and decoding",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/percent-encoding@2.3.2",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/servo/rust-url/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.6.0",
+      "name": "portable-atomic",
+      "version": "1.6.0",
+      "description": "Portable atomic types including support for 128-bit atomics, atomic float, etc. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7170ef9988bc169ba16dd36a7fa041e5c4cbeb6a35b76d4c03daded371eae7c0"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/portable-atomic@1.6.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/taiki-e/portable-atomic"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+      "author": "David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>",
+      "name": "proc-macro2",
+      "version": "1.0.86",
+      "description": "A substitute implementation of the compiler's `proc_macro` API to decouple token-based libraries from the procedural macro use case.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5e719e8df665df0d1c8fbfd238015744736151d4445ec0836b8e628aae103b77"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/proc-macro2@1.0.86",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/proc-macro2"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/proc-macro2"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3",
+      "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+      "name": "pyo3-build-config",
+      "version": "0.28.3",
+      "description": "Build configuration for the PyO3 ecosystem",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e368e7ddfdeb98c9bca7f8383be1648fd84ab466bf2bc015e94008db6d35611e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pyo3-build-config@0.28.3",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyo3/pyo3"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pyo3/pyo3"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-ffi@0.28.3",
+      "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+      "name": "pyo3-ffi",
+      "version": "0.28.3",
+      "description": "Python-API bindings for the PyO3 ecosystem",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7f29e10af80b1f7ccaf7f69eace800a03ecd13e883acfacc1e5d0988605f651e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pyo3-ffi@0.28.3",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyo3/pyo3"
+        },
+        {
+          "type": "other",
+          "url": "python"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pyo3/pyo3"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros-backend@0.28.3",
+      "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+      "name": "pyo3-macros-backend",
+      "version": "0.28.3",
+      "description": "Code generation for PyO3 package",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c4cdc218d835738f81c2338f822078af45b4afdf8b2e33cbb5916f108b813acb"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pyo3-macros-backend@0.28.3",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyo3/pyo3"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pyo3/pyo3"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros@0.28.3",
+      "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+      "name": "pyo3-macros",
+      "version": "0.28.3",
+      "description": "Proc macros for PyO3 package",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "df6e520eff47c45997d2fc7dd8214b25dd1310918bbb2642156ef66a67f29813"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pyo3-macros@0.28.3",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyo3/pyo3"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pyo3/pyo3"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.28.3",
+      "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+      "name": "pyo3",
+      "version": "0.28.3",
+      "description": "Bindings to Python interpreter",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91fd8e38a3b50ed1167fb981cd6fd60147e091784c427b8f7183a7ee32c31c12"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pyo3@0.28.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/crate/pyo3/"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/pyo3/pyo3"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pyo3/pyo3"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#python3-dll-a@0.2.14",
+      "author": "Sergey Kvachonok <ravenexp@gmail.com>, messense <messense@icloud.com>, Adam Reichold <adam.reichold@t-online.de>",
+      "name": "python3-dll-a",
+      "version": "0.2.14",
+      "description": "Standalone python3(y)(t).dll import library generator",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d381ef313ae70b4da5f95f8a4de773c6aa5cd28f73adec4b4a31df70b66780d8"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/python3-dll-a@0.2.14",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/PyO3/python3-dll-a"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "quote",
+      "version": "1.0.44",
+      "description": "Quasi-quoting macro quote!(...)",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/quote@1.0.44",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/quote/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/quote"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#r-efi@5.2.0",
+      "name": "r-efi",
+      "version": "5.2.0",
+      "description": "UEFI Reference Specification Protocol Constants and Definitions",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "74765f6d916ee2faa39bc8e68e4f3ed8949b48cccdac59983d287a7cb71ce9c5"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+        }
+      ],
+      "purl": "pkg:cargo/r-efi@5.2.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/r-efi/r-efi/wiki"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/r-efi/r-efi"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#radium@0.7.0",
+      "author": "Nika Layzell <nika@thelayzells.com>, myrrlyn <self@myrrlyn.dev>",
+      "name": "radium",
+      "version": "0.7.0",
+      "description": "Portable interfaces for maybe-atomic types",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/radium@0.7.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/radium"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/bitvecto-rs/radium"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bitvecto-rs/radium"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#regex-automata@0.4.13",
+      "author": "The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>",
+      "name": "regex-automata",
+      "version": "0.4.13",
+      "description": "Automata construction and matching using regular expressions.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5276caf25ac86c8d810222b3dbb938e512c55c6831a10f3e6ed1c93b84041f1c"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/regex-automata@0.4.13",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/regex-automata"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-lang/regex/tree/master/regex-automata"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/regex"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.5",
+      "author": "The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>",
+      "name": "regex-syntax",
+      "version": "0.8.5",
+      "description": "A regular expression parser.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/regex-syntax@0.8.5",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/regex-syntax"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/regex/tree/master/regex-syntax"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#regex@1.12.3",
+      "author": "The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>",
+      "name": "regex",
+      "version": "1.12.3",
+      "description": "An implementation of regular expressions for Rust. This implementation uses finite automata and guarantees linear time matching on all inputs. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/regex@1.12.3",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/regex"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-lang/regex"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/regex"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.17",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "rustversion",
+      "version": "1.0.17",
+      "description": "Conditional compilation according to rustc compiler version",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "955d28af4278de8121b7ebeb796b6a45735dc01436d898801014aced2773a3d6"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rustversion@1.0.17",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/rustversion"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/rustversion"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+      "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
+      "name": "serde",
+      "version": "1.0.228",
+      "description": "A generic serialization/deserialization framework",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde@1.0.228",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/serde"
+        },
+        {
+          "type": "website",
+          "url": "https://serde.rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/serde-rs/serde"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.228",
+      "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
+      "name": "serde_core",
+      "version": "1.0.228",
+      "description": "Serde traits only, with no support for derive -- use the `serde` crate instead",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_core@1.0.228",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/serde_core"
+        },
+        {
+          "type": "website",
+          "url": "https://serde.rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/serde-rs/serde"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.228",
+      "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
+      "name": "serde_derive",
+      "version": "1.0.228",
+      "description": "Macros 1.1 implementation of #[derive(Serialize, Deserialize)]",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_derive@1.0.228",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://serde.rs/derive.html"
+        },
+        {
+          "type": "website",
+          "url": "https://serde.rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/serde-rs/serde"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.149",
+      "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
+      "name": "serde_json",
+      "version": "1.0.149",
+      "description": "A JSON serialization file format",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_json@1.0.149",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/serde_json"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/serde-rs/json"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1",
+      "author": "The Servo Project Developers",
+      "name": "smallvec",
+      "version": "1.15.1",
+      "description": "'Small vector' optimization: store up to a small number of items on the stack",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/smallvec@1.15.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/smallvec/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/servo/rust-smallvec"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#speedate@0.17.0",
+      "author": "Samuel Colvin <s@muelcolvin.com>",
+      "name": "speedate",
+      "version": "0.17.0",
+      "description": "Fast and simple datetime, date, time and duration parsing",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aba069c070b5e213f2a094deb7e5ed50ecb092be36102a4f4042e8d2056d060e"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/speedate@0.17.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/speedate/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pydantic/speedate/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#stable_deref_trait@1.2.0",
+      "author": "Robert Grosse <n210241048576@gmail.com>",
+      "name": "stable_deref_trait",
+      "version": "1.2.0",
+      "description": "An unsafe marker trait for types like Box and Rc that dereference to a stable address even when moved, and hence can be used with libraries such as owning_ref and rental. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/stable_deref_trait@1.2.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/stable_deref_trait/1.2.0/stable_deref_trait"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/storyyeller/stable_deref_trait"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#static_assertions@1.1.0",
+      "author": "Nikolai Vazquez",
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "description": "Compile-time assertions to ensure that invariants are met.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/static_assertions@1.1.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/static_assertions/"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/nvzqz/static-assertions-rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/nvzqz/static-assertions-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#strum@0.27.2",
+      "author": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+      "name": "strum",
+      "version": "0.27.2",
+      "description": "Helpful macros for working with enums and strings",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/strum@0.27.2",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/strum"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/Peternator7/strum"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/Peternator7/strum"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#strum_macros@0.27.2",
+      "author": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+      "name": "strum_macros",
+      "version": "0.27.2",
+      "description": "Helpful macros for working with enums and strings",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/strum_macros@0.27.2",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/strum"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/Peternator7/strum"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/Peternator7/strum"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "syn",
+      "version": "2.0.82",
+      "description": "Parser for Rust source code",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "83540f837a8afc019423a8edb95b52a8effe46957ee402287f4292fae35be021"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/syn@2.0.82",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/syn"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/syn"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#synstructure@0.13.1",
+      "author": "Nika Layzell <nika@thelayzells.com>",
+      "name": "synstructure",
+      "version": "0.13.1",
+      "description": "Helper methods and macros for custom derives",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c8af7666ab7b6390ab78131fb5b0fce11d6b7a6951602017c35fa82800708971"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/synstructure@0.13.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/synstructure"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/mystor/synstructure"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#tap@1.0.1",
+      "author": "Elliott Linder <elliott.darfink@gmail.com>, myrrlyn <self@myrrlyn.dev>",
+      "name": "tap",
+      "version": "1.0.1",
+      "description": "Generic extensions for tapping values in Rust",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tap@1.0.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/tap"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/myrrlyn/tap"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/myrrlyn/tap"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.4",
+      "author": "Dan Gohman <sunfish@mozilla.com>",
+      "name": "target-lexicon",
+      "version": "0.13.4",
+      "description": "LLVM target triple types",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b1dd07eb858a2067e2f3c7155d54e929265c264e6f37efe3ee7a8d1b5a1dd0ba"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception"
+        }
+      ],
+      "purl": "pkg:cargo/target-lexicon@0.13.4",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/target-lexicon/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bytecodealliance/target-lexicon"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.7.6",
+      "author": "The ICU4X Project Developers",
+      "name": "tinystr",
+      "version": "0.7.6",
+      "description": "A small ASCII-only bounded length string representation.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9117f5d4db391c1cf6927e7bea3db74b9a1c1add8f7eda9ffd5364f40f57b82f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/tinystr@0.7.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.12",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "unicode-ident",
+      "version": "1.0.12",
+      "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3354b9ac3fae1ff6755cb6db53683adb661634f67557942dea4facebec0fee4b"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0) AND Unicode-DFS-2016"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-ident@1.0.12",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/unicode-ident"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/unicode-ident"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+      "author": "The rust-url developers",
+      "name": "url",
+      "version": "2.5.8",
+      "description": "URL library for Rust, based on the WHATWG URL Standard",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/url@2.5.8",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/url"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/servo/rust-url"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#utf16_iter@1.0.5",
+      "author": "Henri Sivonen <hsivonen@hsivonen.fi>",
+      "name": "utf16_iter",
+      "version": "1.0.5",
+      "description": "Iterator by char over potentially-invalid UTF-16 in &[u16]",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c8232dd3cdaed5356e0f716d285e4b40b932ac434100fe9b7e0e8e935b9e6246"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/utf16_iter@1.0.5",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/utf16_iter/"
+        },
+        {
+          "type": "website",
+          "url": "https://docs.rs/utf16_iter/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/hsivonen/utf16_iter"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#utf8_iter@1.0.4",
+      "author": "Henri Sivonen <hsivonen@hsivonen.fi>",
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "description": "Iterator by char over potentially-invalid UTF-8 in &[u8]",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/utf8_iter@1.0.4",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/utf8_iter/"
+        },
+        {
+          "type": "website",
+          "url": "https://docs.rs/utf8_iter/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/hsivonen/utf8_iter"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.23.0",
+      "author": "Ashley Mannix<ashleymannix@live.com.au>, Dylan DPC<dylan.dpc@gmail.com>, Hunar Roop Kahlon<hunar.roop@gmail.com>",
+      "name": "uuid",
+      "version": "1.23.0",
+      "description": "A library to generate and parse UUIDs.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/uuid@1.23.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/uuid"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/uuid-rs/uuid"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/uuid-rs/uuid"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5",
+      "author": "Sergio Benitez <sb@sergio.bz>",
+      "name": "version_check",
+      "version": "0.9.5",
+      "description": "Tiny crate to check the version of the installed/running rustc.",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/version_check@0.9.5",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/version_check/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/SergioBenitez/version_check"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wasi@0.14.2+wasi-0.2.4",
+      "author": "The Cranelift Project Developers",
+      "name": "wasi",
+      "version": "0.14.2+wasi-0.2.4",
+      "description": "WASI API bindings for Rust",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9683f9a5a998d873c0d21fcbe3c083009670149a8fab228644b8bd36b2c48cb3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/wasi@0.14.2+wasi-0.2.4",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wasi"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bytecodealliance/wasi-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-backend@0.2.100",
+      "author": "The wasm-bindgen Developers",
+      "name": "wasm-bindgen-backend",
+      "version": "0.2.100",
+      "description": "Backend code generation of the wasm-bindgen tool ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2f0a0651a5c2bc21487bde11ee802ccaf4c51935d0d3d42a6101f98161700bc6"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-backend@0.2.100",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wasm-bindgen-backend"
+        },
+        {
+          "type": "website",
+          "url": "https://rustwasm.github.io/wasm-bindgen/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/backend"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro-support@0.2.100",
+      "author": "The wasm-bindgen Developers",
+      "name": "wasm-bindgen-macro-support",
+      "version": "0.2.100",
+      "description": "The part of the implementation of the `#[wasm_bindgen]` attribute that is not in the shared backend crate ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8ae87ea40c9f689fc23f209965b6fb8a99ad69aeeb0231408be24920604395de"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-macro-support@0.2.100",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wasm-bindgen"
+        },
+        {
+          "type": "website",
+          "url": "https://rustwasm.github.io/wasm-bindgen/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/macro-support"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro@0.2.100",
+      "author": "The wasm-bindgen Developers",
+      "name": "wasm-bindgen-macro",
+      "version": "0.2.100",
+      "description": "Definition of the `#[wasm_bindgen]` attribute, an internal dependency ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7fe63fc6d09ed3792bd0897b314f53de8e16568c2b3f7982f468c0bf9bd0b407"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-macro@0.2.100",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wasm-bindgen"
+        },
+        {
+          "type": "website",
+          "url": "https://rustwasm.github.io/wasm-bindgen/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/macro"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-shared@0.2.100",
+      "author": "The wasm-bindgen Developers",
+      "name": "wasm-bindgen-shared",
+      "version": "0.2.100",
+      "description": "Shared support between wasm-bindgen and wasm-bindgen cli, an internal dependency. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1a05d73b933a847d6cccdda8f838a22ff101ad9bf93e33684f39c1f5f0eece3d"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-shared@0.2.100",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wasm-bindgen-shared"
+        },
+        {
+          "type": "website",
+          "url": "https://rustwasm.github.io/wasm-bindgen/"
+        },
+        {
+          "type": "other",
+          "url": "wasm_bindgen"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/shared"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen@0.2.100",
+      "author": "The wasm-bindgen Developers",
+      "name": "wasm-bindgen",
+      "version": "0.2.100",
+      "description": "Easy support for interacting between JS and Rust. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1edc8929d7499fc4e8f0be2262a241556cfc54a0bea223790e71446f2aab1ef5"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen@0.2.100",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wasm-bindgen"
+        },
+        {
+          "type": "website",
+          "url": "https://rustwasm.github.io/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rustwasm/wasm-bindgen"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wit-bindgen-rt@0.39.0",
+      "name": "wit-bindgen-rt",
+      "version": "0.39.0",
+      "description": "Runtime support for the `wit-bindgen` crate ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/wit-bindgen-rt@0.39.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/bytecodealliance/wit-bindgen"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bytecodealliance/wit-bindgen"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#write16@1.0.0",
+      "name": "write16",
+      "version": "1.0.0",
+      "description": "A UTF-16 analog of the Write trait",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d1890f4022759daae28ed4fe62859b1236caebfc61ede2f63ed4e695f3f6d936"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/write16@1.0.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/write16/"
+        },
+        {
+          "type": "website",
+          "url": "https://docs.rs/write16/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/hsivonen/write16"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#writeable@0.5.5",
+      "author": "The ICU4X Project Developers",
+      "name": "writeable",
+      "version": "0.5.5",
+      "description": "A more efficient alternative to fmt::Display",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/writeable@0.5.5",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wyz@0.5.1",
+      "author": "myrrlyn <self@myrrlyn.dev>",
+      "name": "wyz",
+      "version": "0.5.1",
+      "description": "myrrlyn’s utility collection",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/wyz@0.5.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/wyz"
+        },
+        {
+          "type": "website",
+          "url": "https://myrrlyn.net/crates/wyz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/myrrlyn/wyz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#yoke-derive@0.7.4",
+      "author": "Manish Goregaokar <manishsmail@gmail.com>",
+      "name": "yoke-derive",
+      "version": "0.7.4",
+      "description": "Custom derive for the yoke crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "28cc31741b18cb6f1d5ff12f5b7523e3d6eb0852bbbad19d73905511d9849b95"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/yoke-derive@0.7.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#yoke@0.7.4",
+      "author": "Manish Goregaokar <manishsmail@gmail.com>",
+      "name": "yoke",
+      "version": "0.7.4",
+      "description": "Abstraction allowing borrowed data to be carried along with the backing data it borrows from",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6c5b1314b079b0930c31e3af543d8ee1757b1951ae1e1565ec704403a7240ca5"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/yoke@0.7.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.25",
+      "author": "Joshua Liebow-Feeser <joshlf@google.com>, Jack Wrenn <jswrenn@amazon.com>",
+      "name": "zerocopy-derive",
+      "version": "0.8.25",
+      "description": "Custom derive for traits from the zerocopy crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "28a6e20d751156648aa063f3800b706ee209a32c0b4d9f24be3d980b01be55ef"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "BSD-2-Clause OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zerocopy-derive@0.8.25",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/google/zerocopy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.25",
+      "author": "Joshua Liebow-Feeser <joshlf@google.com>, Jack Wrenn <jswrenn@amazon.com>",
+      "name": "zerocopy",
+      "version": "0.8.25",
+      "description": "Zerocopy makes zero-cost memory manipulation effortless. We write \"unsafe\" so you don't have to.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a1702d9583232ddb9174e01bb7c15a2ab8fb1bc6f227aa1233858c351a3ba0cb"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "BSD-2-Clause OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zerocopy@0.8.25",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/google/zerocopy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zerofrom-derive@0.1.4",
+      "author": "Manish Goregaokar <manishsmail@gmail.com>",
+      "name": "zerofrom-derive",
+      "version": "0.1.4",
+      "description": "Custom derive for the zerofrom crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0ea7b4a3637ea8669cedf0f1fd5c286a17f3de97b8dd5a70a6c167a1730e63a5"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/zerofrom-derive@0.1.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.4",
+      "author": "Manish Goregaokar <manishsmail@gmail.com>",
+      "name": "zerofrom",
+      "version": "0.1.4",
+      "description": "ZeroFrom trait for constructing",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91ec111ce797d0e0784a1116d0ddcdbea84322cd79e5d5ad173daeba4f93ab55"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/zerofrom@0.1.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zerovec-derive@0.10.3",
+      "author": "Manish Goregaokar <manishsmail@gmail.com>",
+      "name": "zerovec-derive",
+      "version": "0.10.3",
+      "description": "Custom derive for the zerovec crate",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6eafa6dfb17584ea3e2bd6e76e0cc15ad7af12b09abdd1ca55961bed9b1063c6"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/zerovec-derive@0.10.3",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4",
+      "author": "The ICU4X Project Developers",
+      "name": "zerovec",
+      "version": "0.10.4",
+      "description": "Zero-copy vector backed by a byte array",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aa2b893d79df23bfb12d5461018d408ea19dfafe76c2c7ef6d4eba614f8ff079"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/zerovec@0.10.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-org/icu4x"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.6",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "zmij",
+      "version": "1.0.6",
+      "description": "A double-to-string conversion algorithm based on Schubfach and yy",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aac060176f7020d62c3bcc1cdbcec619d54f48b07ad1963a3f80ce7a0c17755f"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zmij@1.0.6",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/zmij"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/zmij"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "path+file:///Users/runner/work/pydantic/pydantic/pydantic-core#2.46.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#ahash@0.8.12",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1",
+        "registry+https://github.com/rust-lang/crates.io-index#enum_dispatch@0.3.13",
+        "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.16.1",
+        "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#jiter@0.14.0",
+        "registry+https://github.com/rust-lang/crates.io-index#lru@0.16.3",
+        "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.6",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#regex@1.12.3",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.149",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#speedate@0.17.0",
+        "registry+https://github.com/rust-lang/crates.io-index#strum@0.27.2",
+        "registry+https://github.com/rust-lang/crates.io-index#strum_macros@0.27.2",
+        "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.23.0",
+        "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#ahash@0.8.12",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.3.3",
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3",
+        "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5",
+        "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.25"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.7.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#allocator-api2@0.2.21"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.3.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.9.1"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#bitvec@1.0.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#funty@2.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#radium@0.7.0",
+        "registry+https://github.com/rust-lang/crates.io-index#tap@1.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#wyz@0.5.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#bumpalo@3.19.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.101"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#enum_dispatch@0.3.13",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3",
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#form_urlencoded@1.2.2",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#funty@2.0.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.3.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.155",
+        "registry+https://github.com/rust-lang/crates.io-index#r-efi@5.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#wasi@0.14.2+wasi-0.2.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.16.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#allocator-api2@0.2.21",
+        "registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2",
+        "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_collections@1.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#yoke@0.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_locid@1.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#litemap@0.7.3",
+        "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.7.6",
+        "registry+https://github.com/rust-lang/crates.io-index#writeable@0.5.5",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_locid_transform@1.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_locid@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_locid_transform_data@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_provider@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.7.6",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_locid_transform_data@1.5.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer@1.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_collections@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer_data@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_properties@1.5.1",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_provider@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#utf16_iter@1.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#utf8_iter@1.0.4",
+        "registry+https://github.com/rust-lang/crates.io-index#write16@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer_data@1.5.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_properties@1.5.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_collections@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_locid_transform@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_properties_data@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_provider@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.7.6",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_properties_data@1.5.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_provider@1.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_locid@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_provider_macros@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#stable_deref_trait@1.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.7.6",
+        "registry+https://github.com/rust-lang/crates.io-index#writeable@0.5.5",
+        "registry+https://github.com/rust-lang/crates.io-index#yoke@0.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#icu_provider_macros@1.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#idna_adapter@1.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#utf8_iter@1.0.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#idna_adapter@1.2.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer@1.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#icu_properties@1.5.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.11"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#jiter@0.14.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#ahash@0.8.12",
+        "registry+https://github.com/rust-lang/crates.io-index#bitvec@1.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-float@1.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.6",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.77",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen@0.2.100"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-float@1.0.5",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-integer@1.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#lexical-util@1.0.6",
+        "registry+https://github.com/rust-lang/crates.io-index#static_assertions@1.1.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-integer@1.0.5",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#lexical-util@1.0.6",
+        "registry+https://github.com/rust-lang/crates.io-index#static_assertions@1.1.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#lexical-util@1.0.6",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#static_assertions@1.1.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.155"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#litemap@0.7.3"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#log@0.4.27"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#lru@0.16.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.16.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.7.4"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.6",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.3.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.6.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.12"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#python3-dll-a@0.2.14",
+        "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-ffi@0.28.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.155",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros-backend@0.28.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros@0.28.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros-backend@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.28.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.155",
+        "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.6",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3",
+        "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.6.0",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-ffi@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros@0.28.3",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#python3-dll-a@0.2.14",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.101"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#r-efi@5.2.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#radium@0.7.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#regex-automata@0.4.13",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.3",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.5"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.5"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#regex@1.12.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.3",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-automata@0.4.13",
+        "registry+https://github.com/rust-lang/crates.io-index#regex-syntax@0.8.5"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.17"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.228",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.228"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.228",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.228"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.228",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.149",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.11",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.228",
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.6"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.15.1"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#speedate@0.17.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#lexical-parse-float@1.0.5",
+        "registry+https://github.com/rust-lang/crates.io-index#strum@0.27.2",
+        "registry+https://github.com/rust-lang/crates.io-index#strum_macros@0.27.2"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#stable_deref_trait@1.2.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#static_assertions@1.1.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#strum@0.27.2",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#strum_macros@0.27.2"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#strum_macros@0.27.2",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.12"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#synstructure@0.13.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#tap@1.0.1"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.4"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.7.6",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.5",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.12"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#form_urlencoded@1.2.2",
+        "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
+        "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#utf16_iter@1.0.5"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#utf8_iter@1.0.4"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.23.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.77",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen@0.2.100"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wasi@0.14.2+wasi-0.2.4",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#wit-bindgen-rt@0.39.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-backend@0.2.100",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#bumpalo@3.19.0",
+        "registry+https://github.com/rust-lang/crates.io-index#log@0.4.27",
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-shared@0.2.100"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro-support@0.2.100",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-backend@0.2.100",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-shared@0.2.100"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro@0.2.100",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro-support@0.2.100"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-shared@0.2.100",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.12"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen@0.2.100",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.0",
+        "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.3",
+        "registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.17",
+        "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro@0.2.100"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wit-bindgen-rt@0.39.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.9.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#write16@1.0.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#writeable@0.5.5"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#wyz@0.5.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#tap@1.0.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#yoke-derive@0.7.4",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82",
+        "registry+https://github.com/rust-lang/crates.io-index#synstructure@0.13.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#yoke@0.7.4",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+        "registry+https://github.com/rust-lang/crates.io-index#stable_deref_trait@1.2.0",
+        "registry+https://github.com/rust-lang/crates.io-index#yoke-derive@0.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.25",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.25",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.25"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zerofrom-derive@0.1.4",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82",
+        "registry+https://github.com/rust-lang/crates.io-index#synstructure@0.13.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.4",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#zerofrom-derive@0.1.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zerovec-derive@0.10.3",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.86",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.44",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.82"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.10.4",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#yoke@0.7.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.4",
+        "registry+https://github.com/rust-lang/crates.io-index#zerovec-derive@0.10.3"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.6"
+    }
+  ]
+}

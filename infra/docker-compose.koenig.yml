@@ -1,0 +1,110 @@
+# Koenig docker-compose — production-grade, VPS-portable Paperclip stack
+#
+# Two services: postgres:18 (durable data in named volume) + paperclip-server.
+# Named volumes for state make this directly portable to a VPS (Hetzner, Fly.io)
+# with `docker compose up -d` — no host-path rewrites.
+#
+# Sources (vault, companies, skills, scripts) bind-mounted from this repo so
+# agents read/write live files. On VPS, swap bind-mounts for git-clone in the
+# image build, OR mount via a shared persistent volume.
+#
+# Migration from prior embedded-Postgres dev mode: one-time clean import via
+# `pnpm paperclipai company import --collision overwrite`. Vault content (the
+# 13 blog drafts + 4 course folders) is preserved on disk — just gets re-tied
+# to fresh tickets.
+
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: paperclip-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "5432:5432"
+    volumes:
+      # PG 18+ requires mount at /var/lib/postgresql (parent), not /data subdir.
+      # See https://github.com/docker-library/postgres/pull/1259
+      - paperclip-pgdata:/var/lib/postgresql
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  paperclip:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        USER_UID: "${USER_UID:-501}"
+        USER_GID: "${USER_GID:-20}"
+    image: koenig/paperclip-server:dev
+    container_name: paperclip-server
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      SERVE_UI: "true"
+      DATABASE_URL: "postgres://paperclip:paperclip@db:5432/paperclip"
+      PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_INSTANCE_ID: "default"
+      # authenticated mode is required when bind=0.0.0.0 (which Docker port-forwarding needs).
+      # local_trusted demands loopback-only bind, incompatible with cross-container access.
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      PAPERCLIP_SPEND_LOG: "1"          # Phase J — restore spend tracking
+      PAPERCLIP_MIGRATION_PROMPT: "never"
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      OPENCODE_ALLOW_ALL_MODELS: "true"
+      USER_UID: "${USER_UID:-501}"
+      USER_GID: "${USER_GID:-20}"
+      # HOME inside container = /paperclip so adapter CLIs (claude/codex/opencode) find their auth at $HOME/.claude etc.
+      HOME: "/paperclip"
+    env_file:
+      - ../.env.koenig
+    volumes:
+      # Paperclip durable state (config, instances, spend.jsonl, logs) — named volume for VPS portability
+      - paperclip-data:/paperclip
+      # Adapter CLI auth credentials — bind-mount from host so claude_local / codex_local / opencode_local work
+      - /Users/vardaankoenig/.claude:/paperclip/.claude:rw
+      - /Users/vardaankoenig/.codex:/paperclip/.codex:rw
+      # OpenCode stores creds at ~/.local/share/opencode/auth.json (xdg-data, not xdg-config)
+      - /Users/vardaankoenig/.local/share/opencode:/paperclip/.local/share/opencode:rw
+      - /Users/vardaankoenig/.config/opencode:/paperclip/.config/opencode:rw
+      # Koenig project sources (live mount — agents read+write here)
+      - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org:/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org:rw
+      # Sibling repo for skills referenced by absolute path
+      - /Users/vardaankoenig/Documents/Paperclip/learnovaBeast:/Users/vardaankoenig/Documents/Paperclip/learnovaBeast:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:3100/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  paperclip-pgdata:
+    name: paperclip-pgdata
+  paperclip-data:
+    name: paperclip-data
