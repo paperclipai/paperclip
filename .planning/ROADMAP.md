@@ -10,7 +10,7 @@
 - [shipped] **v2.5 Semantic Knowledge Intelligence** - Phase 33-38 완료, 2026-04-29 ([archive](milestones/v2.5-ROADMAP.md), [requirements](milestones/v2.5-REQUIREMENTS.md), [audit](milestones/v2.5-MILESTONE-AUDIT.md), [re-audit](milestones/v2.5-MILESTONE-REAUDIT.md))
 - [shipped] **v2.6 운영 커넥터 및 자율성 하드닝** - Phase 39-43 완료, 2026-04-29 ([archive](milestones/v2.6-ROADMAP.md), [requirements](milestones/v2.6-REQUIREMENTS.md), [audit](milestones/v2.6-MILESTONE-AUDIT.md))
 - [shipped] **v2.7 릴리즈 호스트 검증 및 런타임 신뢰도** - Phase 44-47 완료, 2026-04-30 ([archive](milestones/v2.7-ROADMAP.md), [requirements](milestones/v2.7-REQUIREMENTS.md), [audit](milestones/v2.7-MILESTONE-AUDIT.md))
-- [active] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 진행 중
+- [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 
 ## 완료됨
 
@@ -111,7 +111,7 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v2.8 RealTycoon2 Product Identity and Daily Work UX가 시작됐다. 이번 milestone은 federation/autonomy/native distribution 확장보다 앱을 켰을 때 RealTycoon2가 한국어 일일 업무 운영 제품으로 즉시 보이도록 만드는 데 집중한다.
+v2.8 RealTycoon2 Product Identity and Daily Work UX는 2026-04-30에 완료됐다. 다음 단계는 `$gsd-new-milestone`로 fresh requirements를 정의하고 v2.9 범위를 정하는 것이다.
 
 <details>
 <summary>v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 (Phase 44-47) - 2026-04-30 완료</summary>
@@ -125,8 +125,8 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 
 </details>
 
-<details open>
-<summary>v2.8 RealTycoon2 Product Identity and Daily Work UX (Phase 48-53) - 진행 중</summary>
+<details>
+<summary>v2.8 RealTycoon2 Product Identity and Daily Work UX (Phase 48-53) - 2026-04-30 완료</summary>
 
 **Goal:** 앱을 구동했을 때 RealTycoon2가 Paperclip-derived 도구가 아니라 한국어 일일 업무 운영 시스템으로 즉시 인식되도록 제품 정체성과 핵심 보드 UX를 완성한다.
 
@@ -279,6 +279,9 @@ Success criteria:
 - [v2.7 roadmap archive](milestones/v2.7-ROADMAP.md)
 - [v2.7 requirements archive](milestones/v2.7-REQUIREMENTS.md)
 - [v2.7 milestone audit](milestones/v2.7-MILESTONE-AUDIT.md)
+- [v2.8 roadmap archive](milestones/v2.8-ROADMAP.md)
+- [v2.8 requirements archive](milestones/v2.8-REQUIREMENTS.md)
+- [v2.8 milestone audit](milestones/v2.8-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-04-30, Phase 53 verification and traceability closure complete*
+*마지막 업데이트: 2026-04-30, v2.8 milestone complete*

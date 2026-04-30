@@ -319,6 +319,46 @@
 - Generated confidence report만으로도 close decision은 가능하지만, operator adoption에는 더 discoverable한 surface가 필요할 수 있다.
 - 다음 milestone을 시작하기 전에 v2.7의 accepted debt가 제품 기능 확장보다 먼저 닫아야 할 운영 blocker인지 다시 판단해야 한다.
 
+## 마일스톤: v2.8 - RealTycoon2 Product Identity and Daily Work UX
+
+**완료:** 2026-04-30  
+**Phases:** 6  
+**Plans:** 14  
+**Audit:** `passed`
+
+### 만든 것
+
+- RealTycoon2-first Korean shell: product-facing navigation, title, loading/fallback, settings, empty state cleanup.
+- Daily Work Kanban: `할 일 / 진행 중 / 완료` 3단 board, persisted lane movement, card metadata.
+- Work card editing and board controls: title/status/deliverable/base price/quality/OKR quick edit, filters, search, sort.
+- One-Liner to board flow: capture draft review inbox, duplicate warning, source evidence, promotion/failure path.
+- Supporting evidence: Jarvis/wiki/graph/economy signals as board rail and card evidence instead of competing top-level surfaces.
+- Identity regression gate: focused scan and fixture test for legacy product names and English defaults.
+
+### 잘 된 점
+
+- Milestone scope를 federation/autonomy/native 확장보다 제품 얼굴과 매일 쓰는 board loop에 좁혀 실제 operator perception을 개선했다.
+- Phase 53 closure가 verification/validation artifact drift를 숨기지 않고 ROADMAP/REQUIREMENTS까지 같은 truth로 맞췄다.
+- `rt2:identity-gate`가 앞으로 product-facing regression을 빠르게 잡을 수 있는 작고 명확한 guardrail이 됐다.
+
+### 비효율적이었던 점
+
+- Phase 52 구현 변경과 일부 phase 문서가 milestone close 시점까지 미커밋 상태로 남아 tag 전 별도 정리가 필요했다.
+- Broad `pnpm test`는 v2.8 close에서 `server/src/__tests__/workspace-runtime.test.ts` provision-command 케이스 1개가 60초 timeout으로 실패해 focused verification과 accepted debt 기록에 의존했다.
+- 설치된 `gsd-sdk`가 `query` 명령을 제공하지 않아 complete-milestone 자동 archive 경로를 수동 파일 갱신으로 대체했다.
+
+### 확립된 패턴
+
+- Product-facing surface는 RealTycoon2/Korean-first가 기본이고, Paperclip-derived naming은 내부 호환 계층에만 남긴다.
+- Jarvis/wiki/graph/economy는 daily board를 대체하는 독립 hub가 아니라 card/work 맥락의 supporting evidence로 배치한다.
+- Milestone close 전 audit `passed`, requirements traceability 100%, summary/verification artifacts를 맞춘 뒤 archive한다.
+
+### 핵심 교훈
+
+- UI identity milestone은 copy cleanup만으로 끝나지 않는다. 첫 운영 화면, card action, evidence placement, regression gate가 같이 닫혀야 한다.
+- 다음 milestone은 `REQUIREMENTS.md`를 새로 만들어야 한다. v2.8 archived requirements를 계속 active scope처럼 재사용하면 planning drift가 생긴다.
+- Full-suite timeout/failure가 반복되는 동안에는 focused tests의 범위와 accepted debt의 owner를 milestone마다 명확히 적어야 한다.
+
 ## Cross-Milestone Trend
 
 | Trend | Observation |
@@ -326,4 +366,4 @@
 | Product identity | RT2가 우선순위다. Paperclip/Multica wording은 product-facing surface에서 숨기고 engine/internal compatibility layer로 제한한다. |
 | Verification | Windows sandbox `spawn EPERM`은 반복되는 local environment issue다. Vitest/build에는 승인된 escalated run이 필요할 수 있다. |
 | Planning | 사용자는 wave-by-wave prompting보다 긴 `--auto --chain` execution을 선호한다. |
-| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. v2.6은 운영 hardening을 완료하되 full-suite timeout을 `tech_debt`로 분리했다. v2.7은 release-host evidence와 runtime confidence taxonomy로 blocker 없는 accepted debt를 명시했다. |
+| Milestone scope | v2.1부터 요구사항, phase, summary, archive가 개발기획서 gap map에 직접 연결된다. v2.2부터는 `tech_debt` completion을 명시적으로 기록하고, v2.3부터는 gap closure phase와 재감사 archive까지 포함한다. v2.4부터는 initial audit failure를 closure phase로 닫고 final re-audit `passed`까지 기록한다. v2.5는 semantic knowledge loop를 기능 phase 5개와 closure phase 1개로 닫았다. v2.6은 운영 hardening을 완료하되 full-suite timeout을 `tech_debt`로 분리했다. v2.7은 release-host evidence와 runtime confidence taxonomy로 blocker 없는 accepted debt를 명시했다. v2.8은 product identity와 daily work UX를 audit `passed` 상태로 닫았다. |
