@@ -19,6 +19,15 @@ function createApp(
   app.post("/mutate", (_req, res) => {
     res.status(204).end();
   });
+  app.post("/api/issues/issue-1/comments", (_req, res) => {
+    res.status(204).end();
+  });
+  app.patch("/api/issues/issue-1", (_req, res) => {
+    res.status(204).end();
+  });
+  app.post("/api/companies/company-1/issues", (_req, res) => {
+    res.status(204).end();
+  });
   app.get("/read", (_req, res) => {
     res.status(204).end();
   });
@@ -57,6 +66,42 @@ describe("boardMutationGuard", () => {
   it("allows local implicit board mutations without origin", async () => {
     const app = createApp("board", "local_implicit");
     const res = await request(app).post("/mutate").send({ ok: true });
+    expect([200, 204]).toContain(res.status);
+  });
+
+  it("blocks local implicit issue comment mutations without browser origin", async () => {
+    const app = createApp("board", "local_implicit");
+    const res = await request(app).post("/api/issues/issue-1/comments").send({ body: "agent output" });
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "Issue mutation requires trusted browser origin or authenticated actor",
+    });
+  });
+
+  it("blocks local implicit issue updates without browser origin", async () => {
+    const app = createApp("board", "local_implicit");
+    const res = await request(app).patch("/api/issues/issue-1").send({ comment: "agent output" });
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "Issue mutation requires trusted browser origin or authenticated actor",
+    });
+  });
+
+  it("blocks local implicit issue creation without browser origin", async () => {
+    const app = createApp("board", "local_implicit");
+    const res = await request(app).post("/api/companies/company-1/issues").send({ title: "agent output" });
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "Issue mutation requires trusted browser origin or authenticated actor",
+    });
+  });
+
+  it("allows local implicit browser issue mutations from trusted origin", async () => {
+    const app = createApp("board", "local_implicit");
+    const res = await request(app)
+      .post("/api/issues/issue-1/comments")
+      .set("Origin", "http://localhost:3100")
+      .send({ body: "board comment" });
     expect([200, 204]).toContain(res.status);
   });
 

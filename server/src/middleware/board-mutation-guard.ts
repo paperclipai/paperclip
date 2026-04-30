@@ -44,6 +44,14 @@ function isTrustedBoardMutationRequest(req: Request) {
   return false;
 }
 
+function isIssueMutationRequest(req: Request) {
+  const path = (req.originalUrl || req.url || "").split("?")[0] ?? "";
+  return (
+    /^\/api\/issues(?:\/|$)/.test(path) ||
+    /^\/api\/companies\/[^/]+\/issues(?:\/|$)/.test(path)
+  );
+}
+
 export function boardMutationGuard(): RequestHandler {
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {
@@ -56,9 +64,22 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    // Local-trusted mode and board bearer keys are not browser-session requests.
-    // In these modes, origin/referer headers can be absent; do not block those mutations.
-    if (req.actor.source === "local_implicit" || req.actor.source === "board_key") {
+    // Local-trusted browser requests are still the board UI. Local scripts that
+    // mutate issue threads must authenticate or carry a resolvable run id so
+    // they cannot silently write audit records as "local-board".
+    if (req.actor.source === "local_implicit") {
+      if (isIssueMutationRequest(req) && !isTrustedBoardMutationRequest(req)) {
+        res.status(403).json({
+          error: "Issue mutation requires trusted browser origin or authenticated actor",
+        });
+        return;
+      }
+      next();
+      return;
+    }
+
+    // Board bearer keys are explicit non-browser credentials.
+    if (req.actor.source === "board_key") {
       next();
       return;
     }

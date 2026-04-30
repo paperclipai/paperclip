@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -12,6 +12,8 @@ import { boardAuthService } from "../services/board-auth.js";
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
@@ -37,6 +39,44 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+      if (opts.deploymentMode === "local_trusted" && runIdHeader && UUID_RE.test(runIdHeader)) {
+        const run = await db
+          .select({
+            id: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            companyId: heartbeatRuns.companyId,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runIdHeader))
+          .then((rows) => rows[0] ?? null);
+
+        if (run?.agentId) {
+          const agentRecord = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, run.agentId))
+            .then((rows) => rows[0] ?? null);
+
+          if (
+            agentRecord &&
+            agentRecord.companyId === run.companyId &&
+            agentRecord.status !== "terminated" &&
+            agentRecord.status !== "pending_approval"
+          ) {
+            req.actor = {
+              type: "agent",
+              agentId: run.agentId,
+              companyId: run.companyId,
+              keyId: undefined,
+              runId: run.id,
+              source: "agent_run_id",
+            };
+            next();
+            return;
+          }
+        }
+      }
+
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         let session: BetterAuthSessionResult | null = null;
         try {
