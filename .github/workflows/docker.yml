@@ -92,7 +92,7 @@ jobs:
 
       - name: Compute short sha
         id: sha
-        run: echo "short=$(git rev-parse --short=8 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
+        run: echo "short=$(git rev-parse --short=7 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: build-and-push
@@ -110,7 +110,7 @@ jobs:
 
       - name: Compute short sha
         id: sha
-        run: echo "short=$(git rev-parse --short=8 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
+        run: echo "short=$(git rev-parse --short=7 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
 
       - name: Write kubeconfig
         env:
