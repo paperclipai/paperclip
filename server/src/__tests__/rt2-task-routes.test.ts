@@ -447,6 +447,66 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     );
   });
 
+  it("reuses work-board quality metadata for Phase 50 daily-card quality edits", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({ capacity: 1, participants: [] });
+    const todo = await createTodoFixture({
+      taskIssueId: task.issueId,
+      assigneeUserId: fixture.userAId,
+      status: "todo",
+    });
+
+    const update = await request(app)
+      .patch(`/api/companies/${fixture.companyId}/rt2/work-board/cards/${todo.issueId}`)
+      .send({
+        qualityStatus: "needs_work",
+        priceGold: 90000,
+        detailNotes: "품질 이슈 먼저 정렬 대상",
+      })
+      .expect(200);
+
+    expect(update.body).toEqual(
+      expect.objectContaining({
+        issueId: todo.issueId,
+        qualityStatus: "needs_work",
+        priceGold: 90000,
+        detailNotes: "품질 이슈 먼저 정렬 대상",
+      }),
+    );
+
+    const overview = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/work-board`)
+      .query({ issueIds: todo.issueId })
+      .expect(200);
+
+    expect(overview.body.filters.qualityStatuses).toEqual(expect.arrayContaining(["needs_work"]));
+    expect(overview.body.cards[0]).toEqual(
+      expect.objectContaining({
+        issueId: todo.issueId,
+        qualityStatus: "needs_work",
+        priceGold: 90000,
+      }),
+    );
+  });
+
+  it("does not accept deliverable title or base-price edits through the broad work-board card metadata route", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({ capacity: 1, participants: [] });
+
+    const response = await request(app)
+      .patch(`/api/companies/${fixture.companyId}/rt2/work-board/cards/${task.issueId}`)
+      .send({
+        deliverableTitle: "",
+        deliverableType: "spreadsheet",
+        basePrice: -100,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toEqual(expect.stringContaining("deliverable"));
+  });
+
   it("rejects capacity shrink without explicitly ending overflow participants", async () => {
     fixture = await seedFixture();
     const app = await createApp(fixture.companyId, fixture.managerUserId);

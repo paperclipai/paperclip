@@ -392,4 +392,167 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       ]),
     );
   });
+
+  it("returns enriched card fields for Phase 50 quick edit controls and composable board filters", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.boardUserId);
+
+    const response = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/daily-report`)
+      .query({ projectId: fixture.projectId, reportDate: "2026-04-30" })
+      .expect(200);
+
+    expect(response.body.cards[0]).toEqual(
+      expect.objectContaining({
+        deliverableTitle: "Daily report cockpit note",
+        deliverableType: "document",
+        deliverableRequired: true,
+        deliverableOwner: "todo",
+        qualityStatus: "none",
+        qualityLabel: "없음",
+        approvalWaiting: false,
+        approvalWaitingSource: "deliverable_review",
+        okrSource: "task",
+        directGoalId: expect.any(String),
+        directGoalTitle: "Improve daily operating cadence",
+        inheritedGoalId: null,
+        inheritedGoalTitle: null,
+        assigneeDisplayName: "board-user",
+        searchText: expect.stringContaining("Daily report cockpit note"),
+        dueDate: null,
+      }),
+    );
+  });
+
+  it("keeps title, deliverable, quality, and OKR quick edits on narrow board-owned routes", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.boardUserId);
+    const reportDate = "2026-04-30";
+
+    await request(app)
+      .patch(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}/title`)
+      .send({ projectId: fixture.projectId, reportDate, title: "고객 리포트 정리" })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.card).toEqual(
+          expect.objectContaining({
+            todoIssueId: fixture.todoIssueId,
+            todoTitle: "고객 리포트 정리",
+          }),
+        );
+      });
+
+    await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}/deliverable`)
+      .send({
+        projectId: fixture.projectId,
+        reportDate,
+        title: "고객 리포트",
+        type: "document",
+        required: true,
+        basePrice: 50000,
+      })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.card).toEqual(
+          expect.objectContaining({
+            deliverableTitle: "고객 리포트",
+            deliverableType: "document",
+            deliverableRequired: true,
+            basePriceTotal: 50000,
+          }),
+        );
+      });
+
+    await request(app)
+      .patch(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}/quality`)
+      .send({ projectId: fixture.projectId, reportDate, qualityStatus: "needs_work" })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.card).toEqual(
+          expect.objectContaining({
+            qualityStatus: "needs_work",
+            qualityLabel: "수정 필요",
+            approvalWaiting: true,
+            approvalWaitingSource: "deliverable_review",
+          }),
+        );
+      });
+
+    await request(app)
+      .patch(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}/okr`)
+      .send({ projectId: fixture.projectId, reportDate, goalId: null })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.card).toEqual(
+          expect.objectContaining({
+            okrSource: "project",
+            directGoalId: null,
+          }),
+        );
+      });
+  });
+
+  it("preserves daily report activity and wiki materialization when lane/status is edited", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.boardUserId);
+    const reportDate = "2026-04-30";
+
+    const saveResponse = await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}`)
+      .send({
+        projectId: fixture.projectId,
+        reportDate,
+        lane: "doing",
+        bucketLabel: "검토 대기",
+        progressPercent: 50,
+        note: "상태만 보드에서 수정",
+      })
+      .expect(200);
+
+    expect(saveResponse.body.wikiPage).toEqual(
+      expect.objectContaining({
+        reportDate,
+        history: expect.arrayContaining([
+          expect.objectContaining({
+            todoIssueId: fixture.todoIssueId,
+            lane: "doing",
+            evidenceTag: "EXTRACTED",
+          }),
+        ]),
+      }),
+    );
+
+    const [activityRow] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityType, "rt2_daily_report"));
+
+    expect(activityRow).toEqual(
+      expect.objectContaining({
+        action: expect.any(String),
+        details: expect.objectContaining({
+          lane: "doing",
+          todoIssueId: fixture.todoIssueId,
+        }),
+      }),
+    );
+  });
+
+  it("rejects cross-company and wrong-assignee mutations on new daily quick-edit paths", async () => {
+    fixture = await seedFixture();
+    const reportDate = "2026-04-30";
+    const crossCompanyApp = await createApp(randomUUID(), fixture.boardUserId);
+    const wrongAssigneeApp = await createApp(fixture.companyId, "someone-else");
+
+    await request(crossCompanyApp)
+      .patch(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}/title`)
+      .send({ projectId: fixture.projectId, reportDate, title: "권한 없는 수정" })
+      .expect(403);
+
+    await request(wrongAssigneeApp)
+      .patch(`/api/companies/${fixture.companyId}/rt2/daily-report/cards/${fixture.todoIssueId}/quality`)
+      .send({ projectId: fixture.projectId, reportDate, qualityStatus: "reviewed" })
+      .expect(403);
+  });
 });

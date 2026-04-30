@@ -14,6 +14,7 @@ import {
   rt2DailyLaneSchema as validatorsRt2DailyLaneSchema,
   rt2DailyReportDateSchema as validatorsRt2DailyReportDateSchema,
 } from "./validators/index.js";
+import * as sharedExports from "./index.js";
 
 type DailyTypeSmoke = [Rt2DailyLane, Rt2DailyBoard, Rt2DailyWikiAnswer, Rt2DailyActivityEntry];
 const evidenceTagSmoke: Rt2DailyActivityEntry["evidenceTag"][] = ["EXTRACTED", "INFERRED", "AMBIGUOUS"];
@@ -76,5 +77,95 @@ describe("RT2 daily report shared contracts", () => {
     expect(validatorsRt2DailyReportDateSchema).toBe(rt2DailyReportDateSchema);
     expect(validatorsListRt2DailyBoardSchema).toBe(listRt2DailyBoardSchema);
     expect(validatorsQueryRt2DailyWikiSchema).toBe(queryRt2DailyWikiSchema);
+  });
+
+  it("exposes enriched daily card metadata required for quick edit and board controls", () => {
+    const contract = {
+      deliverableTitle: "주간 보고서",
+      deliverableType: "document",
+      deliverableRequired: true,
+      deliverableOwner: "todo",
+      basePriceTotal: 120000,
+      qualityStatus: "needs_work",
+      approvalWaiting: true,
+      approvalWaitingSource: "deliverable_review",
+      okrContextStatus: "connected",
+      okrSource: "task",
+      directGoalId: "550e8400-e29b-41d4-a716-446655440001",
+      directGoalTitle: "운영 리듬 개선",
+      inheritedGoalId: null,
+      inheritedGoalTitle: null,
+      assigneeDisplayName: "김운영",
+      searchText: "주간 보고서 김운영 운영 리듬 개선 수정 필요",
+      dueDate: "2026-04-30",
+      updatedAt: new Date("2026-04-30T09:30:00.000Z"),
+    };
+
+    expect(contract).toEqual(
+      expect.objectContaining({
+        deliverableTitle: expect.any(String),
+        deliverableType: "document",
+        deliverableRequired: true,
+        deliverableOwner: "todo",
+        basePriceTotal: 120000,
+        qualityStatus: "needs_work",
+        approvalWaiting: true,
+        approvalWaitingSource: "deliverable_review",
+        okrSource: "task",
+        directGoalTitle: "운영 리듬 개선",
+        inheritedGoalTitle: null,
+        assigneeDisplayName: "김운영",
+        searchText: expect.stringContaining("수정 필요"),
+        dueDate: "2026-04-30",
+      }),
+    );
+  });
+
+  it("exports narrow quick-edit validators for title, deliverable, quality, and OKR updates", () => {
+    const exportsByName = sharedExports as Record<string, any>;
+
+    expect(exportsByName.updateRt2DailyCardTitleSchema).toBeDefined();
+    expect(exportsByName.upsertRt2DailyCardDeliverableSchema).toBeDefined();
+    expect(exportsByName.updateRt2DailyCardQualitySchema).toBeDefined();
+    expect(exportsByName.updateRt2DailyCardOkrSchema).toBeDefined();
+
+    expect(() => exportsByName.updateRt2DailyCardTitleSchema.parse({ title: "" })).toThrow();
+    expect(() =>
+      exportsByName.upsertRt2DailyCardDeliverableSchema.parse({
+        title: "",
+        type: "spreadsheet",
+        required: true,
+        basePrice: -1,
+      }),
+    ).toThrow();
+    expect(() => exportsByName.updateRt2DailyCardQualitySchema.parse({ qualityStatus: "approved" })).toThrow();
+    expect(() => exportsByName.updateRt2DailyCardOkrSchema.parse({ goalId: "not-a-uuid" })).toThrow();
+
+    expect(exportsByName.updateRt2DailyCardTitleSchema.parse({ title: "고객 리포트 정리" })).toEqual({
+      title: "고객 리포트 정리",
+    });
+    expect(
+      exportsByName.upsertRt2DailyCardDeliverableSchema.parse({
+        title: "고객 리포트",
+        type: "document",
+        required: true,
+        basePrice: 50000,
+      }),
+    ).toEqual({
+      title: "고객 리포트",
+      type: "document",
+      required: true,
+      basePrice: 50000,
+    });
+    expect(exportsByName.updateRt2DailyCardQualitySchema.parse({ qualityStatus: "needs_work" })).toEqual({
+      qualityStatus: "needs_work",
+    });
+    expect(
+      exportsByName.updateRt2DailyCardOkrSchema.parse({
+        goalId: "550e8400-e29b-41d4-a716-446655440000",
+      }),
+    ).toEqual({
+      goalId: "550e8400-e29b-41d4-a716-446655440000",
+    });
   });
 });
