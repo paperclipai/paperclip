@@ -43,6 +43,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { initOtel, shutdownOtel } from "./telemetry/index.js";
 import { conflict } from "./errors.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -87,6 +88,19 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Initialize OpenTelemetry SDK first (before other server init)
+  const otelConfig = initOtel();
+  if (otelConfig.enabled) {
+    logger.info(
+      {
+        serviceName: otelConfig.serviceName,
+        otlpEndpoint: otelConfig.otlpEndpoint ?? "(none)",
+        samplingRate: otelConfig.samplingRate,
+      },
+      "OpenTelemetry initialized",
+    );
+  }
+
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -870,6 +884,11 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Flush OpenTelemetry spans/metrics before exit
+      await shutdownOtel().catch((err) => {
+        logger.warn({ err }, "Failed to shutdown OpenTelemetry cleanly");
+      });
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

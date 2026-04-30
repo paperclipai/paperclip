@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { withCostEventSpan } from "../telemetry/spans.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -52,6 +53,14 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
+      return withCostEventSpan(
+        {
+          provider: data.provider ?? "unknown",
+          model: data.model ?? "unknown",
+          costCents: data.costCents ?? 0,
+          billingType: data.billingType ?? "unknown",
+        },
+        async () => {
       const agent = await db
         .select()
         .from(agents)
@@ -99,6 +108,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       await budgets.evaluateCostEvent(event);
 
       return event;
+        }); // end withCostEventSpan
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {

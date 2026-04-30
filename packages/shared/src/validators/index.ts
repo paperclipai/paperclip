@@ -22,9 +22,11 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  observabilityConfigSchema,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type ObservabilityConfig,
 } from "./company.js";
 export {
   environmentDriverSchema,
