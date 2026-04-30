@@ -142,7 +142,7 @@ for r in runs:
         created_at = datetime.fromisoformat((r.get('created_at') or '').replace('Z', '+00:00'))
     except ValueError:
         continue
-    if issue_id in run_name and created_at >= boundary:
+    if run_name == f"publish-{issue_id}" and created_at >= boundary:
         match = r
         break
 if match:
