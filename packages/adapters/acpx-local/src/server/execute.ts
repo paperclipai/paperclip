@@ -13,9 +13,9 @@ import {
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
   ensureAbsoluteDirectory,
-  ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   joinPromptSections,
+  materializePaperclipSkillCopy,
   parseObject,
   readPaperclipRuntimeSkillEntries,
   renderPaperclipWakePrompt,
@@ -49,6 +49,7 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WARM_HANDLE_IDLE_MS = 15 * 60 * 1000;
+const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
 type AcpxRuntimeSessionOptions = {
   systemPrompt?: string | { append: string };
@@ -218,13 +219,7 @@ async function hashPathContents(
   const stat = await fs.lstat(candidate);
 
   if (stat.isSymbolicLink()) {
-    hash.update(`symlink:${relativePath}\n`);
-    const resolved = await fs.realpath(candidate).catch(() => null);
-    if (!resolved) {
-      hash.update("missing\n");
-      return;
-    }
-    await hashPathContents(resolved, hash, relativePath, seenDirectories);
+    hash.update(`symlink-skipped:${relativePath}\n`);
     return;
   }
 
@@ -300,7 +295,13 @@ async function prepareClaudeSkillRuntime(input: {
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await materializePaperclipSkillCopy(entry.source, target);
+      if (result.skippedSymlinks.length > 0) {
+        await input.onLog(
+          "stdout",
+          `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+        );
+      }
     } catch (err) {
       await input.onLog(
         "stderr",
@@ -337,6 +338,75 @@ async function prepareClaudeSkillRuntime(input: {
   };
 }
 
+async function readManagedCodexSkillsManifest(skillsHome: string): Promise<Set<string>> {
+  const manifestPath = path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST);
+  try {
+    const raw = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
+    const parsed = parseObject(raw);
+    const skills = Array.isArray(parsed.managedSkillNames)
+      ? parsed.managedSkillNames.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
+    return new Set(skills);
+  } catch {
+    return new Set();
+  }
+}
+
+async function writeManagedCodexSkillsManifest(skillsHome: string, skillNames: Iterable<string>): Promise<void> {
+  const managedSkillNames = Array.from(new Set(skillNames)).sort();
+  await fs.writeFile(
+    path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST),
+    `${JSON.stringify({ version: 1, managedSkillNames }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function removeSkillTarget(target: string): Promise<boolean> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) return false;
+  await fs.rm(target, { recursive: true, force: true });
+  return true;
+}
+
+async function reconcileManagedCodexSkills(input: {
+  skillsHome: string;
+  allSkills: PaperclipSkillEntry[];
+  selectedSkills: PaperclipSkillEntry[];
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const desired = new Set(input.selectedSkills.map((entry) => entry.runtimeName));
+  const managed = await readManagedCodexSkillsManifest(input.skillsHome);
+  const availableByRuntimeName = new Map(input.allSkills.map((entry) => [entry.runtimeName, entry]));
+
+  for (const name of managed) {
+    if (desired.has(name)) continue;
+    if (await removeSkillTarget(path.join(input.skillsHome, name))) {
+      await input.onLog("stdout", `[paperclip] Revoked ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+    }
+  }
+
+  for (const entry of input.allSkills) {
+    if (desired.has(entry.runtimeName) || managed.has(entry.runtimeName)) continue;
+    const target = path.join(input.skillsHome, entry.runtimeName);
+    const existing = await fs.lstat(target).catch(() => null);
+    if (!existing?.isSymbolicLink()) continue;
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) continue;
+    const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+    if (resolvedLinkedPath !== path.resolve(entry.source)) continue;
+    if (await removeSkillTarget(target)) {
+      await input.onLog("stdout", `[paperclip] Revoked legacy ACPX Codex skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
+    }
+  }
+
+  for (const name of managed) {
+    if (desired.has(name) || availableByRuntimeName.has(name)) continue;
+    if (await removeSkillTarget(path.join(input.skillsHome, name))) {
+      await input.onLog("stdout", `[paperclip] Revoked unavailable ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+    }
+  }
+}
+
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
@@ -360,19 +430,25 @@ async function prepareCodexSkillRuntime(input: {
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
-  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
+  await reconcileManagedCodexSkills({
+    skillsHome,
+    allSkills,
+    selectedSkills,
+    onLog: input.onLog,
+  });
 
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
-      if (result !== "skipped") {
+      const result = await materializePaperclipSkillCopy(entry.source, target);
+      if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
-          `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} ACPX Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
+          `[paperclip] Materialized ACPX Codex skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
         );
       }
     } catch (err) {
@@ -382,6 +458,7 @@ async function prepareCodexSkillRuntime(input: {
       );
     }
   }
+  await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
 
   input.env.CODEX_HOME = effectiveCodexHome;
 

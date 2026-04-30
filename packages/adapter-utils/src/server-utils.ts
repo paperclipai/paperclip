@@ -111,6 +111,11 @@ export interface InstalledSkillTarget {
   kind: "symlink" | "directory" | "file";
 }
 
+export interface MaterializedPaperclipSkillCopyResult {
+  copiedFiles: number;
+  skippedSymlinks: string[];
+}
+
 interface PersistentSkillSnapshotOptions {
   adapterType: string;
   availableEntries: PaperclipSkillEntry[];
@@ -1393,6 +1398,64 @@ export async function ensurePaperclipSkillSymlink(
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+export async function materializePaperclipSkillCopy(
+  source: string,
+  target: string,
+): Promise<MaterializedPaperclipSkillCopyResult> {
+  const sourceRoot = path.resolve(source);
+  const targetRoot = path.resolve(target);
+  const relativeTarget = path.relative(sourceRoot, targetRoot);
+  if (!relativeTarget || (!relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget))) {
+    throw new Error("Refusing to materialize a skill into itself or one of its descendants.");
+  }
+
+  const rootStat = await fs.lstat(sourceRoot);
+  if (rootStat.isSymbolicLink()) {
+    throw new Error("Refusing to materialize a skill root that is itself a symlink.");
+  }
+  if (!rootStat.isDirectory()) {
+    throw new Error("Paperclip skills must be directories.");
+  }
+
+  const result: MaterializedPaperclipSkillCopyResult = {
+    copiedFiles: 0,
+    skippedSymlinks: [],
+  };
+
+  await fs.rm(targetRoot, { recursive: true, force: true });
+
+  async function copyEntry(sourcePath: string, targetPath: string, relativePath: string): Promise<void> {
+    const stat = await fs.lstat(sourcePath);
+    if (stat.isSymbolicLink()) {
+      result.skippedSymlinks.push(relativePath || ".");
+      return;
+    }
+
+    if (stat.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await copyEntry(path.join(sourcePath, entry.name), path.join(targetPath, entry.name), childRelativePath);
+      }
+      return;
+    }
+
+    if (stat.isFile()) {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(sourcePath, targetPath);
+      });
+      await fs.chmod(targetPath, stat.mode).catch(() => {});
+      result.copiedFiles += 1;
+    }
+  }
+
+  await copyEntry(sourceRoot, targetRoot, "");
+  return result;
 }
 
 export async function removeMaintainerOnlySkillSymlinks(
