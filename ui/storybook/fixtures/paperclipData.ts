@@ -1236,6 +1236,8 @@ export const storybookSidebarBadges: SidebarBadges = {
   approvals: 2,
   failedRuns: 1,
   joinRequests: 1,
+  mineIssues: 3,
+  alerts: 1,
 };
 
 export const storybookDashboardSummary: DashboardSummary = {
