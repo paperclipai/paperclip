@@ -14,7 +14,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "Sandbox provider that runs agents through a ccrotate-managed Claude or Codex account pool over SSH, rotating between accounts at lease acquisition and on rate-limit signals mid-run.",
   author: "kkroo",
   categories: ["automation", "connector"],
-  capabilities: ["environment.drivers.register", "api.routes.register"],
+  capabilities: [
+    "environment.drivers.register",
+    "api.routes.register",
+    "instance.settings.register",
+  ],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
