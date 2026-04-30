@@ -13,15 +13,33 @@ reporting that `server/src/services/ccrotate-tier-gate.ts` reads. Installed as
 a global npm package by the kkroo Dockerfile (`COPY vendor/...` + `npm install
 -g /tmp/ccrotate.tgz`). Refresh procedure documented inline in the Dockerfile.
 
-## paperclip-adapter-claude-k8s-0.2.1-kkroo.1.tgz
+## paperclip-adapter-claude-k8s-0.2.1-kkroo.4.tgz
 
 Upstream: <https://github.com/farhoodlabs/paperclip-adapter-claude-k8s> at
-v0.2.1. Diverges in **two** places — the small-prompt and large-prompt
-branches in `dist/server/job-manifest.js` — to add a missing `data` PVC mount
-to the `write-prompt` init container's `volumeMounts`. Without that mount the
-init container can't `mkdir -p /paperclip/instances/.../run-logs/...` and
-every Job fails before reaching the main `claude` container. Bug write-up:
-`~/.claude/projects/.../memory/claude_k8s_adapter_init_volumemount_bug.md`.
+v0.2.1. Patches over upstream live in `dist/server/`:
+
+1. **`job-manifest.js`** — `write-prompt` init container's `volumeMounts` add
+   the `data` PVC mount so the init container can
+   `mkdir -p /paperclip/instances/.../run-logs/...`. Without this every Job
+   fails before the main `claude` container starts.
+2. **`job-manifest.js`** — main container's command prepends
+   `(command -v ccrotate >/dev/null 2>&1 && ccrotate next --target claude >/dev/null 2>&1) || true`
+   so each Job pod gets a freshly-rotated OAuth credential before claude
+   reads `~/.claude/.credentials.json`. Without this, Job pods inherit a
+   cached token whose `expiresAt` may already be past.
+3. **`execute.js` `tailPodLogFile`** *(kkroo.2)* — stable-size drain loop +
+   trailing pendingLine flush so cephfs propagation lag and missing-trailing-
+   newline output don't drop the result event line and surface a successful
+   run as `adapter_failed: "Failed to parse Claude JSON output"`.
+4. **`execute.js` unknown-session handler** *(kkroo.4 added 2026-04-30)* —
+   removes the `(exitCode ?? 0) !== 0` guard around
+   `isClaudeUnknownSessionError(parsed)` so a clean-exit-but-unknown-session
+   result (`subtype:"error_during_execution"`, `is_error:true`,
+   `errors:["No conversation found with session ID..."]`) also triggers
+   `clearSession: true` and `errorCode: "session_unavailable"`. Belt-and-
+   suspenders complement to the server-side
+   `agent_runtime_state.session_id`-clear-on-adapter-flip fix in
+   `server/src/routes/agents.ts` (commit `bf30056f`).
 
 ### How to install on a running paperclip-0 pod
 
