@@ -40,7 +40,7 @@ function describeError(error: unknown): string {
 async function ccrotateRotate(config: CcrotateDriverConfig): Promise<string | null> {
   const result = await runSshCommand(config.ssh, {
     command: "ccrotate",
-    args: ["next", "--target", config.target, "-y"],
+    args: ccrotateArgs(config.target, "next", ["-y"]),
     timeoutMs: 30_000,
   });
   if (result.exitCode !== 0) {
@@ -203,15 +203,29 @@ function pickTarget(body: unknown, fallback: CcrotateTarget = "claude"): Ccrotat
   return fallback;
 }
 
+function ccrotateArgs(target: CcrotateTarget, command: string, args: string[] = []): string[] {
+  return ["--target", target, command, ...args];
+}
+
+async function readTierCache(ssh: CcrotateSshConfig, target: CcrotateTarget) {
+  const cachePath = target === "claude"
+    ? "$HOME/.ccrotate/tier-cache.json"
+    : "$HOME/.ccrotate/tier-cache.codex.json";
+  return await runSshCommand(ssh, {
+    command: "sh",
+    args: ["-c", `cat "${cachePath}" 2>/dev/null || true`],
+    timeoutMs: 10_000,
+  });
+}
+
 /**
  * Route: POST /pools
  * Body: { ssh, targets?: ("claude" | "codex")[] }   (default targets = ["claude", "codex"])
  *
- * Runs `ccrotate tier-cache --target X` on the SSH host for each requested
- * target and returns the cached tier data verbatim (one key per target). The
- * cache is whatever the host's last `ccrotate refresh{,-one}` wrote — calling
- * this route does NOT hit Anthropic. Use POST /refresh first if the cache is
- * stale.
+ * Reads the ccrotate tier-cache JSON on the SSH host for each requested target
+ * and returns the cached data verbatim (one key per target). Calling this
+ * route does not hit Anthropic or OpenAI. Use POST /refresh first if the cache
+ * is stale.
  */
 async function handlePoolsRoute(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   let ssh: CcrotateSshConfig;
@@ -232,14 +246,10 @@ async function handlePoolsRoute(input: PluginApiRequestInput): Promise<PluginApi
   const pools: Record<string, unknown> = {};
   for (const target of requestedTargets) {
     try {
-      const result = await runSshCommand(ssh, {
-        command: "ccrotate",
-        args: ["tier-cache", "--target", target],
-        timeoutMs: 10_000,
-      });
+      const result = await readTierCache(ssh, target);
       if (result.exitCode !== 0) {
         pools[target] = {
-          error: `ccrotate tier-cache --target ${target} exited ${result.exitCode}`,
+          error: `ccrotate tier-cache read for ${target} exited ${result.exitCode}`,
           stderr: result.stderr.trim().slice(0, 500),
         };
         continue;
@@ -265,7 +275,7 @@ async function handlePoolsRoute(input: PluginApiRequestInput): Promise<PluginApi
  * Route: POST /switch
  * Body: { ssh, email, target?: "claude" | "codex" }
  *
- * Runs `ccrotate switch <email> --target <target>` on the SSH host. ccrotate's
+ * Runs `ccrotate --target <target> switch <email>` on the SSH host. ccrotate's
  * switchTo auto-refreshes the access token when the saved snapshot's expiresAt
  * is < now+5min, so the resulting credentials.json/auth.json is always usable
  * if the saved refresh token is still valid.
@@ -286,7 +296,7 @@ async function handleSwitchRoute(input: PluginApiRequestInput): Promise<PluginAp
   }
   const result = await runSshCommand(ssh, {
     command: "ccrotate",
-    args: ["switch", emailRaw, "--target", target],
+    args: ccrotateArgs(target, "switch", [emailRaw]),
     timeoutMs: 30_000,
   });
   return {
@@ -303,12 +313,12 @@ async function handleSwitchRoute(input: PluginApiRequestInput): Promise<PluginAp
 
 /**
  * Route: POST /refresh
- * Body: { ssh, target?: "claude" | "codex", account?: string }
+ * Body: { ssh, target?: "claude" | "codex" }
  *
  * For target=claude, runs `ccrotate refresh-one` (cron-friendly single-account
- * refresh). For target=codex, runs `ccrotate refresh --target codex` (no
+ * refresh). For target=codex, runs `ccrotate --target codex refresh` (no
  * refresh-one in codex mode per ccrotate README). Both write back to the
- * tier-cache that GET /pools reads from.
+ * tier-cache that POST /pools reads from.
  */
 async function handleRefreshRoute(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   let ssh: CcrotateSshConfig;
@@ -318,7 +328,9 @@ async function handleRefreshRoute(input: PluginApiRequestInput): Promise<PluginA
     return { status: 400, body: { error: describeError(error) } };
   }
   const target = pickTarget(input.body);
-  const args = target === "claude" ? ["refresh-one"] : ["refresh", "--target", "codex"];
+  const args = target === "claude"
+    ? ccrotateArgs(target, "refresh-one")
+    : ccrotateArgs(target, "refresh");
   const result = await runSshCommand(ssh, {
     command: "ccrotate",
     args,

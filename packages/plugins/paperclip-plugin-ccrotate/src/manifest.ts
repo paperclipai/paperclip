@@ -30,7 +30,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   // Plugin-local routes mounted at /api/plugins/kkroo.ccrotate/api/*. Each
   // route takes the SSH config in its body so a single plugin install can
-  // operate against multiple ccrotate hosts (.32, .33, .34, paperclip pod) —
+  // operate against multiple ccrotate hosts (.32, .33, .34, paperclip pod);
   // the caller resolves which environment to query and forwards its ssh
   // section. The hooks/pools UI panel uses these to render the live state.
   apiRoutes: [
