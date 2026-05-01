@@ -1,4 +1,35 @@
-export type Rt2WikiPageType = "index" | "log" | "topic";
+export type Rt2WikiPageType = "index" | "log" | "topic" | "project" | "schema";
+export type Rt2WikiConfidenceLabel = "EXTRACTED" | "INFERRED" | "AMBIGUOUS";
+export type Rt2WikiContradictionStatus = "none" | "unknown" | "unresolved" | "resolved";
+
+export interface Rt2WikiConfidenceSummary {
+  EXTRACTED: number;
+  INFERRED: number;
+  AMBIGUOUS: number;
+}
+
+export interface Rt2WikiPageProvenance {
+  source: "domain_event_projector" | "obsidian_vault_import" | "obsidian_conflict_resolution" | "jarvis_rewrite";
+  sourceEventIds: string[];
+  sourceEventTypes: string[];
+  entityRefs: Array<{
+    entityType: string;
+    entityId: string;
+  }>;
+  generatedAt: string;
+}
+
+export interface Rt2WikiPageUpdateEvidence {
+  reason: string;
+  touchedPageKeys: string[];
+  sourceEventIds: string[];
+  sourceEventCount: number;
+  relatedPageKeys: string[];
+  generatedAt: string;
+  actorId?: string | null;
+  proposalId?: string | null;
+  citationIds?: string[];
+}
 
 export interface Rt2WikiPage {
   id: string;
@@ -10,6 +41,11 @@ export interface Rt2WikiPage {
   summary: string[];
   sourceEventIds: string[];
   metadata: Record<string, unknown>;
+  provenance?: Rt2WikiPageProvenance;
+  confidenceSummary?: Rt2WikiConfidenceSummary;
+  contradictionStatus?: Rt2WikiContradictionStatus;
+  relatedPageKeys?: string[];
+  updateEvidence?: Rt2WikiPageUpdateEvidence | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -43,6 +79,29 @@ export interface Rt2ObsidianVaultExport {
   vaultName: string;
   generatedAt: string;
   files: Rt2ObsidianVaultFile[];
+}
+
+export interface Rt2WikiLLMExportFile {
+  path: string;
+  title: string;
+  pageKey: string;
+  pageType: Rt2WikiPageType;
+  content: string;
+  sourceEventIds: string[];
+  updatedAt: string;
+  provenance: Rt2WikiPageProvenance | null;
+  confidenceSummary: Rt2WikiConfidenceSummary;
+  contradictionStatus: Rt2WikiContradictionStatus;
+  relatedPageKeys: string[];
+  updateEvidence: Rt2WikiPageUpdateEvidence | null;
+}
+
+export interface Rt2WikiLLMExport {
+  companyId: string;
+  model: "wikillm-compatible-file-model";
+  generatedAt: string;
+  fileCount: number;
+  files: Rt2WikiLLMExportFile[];
 }
 
 export type Rt2KnowledgeEvidenceStatus = "ready" | "missing" | "stale" | "ambiguous";

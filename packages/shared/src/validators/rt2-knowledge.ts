@@ -1,10 +1,15 @@
 import { z } from "zod";
 
-export const rt2WikiPageTypeSchema = z.enum(["index", "log", "topic"]);
+export const rt2WikiPageTypeSchema = z.enum(["index", "log", "topic", "project", "schema"]);
 
 export const listRt2WikiPagesSchema = z.object({
   pageType: rt2WikiPageTypeSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+export const exportRt2WikiLLMSchema = z.object({
+  pageType: rt2WikiPageTypeSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
 export const getRt2WikiPageSchema = z.object({
@@ -116,6 +121,7 @@ export const resolveRt2ContradictionSchema = z.object({
 });
 
 export type ListRt2WikiPages = z.infer<typeof listRt2WikiPagesSchema>;
+export type ExportRt2WikiLLM = z.infer<typeof exportRt2WikiLLMSchema>;
 export type GetRt2WikiPage = z.infer<typeof getRt2WikiPageSchema>;
 export type ListRt2DailyWikiPages = z.infer<typeof listRt2DailyWikiPagesSchema>;
 export type GetRt2DailyWikiPage = z.infer<typeof getRt2DailyWikiPageSchema>;

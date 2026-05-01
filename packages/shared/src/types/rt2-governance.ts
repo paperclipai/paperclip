@@ -167,7 +167,7 @@ export interface Rt2JarvisAutoPolicyDecision {
   approvalRequired: boolean;
 }
 
-export type Rt2JarvisRewriteProposalStatus = "proposed" | "approval_requested" | "approved" | "rejected" | "blocked";
+export type Rt2JarvisRewriteProposalStatus = "proposed" | "approval_requested" | "approved" | "applied" | "rejected" | "blocked";
 export type Rt2JarvisRewriteRiskLevel = "low" | "medium" | "high";
 export type Rt2JarvisRewriteEvalProviderStatus = "not_run" | "completed" | "unavailable" | "error";
 export type Rt2JarvisRewriteEvalFallbackStatus = "completed" | "error";
@@ -273,6 +273,7 @@ export interface Rt2JarvisRewriteProposalList {
     proposed: number;
     approvalRequested: number;
     approved: number;
+    applied: number;
     rejected: number;
     blocked: number;
     highRisk: number;

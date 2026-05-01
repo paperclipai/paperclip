@@ -391,6 +391,7 @@ export {
 
 export {
   applyRt2KnowledgeVaultImportSchema,
+  exportRt2WikiLLMSchema,
   generateRt2ContradictionCandidatesSchema,
   getRt2DailyWikiPageSchema,
   getRt2WikiPageSchema,
@@ -414,6 +415,7 @@ export {
   type ApplyRt2KnowledgeVaultImport,
   type CreateRt2LocalBridgePairing,
   type CreateRt2LocalBridgeQueue,
+  type ExportRt2WikiLLM,
   type GenerateRt2ContradictionCandidates,
   type GetRt2DailyWikiPage,
   type GetRt2WikiPage,

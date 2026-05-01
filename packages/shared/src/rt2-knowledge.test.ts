@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getRt2WikiPageSchema,
   listRt2WikiPagesSchema,
+  exportRt2WikiLLMSchema,
   previewRt2KnowledgeVaultImportSchema,
   projectRt2KnowledgeSchema,
   rt2WikiPageTypeSchema,
@@ -12,12 +13,18 @@ describe("rt2 knowledge validators", () => {
     expect(rt2WikiPageTypeSchema.parse("index")).toBe("index");
     expect(rt2WikiPageTypeSchema.parse("log")).toBe("log");
     expect(rt2WikiPageTypeSchema.parse("topic")).toBe("topic");
+    expect(rt2WikiPageTypeSchema.parse("project")).toBe("project");
+    expect(rt2WikiPageTypeSchema.parse("schema")).toBe("schema");
   });
 
   it("normalizes list query limits", () => {
     expect(listRt2WikiPagesSchema.parse({ pageType: "topic", limit: "10" })).toEqual({
       pageType: "topic",
       limit: 10,
+    });
+    expect(exportRt2WikiLLMSchema.parse({ pageType: "project", limit: "250" })).toEqual({
+      pageType: "project",
+      limit: 250,
     });
   });
 
