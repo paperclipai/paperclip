@@ -1,10 +1,16 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
+const DASHBOARD_ISSUE_ACTIVITY_DAYS = 14;
+// Top N most-recently-updated issues. Drives the Recent Issues panel (renders
+// the first 10) AND the activity-feed entityName/entityTitle lookup map
+// (covers issues referenced by the 10 latest activity events). 50 is generous
+// for the lookup case while staying under ~30 KB on the wire.
+const DASHBOARD_RECENT_ISSUE_LIMIT = 50;
 
 function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -128,6 +134,86 @@ export function dashboardService(db: Db) {
         bucket.total += count;
       }
 
+      // ----- Issue creation activity (14d, by priority + status) ----
+      // Replaces the Dashboard's previous practice of fetching the full
+      // company-scoped issue list (~1.28 MB on a busy company) just to bin
+      // issues by createdAt-day client-side. With ~2k issues across 14 days,
+      // each GROUP BY runs in a few ms against the (company_id, created_at)
+      // index.
+      const issueActivityDays = getRecentUtcDateKeys(now, DASHBOARD_ISSUE_ACTIVITY_DAYS);
+      const issueActivityStart = new Date(`${issueActivityDays[0]}T00:00:00.000Z`);
+      const issueDayExpr = sql<string>`to_char(${issues.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+
+      const [issuePriorityRows, issueStatusRows, recentIssuesRows] = await Promise.all([
+        db
+          .select({
+            date: issueDayExpr,
+            priority: issues.priority,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            gte(issues.createdAt, issueActivityStart),
+            isNull(issues.hiddenAt),
+          ))
+          .groupBy(issueDayExpr, issues.priority),
+        db
+          .select({
+            date: issueDayExpr,
+            status: issues.status,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            gte(issues.createdAt, issueActivityStart),
+            isNull(issues.hiddenAt),
+          ))
+          .groupBy(issueDayExpr, issues.status),
+        db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            priority: issues.priority,
+            projectId: issues.projectId,
+            parentId: issues.parentId,
+            assigneeAgentId: issues.assigneeAgentId,
+            createdAt: issues.createdAt,
+            updatedAt: issues.updatedAt,
+            lastActivityAt: issues.lastActivityAt,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)))
+          .orderBy(desc(issues.updatedAt))
+          .limit(DASHBOARD_RECENT_ISSUE_LIMIT),
+      ]);
+
+      const issueActivity = issueActivityDays.map((date) => ({
+        date,
+        total: 0,
+        byPriority: {} as Record<string, number>,
+        byStatus: {} as Record<string, number>,
+      }));
+      const issueActivityByDate = new Map(issueActivity.map((day) => [day.date, day]));
+      for (const row of issuePriorityRows) {
+        const bucket = issueActivityByDate.get(row.date);
+        if (!bucket) continue;
+        const count = Number(row.count);
+        bucket.byPriority[row.priority] = (bucket.byPriority[row.priority] ?? 0) + count;
+        bucket.total += count;
+      }
+      for (const row of issueStatusRows) {
+        const bucket = issueActivityByDate.get(row.date);
+        if (!bucket) continue;
+        bucket.byStatus[row.status] = (bucket.byStatus[row.status] ?? 0) + Number(row.count);
+        // Note: don't also add to total here — issuePriorityRows already
+        // counted every issue in this window. byStatus is a parallel
+        // breakdown of the same issue set on the same day.
+      }
+
       const utilization =
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
@@ -156,6 +242,8 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        issueActivity,
+        recentIssues: recentIssuesRows,
       };
     },
   };

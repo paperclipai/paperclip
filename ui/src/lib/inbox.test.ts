@@ -300,6 +300,8 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  issueActivity: [],
+  recentIssues: [],
 };
 
 describe("inbox helpers", () => {
