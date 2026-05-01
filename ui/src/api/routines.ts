@@ -22,7 +22,12 @@ export interface RotateRoutineTriggerResponse {
 }
 
 export const routinesApi = {
-  list: (companyId: string) => api.get<RoutineListItem[]>(`/companies/${companyId}/routines`),
+  list: (companyId: string, filters?: { projectId?: string | null }) => {
+    const params = new URLSearchParams();
+    if (filters?.projectId) params.set("projectId", filters.projectId);
+    const query = params.toString();
+    return api.get<RoutineListItem[]>(`/companies/${companyId}/routines${query ? `?${query}` : ""}`);
+  },
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Routine>(`/companies/${companyId}/routines`, data),
   get: (id: string) => api.get<RoutineDetail>(`/routines/${id}`),
