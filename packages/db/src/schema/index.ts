@@ -48,6 +48,11 @@ export {
   rt2V33KnowledgeVaultSettings,
 } from "./rt2_v33_knowledge_sync.js";
 export {
+  rt2V33CorpusGraphCommunities,
+  rt2V33CorpusGraphEdges,
+  rt2V33CorpusGraphNodes,
+  rt2V33CorpusGraphReports,
+  rt2V33CorpusGraphSources,
   rt2V33GraphCache,
   rt2V33GraphCommunities,
   rt2V33GraphEdges,

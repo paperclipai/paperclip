@@ -467,6 +467,15 @@ export type Rt2GraphEdgeType = (typeof RT2_GRAPH_EDGE_TYPES)[number];
 export const RT2_GRAPH_CONFIDENCES = ["EXTRACTED", "INFERRED", "AMBIGUOUS"] as const;
 export type Rt2GraphConfidence = (typeof RT2_GRAPH_CONFIDENCES)[number];
 
+export const RT2_CORPUS_GRAPH_SOURCE_TYPES = ["repo_file", "doc_file", "wiki_page", "external_reference"] as const;
+export type Rt2CorpusGraphSourceType = (typeof RT2_CORPUS_GRAPH_SOURCE_TYPES)[number];
+
+export const RT2_CORPUS_GRAPH_NODE_TYPES = ["source_file", "heading", "symbol", "term"] as const;
+export type Rt2CorpusGraphNodeType = (typeof RT2_CORPUS_GRAPH_NODE_TYPES)[number];
+
+export const RT2_CORPUS_GRAPH_EDGE_TYPES = ["contains", "imports", "references", "mentions", "shared_concept"] as const;
+export type Rt2CorpusGraphEdgeType = (typeof RT2_CORPUS_GRAPH_EDGE_TYPES)[number];
+
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 

@@ -7,6 +7,7 @@ export { issueRoutes } from "./issues.js";
 export { issueTreeControlRoutes } from "./issue-tree-control.js";
 export { routineRoutes } from "./routines.js";
 export { rt2DailyReportRoutes } from "./rt2-daily-report.js";
+export { rt2CorpusGraphRoutes } from "./rt2-corpus-graph.js";
 export { rt2KnowledgeRoutes } from "./rt2-knowledge.js";
 export { rt2KnowledgeOperationsRoutes } from "./rt2-knowledge-operations.js";
 export { rt2ContradictionReviewRoutes } from "./rt2-contradiction-review.js";

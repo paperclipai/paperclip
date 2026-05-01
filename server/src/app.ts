@@ -19,6 +19,7 @@ import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { rt2TaskRoutes } from "./routes/rt2-tasks.js";
+import { rt2CorpusGraphRoutes } from "./routes/rt2-corpus-graph.js";
 import { rt2TaskMeshRoutes } from "./routes/rt2-task-mesh.js";
 import { rt2KnowledgeRoutes } from "./routes/rt2-knowledge.js";
 import { rt2KnowledgeOperationsRoutes } from "./routes/rt2-knowledge-operations.js";
@@ -235,6 +236,7 @@ export async function createApp(
   }));
   api.use(issueTreeControlRoutes(db));
   api.use(rt2TaskRoutes(db));
+  api.use(rt2CorpusGraphRoutes(db));
   api.use(rt2TaskMeshRoutes(db));
   api.use(rt2KnowledgeRoutes(db));
   api.use(rt2KnowledgeOperationsRoutes(db));
