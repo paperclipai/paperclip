@@ -2433,3 +2433,148 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.create gmail_thread_triage dedup", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-gmail-triage-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  it("returns the existing issue when a second create races on the same gmail thread", async () => {
+    const companyId = await seedCompany();
+    const threadId = "19de41083f36ca6e";
+
+    const first = await svc.create(companyId, {
+      title: "Triage: inbound from lead",
+      description: "first body",
+      originKind: "gmail_thread_triage",
+      originId: threadId,
+    });
+
+    const second = await svc.create(companyId, {
+      title: "Triage: inbound from lead (retry)",
+      description: "second body",
+      originKind: "gmail_thread_triage",
+      originId: threadId,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.title).toBe(first.title);
+
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, threadId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("allows a new issue for the same thread once the prior one is cancelled", async () => {
+    const companyId = await seedCompany();
+    const threadId = "thread-cancel-then-recreate";
+
+    const first = await svc.create(companyId, {
+      title: "Triage: first cycle",
+      originKind: "gmail_thread_triage",
+      originId: threadId,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "cancelled", cancelledAt: new Date() })
+      .where(eq(issues.id, first.id));
+
+    const second = await svc.create(companyId, {
+      title: "Triage: second cycle",
+      originKind: "gmail_thread_triage",
+      originId: threadId,
+    });
+
+    expect(second.id).not.toBe(first.id);
+  });
+
+  it("collapses concurrent racing creates on the same gmail thread to one issue", async () => {
+    const companyId = await seedCompany();
+    const threadId = "thread-parallel-race";
+
+    const results = await Promise.all([
+      svc.create(companyId, {
+        title: "Triage A",
+        originKind: "gmail_thread_triage",
+        originId: threadId,
+      }),
+      svc.create(companyId, {
+        title: "Triage B",
+        originKind: "gmail_thread_triage",
+        originId: threadId,
+      }),
+      svc.create(companyId, {
+        title: "Triage C",
+        originKind: "gmail_thread_triage",
+        originId: threadId,
+      }),
+    ]);
+
+    const ids = new Set(results.map((row) => row.id));
+    expect(ids.size).toBe(1);
+
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, threadId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("does not collapse other origin kinds via the gmail-thread dedup path", async () => {
+    const companyId = await seedCompany();
+    const sharedOriginId = "shared-origin-id";
+
+    const first = await svc.create(companyId, {
+      title: "Routine execution one",
+      originKind: "manual",
+      originId: sharedOriginId,
+    });
+    const second = await svc.create(companyId, {
+      title: "Routine execution two",
+      originKind: "manual",
+      originId: sharedOriginId,
+    });
+
+    expect(second.id).not.toBe(first.id);
+  });
+});

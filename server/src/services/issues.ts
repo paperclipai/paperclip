@@ -1624,6 +1624,17 @@ async function blockedByMapForIssues(
   return map;
 }
 
+const GMAIL_THREAD_TRIAGE_UNIQUE_CONSTRAINT = "issues_gmail_thread_triage_uq";
+
+function isGmailThreadTriageConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const maybe = error as { code?: string; constraint?: string; constraint_name?: string; message?: string };
+  if (maybe.code !== "23505") return false;
+  const constraint = maybe.constraint ?? maybe.constraint_name;
+  if (constraint === GMAIL_THREAD_TRIAGE_UNIQUE_CONSTRAINT) return true;
+  return typeof maybe.message === "string" && maybe.message.includes(GMAIL_THREAD_TRIAGE_UNIQUE_CONSTRAINT);
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -2685,7 +2696,32 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+
+      const findActiveGmailThreadTriageIssue = async (dbOrTx: any) => {
+        const [existing] = await dbOrTx
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, "gmail_thread_triage"),
+              eq(issues.originId, issueData.originId!),
+              ne(issues.status, "cancelled"),
+            ),
+          )
+          .limit(1);
+        if (!existing) return null;
+        const [enriched] = await withIssueLabels(dbOrTx, [existing]);
+        return enriched;
+      };
+
+      if (issueData.originKind === "gmail_thread_triage" && issueData.originId) {
+        const existing = await findActiveGmailThreadTriageIssue(db);
+        if (existing) return existing;
+      }
+
+      try {
+        return await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -2834,7 +2870,18 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+        });
+      } catch (error) {
+        if (
+          isGmailThreadTriageConflict(error)
+          && issueData.originKind === "gmail_thread_triage"
+          && issueData.originId
+        ) {
+          const existing = await findActiveGmailThreadTriageIssue(db);
+          if (existing) return existing;
+        }
+        throw error;
+      }
     },
 
     update: async (

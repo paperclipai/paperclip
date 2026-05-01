@@ -131,5 +131,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    gmailThreadTriageIdx: uniqueIndex("issues_gmail_thread_triage_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'gmail_thread_triage'
+          and ${table.originId} is not null
+          and ${table.status} <> 'cancelled'`,
+      ),
   }),
 );
