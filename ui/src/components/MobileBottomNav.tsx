@@ -4,7 +4,7 @@ import {
   SquarePen,
   BookOpen,
   DollarSign,
-  Network,
+  Store,
   ShieldCheck,
   PlusCircle,
 } from "lucide-react";
@@ -32,7 +32,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
       { to: "/quick-capture", label: "기록", icon: PlusCircle },
       { to: "/knowledge", label: "지식", icon: BookOpen },
       { to: "/pnl", label: "정산", icon: DollarSign },
-      { to: "/org", label: "조직", icon: Network },
+      { to: "/marketplace", label: "마켓", icon: Store },
       { to: "/governance", label: "승인", icon: ShieldCheck },
     ],
     [],

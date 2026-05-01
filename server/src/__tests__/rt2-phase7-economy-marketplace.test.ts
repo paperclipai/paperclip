@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agents,
   companies,
   createDb,
   getEmbeddedPostgresTestSupport,
@@ -14,9 +15,15 @@ import {
   rt2AgentMarketplace,
   rt2AgentSubscriptions,
   rt2AntiGamingSignals,
+  rt2CareerMilestones,
+  rt2CareerPortfolio,
+  rt2CareerProfiles,
   rt2CoinLedger,
   rt2CollaborationEvents,
   rt2CollaborationRewards,
+  rt2GamificationAchievements,
+  rt2GamificationAgentBalances,
+  rt2GamificationXpTransactions,
   rt2PersonalPnL,
   rt2QualityScores,
   rt2SettlementGovernance,
@@ -27,6 +34,7 @@ import {
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { rt2AgentMarketplaceRoutes } from "../routes/rt2-agent-marketplace.js";
+import { rt2CareerMateRoutes } from "../routes/rt2-career-mate.js";
 import { rt2CollaborationRewardsRoutes } from "../routes/rt2-collaboration-rewards.js";
 import { rt2PersonalPnLRoutes } from "../routes/rt2-personal-pnl.js";
 import { rt2PersonalPnLService } from "../services/rt2-personal-pnl.js";
@@ -59,6 +67,12 @@ describeEmbeddedPostgres("rt2 phase 7 economy, collaboration, and marketplace", 
     await db.delete(rt2AgentMarketplace);
     await db.delete(rt2CollaborationEvents);
     await db.delete(rt2CollaborationRewards);
+    await db.delete(rt2GamificationAchievements);
+    await db.delete(rt2GamificationAgentBalances);
+    await db.delete(rt2GamificationXpTransactions);
+    await db.delete(rt2CareerMilestones);
+    await db.delete(rt2CareerPortfolio);
+    await db.delete(rt2CareerProfiles);
     await db.delete(rt2AntiGamingSignals);
     await db.delete(rt2SettlementGovernance);
     await db.delete(rt2SettlementThresholds);
@@ -69,6 +83,7 @@ describeEmbeddedPostgres("rt2 phase 7 economy, collaboration, and marketplace", 
     await db.delete(rt2V33TaskParticipants);
     await db.delete(rt2V33TaskProfiles);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(activityLog);
     await db.delete(projects);
     await db.delete(companies);
@@ -92,6 +107,7 @@ describeEmbeddedPostgres("rt2 phase 7 economy, collaboration, and marketplace", 
       next();
     });
     app.use("/api", rt2PersonalPnLRoutes(db));
+    app.use("/api", rt2CareerMateRoutes(db));
     app.use("/api", rt2CollaborationRewardsRoutes(db));
     app.use("/api", rt2AgentMarketplaceRoutes(db));
     app.use(errorHandler);
@@ -334,6 +350,160 @@ describeEmbeddedPostgres("rt2 phase 7 economy, collaboration, and marketplace", 
     );
 
     expect(entries.map((entry) => entry.balanceAfter).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("derives CareerMate progression from settlement, ledger, quality, and gamification evidence", async () => {
+    companyId = randomUUID();
+    projectId = randomUUID();
+    taskIssueId = randomUUID();
+    workProductId = randomUUID();
+    const agentId = randomUUID();
+    const careerProfileId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "RT2 Career Economy Corp",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CareerMate Jarvis",
+      role: "engineer",
+      adapterType: "process",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "CareerMate Economy Loop",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: taskIssueId,
+      companyId,
+      projectId,
+      title: "Deliver ledger-backed CareerMate progress",
+      description: "Settlement and quality evidence should drive progression",
+      status: "completed",
+      priority: "high",
+      assigneeAgentId: agentId,
+      createdByUserId: "board-user",
+    });
+    await db.insert(rt2SettlementGovernance).values({
+      companyId,
+      workProductId,
+      taskIssueId,
+      ownerActorId: agentId,
+      ownerActorType: "agent",
+      proposedPriceGold: 2_000,
+      finalPriceGold: 2_000,
+      rationale: "Approved quality deliverable",
+      status: "approved",
+      riskLevel: "low",
+      pnlPeriod: "2026-05",
+      decidedAt: new Date("2026-05-01T00:00:00.000Z"),
+    });
+    await db.insert(rt2CoinLedger).values({
+      companyId,
+      fromActorId: "company",
+      fromActorType: "company",
+      toActorId: agentId,
+      toActorType: "agent",
+      amount: 2_000,
+      balanceAfter: 2_000,
+      leg: "credit",
+      transactionType: "earned",
+      description: "Approved deliverable settlement",
+      referenceId: workProductId,
+      referenceType: "approved_deliverable",
+      period: "2026-05",
+    });
+    await db.insert(rt2QualityScores).values({
+      companyId,
+      taskIssueId,
+      evaluator: "jarvis",
+      evalType: "ai_auto",
+      score: 90,
+      direction: "positive",
+      category: "quality",
+      rationale: "Manager approved CareerMate evidence",
+      isActive: 1,
+      managerDecision: "approved",
+      isFinalized: 1,
+      basePrice: 1_000,
+      evaluationMode: "auto",
+    });
+    await db.insert(rt2GamificationXpTransactions).values({
+      companyId,
+      agentId,
+      activityType: "task_complete",
+      xpAmount: 500,
+      balanceAfter: 500,
+      description: "CareerMate task complete",
+    });
+    await db.insert(rt2GamificationAchievements).values({
+      companyId,
+      agentId,
+      achievementKey: "first_task",
+      scope: "agent",
+      earnedAt: new Date("2026-05-01T00:00:00.000Z"),
+    });
+    await db.insert(rt2GamificationAgentBalances).values({
+      companyId,
+      agentId,
+      balance: 2_000,
+      lifetimeEarned: 2_000,
+      lifetimeSpent: 0,
+    });
+    await db.insert(rt2CareerProfiles).values({
+      id: careerProfileId,
+      companyId,
+      agentId,
+      name: "CareerMate Jarvis",
+      title: "Economy Operator",
+    });
+    await db.insert(rt2CareerPortfolio).values({
+      careerProfileId,
+      companyId,
+      workProductId,
+      title: "Ledger-backed progression",
+      category: "analysis",
+      qualityScore: 90,
+    });
+    await db.insert(rt2CareerMilestones).values({
+      careerProfileId,
+      companyId,
+      title: "First approved economy loop",
+      category: "achievement",
+      achievedAt: new Date("2026-05-01T00:00:00.000Z"),
+    });
+
+    const app = createApp(companyId);
+    const response = await request(app).get(`/api/companies/${companyId}/rt2/career/progression/${agentId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({
+      agentId,
+      evidenceStatus: "ready",
+      tier: "operator",
+      reputationBand: "trusted",
+      avatarState: "trusted",
+      evidence: expect.objectContaining({
+        approvedSettlementCount: 1,
+        approvedSettlementGold: 2000,
+        ledgerEarnedGold: 2000,
+        qualityAverage: 90,
+        qualitySampleCount: 1,
+        portfolioCount: 1,
+        milestoneCount: 1,
+        achievementsCount: 1,
+      }),
+      sourceLinks: expect.arrayContaining([
+        expect.objectContaining({ type: "settlement", path: "/pnl" }),
+        expect.objectContaining({ type: "quality", path: "/daily-work" }),
+      ]),
+    }));
   });
 
   it("returns marketplace listings with live skill, pricing, quality, reputation, and subscription evidence", async () => {

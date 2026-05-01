@@ -7,10 +7,11 @@ import type {
   Rt2TokenBalance,
   Rt2CostBreakdown,
   Rt2XpActivityType,
+  Rt2CareerProgression,
 } from "@paperclipai/shared";
 import { RT2_XP_REWARDS } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { rt2GamificationApi } from "@/api/rt2-gamification";
 
 // =============================================================================
 // Utility Functions
@@ -85,6 +86,90 @@ function StatCard({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+function careerEvidenceStatusLabel(status: Rt2CareerProgression["evidenceStatus"]): string {
+  switch (status) {
+    case "ready":
+      return "근거 준비됨";
+    case "partial":
+      return "부분 근거";
+    case "review_required":
+      return "검토 필요";
+    case "missing":
+      return "근거 없음";
+  }
+}
+
+function CareerMateProgressionSection({
+  companyId,
+  agentId,
+}: {
+  companyId: string;
+  agentId?: string;
+}) {
+  const { data: progression, isLoading } = useQuery<Rt2CareerProgression>({
+    queryKey: ["rt2-career-progression", companyId, agentId],
+    queryFn: async () => {
+      if (!agentId) throw new Error("No agentId");
+      return rt2GamificationApi.getCareerProgression(companyId, agentId);
+    },
+    enabled: Boolean(companyId) && Boolean(agentId),
+  });
+
+  if (!agentId) return null;
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border bg-background p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold">CareerMate 진행도</h4>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            정산, ledger, 품질, XP 근거로 계산합니다.
+          </p>
+        </div>
+        {progression ? (
+          <Badge variant={progression.evidenceStatus === "ready" ? "default" : "outline"}>
+            {careerEvidenceStatusLabel(progression.evidenceStatus)}
+          </Badge>
+        ) : null}
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">로딩 중...</p>
+      ) : progression ? (
+        <>
+          <div className="grid grid-cols-3 gap-2">
+            <StatCard label="레벨" value={`Lv.${progression.level}`} />
+            <StatCard label="티어" value={progression.tier} />
+            <StatCard label="신뢰" value={progression.reputationBand} />
+          </div>
+          <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+            <div>승인 정산 {progression.evidence.approvedSettlementCount}건 · {formatNumber(progression.evidence.approvedSettlementGold)} Gold</div>
+            <div>Ledger 수익 {formatNumber(progression.evidence.ledgerEarnedGold)} Gold</div>
+            <div>품질 평균 {progression.evidence.qualityAverage ?? "-"} · 표본 {progression.evidence.qualitySampleCount}개</div>
+            <div>XP {formatNumber(progression.evidence.totalXp)} · 업적 {progression.evidence.achievementsCount}개</div>
+            <div>포트폴리오 {progression.evidence.portfolioCount}개 · 마일스톤 {progression.evidence.milestoneCount}개</div>
+            <div>반려/리스크 {progression.evidence.rejectedSettlementCount + progression.evidence.highRiskSettlementCount}건</div>
+          </div>
+          {progression.warnings.length > 0 ? (
+            <div className="space-y-1 text-xs text-amber-700 dark:text-amber-300">
+              {progression.warnings.slice(0, 2).map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2 text-xs">
+            <a className="underline underline-offset-4" href="/pnl">정산/P&L</a>
+            <a className="underline underline-offset-4" href="/marketplace">Jarvis 마켓</a>
+            <a className="underline underline-offset-4" href={`/agents/${agentId}`}>CareerMate 근거</a>
+          </div>
+        </>
+      ) : (
+        <p className="text-sm text-muted-foreground">CareerMate 진행도 근거가 없습니다.</p>
+      )}
     </div>
   );
 }
@@ -449,6 +534,8 @@ export function Rt2GamificationPanel({
           <StatCard label="협업" value={agentScore.collaborationScore.toFixed(1)} />
         </div>
       )}
+
+      <CareerMateProgressionSection companyId={companyId} agentId={agentId} />
 
       {/* Tabs */}
       <div className="flex border-b">

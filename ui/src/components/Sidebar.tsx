@@ -6,6 +6,7 @@ import {
   DollarSign,
   History,
   Search,
+  Store,
   SquarePen,
   Network,
   Boxes,
@@ -114,6 +115,8 @@ export function Sidebar() {
 
         <SidebarSection label="회사">
           <SidebarNavItem to="/org" label="조직" icon={Network} />
+          <SidebarNavItem to="/marketplace" label="Jarvis 마켓" icon={Store} />
+          <SidebarNavItem to="/pnl" label="정산/P&L" icon={DollarSign} />
           <SidebarNavItem to="/skills" label="스킬" icon={Boxes} />
           <SidebarNavItem to="/costs" label="비용" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="활동" icon={History} />

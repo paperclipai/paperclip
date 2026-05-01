@@ -729,6 +729,12 @@ function SupportEvidenceRail({ board }: { board: Rt2DailyBoardData }) {
           <Metric label="품질 상태" value={qualityLabel(board.cockpit.summary.qualityStatus)} />
         </div>
         <EvidenceLine>가격 또는 제출 근거가 있는 카드 {economyCards}개</EvidenceLine>
+        <div className="flex flex-wrap gap-2 text-xs" aria-label="경제 근거 링크">
+          <EvidenceLink href="/pnl">정산/P&L</EvidenceLink>
+          <EvidenceLink href="/pnl#settlements">정산 승인</EvidenceLink>
+          <EvidenceLink href="/marketplace">Jarvis 마켓</EvidenceLink>
+          <EvidenceLink href="/agents">CareerMate</EvidenceLink>
+        </div>
       </EvidenceSection>
     </aside>
   );
@@ -772,6 +778,17 @@ function EvidenceLine({ children, tone = "muted" }: { children: ReactNode; tone?
 
 function EvidenceEmpty({ children }: { children: ReactNode }) {
   return <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">{children}</p>;
+}
+
+function EvidenceLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      className="rounded-md border border-border bg-background px-2 py-1 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+      href={href}
+    >
+      {children}
+    </a>
+  );
 }
 
 function cardMatchesFilters(

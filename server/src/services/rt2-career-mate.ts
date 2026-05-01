@@ -1,11 +1,21 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   rt2CareerProfiles,
   rt2CareerPortfolio,
   rt2SkillTransfers,
   rt2CareerMilestones,
+  rt2CoinLedger,
+  rt2QualityScores,
+  rt2SettlementGovernance,
+  rt2GamificationXpTransactions,
+  rt2GamificationAchievements,
+  rt2GamificationAgentBalances,
 } from "@paperclipai/db";
+import {
+  deriveRt2CareerProgression,
+  type Rt2CareerProgression,
+} from "@paperclipai/shared";
 
 export type CareerProfile = {
   id: string;
@@ -175,6 +185,172 @@ export function rt2CareerMateService(db: Db) {
       skills: profile.skills as string[],
       certifications: profile.certifications as string[],
     } as CareerProfile;
+  }
+
+  /**
+   * Phase 70: derive CareerMate progression from economy evidence.
+   */
+  async function getCareerProgression(
+    companyId: string,
+    agentId: string,
+  ): Promise<Rt2CareerProgression> {
+    const profile = await getCareerProfileByAgent(companyId, agentId);
+    const careerProfileId = profile?.id ?? null;
+
+    const settlementRows = await db
+      .select({
+        id: rt2SettlementGovernance.id,
+        taskIssueId: rt2SettlementGovernance.taskIssueId,
+        status: rt2SettlementGovernance.status,
+        proposedPriceGold: rt2SettlementGovernance.proposedPriceGold,
+        finalPriceGold: rt2SettlementGovernance.finalPriceGold,
+        riskLevel: rt2SettlementGovernance.riskLevel,
+        antiGamingSignals: rt2SettlementGovernance.antiGamingSignals,
+      })
+      .from(rt2SettlementGovernance)
+      .where(
+        and(
+          eq(rt2SettlementGovernance.companyId, companyId),
+          eq(rt2SettlementGovernance.ownerActorId, agentId),
+        ),
+      );
+
+    const approvedSettlements = settlementRows.filter((row) => row.status === "approved");
+    const rejectedSettlementCount = settlementRows.filter((row) => row.status === "rejected").length;
+    const flaggedSettlementCount = settlementRows.reduce(
+      (sum, row) => sum + ((row.antiGamingSignals as Array<unknown> | null)?.length ?? 0),
+      0,
+    );
+    const highRiskSettlementCount = settlementRows.filter((row) => row.riskLevel === "high").length;
+    const approvedSettlementGold = approvedSettlements.reduce(
+      (sum, row) => sum + Number(row.finalPriceGold ?? row.proposedPriceGold ?? 0),
+      0,
+    );
+
+    const ledgerRows = await db
+      .select({
+        amount: rt2CoinLedger.amount,
+        leg: rt2CoinLedger.leg,
+        transactionType: rt2CoinLedger.transactionType,
+      })
+      .from(rt2CoinLedger)
+      .where(
+        and(
+          eq(rt2CoinLedger.companyId, companyId),
+          eq(rt2CoinLedger.toActorId, agentId),
+          eq(rt2CoinLedger.toActorType, "agent"),
+        ),
+      );
+
+    const ledgerEarnedGold = ledgerRows.reduce((sum, row) => {
+      if (row.leg !== "credit") return sum;
+      if (!["earned", "reward", "transferred"].includes(row.transactionType)) return sum;
+      return sum + Math.max(0, Number(row.amount));
+    }, 0);
+
+    const settlementTaskIssueIds = [
+      ...new Set(settlementRows.map((row) => row.taskIssueId).filter(Boolean)),
+    ];
+    const qualityRows = settlementTaskIssueIds.length > 0
+      ? await db
+          .select({ score: rt2QualityScores.score })
+          .from(rt2QualityScores)
+          .where(
+            and(
+              eq(rt2QualityScores.companyId, companyId),
+              inArray(rt2QualityScores.taskIssueId, settlementTaskIssueIds),
+              eq(rt2QualityScores.managerDecision, "approved"),
+              eq(rt2QualityScores.isFinalized, 1),
+              eq(rt2QualityScores.isActive, 1),
+            ),
+          )
+      : [];
+    const qualityAverage = qualityRows.length > 0
+      ? Math.round(qualityRows.reduce((sum, row) => sum + Number(row.score), 0) / qualityRows.length)
+      : null;
+
+    const xpRows = await db
+      .select({ total: sql<number>`COALESCE(SUM(${rt2GamificationXpTransactions.xpAmount}), 0)::int` })
+      .from(rt2GamificationXpTransactions)
+      .where(
+        and(
+          eq(rt2GamificationXpTransactions.companyId, companyId),
+          eq(rt2GamificationXpTransactions.agentId, agentId),
+        ),
+      );
+
+    const achievementRows = await db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(rt2GamificationAchievements)
+      .where(
+        and(
+          eq(rt2GamificationAchievements.companyId, companyId),
+          eq(rt2GamificationAchievements.agentId, agentId),
+          sql`${rt2GamificationAchievements.earnedAt} IS NOT NULL`,
+        ),
+      );
+
+    const balanceRows = await db
+      .select({
+        balance: rt2GamificationAgentBalances.balance,
+        lifetimeEarned: rt2GamificationAgentBalances.lifetimeEarned,
+      })
+      .from(rt2GamificationAgentBalances)
+      .where(
+        and(
+          eq(rt2GamificationAgentBalances.companyId, companyId),
+          eq(rt2GamificationAgentBalances.agentId, agentId),
+        ),
+      )
+      .limit(1);
+
+    const portfolioCount = careerProfileId
+      ? Number(
+          (
+            await db
+              .select({ count: sql<number>`COUNT(*)::int` })
+              .from(rt2CareerPortfolio)
+              .where(eq(rt2CareerPortfolio.careerProfileId, careerProfileId))
+          )[0]?.count ?? 0,
+        )
+      : 0;
+    const milestoneCount = careerProfileId
+      ? Number(
+          (
+            await db
+              .select({ count: sql<number>`COUNT(*)::int` })
+              .from(rt2CareerMilestones)
+              .where(eq(rt2CareerMilestones.careerProfileId, careerProfileId))
+          )[0]?.count ?? 0,
+        )
+      : 0;
+
+    return deriveRt2CareerProgression({
+      companyId,
+      agentId,
+      totalXp: Number(xpRows[0]?.total ?? 0),
+      earnedGold: Math.max(ledgerEarnedGold, Number(balanceRows[0]?.lifetimeEarned ?? 0)),
+      ledgerEarnedGold,
+      approvedSettlementGold,
+      gamificationGoldBalance: balanceRows[0]?.balance ?? null,
+      qualityAverage,
+      qualitySampleCount: qualityRows.length,
+      approvedSettlementCount: approvedSettlements.length,
+      rejectedSettlementCount,
+      flaggedSettlementCount,
+      highRiskSettlementCount,
+      portfolioCount,
+      milestoneCount,
+      achievementsCount: Number(achievementRows[0]?.count ?? 0),
+      sourceLinks: [
+        { type: "settlement", label: "정산/P&L", path: "/pnl" },
+        { type: "ledger", label: "Gold ledger", path: "/pnl" },
+        { type: "quality", label: "품질 근거", path: "/daily-work" },
+        { type: "portfolio", label: "CareerMate 포트폴리오", path: `/agents/${agentId}` },
+        { type: "achievement", label: "업적/XP", path: `/agents/${agentId}` },
+        { type: "profile", label: "CareerMate 프로필", path: `/agents/${agentId}` },
+      ],
+    });
   }
 
   /**
@@ -596,6 +772,7 @@ export function rt2CareerMateService(db: Db) {
     // Career Profiles
     upsertCareerProfile,
     getCareerProfileByAgent,
+    getCareerProgression,
     getPublicProfiles,
     updateCareerStats,
     exportPortableData,

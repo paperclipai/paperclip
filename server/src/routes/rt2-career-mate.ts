@@ -10,6 +10,24 @@ export function rt2CareerMateRoutes(db: Db) {
   // ===== Career Profiles =====
 
   /**
+   * GET /companies/:companyId/rt2/career/progression/:agentId
+   * Derive CareerMate progression from settlement, ledger, quality, and gamification evidence.
+   */
+  router.get("/companies/:companyId/rt2/career/progression/:agentId", async (req, res) => {
+    try {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const agentId = req.params.agentId;
+
+      const progression = await careerService.getCareerProgression(companyId, agentId);
+      return res.json(progression);
+    } catch (error) {
+      console.error("Error getting career progression:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  /**
    * GET /companies/:companyId/rt2/career/profile/:agentId
    * Get career profile for an agent
    */

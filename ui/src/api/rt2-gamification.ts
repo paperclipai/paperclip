@@ -7,6 +7,7 @@ import type {
   Rt2XpTransaction,
   Rt2LevelHistoryEntry,
   Rt2AgentBalance,
+  Rt2CareerProgression,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -66,6 +67,12 @@ export const rt2GamificationApi = {
   getAgentBalance: (companyId: string, agentId: string) =>
     api.get<Rt2AgentBalance>(
       `/companies/${companyId}/rt2/gamification/agents/${agentId}/balance`,
+    ),
+
+  // CareerMate progression
+  getCareerProgression: (companyId: string, agentId: string) =>
+    api.get<Rt2CareerProgression>(
+      `/companies/${companyId}/rt2/career/progression/${agentId}`,
     ),
 
   // Economy

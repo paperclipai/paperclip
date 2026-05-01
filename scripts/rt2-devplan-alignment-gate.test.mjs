@@ -17,9 +17,14 @@ function makeRoot() {
   const summary = evaluateDevPlanAlignment({ now: new Date("2026-05-01T00:00:00.000Z") });
   assert.equal(summary.status, "passed");
   assert.equal(summary.baselineScorePct, 64);
-  assert.equal(summary.currentScorePct, 83);
-  assert.equal(summary.counts.byStatus.complete, 7);
+  assert.equal(summary.currentScorePct, 88);
+  assert.equal(summary.counts.byStatus.complete, 8);
   assert.match(buildReport(summary), /Graphify v3 corpus graph sidecar/);
+  assert.match(buildReport(summary), /Economy, marketplace, P&L, CareerMate loop/);
+  const economyRow = summary.rows.find((row) => row.id === "economy-loop");
+  assert.equal(economyRow?.status, "complete");
+  assert.ok(economyRow?.evidence.some((entry) => entry.path === "server/src/routes/rt2-career-mate.ts"));
+  assert.ok(economyRow?.evidence.some((entry) => entry.path === "ui/src/components/Rt2DailyBoard.tsx"));
 }
 
 {

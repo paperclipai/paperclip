@@ -1005,6 +1005,11 @@ describe("Rt2DailyBoard", () => {
     expect(container.textContent).toContain("오늘 위키와 카드 메모에 연결된 업무");
     expect(container.textContent).toContain("OKR/KPI 추적 노드");
     expect(container.textContent).toContain("가격 또는 제출 근거가 있는 카드");
+    expect(container.querySelector('[aria-label="경제 근거 링크"]')?.textContent).toContain("정산/P&L");
+    expect(container.querySelector('[aria-label="경제 근거 링크"]')?.textContent).toContain("Jarvis 마켓");
+    expect(container.querySelector('a[href="/pnl"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/marketplace"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/agents"]')?.textContent).toContain("CareerMate");
     expect(container.querySelector('[aria-label="todo-1-support-evidence"]')?.textContent).toContain("보완 필요 항목 확인");
     expect(container.querySelector('[aria-label="todo-2-support-evidence"]')?.textContent).toContain("90,000 Gold 근거");
     expect(container.textContent).not.toContain("Task Mesh");
