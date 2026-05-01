@@ -686,14 +686,23 @@ const heartbeatRunListContextColumns = {
   contextWakeTriggerDetail: heartbeatRuns.contextWakeTriggerDetail,
 } as const;
 
+// Read from the stored generated columns (migration 0080) instead of
+// extracting from the JSONB blob with `->>`. The previous form forced a
+// per-row detoast of result_json on the heartbeat list query — same shape
+// as the context_snapshot fix in migration 0079. See the 0080 SQL header
+// for the locking caveat. Truncation to 500 chars happens at write time on
+// the generated column; if HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS ever
+// grows past 500, ship a follow-up migration that drops + re-adds these
+// columns at the new bound (Postgres can't change a generated expression
+// in place).
 const heartbeatRunListResultColumns = {
-  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
-  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
-  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
-  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
-  resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
-  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
-  resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+  resultSummary: heartbeatRuns.resultSummary,
+  resultResult: heartbeatRuns.resultResult,
+  resultMessage: heartbeatRuns.resultMessage,
+  resultError: heartbeatRuns.resultError,
+  resultTotalCostUsd: heartbeatRuns.resultTotalCostUsd,
+  resultCostUsd: heartbeatRuns.resultCostUsd,
+  resultCostUsdCamel: heartbeatRuns.resultCostUsdCamel,
 } as const;
 
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
