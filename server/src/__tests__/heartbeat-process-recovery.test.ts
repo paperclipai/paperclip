@@ -876,6 +876,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function executeAutoCompleteFixture(input: {
     autoCompleteIssueOnSuccess?: boolean;
     adapterResult?: Awaited<ReturnType<typeof mockAdapterExecute>>;
+    seedConcreteActionEvidence?: boolean;
   }) {
     if (input.adapterResult) {
       mockAdapterExecute.mockResolvedValueOnce(input.adapterResult);
@@ -883,10 +884,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const fixture = await seedAutoCompleteIssueRunFixture({
       autoCompleteIssueOnSuccess: input.autoCompleteIssueOnSuccess,
     });
+    if (input.seedConcreteActionEvidence) {
+      await db.insert(issueComments).values({
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        authorAgentId: fixture.agentId,
+        createdByRunId: fixture.runId,
+        body: "Implemented the requested fix and verified the targeted behavior.",
+      });
+    }
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, fixture.runId);
+    await waitForHeartbeatIdle(db);
 
     const issue = await db.select().from(issues).where(eq(issues.id, fixture.issueId)).then((rows) => rows[0] ?? null);
     const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)).then((rows) => rows[0] ?? null);
@@ -894,27 +905,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }
 
   it("auto-completes the assigned issue after a successful live-content run when explicitly enabled", async () => {
-    mockAdapterExecute.mockImplementationOnce(async (ctx: { agent: { id: string; companyId: string }; runId: string; context: Record<string, unknown> }) => {
-      await db.insert(issueComments).values({
-        companyId: ctx.agent.companyId,
-        issueId: String(ctx.context.issueId),
-        authorAgentId: ctx.agent.id,
-        createdByRunId: ctx.runId,
-        body: "Implemented the requested fix and verified the targeted behavior.",
-      });
-      return {
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        errorMessage: null,
-        summary: "Implemented the requested fix and verified the targeted behavior.",
-        provider: "test",
-        model: "test-model",
-      };
-    });
-
     const { issue, run } = await executeAutoCompleteFixture({
       autoCompleteIssueOnSuccess: true,
+      seedConcreteActionEvidence: true,
     });
 
     expect(run?.status).toBe("succeeded");
