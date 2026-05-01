@@ -33,6 +33,7 @@ interface PluginListEntry {
   pluginKey: string;
   status: string;
   packageName?: string;
+  version?: string;
 }
 
 async function listInstalledPlugins(ctx: BootstrapContext): Promise<PluginListEntry[]> {
@@ -41,14 +42,37 @@ async function listInstalledPlugins(ctx: BootstrapContext): Promise<PluginListEn
   return (await res.json()) as PluginListEntry[];
 }
 
-async function readBundlePackageName(absPath: string): Promise<string | null> {
+async function readBundlePackageJson(
+  absPath: string,
+): Promise<{ name: string | null; version: string | null }> {
   try {
     const raw = await readFile(resolve(absPath, "package.json"), "utf8");
-    const parsed = JSON.parse(raw) as { name?: unknown };
-    return typeof parsed.name === "string" ? parsed.name : null;
+    const parsed = JSON.parse(raw) as { name?: unknown; version?: unknown };
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : null,
+      version: typeof parsed.version === "string" ? parsed.version : null,
+    };
   } catch {
-    return null;
+    return { name: null, version: null };
   }
+}
+
+/**
+ * Compare two semver strings numerically. Returns positive if `a > b`,
+ * negative if `a < b`, 0 if equal. Pre-release / build suffixes (e.g.
+ * `0.3.0-canary.4`) are stripped before comparison — bundled plugins
+ * pin a clean MAJOR.MINOR.PATCH so the simple form is sufficient and
+ * avoids pulling in a real semver dep just for this one comparison.
+ */
+function compareVersions(a: string, b: string): number {
+  const parse = (v: string) => v.replace(/^v/, "").split("-")[0].split(".").map(Number);
+  const av = parse(a);
+  const bv = parse(b);
+  for (let i = 0; i < 3; i++) {
+    const diff = (av[i] ?? 0) - (bv[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 interface LocalPluginInstall {
@@ -60,6 +84,47 @@ interface LocalPluginInstall {
   displayName: string;
 }
 
+async function upgradeBundledPlugin(
+  ctx: BootstrapContext,
+  spec: LocalPluginInstall,
+  pluginId: string,
+  bundleVersion: string,
+  registryVersion: string,
+): Promise<void> {
+  // For local-path plugins, the upgrade route's loader re-reads the manifest
+  // from the registry's stored packagePath (no body fields needed). Force-
+  // approve any capability escalation: the bundle is shipped in our own
+  // image, so this is implicitly admin-approved at build time.
+  try {
+    const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${pluginId}/upgrade`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    });
+    if (res.ok) {
+      const result = (await res.json()) as { version?: string; status?: string };
+      logger.info(
+        {
+          pluginKey: spec.pluginKey,
+          registryVersion,
+          bundleVersion,
+          newVersion: result.version,
+          status: result.status,
+        },
+        `${spec.displayName} plugin upgraded to bundle version`,
+      );
+    } else {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      logger.warn(
+        { pluginKey: spec.pluginKey, registryVersion, bundleVersion, error: err.error },
+        `${spec.displayName} plugin version-drift upgrade failed`,
+      );
+    }
+  } catch (err) {
+    logger.warn({ pluginKey: spec.pluginKey, err }, `${spec.displayName} plugin upgrade threw`);
+  }
+}
+
 async function installLocalPluginIfAbsent(
   ctx: BootstrapContext,
   spec: LocalPluginInstall,
@@ -67,50 +132,58 @@ async function installLocalPluginIfAbsent(
   const installed = await listInstalledPlugins(ctx);
   const existing = installed.find((p) => p.pluginKey === spec.pluginKey && p.status === "ready");
 
-  // Drift check: if a previous deploy installed this pluginKey from a different
-  // packageName (e.g. registry has @lucitra/X but the in-image bundle is now
-  // @kkroo/X), the dist on disk for the registered packageName is stale and
-  // never gets replaced because the pluginKey-only check below would short-
-  // circuit. Force a re-install from the bundle path so the host writes the
-  // current dist for the current packageName.
-  let driftDetected = false;
+  // packageName drift: a previous deploy installed this pluginKey from a
+  // different packageName (e.g. registry has @lucitra/X but the in-image
+  // bundle is now @kkroo/X). The dist on disk for the registered packageName
+  // is stale and never gets replaced because the pluginKey-only check below
+  // would short-circuit. Force a re-install from the bundle path so the host
+  // writes the current dist for the current packageName. Worker is repointed
+  // in place; new code takes effect on next worker (re)start.
+  //
+  // version drift: the in-image bundle has bumped past the registry-recorded
+  // version (e.g. 0.2.1 → 0.3.0 added a new route). We don't publish kkroo
+  // plugins to npm so the upstream auto-upgrade loop (which polls
+  // registry.npmjs.org) never fires. We use the upgrade route here, not
+  // install+force, because by the time this runs the worker for v0.2.1 is
+  // already running (loader.loadAll() ran before this bootstrap step) — the
+  // upgrade lifecycle stops the running worker, re-reads the package from
+  // the stored packagePath, and starts a fresh worker with the new code.
   if (existing) {
-    const bundleName = await readBundlePackageName(spec.absPath);
-    if (bundleName && existing.packageName && bundleName !== existing.packageName) {
-      driftDetected = true;
+    const bundle = await readBundlePackageJson(spec.absPath);
+    if (bundle.name && existing.packageName && bundle.name !== existing.packageName) {
       logger.info(
         {
           pluginKey: spec.pluginKey,
           registryPackageName: existing.packageName,
-          bundlePackageName: bundleName,
+          bundlePackageName: bundle.name,
           path: spec.absPath,
         },
         `${spec.displayName} plugin packageName drifted — force-reinstalling from bundle`,
       );
-    } else {
+      await forceReinstallLocalPlugin(ctx, spec);
       return;
     }
+    if (bundle.version && existing.version && compareVersions(bundle.version, existing.version) > 0) {
+      await upgradeBundledPlugin(ctx, spec, existing.id, bundle.version, existing.version);
+      return;
+    }
+    return;
   }
 
   try {
-    if (!driftDetected) {
-      logger.info({ path: spec.absPath }, `installing bundled ${spec.displayName} plugin from local path`);
-    }
+    logger.info({ path: spec.absPath }, `installing bundled ${spec.displayName} plugin from local path`);
     const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         packageName: spec.absPath,
         isLocalPath: true,
-        // On drift, repoint the existing registry row to the new bundle path
-        // instead of failing with "Plugin already installed".
-        ...(driftDetected ? { force: true } : {}),
       }),
     });
     if (res.ok) {
       const result = (await res.json()) as { pluginKey?: string; status?: string };
       logger.info(
-        { pluginKey: result.pluginKey, status: result.status, drift: driftDetected || undefined },
+        { pluginKey: result.pluginKey, status: result.status },
         `${spec.displayName} plugin installed from local path`,
       );
     } else {
@@ -119,6 +192,35 @@ async function installLocalPluginIfAbsent(
     }
   } catch (err) {
     logger.warn({ err }, `${spec.displayName} plugin local install threw`);
+  }
+}
+
+async function forceReinstallLocalPlugin(
+  ctx: BootstrapContext,
+  spec: LocalPluginInstall,
+): Promise<void> {
+  try {
+    const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/install`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packageName: spec.absPath,
+        isLocalPath: true,
+        force: true,
+      }),
+    });
+    if (res.ok) {
+      const result = (await res.json()) as { pluginKey?: string; status?: string };
+      logger.info(
+        { pluginKey: result.pluginKey, status: result.status, drift: true },
+        `${spec.displayName} plugin repointed from local path`,
+      );
+    } else {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      logger.warn({ error: err.error }, `${spec.displayName} plugin local repoint failed`);
+    }
+  } catch (err) {
+    logger.warn({ err }, `${spec.displayName} plugin local repoint threw`);
   }
 }
 
