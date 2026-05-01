@@ -715,11 +715,11 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(createdEval?.description).toContain("- output silence:");
     expect(createdEval?.description).not.toContain("- no progress:");
 
-    // Simulate "no further progress" between scans: clear heartbeat events + activity log entries
-    // (round 1's issue creation logged a `heartbeat.output_stale_detected` entry attributed to the
-    // run, which would otherwise keep the progress-evidence count above zero forever).
+    // Simulate "no further progress" between scans: clear non-bookkeeping heartbeat events.
+    // Round 1's `heartbeat.output_stale_detected` activity entry is intentionally left in place;
+    // it's in `ACTIVE_RUN_NO_PROGRESS_LIVENESS_BOOKKEEPING_ACTIONS` and excluded from the count
+    // so it must not block re-detection.
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
-    await db.delete(activityLog).where(eq(activityLog.runId, runId));
 
     // Round 2: now both reasons fire. Existing issue should grow to cover both.
     const later = new Date(now.getTime() + ACTIVE_RUN_NO_PROGRESS_THRESHOLD_MS);

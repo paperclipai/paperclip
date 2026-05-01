@@ -59,6 +59,8 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const ACTIVE_RUN_NO_PROGRESS_LIVENESS_BOOKKEEPING_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
+  "heartbeat.output_stale_detected",
+  "heartbeat.output_stale_reasons_grown",
 ];
 type StaleActiveRunReason = "output_silence" | "no_progress";
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
