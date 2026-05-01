@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
@@ -56,19 +56,34 @@ export function ActiveAgentsPanel({
   const runs = liveRuns ?? [];
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
-  const { data: issues } = useQuery({
-    queryKey: [...queryKeys.issues.list(companyId), "with-routine-executions"],
-    queryFn: () => issuesApi.list(companyId, { includeRoutineExecutions: true }),
-    enabled: visibleRuns.length > 0,
+
+  // Each card needs only `issue.identifier` and `issue.title` for the
+  // run-context link. Previously we fetched the full company-scoped issue
+  // list (`/issues?includeRoutineExecutions=true`, ~1.28 MB on a busy
+  // company) on every dashboard load just to build a 4-key lookup map. Use
+  // `useQueries` for parallel single-row fetches by ID — these reuse the
+  // existing IssueDetail cache (`queryKeys.issues.detail(id)`) so navigating
+  // into a run doesn't refetch.
+  const visibleIssueIds = useMemo(
+    () => Array.from(new Set(visibleRuns.map((r) => r.issueId).filter((id): id is string => Boolean(id)))),
+    [visibleRuns],
+  );
+
+  const issueQueries = useQueries({
+    queries: visibleIssueIds.map((id) => ({
+      queryKey: queryKeys.issues.detail(id),
+      queryFn: () => issuesApi.get(id),
+    })),
   });
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
-    for (const issue of issues ?? []) {
-      map.set(issue.id, issue);
+    for (const result of issueQueries) {
+      const issue = result.data;
+      if (issue) map.set(issue.id, issue);
     }
     return map;
-  }, [issues]);
+  }, [issueQueries]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: visibleRuns,
