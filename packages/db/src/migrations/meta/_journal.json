@@ -743,6 +743,27 @@
       "when": 1776760200000,
       "tag": "0105_rt2_execution_dispatched_state",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1776760500000,
+      "tag": "0106_rt2_corpus_graph_sidecar",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1776760800000,
+      "tag": "0107_rt2_gamification_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1776761100000,
+      "tag": "0108_rt2_career_mate_tables",
+      "breakpoints": true
     }
   ]
 }

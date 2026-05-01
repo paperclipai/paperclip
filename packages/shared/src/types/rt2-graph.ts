@@ -96,3 +96,183 @@ export interface Rt2GraphReport {
   staleWarnings: string[];
   markdown: string;
 }
+
+export type Rt2CorpusGraphSourceType = "repo_file" | "doc_file" | "wiki_page" | "external_reference";
+
+export type Rt2CorpusGraphNodeType = "source_file" | "heading" | "symbol" | "term";
+
+export type Rt2CorpusGraphEdgeType = "contains" | "imports" | "references" | "mentions" | "shared_concept";
+
+export interface Rt2CorpusGraphSourceLocation {
+  path: string;
+  url?: string | null;
+  startLine?: number | null;
+  endLine?: number | null;
+  section?: string | null;
+}
+
+export interface Rt2CorpusGraphSource {
+  id: string;
+  companyId: string;
+  sourceKey: string;
+  sourceType: Rt2CorpusGraphSourceType;
+  sourceLocation: Rt2CorpusGraphSourceLocation;
+  sha256: string;
+  title: string;
+  metadata: Record<string, unknown>;
+  lastIngestedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Rt2CorpusGraphIngestSourceInput {
+  sourceKey: string;
+  sourceType: Rt2CorpusGraphSourceType;
+  content: string;
+  title?: string;
+  sourceLocation?: Partial<Rt2CorpusGraphSourceLocation>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface Rt2CorpusGraphIngestInput {
+  sources: Rt2CorpusGraphIngestSourceInput[];
+  rebuildReport?: boolean;
+}
+
+export interface Rt2CorpusGraphNode {
+  id: string;
+  companyId: string;
+  nodeKey: string;
+  nodeType: Rt2CorpusGraphNodeType;
+  label: string;
+  sourceId: string | null;
+  sourceLocation: Rt2CorpusGraphSourceLocation;
+  metadata: Record<string, unknown>;
+  centrality: number;
+  communityKey: string | null;
+  isGodNode: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Rt2CorpusGraphEdge {
+  id: string;
+  companyId: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  edgeType: Rt2CorpusGraphEdgeType;
+  relation: string;
+  confidence: Rt2GraphConfidence;
+  confidenceScore: number | null;
+  rationale: string;
+  evidence: Array<Record<string, unknown>>;
+  provenance: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Rt2CorpusGraphCommunity {
+  id: string;
+  companyId: string;
+  communityKey: string;
+  algorithm: string;
+  label: string;
+  memberNodeCount: number;
+  godNodeId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Rt2CorpusGraphStats {
+  companyId: string;
+  sourceCount: number;
+  nodeCount: number;
+  edgeCount: number;
+  communityCount: number;
+  godNodeCount: number;
+  confidenceSummary: Record<Rt2GraphConfidence, number>;
+  clusteringAlgorithm: string;
+  productGraph: {
+    nodeCount: number;
+    edgeCount: number;
+  };
+  communities: Array<{
+    communityKey: string;
+    label: string;
+    memberNodeCount: number;
+    godNodeKey: string | null;
+  }>;
+  updatedAt: string;
+}
+
+export interface Rt2CorpusGraphReport {
+  companyId: string;
+  updatedAt: string;
+  generatedAt: string;
+  corpusGraph: {
+    nodeCount: number;
+    edgeCount: number;
+    communityCount: number;
+    godNodeKeys: string[];
+  };
+  productGraph: {
+    nodeCount: number;
+    edgeCount: number;
+  };
+  confidenceSummary: Record<Rt2GraphConfidence, number>;
+  knowledgeGaps: Array<Record<string, unknown>>;
+  surprisingConnections: Array<Record<string, unknown>>;
+  suggestedQuestions: string[];
+  markdown: string;
+}
+
+export interface Rt2CorpusGraphIngestResult {
+  companyId: string;
+  processedSources: number;
+  insertedSources: number;
+  updatedSources: number;
+  skippedSources: number;
+  sources: Array<{
+    sourceKey: string;
+    status: "inserted" | "updated" | "skipped";
+    sha256: string;
+    nodeCount: number;
+    edgeCount: number;
+  }>;
+  graph: Rt2CorpusGraphStats;
+  report: Rt2CorpusGraphReport;
+  ingestedAt: string;
+}
+
+export interface Rt2CorpusGraphNodeResult {
+  node: Rt2CorpusGraphNode;
+  source: Rt2CorpusGraphSource | null;
+  incomingEdges: Rt2CorpusGraphEdge[];
+  outgoingEdges: Rt2CorpusGraphEdge[];
+}
+
+export interface Rt2CorpusGraphNeighborsResult {
+  node: Rt2CorpusGraphNode;
+  neighbors: Array<{
+    node: Rt2CorpusGraphNode;
+    edge: Rt2CorpusGraphEdge;
+    direction: "incoming" | "outgoing";
+  }>;
+}
+
+export interface Rt2CorpusGraphCommunityResult {
+  community: Rt2CorpusGraphCommunity;
+  nodes: Rt2CorpusGraphNode[];
+  godNode: Rt2CorpusGraphNode | null;
+}
+
+export interface Rt2CorpusGraphShortestPathResult {
+  companyId: string;
+  fromNodeKey: string;
+  toNodeKey: string;
+  found: boolean;
+  nodes: Rt2CorpusGraphNode[];
+  edges: Rt2CorpusGraphEdge[];
+  maxDepth: number;
+}

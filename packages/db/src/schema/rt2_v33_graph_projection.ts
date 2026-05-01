@@ -159,3 +159,148 @@ export const rt2V33SurprisingConnections = pgTable(
     ),
   }),
 );
+
+export const rt2V33CorpusGraphSources = pgTable(
+  "rt2_v33_corpus_graph_sources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    sourceKey: text("source_key").notNull(),
+    sourceType: text("source_type").notNull(),
+    sourceLocation: jsonb("source_location").$type<Record<string, unknown>>().notNull().default({}),
+    sha256: text("sha256").notNull(),
+    title: text("title").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    lastIngestedAt: timestamp("last_ingested_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyTypeIdx: index("rt2_v33_corpus_graph_sources_company_type_idx").on(table.companyId, table.sourceType),
+    companySourceKeyUq: uniqueIndex("rt2_v33_corpus_graph_sources_company_source_key_uq").on(
+      table.companyId,
+      table.sourceKey,
+    ),
+  }),
+);
+
+export const rt2V33CorpusGraphNodes = pgTable(
+  "rt2_v33_corpus_graph_nodes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    nodeKey: text("node_key").notNull(),
+    nodeType: text("node_type").notNull(),
+    label: text("label").notNull(),
+    sourceId: uuid("source_id").references(() => rt2V33CorpusGraphSources.id, { onDelete: "set null" }),
+    sourceLocation: jsonb("source_location").$type<Record<string, unknown>>().notNull().default({}),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    centrality: numeric("centrality", { precision: 8, scale: 6 }).notNull().default("0"),
+    communityKey: text("community_key"),
+    isGodNode: boolean("is_god_node").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyTypeIdx: index("rt2_v33_corpus_graph_nodes_company_type_idx").on(table.companyId, table.nodeType),
+    companyCommunityIdx: index("rt2_v33_corpus_graph_nodes_company_community_idx").on(
+      table.companyId,
+      table.communityKey,
+    ),
+    companyNodeKeyUq: uniqueIndex("rt2_v33_corpus_graph_nodes_company_node_key_uq").on(
+      table.companyId,
+      table.nodeKey,
+    ),
+  }),
+);
+
+export const rt2V33CorpusGraphEdges = pgTable(
+  "rt2_v33_corpus_graph_edges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    sourceNodeId: uuid("source_node_id")
+      .notNull()
+      .references(() => rt2V33CorpusGraphNodes.id, { onDelete: "cascade" }),
+    targetNodeId: uuid("target_node_id")
+      .notNull()
+      .references(() => rt2V33CorpusGraphNodes.id, { onDelete: "cascade" }),
+    edgeType: text("edge_type").notNull(),
+    relation: text("relation").notNull(),
+    confidence: text("confidence").notNull(),
+    confidenceScore: numeric("confidence_score", { precision: 4, scale: 2 }),
+    rationale: text("rationale").notNull(),
+    evidence: jsonb("evidence").$type<Array<Record<string, unknown>>>().notNull().default([]),
+    provenance: jsonb("provenance").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companySourceIdx: index("rt2_v33_corpus_graph_edges_company_source_idx").on(
+      table.companyId,
+      table.sourceNodeId,
+    ),
+    companyTargetIdx: index("rt2_v33_corpus_graph_edges_company_target_idx").on(
+      table.companyId,
+      table.targetNodeId,
+    ),
+    companyEdgeUq: uniqueIndex("rt2_v33_corpus_graph_edges_company_edge_uq").on(
+      table.companyId,
+      table.sourceNodeId,
+      table.targetNodeId,
+      table.edgeType,
+      table.relation,
+    ),
+  }),
+);
+
+export const rt2V33CorpusGraphCommunities = pgTable(
+  "rt2_v33_corpus_graph_communities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    communityKey: text("community_key").notNull(),
+    algorithm: text("algorithm").notNull(),
+    label: text("label").notNull(),
+    memberNodeCount: integer("member_node_count").notNull().default(0),
+    godNodeId: uuid("god_node_id").references(() => rt2V33CorpusGraphNodes.id, { onDelete: "set null" }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyIdx: index("rt2_v33_corpus_graph_communities_company_idx").on(table.companyId),
+    companyCommunityUq: uniqueIndex("rt2_v33_corpus_graph_communities_company_community_uq").on(
+      table.companyId,
+      table.communityKey,
+    ),
+  }),
+);
+
+export const rt2V33CorpusGraphReports = pgTable(
+  "rt2_v33_corpus_graph_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    corpusNodeCount: integer("corpus_node_count").notNull().default(0),
+    corpusEdgeCount: integer("corpus_edge_count").notNull().default(0),
+    productNodeCount: integer("product_node_count").notNull().default(0),
+    productEdgeCount: integer("product_edge_count").notNull().default(0),
+    confidenceSummary: jsonb("confidence_summary").$type<Record<string, number>>().notNull().default({
+      EXTRACTED: 0,
+      INFERRED: 0,
+      AMBIGUOUS: 0,
+    }),
+    communityCount: integer("community_count").notNull().default(0),
+    godNodeKeys: jsonb("god_node_keys").$type<string[]>().notNull().default([]),
+    knowledgeGaps: jsonb("knowledge_gaps").$type<Array<Record<string, unknown>>>().notNull().default([]),
+    surprisingConnections: jsonb("surprising_connections").$type<Array<Record<string, unknown>>>().notNull().default([]),
+    suggestedQuestions: jsonb("suggested_questions").$type<string[]>().notNull().default([]),
+    markdown: text("markdown").notNull().default(""),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyUq: uniqueIndex("rt2_v33_corpus_graph_reports_company_uq").on(table.companyId),
+  }),
+);
