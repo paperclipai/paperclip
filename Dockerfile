@@ -77,10 +77,21 @@ RUN printf '#!/bin/sh\nexec node /app/cli/dist/index.js "$@"\n' > /usr/local/bin
 # compose file (/paperclip/.hermes/hermes-agent/) — install from that path.
 # Runtime dep: the source must be present at /paperclip/.hermes/hermes-agent before
 # any hermes_local agent runs. The wrapper handles the case where it isn't yet.
-RUN python3 -m venv /opt/hermes-venv \
-    && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip \
-    && printf '#!/bin/sh\nset -e\nHERMES_SRC="${HERMES_SRC:-/paperclip/.hermes/hermes-agent}"\nif [ ! -d "$HERMES_SRC" ]; then\n  echo "hermes-agent source not found at $HERMES_SRC; bind-mount the host ~/.hermes/hermes-agent into the container or set HERMES_SRC" >&2\n  exit 127\nfi\nif ! /opt/hermes-venv/bin/python -c "import agent" 2>/dev/null; then\n  /opt/hermes-venv/bin/pip install --quiet --no-cache-dir -e "$HERMES_SRC" >/dev/null 2>&1 || true\nfi\nexec /opt/hermes-venv/bin/python "$HERMES_SRC/cli.py" "$@"\n' > /usr/local/bin/hermes-container \
-    && chmod +x /usr/local/bin/hermes-container
+# 2026-05-01 (revised): venv create requires python3-venv apt package + build-essential
+# for editable installs. Install hermes-agent eagerly at build time so the wrapper
+# is just `exec /opt/hermes-venv/bin/hermes "$@"`. Bind-mount of host ~/.hermes is
+# still required at runtime (provides the editable source it was installed from).
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends python3-venv python3-pip python3-dev build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/hermes-venv \
+    && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip
+# Hermes install happens at runtime via entrypoint (see scripts/docker-entrypoint.sh).
+# At build time we don't have the bind-mounted source yet, so we create the wrapper
+# that lazily installs hermes-agent on first invocation.
+RUN printf '#!/bin/sh\nset -e\nHERMES_SRC="${HERMES_SRC:-/paperclip/.hermes/hermes-agent}"\nif [ ! -d "$HERMES_SRC" ]; then\n  echo "hermes-agent source not found at $HERMES_SRC; bind-mount the host ~/.hermes into /paperclip/.hermes" >&2\n  exit 127\nfi\nif ! /opt/hermes-venv/bin/python -c "import hermes_agent" 2>/dev/null; then\n  /opt/hermes-venv/bin/pip install --quiet --no-cache-dir -e "$HERMES_SRC" >&2\nfi\nexec /opt/hermes-venv/bin/hermes "$@"\n' > /usr/local/bin/hermes-py \
+    && chmod +x /usr/local/bin/hermes-py \
+    && ln -sf /usr/local/bin/hermes-py /usr/local/bin/hermes-container
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
