@@ -44,10 +44,10 @@ Expected: all green. Any failure → BLOCK.
 
 ### 3. Browser walkthrough (if frontend)
 
-Write a Playwright script `/tmp/qa-walk.mjs` that walks through the verification checks listed in the plan's "Verification" section (see `qa-playwright-walkthrough` skill for the template).
+Write a Playwright script `/tmp/qa-walk.cjs` that walks through the verification checks listed in the plan's "Verification" section (see `qa-playwright-walkthrough` skill for the template).
 
 ```bash
-node /tmp/qa-walk.mjs
+node /tmp/qa-walk.cjs
 ```
 
 Each verification check must pass. Any failure → BLOCK with the specific check that failed.
