@@ -653,9 +653,20 @@ function invalidateActivityQueries(
 
   if (entityType === "issue") {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    // listMineByMe / listTouchedByMe / listUnreadTouchedByMe drive the Inbox
+    // page tabs and the inbox-badge sidebar dot. Both share the same query
+    // prefix, so invalidating with refetchType:"active" (the default) fires
+    // a fresh fetch on every issue activity event — which on an active
+    // company is many per second and exhausted the browser's per-host
+    // connection budget (browser-side ERR_INSUFFICIENT_RESOURCES verified
+    // 2026-05-01: 242 /companies/<id>/issues calls in 2 minutes from the
+    // same client). The badge already uses staleTime: 30s, so we can
+    // afford to mark these stale without a forced refetch — react-query
+    // will refresh them on tab focus / reconnect / next user interaction.
+    // Same pattern dashboard/sidebarBadges already use just below.
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
     if (entityId) {
       const details = readRecord(payload.details);
       const selfCommentActivity =
