@@ -125,6 +125,76 @@ describe("ssh env-lab fixture", () => {
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
 
+  it("merges pod-injected PATH with host PATH instead of clobbering it", async () => {
+    // Regression: pod env had `PATH=/paperclip/bin:/usr/local/bin:...` and was
+    // passed to `env PATH=… cmd`, overriding the login-shell PATH that had just
+    // been sourced from .profile / .bash_profile / nvm.sh. Result: host-only
+    // CLIs (claude, codex, opencode at ~/.nvm/versions/node/*/bin) were
+    // unreachable and the spawn died with exit 127. Fix preserves $PATH.
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      command: "claude",
+      args: ["--version"],
+      env: {
+        PATH: "/paperclip/bin:/usr/local/bin",
+        FOO: "bar",
+      },
+    });
+
+    // Last arg is the `sh -lc 'remoteScript'` body. The whole inner script is
+    // single-quote-wrapped, so any single quotes inside are escape-replaced as
+    // `'"'"'`. Test for substrings that either survive that quoting unchanged
+    // or for the post-quoted form explicitly.
+    const remoteCmd = target.args[target.args.length - 1];
+
+    // The pod-injected PATH value appears as a literal substring (no singles
+    // in `/paperclip/bin:/usr/local/bin` so quoting is a no-op).
+    expect(remoteCmd).toContain(`/paperclip/bin:/usr/local/bin`);
+    // The host $PATH is preserved via the merge marker `:"$PATH"` — colon is
+    // outside double quotes so it's literal, "$PATH" expands at remote
+    // evaluation time (after .profile / nvm.sh have been sourced).
+    expect(remoteCmd).toContain(`:"$PATH"`);
+    // Command + args are present.
+    expect(remoteCmd).toContain(`claude`);
+    expect(remoteCmd).toContain(`--version`);
+    // Single PATH= assignment — no double-emit, no leftover override.
+    expect(remoteCmd.match(/PATH=/g)?.length).toBe(1);
+  });
+
+  it("preserves host PATH with no env override", async () => {
+    // Without any PATH in env, the script doesn't add a PATH override, so the
+    // login-shell PATH (sourced inside the remote script) is what the spawned
+    // command sees.
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      command: "claude",
+      args: [],
+      env: {},
+    });
+
+    const remoteCmd = target.args[target.args.length - 1];
+    expect(remoteCmd).not.toContain("PATH=");
+    expect(remoteCmd).toContain(`'claude'`);
+  });
+
   it("syncs a local directory into the remote fixture workspace", async () => {
     const support = await getSshEnvLabSupport();
     if (!support.supported) {
