@@ -1,38 +1,11 @@
 import { fetchWithTimeout, readClaudeToken } from "./quota.js";
+import type { AdapterAuthProbeResult, AdapterAuthProbeStatus } from "@paperclipai/adapter-utils";
+import { isAdapterUnhealthy } from "@paperclipai/adapter-utils";
 
-/**
- * Outcome categories returned by `probeClaudeAuth`. The runtime should treat
- * `unauthenticated` and `no_credentials` as "do not claim runs" — those are
- * the conditions that previously caused 401 cascades when retried per-issue.
- *
- * - `ok`              — credential authenticates successfully.
- * - `unauthenticated` — credential present but rejected (401/403). Adapter is unhealthy.
- * - `rate_limited`    — credential plausibly valid but probe was 429'd; treat as transient.
- * - `transient_error` — network/5xx/timeout. Don't conclude unhealthy from this alone.
- * - `no_credentials`  — neither API key nor OAuth token nor Bedrock config present.
- */
-export type AdapterAuthProbeStatus =
-  | "ok"
-  | "unauthenticated"
-  | "rate_limited"
-  | "transient_error"
-  | "no_credentials";
+export type { AdapterAuthProbeResult, AdapterAuthProbeStatus };
+export { isAdapterUnhealthy };
 
 export type AdapterAuthProbeSource = "api_key" | "oauth" | "bedrock" | "none";
-
-export interface AdapterAuthProbeResult {
-  status: AdapterAuthProbeStatus;
-  /** Which credential surface was probed. */
-  source: AdapterAuthProbeSource;
-  /** HTTP status from the upstream call when applicable. */
-  httpStatus?: number | null;
-  /** Anthropic request id when surfaced; helpful for support / log correlation. */
-  requestId?: string | null;
-  /** Short human-readable detail for logs. Never includes the credential itself. */
-  detail?: string | null;
-  /** ISO timestamp the probe completed. */
-  probedAt: string;
-}
 
 export interface ProbeClaudeAuthOptions {
   /** Override the network fetch (used by tests). */
@@ -187,11 +160,3 @@ export async function probeClaudeAuth(
   };
 }
 
-/**
- * Convenience predicate — true when the runtime should refuse to claim issues
- * because the credential surface is provably bad. `transient_error` and
- * `rate_limited` are NOT included on purpose: those are recoverable.
- */
-export function isAdapterUnhealthy(result: AdapterAuthProbeResult): boolean {
-  return result.status === "unauthenticated" || result.status === "no_credentials";
-}

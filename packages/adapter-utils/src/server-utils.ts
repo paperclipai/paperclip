@@ -1866,3 +1866,8 @@ export async function runChildProcess(
       .catch(reject);
   });
 }
+
+import type { AdapterAuthProbeResult } from "./types.js";
+export function isAdapterUnhealthy(result: AdapterAuthProbeResult): boolean {
+  return result.status === "unauthenticated" || result.status === "no_credentials";
+}
