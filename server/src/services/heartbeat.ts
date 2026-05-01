@@ -1366,7 +1366,10 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       warning: null as string | null,
     };
   }
-  if (resolvedWorkspace.source !== "project_primary") {
+  if (
+    resolvedWorkspace.source !== "project_primary" &&
+    resolvedWorkspace.source !== "agent_config"
+  ) {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
@@ -2756,7 +2759,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         fallbackWarnings.push(
           `Saved session workspace "${sessionCwd}" is not available. Using agent.adapterConfig.cwd "${agentConfigFallback.cwd}" for this run.`,
         );
-      } else if (useProjectWorkspace && resolvedProjectId) {
+      } else if (resolvedProjectId) {
         fallbackWarnings.push(
           `No project workspace directory is currently available for this issue. Using agent.adapterConfig.cwd "${agentConfigFallback.cwd}" for this run.`,
         );
