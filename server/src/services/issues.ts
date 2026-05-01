@@ -195,7 +195,6 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
-const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -217,16 +216,6 @@ function truncateInlineSummary(value: string | null | undefined, maxChars = CHIL
   const normalized = value?.trim();
   if (!normalized) return null;
   return normalized.length > maxChars ? `${normalized.slice(0, Math.max(0, maxChars - 15)).trimEnd()} [truncated]` : normalized;
-}
-
-function truncateByCodePoint(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return Array.from(value).slice(0, maxChars).join("");
-}
-
-function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
-  if (value == null) return null;
-  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
 }
 
 function appendAcceptanceCriteriaToDescription(description: string | null | undefined, acceptanceCriteria: string[] | undefined) {
@@ -1387,18 +1376,14 @@ const issueListSelect = {
   goalId: issues.goalId,
   parentId: issues.parentId,
   title: issues.title,
-  description: sql<string | null>`
-    CASE
-      WHEN ${issues.description} IS NULL THEN NULL
-      ELSE encode(
-        substring(
-          convert_to(${issues.description}, current_setting('server_encoding'))
-          FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_BYTES}
-        ),
-        'base64'
-      )
-    END
-  `,
+  // Slice the description prefix server-side to bound payload size. Using
+  // `substring(text, 1, n)` (not `convert_to(...)+substring`) is what makes
+  // this fast on TOAST'd rows: PG can fetch only the first ~n*encoding-max
+  // bytes via heap_tuple_untoast_attr_slice and decompress just enough pglz
+  // chunks to satisfy them. The earlier convert_to-based approach forced a
+  // full detoast on every list row (eBPF profile showed pglz_decompress at
+  // ~14% of pg CPU under list load with 66% of issues > 2KB description).
+  description: sql<string | null>`substring(${issues.description}, 1, ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})`,
   status: issues.status,
   priority: issues.priority,
   estimate: issues.estimate,
@@ -2263,10 +2248,7 @@ export function issueService(db: Db) {
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
-      const rows = (await pageQuery).map((row) => ({
-        ...row,
-        description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
-      }));
+      const rows = await pageQuery;
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
