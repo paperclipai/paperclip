@@ -67,6 +67,13 @@ services:
       PAPERCLIP_MIGRATION_PROMPT: "never"
       PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
       OPENCODE_ALLOW_ALL_MODELS: "true"
+      # Hermes adapter dashboard model list (locked 2026-05-01).
+      # Hermes CLI has no non-interactive `model list`, so the adapter's
+      # discoverHermesModels() reads this CSV first; static fallback is the
+      # 8-model list shipped in packages/adapters/hermes-local/src/index.ts.
+      # Free-form model strings are still acceptable at PATCH time —
+      # this just populates the dashboard dropdown for known-good slugs.
+      PAPERCLIP_HERMES_MODELS: "anthropic/claude-sonnet-4.6,anthropic/claude-opus-4.7,anthropic/claude-haiku-4.5,x-ai/grok-4.1-fast,x-ai/grok-4.20,x-ai/grok-4.3,google/gemini-3.1-flash-lite-preview,google/gemini-3-flash-preview,google/gemini-3-pro-preview,openai/gpt-5.4,openai/gpt-5.4-mini,deepseek/deepseek-v4-pro,nvidia/deepseek-ai/deepseek-v4-flash"
       USER_UID: "${USER_UID:-501}"
       USER_GID: "${USER_GID:-20}"
       # HOME inside container = /paperclip so adapter CLIs (claude/codex/opencode) find their auth at $HOME/.claude etc.
