@@ -906,9 +906,26 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
     }
   }
 
-  // Sort each child list by most recent activity
+  const subtreeActivityTimestamp = (issue: Issue, seen: ReadonlySet<string> = new Set()): number => {
+    const ownTimestamp = issueLastActivityTimestamp(issue);
+    if (seen.has(issue.id)) return ownTimestamp;
+    const nextSeen = new Set(seen);
+    nextSeen.add(issue.id);
+    const children = childrenByIssueId.get(issue.id) ?? [];
+    if (children.length === 0) return ownTimestamp;
+    return Math.max(
+      ownTimestamp,
+      ...children.map((child) => subtreeActivityTimestamp(child, nextSeen)),
+    );
+  };
+
+  // Sort each child list by most recent descendant activity, not just direct issue activity.
   for (const children of childrenByIssueId.values()) {
-    children.sort(sortIssuesByMostRecentActivity);
+    children.sort((a, b) => {
+      const activityDiff = subtreeActivityTimestamp(b) - subtreeActivityTimestamp(a);
+      if (activityDiff !== 0) return activityDiff;
+      return sortIssuesByMostRecentActivity(a, b);
+    });
   }
 
   // Build root issue items with group-adjusted timestamps
@@ -917,7 +934,7 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
     .map((item) => {
       const children = childrenByIssueId.get(item.issue.id);
       if (!children?.length) return item;
-      const maxChildTs = Math.max(...children.map(issueLastActivityTimestamp));
+      const maxChildTs = Math.max(...children.map((child) => subtreeActivityTimestamp(child)));
       return { ...item, timestamp: Math.max(item.timestamp, maxChildTs) };
     });
 
@@ -985,6 +1002,23 @@ export function buildInboxKeyboardNavEntries(
     }
     if (isCollapsed) continue;
 
+    const addIssueChildren = (issueId: string, seen: ReadonlySet<string>) => {
+      const children = group.childrenByIssueId.get(issueId);
+      if (!children?.length || collapsedInboxParents.has(issueId)) return;
+
+      for (const child of children) {
+        if (seen.has(child.id)) continue;
+        const nextSeen = new Set(seen);
+        nextSeen.add(child.id);
+        entries.push({
+          type: "child",
+          issueId: child.id,
+          issue: child,
+        });
+        addIssueChildren(child.id, nextSeen);
+      }
+    };
+
     for (const item of group.displayItems) {
       entries.push({
         type: "top",
@@ -993,17 +1027,7 @@ export function buildInboxKeyboardNavEntries(
       });
 
       if (item.kind !== "issue") continue;
-
-      const children = group.childrenByIssueId.get(item.issue.id);
-      if (!children?.length || collapsedInboxParents.has(item.issue.id)) continue;
-
-      for (const child of children) {
-        entries.push({
-          type: "child",
-          issueId: child.id,
-          issue: child,
-        });
-      }
+      addIssueChildren(item.issue.id, new Set([item.issue.id]));
     }
   }
 

@@ -239,9 +239,9 @@ function tableKey(schemaName: string, tableName: string): string {
 }
 
 function nonSystemSchemaPredicate(identifier: string): string {
-  return `${identifier} NOT IN ('pg_catalog', 'information_schema')
-    AND ${identifier} NOT LIKE 'pg_toast%'
-    AND ${identifier} NOT LIKE 'pg_temp_%'`;
+  // PostgreSQL reserves pg_ prefixes for system schemas, including temp/toast variants.
+  return `${identifier} <> 'information_schema'
+    AND ${identifier} NOT LIKE 'pg\\_%' ESCAPE '\\'`;
 }
 
 function hasBackupTransforms(opts: RunDatabaseBackupOptions): boolean {

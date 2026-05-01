@@ -178,6 +178,39 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  it("filters listed routines by project", async () => {
+    const { companyId, agentId, projectId, routine, svc } = await seedFixture();
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId,
+      name: "Other routines",
+      status: "in_progress",
+    });
+    const otherRoutine = await svc.create(
+      companyId,
+      {
+        projectId: otherProjectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "other project routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const projectRoutines = await svc.list(companyId, { projectId });
+    const allRoutines = await svc.list(companyId);
+
+    expect(projectRoutines.map((entry) => entry.id)).toEqual([routine.id]);
+    expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
+  });
+
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
