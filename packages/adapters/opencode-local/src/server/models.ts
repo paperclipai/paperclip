@@ -147,6 +147,15 @@ export async function discoverOpenCodeModels(input: {
   return sortModels(parseModelsOutput(result.stdout));
 }
 
+function distinctProviderCount(models: AdapterModel[]): number {
+  const providers = new Set<string>();
+  for (const m of models) {
+    const slash = m.id.indexOf("/");
+    if (slash > 0) providers.add(m.id.slice(0, slash));
+  }
+  return providers.size;
+}
+
 export async function discoverOpenCodeModelsCached(input: {
   command?: unknown;
   cwd?: unknown;
@@ -162,7 +171,13 @@ export async function discoverOpenCodeModelsCached(input: {
   if (cached && cached.expiresAt > now) return cached.models;
 
   const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+  // Cache hardening: only cache discovery results that look complete.
+  // The flicker bug was caching a partial list (nvidia-only, missing openrouter)
+  // for 60s, locking out grok-4.1-fast for researchers. If discovery returned
+  // ≥2 providers we trust it; otherwise return uncached so the next call retries.
+  if (distinctProviderCount(models) >= 2) {
+    discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+  }
   return models;
 }
 
@@ -177,11 +192,24 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
   }
 
-  const models = await discoverOpenCodeModelsCached({
+  let models = await discoverOpenCodeModelsCached({
     command: input.command,
     cwd: input.cwd,
     env: input.env,
   });
+
+  // Retry once on missing-model — defends against partial discovery results
+  // not blocked by cache-hardening (e.g. ≥2 providers but configured one absent).
+  if (models.length > 0 && !models.some((entry) => entry.id === model)) {
+    const fresh = await discoverOpenCodeModels({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
+    if (fresh.some((entry) => entry.id === model)) {
+      models = fresh;
+    }
+  }
 
   if (models.length === 0) {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
