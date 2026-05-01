@@ -56,10 +56,19 @@ The publish-action.sh cron polls `status='done' AND metadata.publish_state IN ('
    - Did budget overrun materially (>1.5×)? (Y/N)
    - Are there obvious red flags QA didn't catch? (Y/N)
    - Is this consistent with company strategy (V1 vendor scope; content-first; brand voice)? (Y/N)
-5. **Decide**:
-   - **PASS (default)** — keep status `done`, PATCH `metadata.publish_state = "ready"`. publish-action cron detects `status=done + metadata.publish_state=ready` and deploys within 5 min. (**Do NOT set status to "published-ready" — that value is not in the API enum and returns 400.**)
-   - **PASS + high-stakes** — if ticket has `high_stakes: true` in description metadata, set status `in_review` + `metadata.publish_state = "awaiting-g4"` and route to human (g4-routing skill). Reserved for: (a) new course launches, (b) competitor / vendor claims, (c) any post Vardaan flagged at ticket creation.
-   - **BLOCK** — flip status back to `in_progress` (or the relevant earlier gate's equivalent) with a specific reason
+5. **Decide** (policy locked 2026-05-01: blogs never go to G4 — only courses do):
+   - **BLOG content (any blog ticket, content_type=`article`/`blog`/`post`)** —
+     ALWAYS auto-publish on PASS. Keep status `done`, PATCH
+     `metadata.publish_state = "ready"`. Never route to G4. Vardaan
+     does not gate blogs. The CEO is the final approver for blog
+     content; if you're confident in PASS, the blog ships.
+   - **COURSE content (content_type=`course`/`chapter`/`module`)** —
+     - PASS (default) — keep status `done`, PATCH `metadata.publish_state = "ready"`. publish-action cron detects `status=done + metadata.publish_state=ready` and deploys within 5 min.
+     - PASS + high-stakes course — if ticket has `high_stakes: true` AND content_type is course-related, set status `in_review` + `metadata.publish_state = "awaiting-g4"` and route to human (g4-routing skill). Reserved for: (a) new full course launches, (b) competitor / vendor positioning courses, (c) anything Vardaan flagged at ticket creation. **Single-chapter rewrites do NOT trigger G4.**
+   - **CODE / engineering work** — no publish_state, just keep ticket status `done` after PASS. No G4 route applies; engineering merges on G3 PASS.
+   - **BLOCK (any content type)** — flip status back to `in_progress` (or the relevant earlier gate's equivalent) with a specific reason
+
+   **Determining content_type:** read the ticket's `metadata.content_type` field, OR infer from the work product path: `vault/blogs/...` → blog (auto-publish); `vault/courses/...` → course (G4-eligible if high-stakes).
 
 6. **Comment on the ticket**:
 
@@ -99,8 +108,9 @@ OR
 ## Outputs
 
 - A PASS or BLOCK comment + status flip
-- If PASS + non-high-stakes → status stays `done`, PATCH `metadata.publish_state="ready"` (publish-action.sh cron deploys within ~5 min)
-- If PASS + `high_stakes: true` → status `in_review` + `metadata.publish_state="awaiting-g4"`, hand to g4-routing skill (email + Slack/Teams + Paperclip queue)
+- **Blogs (always):** PASS → status stays `done`, PATCH `metadata.publish_state="ready"` (publish-action.sh cron deploys within ~5 min). No G4 route.
+- **Courses:** PASS + non-high-stakes → status stays `done`, PATCH `metadata.publish_state="ready"`. PASS + `high_stakes: true` → status `in_review` + `metadata.publish_state="awaiting-g4"`, hand to g4-routing skill (email + Slack/Teams + Paperclip queue).
+- **Engineering:** PASS → status `done`. No publish_state, no G4.
 
 ## Never do
 

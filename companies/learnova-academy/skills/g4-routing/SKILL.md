@@ -3,7 +3,7 @@ schema: agentcompanies/v1
 kind: skill
 slug: g4-routing
 name: G4 — Human Approval Routing
-description: CEO routes G3-passed work to Vardaan via three channels (email magic-link + Slack/Teams button + Paperclip UI queue). Tracks approval state; publishes on approve.
+description: CEO routes G3-passed COURSE work to Vardaan via three channels (email magic-link + Slack/Teams button + Paperclip UI queue). Blogs NEVER hit G4 — auto-publish on G3 PASS. G4 is courses-only (policy locked 2026-05-01).
 version: 0.1.0
 license: MIT
 sources: []
@@ -11,10 +11,16 @@ sources: []
 
 # G4 — Human Approval Routing
 
-Used by `ceo`. Triggered when work passes G3 with `high_stakes: true`. **NOT the default flow** — V2.6 auto-publish skips G4 for routine content (Reviewer PASS → CEO G3 → metadata.publish_state=ready → live in <5 min). G4 fires only on:
-- New course launches (multi-chapter; brand reputation stakes)
-- Posts making explicit claims about competitors / vendors that could backfire
-- Strategic posts where Vardaan flags `high_stakes: true` at ticket creation
+Used by `ceo`. Triggered ONLY for COURSE content that passes G3 with `high_stakes: true`. **Blogs never enter G4** — they auto-publish on G3 PASS regardless of high_stakes flag. The CEO is the final approver for all blog content.
+
+G4 fires only on:
+- **New full course launches** (multi-chapter; brand reputation stakes)
+- **Strategic course modules** where Vardaan flags `high_stakes: true` at ticket creation
+- Single-chapter rewrites and routine course updates do NOT trigger G4
+
+Policy reference: `vault/decisions/2026-05-01-blog-skip-g4.md`
+
+If a blog ticket arrives at this skill, **return immediately with a routing error** — the upstream g3-alignment skill misclassified the content type. The fix is in g3-alignment, not here.
 
 ## Procedure
 
@@ -62,7 +68,7 @@ Used by `ceo`. Triggered when work passes G3 with `high_stakes: true`. **NOT the
 
 ## Inputs
 
-- A G3-passed ticket WITH `high_stakes: true` in description metadata (auto-publish flow handles all others)
+- A G3-passed COURSE ticket WITH `high_stakes: true` in description metadata. (Blogs are forbidden inputs — they auto-publish without G4. Routine course updates are forbidden inputs — only `high_stakes: true` courses route here.)
 - Vardaan's email (`vardaan97@gmail.com`) + Slack/Discord webhook (V3.1)
 - Resend API key
 - Vercel preview deploy URL (mobile-safe; auto-expires 7 days)

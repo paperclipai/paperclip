@@ -6,7 +6,11 @@ See `COMPANY.md` for the org chart + budgets and `agents/<role>/SOUL.md` for ind
 
 ## Rules of the road
 
-- **Authoring constraint**: any course / blog / module the agency produces must pass G0 (Content Reviewer) → G1 (Chief Engineering, code only) → G2 (Chief QA) → G3 (CEO) → G4 (human Vardaan). No agent can publish without all gates green.
+- **Authoring constraint**:
+  - **Blogs**: G0 (Content Reviewer) → G2 (QA) → G3 (CEO). On CEO G3 PASS, the blog auto-publishes — no human gate. (Policy locked 2026-05-01.)
+  - **Courses**: G0 → G2 → G3 → G4 (human Vardaan, high-stakes only). Single-chapter rewrites and routine updates auto-publish on G3 PASS; new full-course launches and Vardaan-flagged strategic modules go to G4.
+  - **Code**: G_code (Code Reviewer) → G2 (QA). Engineering merges on G3 PASS; no G4.
+  - No agent can publish without the gates above green.
 - **Vendor scope V1**: Anthropic + OpenAI + Google + community (Reddit/HN/X). Don't expand without an explicit user instruction.
 - **Content philosophy**: content-first, not video-first. Long-form prose + PDF chapters + interactive cells + AI tutor chat dominate; video is supplementary.
 - **Style**: confident, friendly, source-citing, never hype-y. Cite sources inline. Answer-first headings.
