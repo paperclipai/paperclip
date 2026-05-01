@@ -2155,6 +2155,14 @@ export function issueRoutes(
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
     });
     if (
+      !assertAgentUserAssignmentAllowed(req, res, {
+        issueId: existing.id,
+        assigneeUserId: typeof transition.patch.assigneeUserId === "string" ? transition.patch.assigneeUserId : null,
+      })
+    ) {
+      return;
+    }
+    if (
       !transition.workflowControlledAssignment &&
       req.body.assigneeUserId !== undefined &&
       req.body.assigneeUserId !== existing.assigneeUserId &&
