@@ -9,6 +9,15 @@
 // Run via launchd (see infra/launchd/com.koenig.watchdog.plist).
 //
 // State is persisted to watchdog/.state/ so restarts don't lose history.
+//
+// 2026-05-01 (V3.5-STABILIZE Phase B):
+//   - Added 403 escalation path. Under PAPERCLIP_DEPLOYMENT_MODE=authenticated, the
+//     watchdog token cannot PATCH cross-agent (server enforces "Only CEO or agent
+//     creators can modify other agents"). Hard pause requires CEO/board action.
+//     When PATCH returns 403 we now: (a) append to vault/_audit/cost-alerts.log,
+//     (b) post Telegram alert, (c) stamp metadata.circuit_breaker_requested_at on
+//     the offending agent (best-effort, swallowed if also 403).
+//   - Added self-pause guard via WATCHDOG_SELF_AGENT_ID.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,6 +25,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = path.join(__dirname, ".state");
+const REPO_ROOT = path.resolve(__dirname, "..");
+const VAULT_AUDIT_LOG = path.join(REPO_ROOT, "vault", "_audit", "cost-alerts.log");
 
 const PAPERCLIP_HOST = process.env.PAPERCLIP_HOST ?? "http://localhost:3100";
 const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY ?? "";
@@ -30,9 +41,22 @@ const ALERT_SLACK = process.env.WATCHDOG_ALERT_SLACK_WEBHOOK;
 const ALERT_TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ALERT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const ALERT_EMAIL_TO = process.env.WATCHDOG_ALERT_EMAIL_TO;
+// 2026-05-01: identity of the agent whose API key the watchdog is using. The watchdog
+// must never pause itself (would deadlock — paused agents can't be resumed by themselves).
+const SELF_AGENT_ID = (process.env.WATCHDOG_SELF_AGENT_ID ?? "").trim() || null;
 
 async function ensureStateDir() {
   await fs.mkdir(STATE_DIR, { recursive: true });
+}
+
+async function appendAudit(line) {
+  try {
+    await fs.mkdir(path.dirname(VAULT_AUDIT_LOG), { recursive: true });
+    const entry = `${new Date().toISOString()} ${line}\n`;
+    await fs.appendFile(VAULT_AUDIT_LOG, entry, "utf8");
+  } catch (err) {
+    console.error(`audit append failed: ${err.message}`);
+  }
 }
 
 async function loadState(agentId) {
@@ -50,6 +74,7 @@ async function loadState(agentId) {
       crashLoopTicks: 0,
       lastErrorState: false,
       lastCostSnapshot: 0,
+      circuitBreakerEscalatedAt: null,
     };
   }
 }
@@ -72,18 +97,75 @@ async function fetchAgents() {
   return Array.isArray(data) ? data : (data.agents ?? data.items ?? []);
 }
 
-async function pauseAgent(agentId, reason) {
+// Best-effort: stamp metadata.circuit_breaker_requested_at on the agent so that
+// agent-side heartbeats can see the soft flag and self-throttle. Falls through
+// silently on 403 (authenticated mode without cross-agent permission).
+async function softFlagAgent(agentId, reason) {
+  try {
+    const res = await fetch(`${PAPERCLIP_HOST}/api/agents/${agentId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        metadata: {
+          circuit_breaker_requested_at: new Date().toISOString(),
+          circuit_breaker_reason: reason,
+        },
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function pauseAgent(agentId, reason, agentName) {
+  // Self-pause guard — never disable the daemon's own identity.
+  if (SELF_AGENT_ID && agentId === SELF_AGENT_ID) {
+    console.log(`SKIP self-pause for ${agentId}: ${reason}`);
+    await appendAudit(`SELF-PAUSE-SKIP agent=${agentId} reason="${reason}"`);
+    return { mode: "skipped-self" };
+  }
+
   const res = await fetch(`${PAPERCLIP_HOST}/api/agents/${agentId}`, {
     method: "PATCH",
     headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ status: "paused", pauseReason: reason }),
   });
-  if (!res.ok) {
-    console.error(`Failed to pause ${agentId}: ${res.status} ${await res.text().catch(() => "")}`);
-    return;
+
+  if (res.ok) {
+    console.log(`PAUSED ${agentId}: ${reason}`);
+    await appendAudit(`PAUSED agent=${agentId} name="${agentName ?? "?"}" reason="${reason}"`);
+    await alert(`🚨 Watchdog paused agent ${agentName ?? agentId}: ${reason}`);
+    return { mode: "paused" };
   }
-  console.log(`PAUSED ${agentId}: ${reason}`);
-  await alert(`🚨 Watchdog paused agent ${agentId}: ${reason}`);
+
+  const status = res.status;
+  const body = await res.text().catch(() => "");
+
+  // 2026-05-01: under authenticated deployment mode, cross-agent PATCH is forbidden
+  // unless the caller is CEO or has agents:create grant. Escalate instead of crashing.
+  if (status === 403) {
+    console.error(`Failed to pause ${agentId}: ${status} ${body}`);
+    await appendAudit(
+      `ESCALATION agent=${agentId} name="${agentName ?? "?"}" reason="${reason}" ` +
+        `paperclip_status=403 note="cross-agent pause forbidden under authenticated mode; CEO action required"`,
+    );
+    await softFlagAgent(agentId, reason); // best-effort soft flag
+    await alert(
+      `⚠️ *Cost circuit-breaker triggered* (CEO action required)\n` +
+        `Agent: ${agentName ?? agentId}\n` +
+        `Reason: ${reason}\n` +
+        `Watchdog cannot hard-pause under authenticated mode. ` +
+        `Pause manually via Paperclip UI or grant the watchdog identity \`agents:create\`.`,
+    );
+    return { mode: "escalated-403" };
+  }
+
+  console.error(`Failed to pause ${agentId}: ${status} ${body}`);
+  await appendAudit(
+    `PAUSE-FAILED agent=${agentId} name="${agentName ?? "?"}" reason="${reason}" status=${status}`,
+  );
+  return { mode: "failed", status };
 }
 
 async function alert(msg) {
@@ -96,7 +178,7 @@ async function alert(msg) {
         body: JSON.stringify({ chat_id: ALERT_TELEGRAM_CHAT_ID, text: msg, parse_mode: "Markdown" }),
       });
     } catch (err) {
-      console.error("Telegram alert failed:", err);
+      console.error("Telegram alert failed:", err.message);
     }
   }
   // Slack (fallback)
@@ -108,7 +190,7 @@ async function alert(msg) {
         body: JSON.stringify({ text: msg }),
       });
     } catch (err) {
-      console.error("Slack alert failed:", err);
+      console.error("Slack alert failed:", err.message);
     }
   }
   // TODO: email via Resend when RESEND_API_KEY is wired
@@ -145,8 +227,17 @@ async function checkAgent(agent) {
   if (state.lastStatusHash === statusHash) {
     state.noDeltaCount += 1;
     if (state.noDeltaCount >= NO_DELTA_LIMIT) {
-      await pauseAgent(agent.id, `${NO_DELTA_LIMIT} consecutive ticks with no status delta`);
-      state.paused = true;
+      const result = await pauseAgent(
+        agent.id,
+        `${NO_DELTA_LIMIT} consecutive ticks with no status delta`,
+        agent.name,
+      );
+      if (result.mode === "paused") {
+        state.paused = true;
+      } else if (result.mode === "escalated-403") {
+        // Don't keep re-escalating every tick — record the timestamp.
+        state.circuitBreakerEscalatedAt = new Date().toISOString();
+      }
     }
   } else {
     state.noDeltaCount = 0;
@@ -171,11 +262,16 @@ async function checkAgent(agent) {
           if (isSameIssue && sameActivity) {
             state.crashLoopTicks = (state.crashLoopTicks ?? 0) + 1;
             if (state.crashLoopTicks >= CRASH_LOOP_TICKS) {
-              await pauseAgent(
+              const result = await pauseAgent(
                 agent.id,
-                `Zero-progress crash loop on issue ${activeIssue.identifier ?? activeIssue.id} for ${state.crashLoopTicks} ticks`
+                `Zero-progress crash loop on issue ${activeIssue.identifier ?? activeIssue.id} for ${state.crashLoopTicks} ticks`,
+                agent.name,
               );
-              state.paused = true;
+              if (result.mode === "paused") {
+                state.paused = true;
+              } else if (result.mode === "escalated-403") {
+                state.circuitBreakerEscalatedAt = new Date().toISOString();
+              }
             }
           } else {
             state.crashLoopIssueId = activeIssue.id;
@@ -199,8 +295,16 @@ async function checkAgent(agent) {
     if (state.recentTokensPerTask.length > 10) state.recentTokensPerTask.shift();
     const avg = state.recentTokensPerTask.reduce((a, b) => a + b, 0) / state.recentTokensPerTask.length;
     if (avg > 0 && last > ROLLING_AVG_MULTIPLIER * avg && state.recentTokensPerTask.length >= 5) {
-      await pauseAgent(agent.id, `Last task tokens (${last}) > ${ROLLING_AVG_MULTIPLIER}× rolling avg (${avg.toFixed(0)})`);
-      state.paused = true;
+      const result = await pauseAgent(
+        agent.id,
+        `Last task tokens (${last}) > ${ROLLING_AVG_MULTIPLIER}× rolling avg (${avg.toFixed(0)})`,
+        agent.name,
+      );
+      if (result.mode === "paused") {
+        state.paused = true;
+      } else if (result.mode === "escalated-403") {
+        state.circuitBreakerEscalatedAt = new Date().toISOString();
+      }
     }
   }
 
@@ -223,7 +327,11 @@ async function tick() {
 
 async function main() {
   await ensureStateDir();
-  console.log(`Watchdog up — polling ${PAPERCLIP_HOST}/api/companies/${COMPANY_ID}/agents every ${INTERVAL_MS / 1000}s`);
+  console.log(
+    `Watchdog up — polling ${PAPERCLIP_HOST}/api/companies/${COMPANY_ID}/agents ` +
+      `every ${INTERVAL_MS / 1000}s ` +
+      `(self-id=${SELF_AGENT_ID ?? "<unset>"})`,
+  );
   await tick();
   setInterval(tick, INTERVAL_MS);
 }

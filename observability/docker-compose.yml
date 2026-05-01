@@ -76,6 +76,9 @@ services:
       CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
       CLICKHOUSE_USER: clickhouse
       CLICKHOUSE_PASSWORD: clickhouse_local_dev
+      # See note in langfuse-worker — single-node ClickHouse, no Zookeeper.
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_SSL: "false"
       REDIS_HOST: langfuse-redis
       REDIS_PORT: 6379
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
@@ -95,7 +98,9 @@ services:
       NEXTAUTH_URL: http://localhost:3200
       NEXTAUTH_SECRET: koenig_local_dev_secret_change_me_in_prod
       SALT: koenig_local_salt_change_me
-      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      # Local-dev encryption key (64 hex chars). Quoted so YAML doesn't coerce to number.
+      # Replace with `openssl rand -hex 32` output before any production use.
+      ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       TELEMETRY_ENABLED: "false"
       LANGFUSE_INIT_ORG_ID: koenig
       LANGFUSE_INIT_ORG_NAME: Koenig
@@ -120,6 +125,11 @@ services:
       CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
       CLICKHOUSE_USER: clickhouse
       CLICKHOUSE_PASSWORD: clickhouse_local_dev
+      # 2026-05-01: Langfuse v3 defaults to ReplicatedMergeTree DDL ("ON CLUSTER default"),
+      # which requires Zookeeper. We run single-node ClickHouse without Zookeeper, so disable
+      # cluster mode and force non-replicated migrations.
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_SSL: "false"
       REDIS_HOST: langfuse-redis
       REDIS_PORT: 6379
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
@@ -130,5 +140,7 @@ services:
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
       SALT: koenig_local_salt_change_me
-      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      # Local-dev encryption key (64 hex chars). Quoted so YAML doesn't coerce to number.
+      # Replace with `openssl rand -hex 32` output before any production use.
+      ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       TELEMETRY_ENABLED: "false"
