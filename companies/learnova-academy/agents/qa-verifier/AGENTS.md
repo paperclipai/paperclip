@@ -8,6 +8,7 @@ icon: "✅"
 reportsTo: chief-engineering
 skills:
   - qa-verify-task
+  - qa-playwright-walkthrough
   - obsidian-vault-write
 sources: []
 ---
@@ -82,7 +83,7 @@ PASS or BLOCK comment on the Paperclip ticket + status flip.
 ## Tools
 
 - **Bash** for `pnpm test`, `pnpm typecheck`, `pnpm lint`, `lighthouse`, `git`
-- **`browser-use`** CLI for browser walkthroughs (Mac-local)
+- **Playwright** (Node.js) for browser walkthroughs — uses system `/usr/bin/chromium` in the Linux container (see `qa-playwright-walkthrough` skill)
 - **WebFetch** for verifying URLs in content changes
 - **Filesystem MCP** for reading test outputs + vault
 - **Paperclip task API** for status flips

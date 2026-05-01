@@ -44,11 +44,10 @@ Expected: all green. Any failure → BLOCK.
 
 ### 3. Browser walkthrough (if frontend)
 
-Use `browser-use` to walk through the verification checks listed in the plan's "Verification" section. Example:
+Write a Playwright script `/tmp/qa-walk.cjs` that walks through the verification checks listed in the plan's "Verification" section (see `qa-playwright-walkthrough` skill for the template).
 
 ```bash
-browser-use --headless \
-  --task "Open http://localhost:3010, click 'Start a course', verify the lesson page loads with the new SkillGraph component visible"
+node /tmp/qa-walk.cjs
 ```
 
 Each verification check must pass. Any failure → BLOCK with the specific check that failed.
@@ -65,7 +64,12 @@ Any regression → BLOCK.
 ### 5. Lighthouse (frontend only)
 
 ```bash
-lighthouse http://localhost:3010<changed-page> --output=json --output-path=/tmp/lh.json
+lighthouse http://localhost:3010<changed-page> \
+  --chrome-path /usr/bin/chromium \
+  --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" \
+  --preset=desktop \
+  --output=json \
+  --output-path=/tmp/lh.json
 jq '.categories.performance.score, .audits["interaction-to-next-paint"].numericValue, .audits["largest-contentful-paint"].numericValue, .audits["cumulative-layout-shift"].numericValue' /tmp/lh.json
 ```
 
@@ -133,7 +137,7 @@ A PASS or BLOCK comment + Paperclip ticket flip.
 - Don't skip the browser walkthrough — unit tests miss UI bugs.
 - For content fact-checks, fetch the URL; never validate via LLM.
 - Lighthouse only on changed pages.
-- If `browser-use` looks like an environment issue (port not bound, dev server crashed), restart dev server once; if persists, escalate.
+- If the Playwright walkthrough fails with a browser launch error (not a UI bug), restart dev server once; if persists, escalate to Chief Engineering — may be a Chromium/container environment issue.
 
 ## Escalation
 
