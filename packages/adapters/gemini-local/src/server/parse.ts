@@ -273,13 +273,16 @@ export function isGeminiTurnLimitResult(
   if (exitCode === 53) return true;
   if (!parsed) return false;
 
-  const status = asString(parsed.status, "").trim().toLowerCase();
-  if (status === "turn_limit" || status === "max_turns") return true;
-
-  const error = asString(parsed.error, "").trim();
-  return /turn[\s_-]*limit|max(?:imum)?[\s_-]+turns?/i.test(error);
-}
-
-export function isGeminiTurnLimitText(text: string | null | undefined): boolean {
-  return /\bturn[\s_-]*limit\b|max(?:imum)?[\s_-]+turns?/i.test(text ?? "");
+  const structuredStopReason =
+    asString(parsed.status, "").trim().toLowerCase() ||
+    asString(parsed.stopReason, "").trim().toLowerCase() ||
+    asString(parsed.stop_reason, "").trim().toLowerCase() ||
+    asString(parsed.errorCode, "").trim().toLowerCase() ||
+    asString(parsed.error_code, "").trim().toLowerCase();
+  return (
+    structuredStopReason === "turn_limit" ||
+    structuredStopReason === "max_turns" ||
+    structuredStopReason === "max_turns_exhausted" ||
+    structuredStopReason === "turn_limit_exhausted"
+  );
 }

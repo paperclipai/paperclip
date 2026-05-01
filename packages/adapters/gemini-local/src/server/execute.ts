@@ -49,7 +49,6 @@ import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
   isGeminiTurnLimitResult,
-  isGeminiTurnLimitText,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
 } from "./parse.js";
@@ -543,16 +542,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stderrLine ||
       `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
     const failed = (attempt.proc.exitCode ?? 0) !== 0;
-    const clearSessionForTurnLimit =
-      isGeminiTurnLimitResult(attempt.parsed.resultEvent, attempt.proc.exitCode) ||
-      (failed &&
-        isGeminiTurnLimitText([
-          parsedError,
-          structuredFailure,
-          attempt.parsed.summary,
-          attempt.proc.stdout,
-          attempt.proc.stderr,
-        ].join("\n")));
+    const clearSessionForTurnLimit = isGeminiTurnLimitResult(
+      attempt.parsed.resultEvent,
+      attempt.proc.exitCode,
+    );
 
     // On retry, don't fall back to old session ID — the old session was stale
     const canFallbackToRuntimeSession = !isRetry;

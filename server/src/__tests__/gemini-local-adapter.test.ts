@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   isGeminiTurnLimitResult,
-  isGeminiTurnLimitText,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
 } from "@paperclipai/adapter-gemini-local/server";
@@ -85,12 +84,14 @@ describe("gemini_local stale session detection", () => {
 });
 
 describe("gemini_local turn-limit detection", () => {
-  it("detects structured and text turn-limit signals", () => {
+  it("detects structured turn-limit signals and exit code 53", () => {
     expect(isGeminiTurnLimitResult({ status: "turn_limit" })).toBe(true);
-    expect(isGeminiTurnLimitResult({ error: "max_turns reached" })).toBe(true);
+    expect(isGeminiTurnLimitResult({ stopReason: "max_turns_exhausted" })).toBe(true);
     expect(isGeminiTurnLimitResult(null, 53)).toBe(true);
-    expect(isGeminiTurnLimitText("turn_limit reached")).toBe(true);
-    expect(isGeminiTurnLimitText("maximum turns reached")).toBe(true);
+  });
+
+  it("does not detect turn-limit exhaustion from unstructured error text", () => {
+    expect(isGeminiTurnLimitResult({ error: "max_turns reached" })).toBe(false);
   });
 });
 
