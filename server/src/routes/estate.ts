@@ -1,7 +1,16 @@
 import { Router } from "express";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { estateAssets, estateFinancialAccounts, estateBalanceHistory } from "@paperclipai/db";
+import {
+  estateAssets,
+  estateFinancialAccounts,
+  estateBalanceHistory,
+  estateInsurancePolicies,
+  estateRetirementAccounts,
+  estateBusinessInterests,
+  estateDigitalAssets,
+  estateCollectibles,
+} from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
 
@@ -529,6 +538,503 @@ export function estateRoutes(db: Db) {
         totalDollars: centsToDecimal(r.totalCents),
       })),
     });
+  });
+
+  // =========================================================================
+  // Phase 2 — Enhanced Asset Detail Routes
+  // =========================================================================
+  // All detail routes follow the same pattern:
+  //   GET  /estate/assets/:assetId/<type>  → fetch detail (404 if not set up yet)
+  //   PUT  /estate/assets/:assetId/<type>  → upsert (create or replace)
+  //   DELETE /estate/assets/:assetId/<type> → remove detail record
+
+  async function resolveAsset(assetId: string, companyId: string) {
+    const [asset] = await db
+      .select({ id: estateAssets.id, companyId: estateAssets.companyId, userId: estateAssets.userId })
+      .from(estateAssets)
+      .where(and(eq(estateAssets.id, assetId), eq(estateAssets.companyId, companyId)));
+    return asset ?? null;
+  }
+
+  // ---- Insurance Policies ---------------------------------------------------
+
+  router.get("/estate/assets/:assetId/insurance", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const [detail] = await db
+      .select()
+      .from(estateInsurancePolicies)
+      .where(eq(estateInsurancePolicies.assetId, assetId));
+    if (!detail) throw notFound("Insurance policy detail not found");
+    res.json(detail);
+  });
+
+  router.put("/estate/assets/:assetId/insurance", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const {
+      policyNumber, insurer, policyType, deathBenefitCents, cashValueCents,
+      premiumAmountCents, premiumFrequency, premiumNextDueAt, ilitTrustName,
+      ilitTrustEntityId, outstandingLoanCents, beneficiaries, documentIds,
+      isActive, notes,
+    } = req.body;
+
+    const [existing] = await db
+      .select({ id: estateInsurancePolicies.id })
+      .from(estateInsurancePolicies)
+      .where(eq(estateInsurancePolicies.assetId, assetId));
+
+    const payload = {
+      assetId,
+      companyId,
+      userId: asset.userId,
+      policyNumber: policyNumber ?? null,
+      insurer: insurer ?? null,
+      policyType: policyType ?? "term",
+      deathBenefitCents: deathBenefitCents != null ? String(deathBenefitCents) : null,
+      cashValueCents: cashValueCents != null ? String(cashValueCents) : null,
+      premiumAmountCents: premiumAmountCents != null ? String(premiumAmountCents) : null,
+      premiumFrequency: premiumFrequency ?? null,
+      premiumNextDueAt: premiumNextDueAt ? new Date(premiumNextDueAt) : null,
+      ilitTrustName: ilitTrustName ?? null,
+      ilitTrustEntityId: ilitTrustEntityId ?? null,
+      outstandingLoanCents: outstandingLoanCents != null ? String(outstandingLoanCents) : null,
+      beneficiaries: beneficiaries ?? null,
+      documentIds: documentIds ?? null,
+      isActive: isActive !== undefined ? Boolean(isActive) : true,
+      notes: notes ?? null,
+      updatedAt: new Date(),
+    };
+
+    if (existing) {
+      const [updated] = await db
+        .update(estateInsurancePolicies)
+        .set(payload)
+        .where(eq(estateInsurancePolicies.id, existing.id))
+        .returning();
+      return res.json(updated);
+    }
+
+    const [created] = await db
+      .insert(estateInsurancePolicies)
+      .values(payload)
+      .returning();
+    res.status(201).json(created);
+  });
+
+  router.delete("/estate/assets/:assetId/insurance", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    await db
+      .delete(estateInsurancePolicies)
+      .where(eq(estateInsurancePolicies.assetId, assetId));
+    res.status(204).send();
+  });
+
+  // ---- Retirement Accounts --------------------------------------------------
+
+  router.get("/estate/assets/:assetId/retirement", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const [detail] = await db
+      .select()
+      .from(estateRetirementAccounts)
+      .where(eq(estateRetirementAccounts.assetId, assetId));
+    if (!detail) throw notFound("Retirement account detail not found");
+    res.json(detail);
+  });
+
+  router.put("/estate/assets/:assetId/retirement", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const {
+      accountType, isRoth, custodian, accountNumber,
+      annualContributionLimitCents, ytdContributionCents,
+      rmdRequired, rmdAmountCents, rmdDueYear, rmdWithdrawnThisYearCents,
+      primaryBeneficiaries, contingentBeneficiaries, documentIds, notes,
+    } = req.body;
+
+    const [existing] = await db
+      .select({ id: estateRetirementAccounts.id })
+      .from(estateRetirementAccounts)
+      .where(eq(estateRetirementAccounts.assetId, assetId));
+
+    const payload = {
+      assetId,
+      companyId,
+      userId: asset.userId,
+      accountType: accountType ?? "traditional_ira",
+      isRoth: isRoth !== undefined ? Boolean(isRoth) : false,
+      custodian: custodian ?? null,
+      accountNumber: accountNumber ?? null,
+      annualContributionLimitCents: annualContributionLimitCents != null ? String(annualContributionLimitCents) : null,
+      ytdContributionCents: ytdContributionCents != null ? String(ytdContributionCents) : null,
+      rmdRequired: rmdRequired !== undefined ? Boolean(rmdRequired) : false,
+      rmdAmountCents: rmdAmountCents != null ? String(rmdAmountCents) : null,
+      rmdDueYear: rmdDueYear ?? null,
+      rmdWithdrawnThisYearCents: rmdWithdrawnThisYearCents != null ? String(rmdWithdrawnThisYearCents) : null,
+      primaryBeneficiaries: primaryBeneficiaries ?? null,
+      contingentBeneficiaries: contingentBeneficiaries ?? null,
+      documentIds: documentIds ?? null,
+      notes: notes ?? null,
+      updatedAt: new Date(),
+    };
+
+    if (existing) {
+      const [updated] = await db
+        .update(estateRetirementAccounts)
+        .set(payload)
+        .where(eq(estateRetirementAccounts.id, existing.id))
+        .returning();
+      return res.json(updated);
+    }
+
+    const [created] = await db
+      .insert(estateRetirementAccounts)
+      .values(payload)
+      .returning();
+    res.status(201).json(created);
+  });
+
+  router.delete("/estate/assets/:assetId/retirement", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    await db
+      .delete(estateRetirementAccounts)
+      .where(eq(estateRetirementAccounts.assetId, assetId));
+    res.status(204).send();
+  });
+
+  // ---- Business Interests ---------------------------------------------------
+
+  router.get("/estate/assets/:assetId/business", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const [detail] = await db
+      .select()
+      .from(estateBusinessInterests)
+      .where(eq(estateBusinessInterests.assetId, assetId));
+    if (!detail) throw notFound("Business interest detail not found");
+    res.json(detail);
+  });
+
+  router.put("/estate/assets/:assetId/business", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const {
+      businessName, entityType, ownershipPct, ein, state,
+      lastAppraisalValueCents, lastAppraisalDate, nextAppraisalDueDate,
+      appraisalDocIds, hasBuySellAgreement, buySellAgreementDocId,
+      buySellTriggers, hasKeyPersonInsurance, keyPersonInsurancePolicyIds,
+      coOwners, notes,
+    } = req.body;
+
+    if (!businessName) throw badRequest("businessName is required");
+
+    const [existing] = await db
+      .select({ id: estateBusinessInterests.id })
+      .from(estateBusinessInterests)
+      .where(eq(estateBusinessInterests.assetId, assetId));
+
+    const payload = {
+      assetId,
+      companyId,
+      userId: asset.userId,
+      businessName,
+      entityType: entityType ?? "llc",
+      ownershipPct: ownershipPct != null ? String(ownershipPct) : null,
+      ein: ein ?? null,
+      state: state ?? null,
+      lastAppraisalValueCents: lastAppraisalValueCents != null ? String(lastAppraisalValueCents) : null,
+      lastAppraisalDate: lastAppraisalDate ? new Date(lastAppraisalDate) : null,
+      nextAppraisalDueDate: nextAppraisalDueDate ? new Date(nextAppraisalDueDate) : null,
+      appraisalDocIds: appraisalDocIds ?? null,
+      hasBuySellAgreement: Boolean(hasBuySellAgreement),
+      buySellAgreementDocId: buySellAgreementDocId ?? null,
+      buySellTriggers: buySellTriggers ?? null,
+      hasKeyPersonInsurance: Boolean(hasKeyPersonInsurance),
+      keyPersonInsurancePolicyIds: keyPersonInsurancePolicyIds ?? null,
+      coOwners: coOwners ?? null,
+      notes: notes ?? null,
+      updatedAt: new Date(),
+    };
+
+    if (existing) {
+      const [updated] = await db
+        .update(estateBusinessInterests)
+        .set(payload)
+        .where(eq(estateBusinessInterests.id, existing.id))
+        .returning();
+      return res.json(updated);
+    }
+
+    const [created] = await db
+      .insert(estateBusinessInterests)
+      .values(payload)
+      .returning();
+    res.status(201).json(created);
+  });
+
+  router.delete("/estate/assets/:assetId/business", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    await db
+      .delete(estateBusinessInterests)
+      .where(eq(estateBusinessInterests.assetId, assetId));
+    res.status(204).send();
+  });
+
+  // ---- Digital Assets -------------------------------------------------------
+
+  router.get("/estate/assets/:assetId/digital", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const [detail] = await db
+      .select()
+      .from(estateDigitalAssets)
+      .where(eq(estateDigitalAssets.assetId, assetId));
+    if (!detail) throw notFound("Digital asset detail not found");
+    res.json(detail);
+  });
+
+  router.put("/estate/assets/:assetId/digital", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const {
+      digitalAssetType, ticker, blockchain, quantityHeld,
+      walletAddresses, exchangeAccounts, coldStorageDocIds,
+      contractAddress, tokenId, recoveryDocIds, notes,
+    } = req.body;
+
+    const [existing] = await db
+      .select({ id: estateDigitalAssets.id })
+      .from(estateDigitalAssets)
+      .where(eq(estateDigitalAssets.assetId, assetId));
+
+    const payload = {
+      assetId,
+      companyId,
+      userId: asset.userId,
+      digitalAssetType: digitalAssetType ?? "cryptocurrency",
+      ticker: ticker ?? null,
+      blockchain: blockchain ?? null,
+      quantityHeld: quantityHeld != null ? String(quantityHeld) : null,
+      walletAddresses: walletAddresses ?? null,
+      exchangeAccounts: exchangeAccounts ?? null,
+      coldStorageDocIds: coldStorageDocIds ?? null,
+      contractAddress: contractAddress ?? null,
+      tokenId: tokenId ?? null,
+      recoveryDocIds: recoveryDocIds ?? null,
+      notes: notes ?? null,
+      updatedAt: new Date(),
+    };
+
+    if (existing) {
+      const [updated] = await db
+        .update(estateDigitalAssets)
+        .set(payload)
+        .where(eq(estateDigitalAssets.id, existing.id))
+        .returning();
+      return res.json(updated);
+    }
+
+    const [created] = await db
+      .insert(estateDigitalAssets)
+      .values(payload)
+      .returning();
+    res.status(201).json(created);
+  });
+
+  router.delete("/estate/assets/:assetId/digital", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    await db
+      .delete(estateDigitalAssets)
+      .where(eq(estateDigitalAssets.assetId, assetId));
+    res.status(204).send();
+  });
+
+  // ---- Collectibles ---------------------------------------------------------
+
+  router.get("/estate/assets/:assetId/collectible", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const [detail] = await db
+      .select()
+      .from(estateCollectibles)
+      .where(eq(estateCollectibles.assetId, assetId));
+    if (!detail) throw notFound("Collectible detail not found");
+    res.json(detail);
+  });
+
+  router.put("/estate/assets/:assetId/collectible", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const {
+      collectibleType, artist, maker, yearCreated, medium, dimensions, condition,
+      provenanceDocIds, authCertDocIds, insuranceRiderDocIds, insuredValueCents,
+      lastAppraisalValueCents, lastAppraisalDate, appraisalDocIds,
+      storageFacility, storageLocation, additionalInfo, notes,
+    } = req.body;
+
+    const [existing] = await db
+      .select({ id: estateCollectibles.id })
+      .from(estateCollectibles)
+      .where(eq(estateCollectibles.assetId, assetId));
+
+    const payload = {
+      assetId,
+      companyId,
+      userId: asset.userId,
+      collectibleType: collectibleType ?? "art",
+      artist: artist ?? null,
+      maker: maker ?? null,
+      yearCreated: yearCreated ?? null,
+      medium: medium ?? null,
+      dimensions: dimensions ?? null,
+      condition: condition ?? null,
+      provenanceDocIds: provenanceDocIds ?? null,
+      authCertDocIds: authCertDocIds ?? null,
+      insuranceRiderDocIds: insuranceRiderDocIds ?? null,
+      insuredValueCents: insuredValueCents != null ? String(insuredValueCents) : null,
+      lastAppraisalValueCents: lastAppraisalValueCents != null ? String(lastAppraisalValueCents) : null,
+      lastAppraisalDate: lastAppraisalDate ? new Date(lastAppraisalDate) : null,
+      appraisalDocIds: appraisalDocIds ?? null,
+      storageFacility: storageFacility ?? null,
+      storageLocation: storageLocation ?? null,
+      additionalInfo: additionalInfo ?? null,
+      notes: notes ?? null,
+      updatedAt: new Date(),
+    };
+
+    if (existing) {
+      const [updated] = await db
+        .update(estateCollectibles)
+        .set(payload)
+        .where(eq(estateCollectibles.id, existing.id))
+        .returning();
+      return res.json(updated);
+    }
+
+    const [created] = await db
+      .insert(estateCollectibles)
+      .values(payload)
+      .returning();
+    res.status(201).json(created);
+  });
+
+  router.delete("/estate/assets/:assetId/collectible", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    await db
+      .delete(estateCollectibles)
+      .where(eq(estateCollectibles.assetId, assetId));
+    res.status(204).send();
   });
 
   return router;

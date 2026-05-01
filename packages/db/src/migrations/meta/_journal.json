@@ -372,6 +372,13 @@
       "when": 1745193600000,
       "tag": "0052_estate_asset_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1746316800000,
+      "tag": "0053_phase2_enhanced_asset_tracking",
+      "breakpoints": true
     }
   ]
 }

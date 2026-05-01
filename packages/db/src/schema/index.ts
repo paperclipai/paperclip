@@ -65,3 +65,8 @@ export { creditLedger, creditEventTypeEnum } from "./credit_ledger.js";
 export { creditBurnRates } from "./credit_burn_rates.js";
 export { estateAssets, estateAssetTypeEnum } from "./estate_assets.js";
 export { estateFinancialAccounts, estateBalanceHistory, financialAccountTypeEnum } from "./estate_financial_accounts.js";
+export { estateInsurancePolicies, insurancePolicyTypeEnum, premiumFrequencyEnum } from "./estate_insurance_policies.js";
+export { estateRetirementAccounts, retirementAccountTypeEnum } from "./estate_retirement_accounts.js";
+export { estateBusinessInterests, businessEntityTypeEnum } from "./estate_business_interests.js";
+export { estateDigitalAssets, digitalAssetTypeEnum } from "./estate_digital_assets.js";
+export { estateCollectibles, collectibleTypeEnum } from "./estate_collectibles.js";
