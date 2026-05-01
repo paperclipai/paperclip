@@ -255,7 +255,9 @@ function CompanyRootRedirect() {
       <div className="mx-auto max-w-xl py-10 px-4">
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 text-destructive">
           <h1 className="text-xl font-semibold">Failed to load companies</h1>
-          <p className="mt-2 text-sm">{error.message}</p>
+          <p className="mt-2 text-sm">
+            A network error occurred. Please try again.
+          </p>
           <div className="mt-4">
             <Button onClick={() => reloadCompanies()}>Retry</Button>
           </div>
@@ -298,7 +300,9 @@ function UnprefixedBoardRedirect() {
       <div className="mx-auto max-w-xl py-10 px-4">
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 text-destructive">
           <h1 className="text-xl font-semibold">Failed to load companies</h1>
-          <p className="mt-2 text-sm">{error.message}</p>
+          <p className="mt-2 text-sm">
+            A network error occurred. Please try again.
+          </p>
           <div className="mt-4">
             <Button onClick={() => reloadCompanies()}>Retry</Button>
           </div>

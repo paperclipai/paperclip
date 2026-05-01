@@ -119,6 +119,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   // Auto-select first company when list loads
   useEffect(() => {
     if (isLoading) return;
+    if (error) return;
     if (companies.length === 0) {
       if (
         shouldClearStoredCompanySelection({
@@ -149,6 +150,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     companies,
     companyListUnauthorized,
     isLoading,
+    error,
     selectedCompanyId,
     sidebarCompanies,
   ]);
