@@ -54,9 +54,10 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+# Koenig customization 2026-05-01: add chromium + lighthouse + Playwright for QA Verifier (KOEA-251)
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai lighthouse playwright \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
+  && apt-get install -y --no-install-recommends openssh-client jq chromium fonts-liberation libnss3 libasound2t64 \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
@@ -81,7 +82,9 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+  PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
