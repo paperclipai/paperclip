@@ -7,6 +7,7 @@ import {
   type IssueChatComment,
   type IssueChatLinkedRun,
 } from "./issue-chat-messages";
+import type { SuggestTasksInteraction } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
@@ -47,6 +48,39 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     body: "Hello",
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createInteraction(
+  overrides: Partial<SuggestTasksInteraction> = {},
+): SuggestTasksInteraction {
+  return {
+    id: "interaction-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "suggest_tasks",
+    title: "Suggested follow-up work",
+    summary: "Preview the next issue tree before accepting it.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-06T12:02:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      tasks: [
+        {
+          clientKey: "task-1",
+          title: "Prototype the card",
+        },
+      ],
+    },
+    result: null,
     ...overrides,
   };
 }
@@ -343,6 +377,63 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("merges thread interactions into the same chronological feed as comments and runs", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+        }),
+      ],
+      interactions: [
+        createInteraction({
+          id: "interaction-2",
+          createdAt: new Date("2026-04-06T12:02:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [
+        {
+          id: "run-live-1",
+          status: "running",
+          invocationSource: "manual",
+          triggerDetail: null,
+          startedAt: "2026-04-06T12:03:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-04-06T12:03:00.000Z",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          adapterType: "codex_local",
+        },
+      ],
+      transcriptsByRunId: new Map([
+        [
+          "run-live-1",
+          [{ kind: "assistant", ts: "2026-04-06T12:03:01.000Z", text: "Working on it." }],
+        ],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-live-1",
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "user:comment-1",
+      "system:interaction:interaction-2",
+      "assistant:run-assistant:run-live-1",
+    ]);
+    expect(messages[1]).toMatchObject({
+      metadata: {
+        custom: {
+          kind: "interaction",
+          anchorId: "interaction-interaction-2",
+        },
+      },
+    });
+  });
+
   it("keeps succeeded runs as assistant messages when transcript output exists", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
     const messages = buildIssueChatMessages({
@@ -511,6 +602,37 @@ describe("buildIssueChatMessages", () => {
       id: "run-assistant:run-1",
       status: { type: "complete", reason: "stop" },
       metadata: { custom: { runStatus: "cancelled" } },
+    });
+  });
+
+  it("labels pause-caused cancelled runs as paused by board", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-paused",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          resultJson: { stopReason: "paused" },
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-paused", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-paused",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      chainOfThoughtLabel: "Paused by board after 1 minute",
+      runStatus: "cancelled",
     });
   });
 

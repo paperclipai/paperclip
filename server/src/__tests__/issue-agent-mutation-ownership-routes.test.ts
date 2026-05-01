@@ -2,8 +2,6 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { issueRoutes } from "../routes/issues.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -38,6 +36,10 @@ const mockAgentService = vi.hoisted(() => ({
   resolveByReference: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockDocumentService = vi.hoisted(() => ({
   upsertIssueDocument: vi.fn(),
 }));
@@ -54,65 +56,97 @@ const mockStorageService = vi.hoisted(() => ({
   headObject: vi.fn(),
   deleteObject: vi.fn(),
 }));
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
+function registerRouteMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  documentService: () => mockDocumentService,
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({}),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-    getRun: vi.fn(async () => null),
-    getActiveRunForAgent: vi.fn(async () => null),
-    cancelRun: vi.fn(async () => null),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => [companyId]),
-  }),
-  issueApprovalService: () => ({}),
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/documents.js", () => ({
+    documentService: () => mockDocumentService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/work-products.js", () => ({
+    workProductService: () => mockWorkProductService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: vi.fn(async () => undefined),
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    companyService: () => mockCompanyService,
+    documentService: () => mockDocumentService,
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
     }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => mockWorkProductService,
-}));
+    goalService: () => ({}),
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => null),
+      getActiveRunForAgent: vi.fn(async () => null),
+      cancelRun: vi.fn(async () => null),
+    }),
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => [companyId]),
+    }),
+    issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
+    logActivity: vi.fn(async () => undefined),
+    projectService: () => ({}),
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => mockWorkProductService,
+  }));
+}
 
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
@@ -146,7 +180,11 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>) {
+  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -191,7 +229,47 @@ function boardActor() {
 
 describe("agent issue mutation checkout ownership", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/documents.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/work-products.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerRouteMocks();
     vi.clearAllMocks();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockAgentService.getById.mockReset();
+    mockAgentService.list.mockReset();
+    mockAgentService.resolveByReference.mockReset();
+    mockCompanyService.getById.mockReset();
+    mockIssueService.addComment.mockReset();
+    mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.getAttachmentById.mockReset();
+    mockIssueService.getByIdentifier.mockReset();
+    mockIssueService.getById.mockReset();
+    mockIssueService.getRelationSummaries.mockReset();
+    mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
+    mockIssueService.listAttachments.mockReset();
+    mockIssueService.listWakeableBlockedDependents.mockReset();
+    mockIssueService.remove.mockReset();
+    mockIssueService.removeAttachment.mockReset();
+    mockIssueService.update.mockReset();
+    mockIssueService.findMentionedAgents.mockReset();
+    mockDocumentService.upsertIssueDocument.mockReset();
+    mockWorkProductService.getById.mockReset();
+    mockWorkProductService.update.mockReset();
+    mockStorageService.putFile.mockReset();
+    mockStorageService.getObject.mockReset();
+    mockStorageService.headObject.mockReset();
+    mockStorageService.deleteObject.mockReset();
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockImplementation(async (id: string) => {
@@ -204,6 +282,7 @@ describe("agent issue mutation checkout ownership", () => {
       makeAgent(peerAgentId),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
+    mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -295,7 +374,7 @@ describe("agent issue mutation checkout ownership", () => {
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
-    const res = await sendRequest(createApp(peerActor()));
+    const res = await sendRequest(await createApp(peerActor()));
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.error).toBe("Issue is checked out by another agent");
@@ -309,7 +388,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
-    const app = createApp(ownerActor());
+    const app = await createApp(ownerActor());
 
     await request(app).patch(`/api/issues/${issueId}`).send({ title: "Updated" }).expect(200);
     await request(app)
@@ -330,7 +409,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("preserves board mutations on active checkouts", async () => {
-    const app = createApp(boardActor());
+    const app = await createApp(boardActor());
 
     await request(app).patch(`/api/issues/${issueId}`).send({ title: "Board update" }).expect(200);
     await request(app)
@@ -351,25 +430,27 @@ describe("agent issue mutation checkout ownership", () => {
       permissionKey: string,
     ) => principalId === peerAgentId && permissionKey === "tasks:manage_active_checkouts");
 
-    const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Managed update" });
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Managed update" });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
-  it("allows same-company agent mutations when the issue is not in progress", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }),
-      ...patch,
-    }));
+  it.each([
+    ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
+    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
+    ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
+  ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
 
-    const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Todo update" });
+    const res = await sendRequest(await createApp(peerActor()));
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
-    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
@@ -379,10 +460,14 @@ describe("agent issue mutation checkout ownership", () => {
       ...patch,
     }));
 
-    const res = await request(createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Claimable update" });
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Claimable update" });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
-    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(res.body).toMatchObject({
+      id: issueId,
+      assigneeAgentId: null,
+      title: "Claimable update",
+    });
   });
 });

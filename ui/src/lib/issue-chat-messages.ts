@@ -10,6 +10,10 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import {
+  buildIssueThreadInteractionSummary,
+  type IssueThreadInteraction,
+} from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import {
   summarizeNotice,
@@ -26,6 +30,8 @@ export interface IssueChatComment extends IssueComment {
   clientStatus?: "pending" | "queued";
   queueState?: "queued";
   queueTargetRunId?: string | null;
+  queueReason?: "hold" | "active_run" | "other";
+  followUpRequested?: boolean;
 }
 
 export interface IssueChatLinkedRun {
@@ -38,6 +44,8 @@ export interface IssueChatLinkedRun {
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
+  logBytes?: number | null;
+  resultJson?: Record<string, unknown> | null;
 }
 
 export interface IssueChatTranscriptEntry {
@@ -311,7 +319,9 @@ function createCommentMessage(args: {
     clientStatus: comment.clientStatus ?? null,
     queueState: comment.queueState ?? null,
     queueTargetRunId: comment.queueTargetRunId ?? null,
+    queueReason: comment.queueReason ?? null,
     interruptedRunId: comment.interruptedRunId ?? null,
+    followUpRequested: comment.followUpRequested === true,
   };
 
   if (comment.authorAgentId) {
@@ -350,7 +360,9 @@ function createTimelineEventMessage(args: {
       ? "System"
       : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
 
-  const lines: string[] = [`${actorName} updated this issue`];
+  const lines: string[] = [
+    event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
+  ];
   if (event.statusChange) {
     lines.push(
       `Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,
@@ -381,6 +393,24 @@ function createTimelineEventMessage(args: {
         actorId: event.actorId,
         statusChange: event.statusChange ?? null,
         assigneeChange: event.assigneeChange ?? null,
+        followUpRequested: event.followUpRequested === true,
+      },
+    },
+  };
+  return message;
+}
+
+function createInteractionMessage(interaction: IssueThreadInteraction) {
+  const message: ThreadSystemMessage = {
+    id: `interaction:${interaction.id}`,
+    role: "system",
+    createdAt: toDate(interaction.createdAt),
+    content: [{ type: "text", text: buildIssueThreadInteractionSummary(interaction) }],
+    metadata: {
+      custom: {
+        kind: "interaction",
+        anchorId: `interaction-${interaction.id}`,
+        interaction,
       },
     },
   };
@@ -455,11 +485,13 @@ function runDurationLabel(run: {
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
+  resultJson?: Record<string, unknown> | null;
 }) {
   const start = run.startedAt ?? run.createdAt;
   const end = run.finishedAt ?? null;
   const durationMs = end ? Math.max(0, toTimestamp(end) - toTimestamp(start)) : null;
   const durationText = formatDurationWords(durationMs);
+  const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
   switch (run.status) {
     case "succeeded":
       return durationText ? `Worked for ${durationText}` : "Finished work";
@@ -469,6 +501,9 @@ function runDurationLabel(run: {
     case "timed_out":
       return durationText ? `Timed out after ${durationText}` : "Run timed out";
     case "cancelled":
+      if (stopReason === "paused") {
+        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+      }
       return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
     case "queued":
       return "Queued";
@@ -738,6 +773,7 @@ function createLiveRunMessage(args: {
 
 export function buildIssueChatMessages(args: {
   comments: readonly IssueChatComment[];
+  interactions?: readonly IssueThreadInteraction[];
   timelineEvents: readonly IssueTimelineEvent[];
   linkedRuns: readonly IssueChatLinkedRun[];
   liveRuns: readonly LiveRunForIssue[];
@@ -754,6 +790,7 @@ export function buildIssueChatMessages(args: {
 }) {
   const {
     comments,
+    interactions = [],
     timelineEvents,
     linkedRuns,
     liveRuns,
@@ -776,6 +813,14 @@ export function buildIssueChatMessages(args: {
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,
       message: createCommentMessage({ comment, agentMap, currentUserId, userLabelMap, companyId, projectId }),
+    });
+  }
+
+  for (const interaction of sortByCreated(interactions)) {
+    orderedMessages.push({
+      createdAtMs: toTimestamp(interaction.createdAt),
+      order: 2,
+      message: createInteractionMessage(interaction),
     });
   }
 

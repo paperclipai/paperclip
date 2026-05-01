@@ -107,6 +107,21 @@ export const pluginToolDeclarationSchema = z.object({
   parametersSchema: jsonSchemaSchema,
 });
 
+export const pluginEnvironmentDriverDeclarationSchema = z.object({
+  driverKey: z.string().min(1).regex(
+    /^[a-z0-9][a-z0-9._-]*$/,
+    "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
+  ),
+  kind: z.enum(["environment_driver", "sandbox_provider"]).optional(),
+  displayName: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  configSchema: jsonSchemaSchema,
+});
+
+export type PluginEnvironmentDriverDeclarationInput = z.infer<
+  typeof pluginEnvironmentDriverDeclarationSchema
+>;
+
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;
 
 /**
@@ -410,11 +425,13 @@ export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclar
  * Cross-field rules enforced via `superRefine`:
  * - `entrypoints.ui` required when `ui.slots` declared
  * - `agent.tools.register` capability required when `tools` declared
+ * - `environment.drivers.register` capability required when `environmentDrivers` declared
  * - `jobs.schedule` capability required when `jobs` declared
  * - `webhooks.receive` capability required when `webhooks` declared
  * - duplicate `jobs[].jobKey` values are rejected
  * - duplicate `webhooks[].endpointKey` values are rejected
  * - duplicate `tools[].name` values are rejected
+ * - duplicate `environmentDrivers[].driverKey` values are rejected
  * - duplicate `ui.slots[].id` values are rejected
  *
  * @see PLUGIN_SPEC.md §10.1 — Manifest shape
@@ -453,6 +470,7 @@ export const pluginManifestV1Schema = z.object({
   tools: z.array(pluginToolDeclarationSchema).optional(),
   database: pluginDatabaseDeclarationSchema.optional(),
   apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
+  environmentDrivers: z.array(pluginEnvironmentDriverDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -495,6 +513,17 @@ export const pluginManifestV1Schema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Capability 'agent.tools.register' is required when tools are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  // environment drivers require environment.drivers.register
+  if (manifest.environmentDrivers && manifest.environmentDrivers.length > 0) {
+    if (!manifest.capabilities.includes("environment.drivers.register")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'environment.drivers.register' is required when environmentDrivers are declared",
         path: ["capabilities"],
       });
     }
@@ -618,6 +647,19 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate tool names: ${[...new Set(duplicates)].join(", ")}`,
         path: ["tools"],
+      });
+    }
+  }
+
+  // environment driver keys must be unique within the plugin
+  if (manifest.environmentDrivers) {
+    const driverKeys = manifest.environmentDrivers.map((d) => d.driverKey);
+    const duplicates = driverKeys.filter((key, i) => driverKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate environment driver keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["environmentDrivers"],
       });
     }
   }

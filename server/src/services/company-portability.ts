@@ -2264,7 +2264,7 @@ function buildEnvInputMap(inputs: CompanyPortabilityEnvInput[]) {
 }
 
 function readCompanyApprovalDefault(_frontmatter: Record<string, unknown>) {
-  return true;
+  return false;
 }
 
 function readIncludeEntries(frontmatter: Record<string, unknown>): CompanyPackageIncludeEntry[] {
@@ -2428,6 +2428,10 @@ function buildManifestFromPackageFiles(
       description: asString(companyFrontmatter.description),
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
+      attachmentMaxBytes:
+        typeof paperclipCompany.attachmentMaxBytes === "number" && Number.isFinite(paperclipCompany.attachmentMaxBytes)
+          ? Math.max(1, Math.floor(paperclipCompany.attachmentMaxBytes))
+          : null,
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -3465,7 +3469,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         company: stripEmptyValues({
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
-          requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
+          attachmentMaxBytes: company.attachmentMaxBytes,
+          requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
           feedbackDataSharingConsentByUserId: company.feedbackDataSharingConsentByUserId ?? null,
@@ -3963,6 +3968,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       id: string;
       name: string;
       requireBoardApprovalForNewAgents?: boolean | null;
+      attachmentMaxBytes?: number | null;
     } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
@@ -3985,9 +3991,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
+        attachmentMaxBytes: include.company
+          ? (sourceManifest.company?.attachmentMaxBytes ?? undefined)
+          : undefined,
         requireBoardApprovalForNewAgents: include.company
-          ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
-          : true,
+          ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
+          : false,
         feedbackDataSharingEnabled: include.company
           ? (sourceManifest.company?.feedbackDataSharingEnabled ?? false)
           : false,
@@ -4016,6 +4025,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
           brandColor: sourceManifest.company.brandColor,
+          attachmentMaxBytes: sourceManifest.company.attachmentMaxBytes ?? undefined,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt

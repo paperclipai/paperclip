@@ -63,6 +63,9 @@ Write tools:
 - `paperclipCheckoutIssue`
 - `paperclipReleaseIssue`
 - `paperclipAddComment`
+- `paperclipSuggestTasks`
+- `paperclipAskUserQuestions`
+- `paperclipRequestConfirmation`
 - `paperclipUpsertIssueDocument`
 - `paperclipRestoreIssueDocumentRevision`
 - `paperclipControlIssueWorkspaceServices`

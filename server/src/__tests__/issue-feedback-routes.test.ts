@@ -49,6 +49,27 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+}));
+const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
+const mockIssueReferenceService = vi.hoisted(() => ({
+  deleteDocumentSource: vi.fn(async () => undefined),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  syncComment: vi.fn(async () => undefined),
+  syncDocument: vi.fn(async () => undefined),
+  syncIssue: vi.fn(async () => undefined),
+}));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -61,33 +82,39 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => mockFeedbackService,
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
-    instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
+    issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
+  }));
+
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
+  }));
+
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+  }));
+
+  vi.doMock("../services/feedback.js", () => ({
+    feedbackService: () => mockFeedbackService,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
   }));
 }
 
@@ -113,6 +140,10 @@ describe("issue feedback trace routes", () => {
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/environments.js");
+    vi.doUnmock("../services/execution-workspaces.js");
+    vi.doUnmock("../services/feedback.js");
+    vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();

@@ -40,10 +40,11 @@
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
+    "@paperclipai/adapter-acpx-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",

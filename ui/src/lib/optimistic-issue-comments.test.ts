@@ -9,9 +9,11 @@ import {
   flattenIssueCommentPages,
   getNextIssueCommentPageParam,
   isQueuedIssueComment,
+  loadRemainingIssueCommentPages,
   matchesIssueRef,
   mergeIssueComments,
   removeIssueCommentFromPages,
+  shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
   upsertIssueComment,
   upsertIssueCommentInPages,
@@ -231,6 +233,70 @@ describe("optimistic issue comments", () => {
         2,
       ),
     ).toBe("comment-1");
+  });
+
+  it("loads remaining comment pages until the terminal partial page", async () => {
+    const fetchPage = vi.fn(async (afterCommentId: string) => {
+      if (afterCommentId === "comment-3") return [{ id: "comment-2" }, { id: "comment-1" }];
+      if (afterCommentId === "comment-1") return [{ id: "comment-0" }];
+      return [];
+    });
+
+    const loaded = await loadRemainingIssueCommentPages({
+      pages: [[{ id: "comment-4" }, { id: "comment-3" }]],
+      pageParams: [null],
+      pageSize: 2,
+      fetchPage,
+    });
+
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(fetchPage).toHaveBeenNthCalledWith(1, "comment-3");
+    expect(fetchPage).toHaveBeenNthCalledWith(2, "comment-1");
+    expect(loaded.pages.map((page) => page.map((comment) => comment.id))).toEqual([
+      ["comment-4", "comment-3"],
+      ["comment-2", "comment-1"],
+      ["comment-0"],
+    ]);
+    expect(loaded.pageParams).toEqual([null, "comment-3", "comment-1"]);
+  });
+
+  it("autoloads older chat comments while the initial thread is still under the threshold", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "chat",
+        hasOlderComments: true,
+        loadedCommentCount: 50,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 150,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not autoload older comments outside the chat tab", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "activity",
+        hasOlderComments: true,
+        loadedCommentCount: 50,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 150,
+      }),
+    ).toBe(false);
+  });
+
+  it("stops autoloading once the initial comment window reaches the cap", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "chat",
+        hasOlderComments: true,
+        loadedCommentCount: 150,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 150,
+      }),
+    ).toBe(false);
   });
 
   it("upserts paged comments without dropping older pages", () => {
@@ -720,7 +786,7 @@ describe("optimistic issue comments", () => {
 
     const result = applyLocalQueuedIssueCommentState(comment, {
       queuedTargetRunId: "run-1",
-      hasLiveRuns: true,
+      targetRunIsLive: true,
       runningRunId: "run-1",
     });
 
@@ -746,8 +812,29 @@ describe("optimistic issue comments", () => {
 
     const result = applyLocalQueuedIssueCommentState(comment, {
       queuedTargetRunId: "run-1",
-      hasLiveRuns: false,
+      targetRunIsLive: false,
       runningRunId: null,
+    });
+
+    expect(result).toBe(comment);
+  });
+
+  it("does not keep local queued state when a different run is live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: true,
+      runningRunId: "run-2",
     });
 
     expect(result).toBe(comment);

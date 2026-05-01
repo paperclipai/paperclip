@@ -4,33 +4,52 @@ import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetPaperclipApiUrl,
+  adapterExecutionTargetRemoteCwd,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetUsesPaperclipBridge,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  prepareAdapterExecutionTargetRuntime,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCommandForLogs,
+  runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
+  startAdapterExecutionTargetPaperclipBridge,
+} from "@paperclipai/adapter-utils/execution-target";
+import {
   asString,
   asNumber,
   asBoolean,
   asStringArray,
   parseObject,
   parseJson,
+  applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  resolveCommandForLogs,
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
+import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -42,6 +61,7 @@ interface ClaudeExecutionInput {
   agent: AdapterExecutionContext["agent"];
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  executionTarget?: ReturnType<typeof readAdapterExecutionTarget>;
   authToken?: string;
 }
 
@@ -92,7 +112,7 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
-  const { runId, agent, config, context, authToken } = input;
+  const { runId, agent, config, context, executionTarget, authToken } = input;
 
   const command = asString(config.command, "claude");
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -179,33 +199,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceStrategy) {
-    env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
-  }
-  if (workspaceId) {
-    env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
-  if (workspaceBranch) {
-    env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
-  }
-  if (workspaceWorktreePath) {
-    env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
-  }
-  if (agentHome) {
-    env.AGENT_HOME = agentHome;
-  }
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) {
     env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -218,6 +222,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
+  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
+  if (targetPaperclipApiUrl) {
+    env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
+  }
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -228,8 +236,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
-  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+  const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
@@ -276,7 +284,7 @@ export async function runClaudeLogin(input: {
     authToken: input.authToken,
   });
 
-  const proc = await runChildProcess(input.runId, runtime.command, ["login"], {
+  const proc = await runAdapterExecutionTargetProcess(input.runId, null, runtime.command, ["login"], {
     cwd: runtime.cwd,
     env: runtime.env,
     timeoutSec: runtime.timeoutSec,
@@ -298,6 +306,11 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -308,6 +321,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const configEnv = parseObject(config.env);
+  const hasExplicitClaudeConfigDir =
+    typeof configEnv.CLAUDE_CONFIG_DIR === "string" && configEnv.CLAUDE_CONFIG_DIR.trim().length > 0;
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
@@ -315,6 +331,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent,
     config,
     context,
+    executionTarget,
     authToken,
   });
   const {
@@ -325,11 +342,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
-    loggedEnv,
+    loggedEnv: initialLoggedEnv,
     timeoutSec,
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  let loggedEnv = initialLoggedEnv;
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
@@ -369,27 +388,145 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
-  const effectiveInstructionsFilePath = promptBundle.instructionsFilePath ?? undefined;
+  const useManagedRemoteClaudeConfig =
+    executionTargetIsRemote &&
+    adapterExecutionTargetUsesManagedHome(executionTarget) &&
+    !hasExplicitClaudeConfigDir;
+  const claudeConfigSeedDir = useManagedRemoteClaudeConfig
+    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
+    : null;
+  const preparedExecutionTargetRuntime = executionTargetIsRemote
+    ? await (async () => {
+        await onLog(
+          "stdout",
+          `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+        );
+        return await prepareAdapterExecutionTargetRuntime({
+          target: executionTarget,
+          adapterKey: "claude",
+          workspaceLocalDir: cwd,
+          assets: [
+            {
+              key: "skills",
+              localDir: promptBundle.addDir,
+              followSymlinks: true,
+            },
+            ...(claudeConfigSeedDir
+              ? [{
+                key: "config-seed",
+                localDir: claudeConfigSeedDir,
+                followSymlinks: true,
+              }]
+              : []),
+          ],
+        });
+      })()
+    : null;
+  const restoreRemoteWorkspace = preparedExecutionTargetRuntime
+    ? () => preparedExecutionTargetRuntime.restoreWorkspace()
+    : null;
+  const effectivePromptBundleAddDir = executionTargetIsRemote
+    ? preparedExecutionTargetRuntime?.assetDirs.skills ??
+      path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude", "skills")
+    : promptBundle.addDir;
+  const effectiveInstructionsFilePath = promptBundle.instructionsFilePath
+    ? executionTargetIsRemote
+      ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
+      : promptBundle.instructionsFilePath
+    : undefined;
+  const remoteClaudeRuntimeRoot = executionTargetIsRemote
+    ? preparedExecutionTargetRuntime?.runtimeRootDir ??
+      path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
+    : null;
+  const remoteClaudeConfigSeedDir = claudeConfigSeedDir && remoteClaudeRuntimeRoot
+    ? preparedExecutionTargetRuntime?.assetDirs["config-seed"] ??
+      path.posix.join(remoteClaudeRuntimeRoot, "config-seed")
+    : null;
+  const remoteClaudeConfigDir = useManagedRemoteClaudeConfig && remoteClaudeRuntimeRoot
+    ? path.posix.join(remoteClaudeRuntimeRoot, "config")
+    : null;
+  if (remoteClaudeConfigDir && remoteClaudeConfigSeedDir) {
+    env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+    loggedEnv.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+    await onLog(
+      "stdout",
+      `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`,
+    );
+    await runAdapterExecutionTargetShellCommand(
+      runId,
+      executionTarget,
+      `mkdir -p ${shellQuote(remoteClaudeConfigDir)} && ` +
+        `if [ -d ${shellQuote(remoteClaudeConfigSeedDir)} ]; then ` +
+        `cp -R ${shellQuote(`${remoteClaudeConfigSeedDir}/.`)} ${shellQuote(remoteClaudeConfigDir)}/; ` +
+        `fi`,
+      {
+        cwd,
+        env,
+        timeoutSec: Math.max(timeoutSec, 15),
+        graceSec,
+        onLog,
+      },
+    );
+  }
+  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
+    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId,
+      target: executionTarget,
+      runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
+      adapterKey: "claude",
+      hostApiToken: env.PAPERCLIP_API_KEY,
+      onLog,
+    });
+    if (paperclipBridge) {
+      Object.assign(env, paperclipBridge.env);
+      const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+      loggedEnv = buildInvocationEnvForLogs(env, {
+        runtimeEnv,
+        includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+        resolvedCommand,
+      });
+      if (remoteClaudeConfigDir) {
+        loggedEnv.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+      }
+    }
+  }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (
+    executionTargetIsRemote &&
     runtimeSessionId &&
-    runtimeSessionCwd.length > 0 &&
-    path.resolve(runtimeSessionCwd) !== path.resolve(cwd)
+    !canResumeSession
   ) {
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+    );
+  } else if (
+    runtimeSessionId &&
+    runtimeSessionCwd.length > 0 &&
+    path.resolve(runtimeSessionCwd) !== path.resolve(effectiveExecutionCwd)
+  ) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+    );
+  } else if (runtimeSessionId && !canResumeSession) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
     );
   }
   if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== promptBundle.bundleKey) {
@@ -416,10 +553,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
+    taskContextNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -427,6 +566,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 
@@ -452,7 +592,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
-    args.push("--add-dir", promptBundle.addDir);
+    args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -489,7 +629,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({
         adapterType: "claude_local",
         command: resolvedCommand,
-        cwd,
+        cwd: effectiveExecutionCwd,
         commandArgs: args,
         commandNotes,
         env: loggedEnv,
@@ -499,7 +639,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
       stdin: prompt,
@@ -552,16 +692,48 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const transientUpstream =
+        !loginMeta.requiresLogin &&
+        (proc.exitCode ?? 0) !== 0 &&
+        isClaudeTransientUpstreamError({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
+      const transientRetryNotBefore = transientUpstream
+        ? extractClaudeRetryNotBefore({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        : null;
+      const errorCode = loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : transientUpstream
+        ? "claude_transient_upstream"
+        : null;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorMessage: fallbackErrorMessage,
+        errorCode,
+        errorFamily: transientUpstream ? "transient_upstream" : null,
+        retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+          ...(transientRetryNotBefore
+            ? { retryNotBefore: transientRetryNotBefore.toISOString() }
+            : {}),
+          ...(transientRetryNotBefore
+            ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() }
+            : {}),
         },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
@@ -584,24 +756,61 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: effectiveExecutionCwd,
         promptBundleKey: promptBundle.bundleKey,
+        ...(executionTargetIsRemote
+          ? {
+              remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget),
+            }
+          : {}),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const parsedIsError = asBoolean(parsed.is_error, false);
+    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    const errorMessage = failed
+      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+      : null;
+    const transientUpstream =
+      failed &&
+      !loginMeta.requiresLogin &&
+      isClaudeTransientUpstreamError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage,
+      });
+    const transientRetryNotBefore = transientUpstream
+      ? extractClaudeRetryNotBefore({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        })
+      : null;
+    const resolvedErrorCode = loginMeta.requiresLogin
+      ? "claude_auth_required"
+      : transientUpstream
+      ? "claude_transient_upstream"
+      : null;
+    const mergedResultJson: Record<string, unknown> = {
+      ...parsed,
+      ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+      ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+    };
 
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
-      errorMessage:
-        (proc.exitCode ?? 0) === 0
-          ? null
-          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorMessage,
+      errorCode: resolvedErrorCode,
+      errorFamily: transientUpstream ? "transient_upstream" : null,
+      retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -612,27 +821,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
-      resultJson: parsed,
+      resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
-  const initial = await runAttempt(sessionId ?? null);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    initial.parsed &&
-    isClaudeUnknownSessionError(initial.parsed)
-  ) {
-    await onLog(
-      "stdout",
-      `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
-  }
+  try {
+    const initial = await runAttempt(sessionId ?? null);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      initial.parsed &&
+      isClaudeUnknownSessionError(initial.parsed)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    }
 
-  return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+  } finally {
+    if (paperclipBridge) {
+      await paperclipBridge.stop();
+    }
+    if (restoreRemoteWorkspace) {
+      await onLog(
+        "stdout",
+        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+      );
+      await restoreRemoteWorkspace();
+    }
+  }
 }
