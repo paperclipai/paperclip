@@ -49,8 +49,8 @@ WORKDIR /vendor
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
 ARG CCROTATE_REF=882e62ac7111ed29efd56861241eed4b4fe956b0
-ARG CLAUDE_K8S_REF=17a44d4f66b03889ca662744b3e7a396d511c6f2
-ARG OPENCODE_K8S_REF=241d6f48876e3e9b11c1cd4714264d742e1ae97c
+ARG CLAUDE_K8S_REF=8cc43fdc2ed26ea05ca69d260650a6a79078c7f7
+ARG OPENCODE_K8S_REF=1395ace6d9e035f04251aca89e9c9a8ee82d247f
 
 RUN git clone https://github.com/kkroo/ccrotate.git ccrotate \
   && cd ccrotate && git checkout "${CCROTATE_REF}" \
