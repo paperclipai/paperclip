@@ -277,5 +277,9 @@ export function isGeminiTurnLimitResult(
   if (status === "turn_limit" || status === "max_turns") return true;
 
   const error = asString(parsed.error, "").trim();
-  return /turn\s*limit|max(?:imum)?\s+turns?/i.test(error);
+  return /turn[\s_-]*limit|max(?:imum)?[\s_-]+turns?/i.test(error);
+}
+
+export function isGeminiTurnLimitText(text: string | null | undefined): boolean {
+  return /\bturn[\s_-]*limit\b|max(?:imum)?[\s_-]+turns?/i.test(text ?? "");
 }

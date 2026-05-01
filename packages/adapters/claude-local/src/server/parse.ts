@@ -174,7 +174,11 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   if (stopReason === "max_turns") return true;
 
   const resultText = asString(parsed.result, "").trim();
-  return /max(?:imum)?\s+turns?/i.test(resultText);
+  return /max(?:imum)?[\s_-]+turns?/i.test(resultText);
+}
+
+export function isClaudeMaxTurnsText(text: string | null | undefined): boolean {
+  return /max(?:imum)?[\s_-]+turns?/i.test(text ?? "");
 }
 
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
