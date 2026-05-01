@@ -13,6 +13,7 @@
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
 - [shipped] **v3.0 Native Distribution Readiness** - Phase 59-64 완료, 2026-05-01 ([archive](milestones/v3.0-ROADMAP.md), [requirements](milestones/v3.0-REQUIREMENTS.md), [audit](milestones/v3.0-MILESTONE-AUDIT.md))
+- [active] **v3.1 DevPlan Core Convergence** - Phase 65-71 planned, 2026-05-01 시작 ([requirements](REQUIREMENTS.md))
 
 ## 완료됨
 
@@ -113,7 +114,101 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.0 Native Distribution Readiness가 완료되어 archive됐다. v2.9 capture reliability는 shipped baseline으로 고정했고, signed native distribution pipeline, release channel/updater, resident tray/global shortcut, mobile push notification, final distribution gate를 evidence-first 운영 표면으로 닫았다. 다음 작업은 새 milestone 정의 또는 실제 release/operator evidence 수집 scope를 정하는 것이다.
+v3.1 DevPlan Core Convergence가 시작됐다. v3.0 distribution evidence gates는 완료된 기준선으로 유지하고, 이번 milestone은 `RealTycoon2_DevPlan (2).pdf` 대비 약 64% 정적 싱크로율을 높이기 위해 제품 핵심 루프와 Multica/wikiLLM/Graphify 엔진 충실도를 실제 코드, UI, 문서, 검증 증거로 닫는다.
+
+<details open>
+<summary>v3.1 DevPlan Core Convergence (Phase 65-71 planned)</summary>
+
+**Goal:** RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 엔진 기준을 실제 코드, UI, 문서, 검증 증거로 다시 정렬한다.
+
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 65 | DevPlan Truth and Identity Cleanup | ALIGN-01..03, IDENTITY-01..03 | Planned |
+| 66 | Daily Work and OKR Cockpit Convergence | DAILY-01..03 | Planned |
+| 67 | Multica Runtime Execution Alignment | RUNTIME-01..03 | Planned |
+| 68 | wikiLLM Living Memory Workflow | WIKI-01..03 | Planned |
+| 69 | Graphify v3 Corpus Graph Sidecar | GRAPH-01..04 | Planned |
+| 70 | Economy, Marketplace, P&L, and CareerMate Loop | ECON-01..03 | Planned |
+| 71 | v3.1 DevPlan Acceptance Gate | GATE-01..02 | Planned |
+
+### Reference Constraints
+
+- 이번 milestone의 기준선은 개발기획서 대비 정적 싱크로율 약 64%다. 목표는 완료 주장을 늘리는 것이 아니라 실제 제품/엔진 증거를 맞추는 것이다.
+- Paperclip-derived control plane은 infrastructure/reference로 유지하되 product-facing identity는 RealTycoon2-first Korean UX여야 한다.
+- Multica는 runtime/daemon/queue lifecycle의 구체 기준으로 참고한다. RT2 product model을 Multica로 대체하지 않는다.
+- Graphify v3는 corpus graph sidecar 기준으로 참고한다. RT2 product graph와 Graphify-style corpus graph를 혼동하지 않는다.
+- wikiLLM은 `index.md`, `log.md`, topic/project/schema page를 갖는 living memory workflow로 검증한다.
+- v2.9 capture reliability와 v3.0 distribution evidence gates는 regression baseline으로만 보호한다.
+
+### Phase Details
+
+**Phase 65: DevPlan Truth and Identity Cleanup**
+Goal: 개발기획서 alignment score를 장/핵심 축별 근거와 함께 재구성하고, product-facing Paperclip residue를 compatibility/reference boundary로 정리한다.
+Requirements: ALIGN-01, ALIGN-02, ALIGN-03, IDENTITY-01, IDENTITY-02, IDENTITY-03
+Success criteria:
+1. 개발기획서 alignment matrix가 구현/부분/미구현/debt 상태와 근거 파일을 연결한다.
+2. `complete` claim은 code, route/schema, UI, test/evidence 중 최소 하나 이상의 근거를 가진다.
+3. UI/docs/server-facing copy에서 product-facing Paperclip/Paper Company residue가 regression scan으로 탐지된다.
+4. 남는 `@paperclipai/*`, `PAPERCLIP_*` 명칭은 compatibility layer로 문서화된다.
+
+**Phase 66: Daily Work and OKR Cockpit Convergence**
+Goal: RealTycoon2 첫 운영 화면을 개발기획서의 3패널 daily cockpit과 Mission -> To-Do rollup 흐름으로 수렴시킨다.
+Requirements: DAILY-01, DAILY-02, DAILY-03
+Success criteria:
+1. 첫 운영 화면은 왼쪽 OKR tree, 중앙 daily report/board/task mesh, 오른쪽 detail/Jarvis/chat 구조를 제공한다.
+2. One-Liner 입력부터 review, Task/To-Do/Deliverable, knowledge/economy evidence까지 cockpit 안에서 추적된다.
+3. Mission -> Objective -> Key Result -> Project -> Task -> To-Do 계층과 rollup 상태가 API/UI에서 일관된다.
+
+**Phase 67: Multica Runtime Execution Alignment**
+Goal: RT2 execution lifecycle을 Multica의 runtime-aware queue, heartbeat, cancellation, progress stream 기준에 맞게 강화한다.
+Requirements: RUNTIME-01, RUNTIME-02, RUNTIME-03
+Success criteria:
+1. execution queue는 `queued -> dispatched -> running -> completed/failed/cancelled` transition guard를 갖는다.
+2. claim은 runtime capacity와 heartbeat 상태를 기준으로 하며 stale runtime/task cleanup evidence를 남긴다.
+3. progress/message/tool stream은 work card와 Jarvis evidence surface에서 추적 가능하다.
+
+**Phase 68: wikiLLM Living Memory Workflow**
+Goal: RT2 event/wiki store를 wikiLLM-compatible file model과 Jarvis citation/update loop로 연결한다.
+Requirements: WIKI-01, WIKI-02, WIKI-03
+Success criteria:
+1. `index.md`, `log.md`, topic/project/schema page를 export 또는 materialize할 수 있다.
+2. ingest/update는 provenance, confidence, contradiction flag, related page update evidence를 남긴다.
+3. Jarvis grounded answer는 wiki citation을 제공하고 review 가능한 wiki draft/update로 되돌아갈 수 있다.
+
+**Phase 69: Graphify v3 Corpus Graph Sidecar**
+Goal: Graphify v3 기준의 corpus ingest, file cache, provenance, clustering/query/report 기능을 RT2 product graph와 분리해 구현한다.
+Requirements: GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04
+Success criteria:
+1. repo/docs/wiki source file이 SHA256 cache와 source location metadata로 증분 ingest된다.
+2. graph build path가 code/docs extraction interface, confidence score, relation provenance를 저장한다.
+3. node, neighbors, community, shortest path, god nodes, graph stats query API가 제공된다.
+4. graph report가 product graph와 corpus graph를 구분하고 gap/surprising connection/suggested question을 노출한다.
+
+**Phase 70: Economy, Marketplace, P&L, and CareerMate Loop**
+Goal: Marketplace, P&L, amoeba economy, CareerMate progression을 deliverable/quality/ledger evidence와 제품 주 흐름으로 연결한다.
+Requirements: ECON-01, ECON-02, ECON-03
+Success criteria:
+1. Marketplace와 P&L은 primary navigation loop에서 접근 가능하고 deliverable price/quality/gold evidence와 연결된다.
+2. price negotiation, settlement, anti-gaming outcome이 amoeba/user/project P&L rollup에 반영된다.
+3. CareerMate/avatar/reputation progression은 ledger와 quality evidence 기반으로 계산된다.
+
+**Phase 71: v3.1 DevPlan Acceptance Gate**
+Goal: v3.1 close가 실제 DevPlan alignment 개선을 증명하도록 focused tests/scans와 score delta audit을 하나의 gate로 묶는다.
+Requirements: GATE-01, GATE-02
+Success criteria:
+1. DevPlan alignment, identity, daily cockpit, runtime, wiki/graph, economy loop focused checks가 실행된다.
+2. milestone audit은 64% baseline 대비 score delta와 남은 blocker/debt/future scope를 파일 근거로 보고한다.
+3. `.planning/REQUIREMENTS.md`, `.planning/ROADMAP.md`, `.planning/STATE.md`, phase artifacts가 v3.1 completion truth에 동의한다.
+
+### Dependencies
+
+- Phase 66 depends on Phase 65 because cockpit work must use the corrected product identity and DevPlan truth matrix.
+- Phase 68 depends on Phase 67 for reliable execution/event evidence flowing into memory.
+- Phase 69 depends on Phase 68 for wiki/corpus source boundaries.
+- Phase 70 depends on Phase 66 because economy/P&L evidence must attach to the primary work cockpit.
+- Phase 71 depends on Phase 65-70.
+
+</details>
 
 <details>
 <summary>v2.7 릴리즈 호스트 검증 및 런타임 신뢰도 (Phase 44-47) - 2026-04-30 완료</summary>
@@ -127,7 +222,7 @@ Audit status: `tech_debt`. Requirements 11/11, phases 4/4, integration 4/4, flow
 
 </details>
 
-<details open>
+<details>
 <summary>v3.0 Native Distribution Readiness (Phase 59-64 complete)</summary>
 
 **Goal:** RealTycoon2를 signed native distribution, release channel, updater, resident desktop entry, mobile push까지 운영 가능한 배포 표면으로 끌어올린다.
@@ -410,6 +505,13 @@ Success criteria:
 | 62. Resident Tray and Global Shortcut | v3.0 | 1/1 | Complete | 2026-04-30 |
 | 63. Mobile Push Notification Loop | v3.0 | 1/1 | Complete | 2026-05-01 |
 | 64. v3.0 Distribution Gate and Capture Regression Closure | v3.0 | 1/1 | Complete | 2026-05-01 |
+| 65. DevPlan Truth and Identity Cleanup | v3.1 | 0/0 | Planned | — |
+| 66. Daily Work and OKR Cockpit Convergence | v3.1 | 0/0 | Planned | — |
+| 67. Multica Runtime Execution Alignment | v3.1 | 0/0 | Planned | — |
+| 68. wikiLLM Living Memory Workflow | v3.1 | 0/0 | Planned | — |
+| 69. Graphify v3 Corpus Graph Sidecar | v3.1 | 0/0 | Planned | — |
+| 70. Economy, Marketplace, P&L, and CareerMate Loop | v3.1 | 0/0 | Planned | — |
+| 71. v3.1 DevPlan Acceptance Gate | v3.1 | 0/0 | Planned | — |
 
 ## Archive
 
@@ -446,4 +548,4 @@ Success criteria:
 - [v3.0 milestone audit](milestones/v3.0-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-05-01, v3.0 milestone archived*
+*마지막 업데이트: 2026-05-01, v3.1 milestone initialized*
