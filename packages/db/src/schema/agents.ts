@@ -20,6 +20,7 @@ export const agents = pgTable(
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),
+    executor: text("executor").notNull().default("mc-dispatch"),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),
@@ -37,6 +38,7 @@ export const agents = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
+    executorIdx: index("agents_executor_idx").on(table.executor),
     companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
   }),
 );
