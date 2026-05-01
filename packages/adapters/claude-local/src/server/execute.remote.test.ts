@@ -10,6 +10,7 @@ const {
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
+  startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async () => ({
     exitCode: 0,
@@ -29,6 +30,14 @@ const {
   prepareWorkspaceForSshExecution: vi.fn(async () => undefined),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   syncDirectoryToSsh: vi.fn(async () => undefined),
+  startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+    env: {
+      PAPERCLIP_API_URL: "http://127.0.0.1:4310",
+      PAPERCLIP_API_KEY: "bridge-token",
+      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+    },
+    stop: async () => {},
+  })),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -52,6 +61,16 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
     prepareWorkspaceForSshExecution,
     restoreWorkspaceFromSshExecution,
     syncDirectoryToSsh,
+  };
+});
+
+vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+    "@paperclipai/adapter-utils/execution-target",
+  );
+  return {
+    ...actual,
+    startAdapterExecutionTargetPaperclipBridge,
   };
 });
 
@@ -112,7 +131,6 @@ describe("claude remote execution", () => {
           privateKey: "PRIVATE KEY",
           knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
           strictHostKeyChecking: true,
-          paperclipApiUrl: "http://198.51.100.10:3102",
         },
       },
       onLog: async () => {},
@@ -136,8 +154,10 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("/remote/workspace/.paperclip-runtime/claude/skills/agent-instructions.md");
     expect(call?.[2]).toContain("--add-dir");
     expect(call?.[2]).toContain("/remote/workspace/.paperclip-runtime/claude/skills");
-    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://198.51.100.10:3102");
+    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
+    expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,
