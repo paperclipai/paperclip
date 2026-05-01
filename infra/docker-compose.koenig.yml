@@ -80,6 +80,10 @@ services:
       # Other startup reconciliations (stranded-assigned, issue-graph-liveness,
       # silent-active-runs) remain enabled — they're useful state consistency.
       PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEWS: "1"
+      # Give V8 a 3GB heap so that OOM is diagnostic (visible in node logs)
+      # instead of silent SIGKILL. Default V8 cap is ~1.7GB, was likely the
+      # actual cause of the SIGKILL crash loop on 2026-05-01 03:00 UTC peak.
+      NODE_OPTIONS: "--max-old-space-size=3072"
     env_file:
       - ../.env.koenig
     volumes:

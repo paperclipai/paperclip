@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -899,6 +899,56 @@ export async function startServer(): Promise<StartedServer> {
     process.once("SIGTERM", () => {
       void shutdown("SIGTERM");
     });
+
+    // ────────────────────────────────────────────────────────────────────
+    // Diagnostic handlers added 2026-05-01 to catch the silent SIGKILL crashes
+    // that had paperclip-server in a 65+ restart loop. Now any unhandled error
+    // produces a logged stack trace + heap snapshot before exit.
+    // ────────────────────────────────────────────────────────────────────
+    process.on("uncaughtException", (err: Error) => {
+      logger.fatal({ err, stack: err.stack }, "uncaughtException — server will exit");
+      try {
+        const v8 = require("node:v8");
+        const path = `/paperclip/heap-${Date.now()}.heapsnapshot`;
+        v8.writeHeapSnapshot(path);
+        logger.fatal({ heapSnapshot: path }, "wrote heap snapshot");
+      } catch (snapErr) {
+        logger.error({ err: snapErr }, "heap snapshot failed");
+      }
+      process.exit(1);
+    });
+    process.on("unhandledRejection", (reason: unknown) => {
+      logger.error({ reason }, "unhandledRejection — continuing");
+    });
+
+    // ────────────────────────────────────────────────────────────────────
+    // Periodic auto-reset for agents stuck in `error` status with no recent
+    // failures. Without this, agents that hit a transient error (process_lost,
+    // OpenCode model flicker) stay error forever until manual CEO reset.
+    // Resets to idle if last update was >30 min ago.
+    // ────────────────────────────────────────────────────────────────────
+    setInterval(() => {
+      void (async () => {
+        try {
+          const result = await db.execute(sql`
+            UPDATE agents
+            SET status = 'idle', updated_at = now()
+            WHERE status = 'error'
+              AND updated_at < now() - interval '30 minutes'
+            RETURNING id, name
+          `);
+          const rows = (result as any).rows ?? result ?? [];
+          if (Array.isArray(rows) && rows.length > 0) {
+            logger.warn(
+              { resetCount: rows.length, agents: rows.map((r: any) => r.name) },
+              "auto-reset stuck error agents to idle (>30min staleness)",
+            );
+          }
+        } catch (err) {
+          logger.error({ err }, "agent auto-reset cycle failed");
+        }
+      })();
+    }, 60_000); // run every 1 min
   }
 
   return {
