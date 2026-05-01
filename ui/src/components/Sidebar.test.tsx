@@ -16,14 +16,23 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  NavLink: ({ to, children, className, ...props }: {
+  NavLink: ({
+    to,
+    children,
+    className,
+    ...props
+  }: {
     to: string;
     children: ReactNode;
     className?: string | ((state: { isActive: boolean }) => string);
   }) => (
     <a
       href={to}
-      className={typeof className === "function" ? className({ isActive: false }) : className}
+      className={
+        typeof className === "function"
+          ? className({ isActive: false })
+          : className
+      }
       {...props}
     >
       {children}
@@ -108,7 +117,9 @@ describe("Sidebar", () => {
   });
 
   it("does not flash the Workspaces link while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(
+      () => new Promise(() => {}),
+    );
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -130,8 +141,14 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows the Workspaces link when isolated workspaces are enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+  it("only counts running/queued runs in the dashboard live badge", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "r1", status: "running", agentId: "a1" },
+      { id: "r2", status: "succeeded", agentId: "a1" },
+      { id: "r3", status: "failed", agentId: "a2" },
+      { id: "r4", status: "queued", agentId: "a2" },
+    ]);
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -146,7 +163,63 @@ describe("Sidebar", () => {
     });
     await flushReact();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
+    expect(container.textContent).toContain("2 live");
+    expect(container.textContent).not.toContain("4 live");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows no live badge when all runs are completed backfill", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "r1", status: "succeeded", agentId: "a1" },
+      { id: "r2", status: "failed", agentId: "a2" },
+      { id: "r3", status: "succeeded", agentId: "a3" },
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Sidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("live");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Workspaces link when isolated workspaces are enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: true,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Sidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const link = [...container.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent === "Workspaces",
+    );
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
     await act(async () => {

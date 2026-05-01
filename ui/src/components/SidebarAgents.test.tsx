@@ -28,7 +28,9 @@ const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
-    <a href={to} {...props}>{children}</a>
+    <a href={to} {...props}>
+      {children}
+    </a>
   ),
   NavLink: ({
     children,
@@ -42,13 +44,22 @@ vi.mock("@/lib/router", () => ({
   }) => (
     <a
       href={to}
-      className={typeof className === "function" ? className({ isActive: false }) : className}
+      className={
+        typeof className === "function"
+          ? className({ isActive: false })
+          : className
+      }
       {...props}
     >
       {children}
     </a>
   ),
-  useLocation: () => ({ pathname: "/PAP/dashboard", search: "", hash: "", state: null }),
+  useLocation: () => ({
+    pathname: "/PAP/dashboard",
+    search: "",
+    hash: "",
+    state: null,
+  }),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -139,7 +150,9 @@ async function openAgentMenu(label = "Open actions for Alpha") {
   expect(trigger).not.toBeNull();
 
   await act(async () => {
-    trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    trigger?.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
     trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   await flushReact();
@@ -155,7 +168,10 @@ describe("SidebarAgents", () => {
     document.body.appendChild(container);
     root = null;
     queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
     mockAgentsApi.list.mockResolvedValue([makeAgent({})]);
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
@@ -194,13 +210,15 @@ describe("SidebarAgents", () => {
     await flushReact();
     await openAgentMenu();
 
-    const editLink = Array.from(document.body.querySelectorAll("a"))
-      .find((element) => element.textContent?.includes("Edit agent"));
+    const editLink = Array.from(document.body.querySelectorAll("a")).find(
+      (element) => element.textContent?.includes("Edit agent"),
+    );
     expect(editLink?.getAttribute("href")).toBe("/agents/alpha/configuration");
     expect(document.body.textContent).toContain("Pause agent");
 
-    const pauseItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Pause agent"));
+    const pauseItem = Array.from(
+      document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
+    ).find((element) => element.textContent?.includes("Pause agent"));
     expect(pauseItem).toBeTruthy();
 
     await act(async () => {
@@ -209,12 +227,18 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
-    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent paused" }));
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Agent paused" }),
+    );
   });
 
   it("shows resume for paused sidebar agents", async () => {
     mockAgentsApi.list.mockResolvedValue([
-      makeAgent({ status: "paused", pauseReason: "manual", pausedAt: new Date("2026-01-02T00:00:00Z") }),
+      makeAgent({
+        status: "paused",
+        pauseReason: "manual",
+        pausedAt: new Date("2026-01-02T00:00:00Z"),
+      }),
     ]);
     const currentRoot = createRoot(container);
     root = currentRoot;
@@ -229,8 +253,9 @@ describe("SidebarAgents", () => {
     await flushReact();
     await openAgentMenu();
 
-    const resumeItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Resume agent"));
+    const resumeItem = Array.from(
+      document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
+    ).find((element) => element.textContent?.includes("Resume agent"));
     expect(resumeItem).toBeTruthy();
 
     await act(async () => {
@@ -239,7 +264,9 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockAgentsApi.resume).toHaveBeenCalledWith("agent-1", "company-1");
-    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent resumed" }));
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Agent resumed" }),
+    );
   });
 
   it("only shows updating state for the agent currently being changed", async () => {
@@ -261,8 +288,9 @@ describe("SidebarAgents", () => {
     await flushReact();
     await openAgentMenu();
 
-    const pauseItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Pause agent"));
+    const pauseItem = Array.from(
+      document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
+    ).find((element) => element.textContent?.includes("Pause agent"));
     expect(pauseItem).toBeTruthy();
 
     await act(async () => {
@@ -273,10 +301,36 @@ describe("SidebarAgents", () => {
 
     const betaPauseItem = Array.from(
       document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
-    )
-      .find((element) => element.textContent?.includes("Pause agent"));
+    ).find((element) => element.textContent?.includes("Pause agent"));
     expect(betaPauseItem).toBeTruthy();
     expect(document.body.textContent).not.toContain("Updating...");
+  });
+
+  it("only shows live badge for running/queued runs, not backfill", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-1", name: "Alpha", urlKey: "alpha" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "r1", status: "running", agentId: "agent-1" },
+      { id: "r2", status: "succeeded", agentId: "agent-1" },
+      { id: "r3", status: "failed", agentId: "agent-1" },
+      { id: "r4", status: "queued", agentId: "agent-1" },
+      { id: "r5", status: "succeeded", agentId: "agent-1" },
+    ]);
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAgents />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("2 live");
+    expect(document.body.textContent).not.toContain("5 live");
   });
 
   it("does not offer sidebar resume for budget-paused agents", async () => {
@@ -302,12 +356,13 @@ describe("SidebarAgents", () => {
 
     const budgetPausedItem = Array.from(
       document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
-    )
-      .find((element) => element.textContent?.includes("Budget paused"));
+    ).find((element) => element.textContent?.includes("Budget paused"));
     expect(budgetPausedItem).toBeTruthy();
 
     await act(async () => {
-      budgetPausedItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      budgetPausedItem?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushReact();
 
