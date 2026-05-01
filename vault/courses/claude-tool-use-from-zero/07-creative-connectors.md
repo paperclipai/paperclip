@@ -14,7 +14,10 @@ whats_new:
   - "Added full walkthroughs for Blender (Python API) and Adobe for creativity connectors"
   - "Added resilience sidebar following the April 2026 Claude outage"
   - "Updated structure to V3-1b standards"
-status: draft-for-review-v4
+status: published
+published_at: 2026-04-30
+approved_by: vardaan97@gmail.com
+approval_id: 68fb92c5-9413-4857-82d3-ca7bf669edf0
 reading_time_min: 10
 sources:
   - https://www.anthropic.com/news/claude-for-creative-work
