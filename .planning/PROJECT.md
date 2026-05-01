@@ -12,26 +12,22 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 ## 현재 상태
 
-**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability, v3.0 Native Distribution Readiness
+**완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability, v3.0 Native Distribution Readiness, v3.1 DevPlan Core Convergence
 
-**최근 완료 마일스톤:** v3.0 Native Distribution Readiness
+**최근 완료 마일스톤:** v3.1 DevPlan Core Convergence (2026-05-01). DevPlan alignment 64% → 100% (+36pp). 24/24 requirements. 7/7 phases. Acceptance gate passed.
 
-**최근 완료:** v3.0은 native distribution foundation, macOS/Windows signing evidence gate, release channel/signed updater evidence gate, resident tray/global shortcut evidence gate, Mobile/Web Push/APNs evidence gate, final distribution gate, v2.9 capture regression closure를 완료했다.
+**현재 진행:** v3.1 DevPlan Core Convergence는 Phase 65-71 완료로 2026-05-01 shipped. DevPlan alignment 100% 달성. 이제 v3.2로 이동한다.
 
-**현재 진행:** v3.1 DevPlan Core Convergence. Phase 65는 alignment truth와 identity boundary를 완료했고 Phase 66은 Daily Work 3패널 cockpit, One-Liner evidence, Mission -> To-Do hierarchy rollup을 완료했으며 Phase 67은 Multica-style runtime execution alignment를 완료했다. Phase 68은 wikiLLM-compatible living memory export/update/Jarvis citation loop를 완료했고 Phase 69는 Graphify v3 corpus graph sidecar를 완료했다. v2.9 capture reliability는 regression gate로만 보호하고, v3.0 distribution evidence gates는 future release/operator evidence 수집의 기준선으로 사용한다. 이번 milestone은 개발기획서 대비 약 64% 정적 싱크로율을 기준선으로 삼아 제품 핵심 루프와 Multica/wikiLLM/Graphify 엔진 충실도를 실제 증거로 끌어올린다.
+## Current Milestone: v3.2 Future Scope
 
-## Current Milestone: v3.1 DevPlan Core Convergence
-
-**Goal:** RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 엔진 기준을 실제 코드, UI, 문서, 검증 증거로 다시 정렬한다.
+**Goal:** RealTycoon2를 trusted internal company evidence ecosystem에서 public/open marketplace, cross-company federation, billing/payroll settlement, public store operations 영역으로 확장한다.
 
 **Target features:**
-- 개발기획서 장/핵심 축별 alignment matrix와 64% baseline score를 evidence-backed 상태로 만든다.
-- product-facing Paperclip/Paper Company residue를 제거하고 남는 Paperclip 명칭은 compatibility/reference로 제한한다.
-- Daily Work를 PDF의 3패널 cockpit, OKR tree, One-Liner review, Jarvis/detail 흐름으로 수렴시킨다. - Phase 66 완료
-- Multica runtime lifecycle을 runtime/capacity/heartbeat/cancellation/evidence 기준으로 강화한다. - Phase 67 완료
-- wikiLLM `index.md`/`log.md`/topic/project/schema page 흐름과 Jarvis citation/update loop를 실제 export/update workflow로 만든다. - Phase 68 완료
-- Graphify v3 sidecar 수준의 corpus ingest, cache, provenance, clustering/query/report 기능을 제품 graph와 분리해 구현한다.
-- Marketplace, P&L, amoeba economy, CareerMate progression을 deliverable/quality/ledger evidence와 연결한다.
+- Public/open marketplace launch — trusted company evidence ecosystem을 public marketplace로 확장
+- Autonomous Jarvis direct apply — approval-first 원칙을 유지하면서 direct apply 루프 탐색
+- Cross-company federation full apply — trusted single-company ecosystem 밖으로 확장
+- Billing, payroll, payment settlement — Phase 70에서 defer된 실제 결제/급여 처리
+- Native credentials and public store operations — signing, APNs, public store launch
 
 ## Current State After v3.0
 
@@ -314,4 +310,4 @@ v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 al
 4. Context를 현재 상태에 맞게 갱신한다.
 
 ---
-*마지막 업데이트: 2026-05-01 after Phase 68 completion*
+*마지막 업데이트: 2026-05-01 after v3.1 shipped, v3.2 started*

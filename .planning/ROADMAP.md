@@ -115,7 +115,7 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.1 DevPlan Core Convergence가 완료되었다. Phase 65-71 전체 완료. DevPlan alignment score 64% → 100% (+36pp delta). Acceptance gate passed.
+v3.1 DevPlan Core Convergence가 완료되었다. Phase 65-71 전체 완료. DevPlan alignment score 64% → 100% (+36pp delta). Acceptance gate passed. 이제 v3.2 Future Scope milestone로 이동하여 public marketplace, billing/payroll settlement, cross-company federation, autonomous Jarvis, public store operations를 순서대로 진행한다.
 
 <details open>
 <summary>v3.1 DevPlan Core Convergence (Phase 65-69 complete, Phase 70-71 planned)</summary>

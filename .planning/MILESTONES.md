@@ -647,53 +647,31 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 ## v3.2 Future Scope
 
-**상태:** Planned
-**시작:** TBD
+**상태:** Active
+**시작:** 2026-05-01
 
-### 범위 (예정)
+### 목표
+
+RealTycoon2를 trusted internal company evidence ecosystem에서 public/open marketplace, cross-company federation, billing/payroll settlement, public store operations 영역으로 확장한다.
+
+### 범위
 
 - Public/open marketplace launch
 - Autonomous Jarvis direct apply (approval-first 원칙 유지)
 - Cross-company federation full apply
-- Native credentials and public store operations
 - Billing, payroll, and external payment settlement
-
-### 목표
-
-RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 엔진 기준을 실제 코드, UI, 문서, 검증 증거로 다시 정렬한다.
+- Native credentials and public store operations
 
 ### 계획된 Phase
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 65 | DevPlan Truth and Identity Cleanup | ALIGN-01..03, IDENTITY-01..03 | Complete |
-| 66 | Daily Work and OKR Cockpit Convergence | DAILY-01..03 | Complete |
-| 67 | Multica Runtime Execution Alignment | RUNTIME-01..03 | Complete |
-| 68 | wikiLLM Living Memory Workflow | WIKI-01..03 | Complete |
-| 69 | Graphify v3 Corpus Graph Sidecar | GRAPH-01..04 | Complete |
-| 70 | Economy, Marketplace, P&L, and CareerMate Loop | ECON-01..03 | Planned |
-| 71 | v3.1 DevPlan Acceptance Gate | GATE-01..02 | Planned |
-
-### 범위
-
-- 개발기획서 alignment matrix를 장/핵심 축별 code/UI/test/evidence와 연결한다.
-- product-facing Paperclip/Paper Company residue를 제거하고 legacy 명칭은 compatibility/reference로 제한한다.
-- Daily Work를 3패널 cockpit, OKR tree, One-Liner review, Jarvis/detail 흐름으로 수렴시켰다.
-- Multica runtime queue/claim/heartbeat/cancellation/progress evidence를 RT2 execution lifecycle에 반영한다.
-- wikiLLM `index.md`/`log.md`/topic/project/schema page workflow를 export/update/citation loop로 만들었다.
-- Graphify v3 corpus graph sidecar를 source cache, provenance, clustering, path/query API, graph report 기준으로 구현했다.
-- Marketplace, P&L, amoeba economy, CareerMate progression을 deliverable/quality/ledger evidence에 연결한다.
-
-### 알려진 Deferred Items
-
-| Category | Item | Status |
-|----------|------|--------|
-| federation | Cross-company federation full apply | v3.1 범위 밖 |
-| autonomy | Autonomous Jarvis direct apply without approval | approval-first 원칙 유지 |
-| marketplace | Public/open company marketplace launch | public rollout 단계로 defer |
-| store_ops | Public store listing/marketing/reviewer operations | v3.0 operator evidence 실제 수집 이후 |
-| native_credentials | Apple/Windows signing credential, APNs/Web Push secret | repo에 저장하지 않음 |
-| capture | v2.9 capture reliability rewrite | regression fix만 허용 |
+| 72 | Public Marketplace Launch | MKT-01..03 | Planned |
+| 73 | Billing, Payroll, and Settlement | BILL-01..03 | Planned |
+| 74 | Federation and Cross-Company Evidence | FED-01..02 | Planned |
+| 75 | Autonomous Jarvis Direct Apply | AUTO-01..02 | Planned |
+| 76 | Public Store Operations | STORE-01..02 | Planned |
+| 77 | v3.2 Acceptance Gate | GATE-01..02 | Planned |
 
 ---
-*마지막 업데이트: 2026-05-01, v3.1 shipped*
+*마지막 업데이트: 2026-05-01, v3.2 started*
