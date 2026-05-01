@@ -273,6 +273,92 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
+  it("stamps consumed_at and consumed_by_heartbeat_run_id when the routine's linked issue is checked out (first-consumption-wins)", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    const linkedIssueId = run.linkedIssueId!;
+
+    // Before checkout: routine_run is unconsumed.
+    const before = await db
+      .select({
+        consumedAt: routineRuns.consumedAt,
+        consumedByHeartbeatRunId: routineRuns.consumedByHeartbeatRunId,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(before).toEqual({ consumedAt: null, consumedByHeartbeatRunId: null });
+
+    // Clear the issue's executionRunId so a fresh checkout can succeed cleanly
+    // (the seedFixture wakeup mock pre-locked it on a queued heartbeat run).
+    await db
+      .update(issues)
+      .set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null, status: "todo" })
+      .where(eq(issues.id, linkedIssueId));
+
+    const firstHeartbeatRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: firstHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: linkedIssueId },
+      startedAt: new Date(),
+    });
+
+    const checkedOut = await issueSvc.checkout(linkedIssueId, agentId, ["todo", "backlog", "in_progress"], firstHeartbeatRunId);
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.checkoutRunId).toBe(firstHeartbeatRunId);
+
+    const afterFirstCheckout = await db
+      .select({
+        consumedAt: routineRuns.consumedAt,
+        consumedByHeartbeatRunId: routineRuns.consumedByHeartbeatRunId,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(afterFirstCheckout?.consumedAt).toBeInstanceOf(Date);
+    expect(afterFirstCheckout?.consumedByHeartbeatRunId).toBe(firstHeartbeatRunId);
+
+    // Release and re-checkout under a different heartbeat run.
+    await issueSvc.release(linkedIssueId, agentId, firstHeartbeatRunId);
+
+    const secondHeartbeatRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: secondHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: linkedIssueId },
+      startedAt: new Date(),
+    });
+
+    const reCheckedOut = await issueSvc.checkout(linkedIssueId, agentId, ["todo", "backlog", "in_progress"], secondHeartbeatRunId);
+    expect(reCheckedOut.status).toBe("in_progress");
+    expect(reCheckedOut.checkoutRunId).toBe(secondHeartbeatRunId);
+
+    const afterReCheckout = await db
+      .select({
+        consumedAt: routineRuns.consumedAt,
+        consumedByHeartbeatRunId: routineRuns.consumedByHeartbeatRunId,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    // First-consumption-wins: re-checkout must NOT overwrite consumed_at or consumed_by_heartbeat_run_id.
+    expect(afterReCheckout?.consumedAt?.getTime()).toBe(afterFirstCheckout?.consumedAt?.getTime());
+    expect(afterReCheckout?.consumedByHeartbeatRunId).toBe(firstHeartbeatRunId);
+  });
+
   it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
     const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();

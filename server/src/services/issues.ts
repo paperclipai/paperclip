@@ -26,6 +26,7 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  routineRuns,
 } from "@paperclipai/db";
 import type {
   IssueBlockerAttention,
@@ -3096,6 +3097,19 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+      const recordRoutineRunConsumption = async () => {
+        if (!checkoutRunId) return;
+        // First-consumption-wins: only set when consumed_at IS NULL.
+        // Idempotent on re-checkout — re-acquiring the same issue does not overwrite.
+        await db
+          .update(routineRuns)
+          .set({
+            consumedAt: new Date(),
+            consumedByHeartbeatRunId: checkoutRunId,
+          })
+          .where(and(eq(routineRuns.linkedIssueId, id), isNull(routineRuns.consumedAt)));
+      };
+
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -3159,6 +3173,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        await recordRoutineRunConsumption();
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -3202,7 +3217,10 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          await recordRoutineRunConsumption();
+          return adopted;
+        }
       }
 
       if (
@@ -3219,6 +3237,7 @@ export function issueService(db: Db) {
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (adopted) {
+          await recordRoutineRunConsumption();
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
@@ -3232,6 +3251,7 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
+        await recordRoutineRunConsumption();
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);

@@ -26,6 +26,8 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    dormancyAlarmFireCountThreshold: integer("dormancy_alarm_fire_count_threshold").notNull().default(3),
+    dormancyAlarmStaleHours: integer("dormancy_alarm_stale_hours").notNull().default(12),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
