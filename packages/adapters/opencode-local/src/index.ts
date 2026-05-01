@@ -3,7 +3,7 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "github-copilot/gpt-5.3-codex";
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
@@ -11,6 +11,13 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "github-copilot/gpt-5.3-codex", label: "github-copilot/gpt-5.3-codex" },
+  { id: "github-copilot/gpt-5.2-codex", label: "github-copilot/gpt-5.2-codex" },
+  { id: "github-copilot/claude-opus-4.7", label: "github-copilot/claude-opus-4.7" },
+  { id: "github-copilot/claude-opus-4.6", label: "github-copilot/claude-opus-4.6" },
+  { id: "github-copilot/claude-sonnet-4.6", label: "github-copilot/claude-sonnet-4.6" },
+  { id: "github-copilot/claude-haiku-4.5", label: "github-copilot/claude-haiku-4.5" },
+  { id: "github-copilot/gemini-3-pro-preview", label: "github-copilot/gemini-3-pro-preview" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
