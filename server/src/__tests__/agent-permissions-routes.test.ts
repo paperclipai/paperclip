@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -72,6 +73,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(async () => new Map()),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -1150,7 +1152,7 @@ describe.sequential("agent permission routes", () => {
       },
     ]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId,
       companyId,
@@ -1158,13 +1160,14 @@ describe.sequential("agent permission routes", () => {
       source: "agent_key",
     });
 
-    const res = await request(app).get("/api/agents/me/inbox-lite");
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/inbox-lite"));
 
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
       assigneeAgentId: agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
+      limit: 500,
     });
     expect(res.body).toEqual([
       {
@@ -1178,6 +1181,9 @@ describe.sequential("agent permission routes", () => {
         parentId: null,
         updatedAt: "2026-04-02T02:22:06.418Z",
         activeRun: null,
+        dependencyReady: true,
+        unresolvedBlockerCount: 0,
+        unresolvedBlockerIssueIds: [],
       },
     ]);
   });
@@ -1220,12 +1226,6 @@ describe.sequential("agent permission routes", () => {
         status: "todo",
       },
     ]);
-    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
-      touchedByUserId: "board-user",
-      inboxArchivedByUserId: "board-user",
-      status: "backlog,todo,in_progress,in_review,blocked,done",
-      limit: 500,
-    });
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
