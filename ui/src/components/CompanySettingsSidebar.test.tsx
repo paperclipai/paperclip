@@ -103,10 +103,10 @@ describe("CompanySettingsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Paperclip");
-    expect(container.textContent).toContain("Company Settings");
+    expect(container.textContent).toContain("Configuración de la empresa");
     expect(container.textContent).toContain("General");
-    expect(container.textContent).toContain("Access");
-    expect(container.textContent).toContain("Invites");
+    expect(container.textContent).toContain("Acceso");
+    expect(container.textContent).toContain("Invitaciones");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
@@ -117,7 +117,7 @@ describe("CompanySettingsSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/access",
-        label: "Access",
+        label: "Acceso",
         badge: 2,
         end: true,
       }),
@@ -125,7 +125,7 @@ describe("CompanySettingsSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/invites",
-        label: "Invites",
+        label: "Invitaciones",
         end: true,
       }),
     );

@@ -88,7 +88,7 @@ export function ApprovalCard({
         <div className="shrink-0">
           <div className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
             {statusIcon(approval.status)}
-            <span className="capitalize">{approval.status.replace(/_/g, " ")}</span>
+            <span className="capitalize">{approval.status?.replace(/_/g, " ") ?? "unknown"}</span>
           </div>
         </div>
       </div>

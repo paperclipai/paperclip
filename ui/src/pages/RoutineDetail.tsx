@@ -1070,7 +1070,7 @@ export function RoutineDetail() {
                   <div className="flex items-center gap-2 min-w-0">
                     <Badge variant="outline" className="shrink-0">{run.source}</Badge>
                     <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
-                      {run.status.replaceAll("_", " ")}
+                      {run.status?.replaceAll("_", " ") ?? "unknown"}
                     </Badge>
                     {run.trigger && (
                       <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>

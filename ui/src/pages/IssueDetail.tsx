@@ -155,25 +155,25 @@ const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "h
 const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
-  pause: "Pause subtree",
-  resume: "Resume subtree",
-  cancel: "Cancel subtree",
-  restore: "Restore subtree",
+  pause: "Pausar subárbol",
+  resume: "Reanudar subárbol",
+  cancel: "Cancelar subárbol",
+  restore: "Restaurar subárbol",
 };
 const TREE_CONTROL_MODE_HELP_TEXT: Record<IssueTreeControlMode, string> = {
-  pause: "Pause active execution in this issue subtree until an explicit resume.",
-  resume: "Release the active subtree pause hold so held work can continue.",
-  cancel: "Cancel non-terminal issues in this subtree and stop queued/running work where possible.",
-  restore: "Restore issues cancelled by this subtree operation so work can resume.",
+  pause: "Pausa la ejecución activa en este subárbol de issues hasta una reanudación explícita.",
+  resume: "Libera la pausa activa del subárbol para que el trabajo retenido continúe.",
+  cancel: "Cancela los issues no terminales de este subárbol y detiene trabajo en cola/ejecución cuando sea posible.",
+  restore: "Restaura los issues cancelados por esta operación de subárbol para retomar el trabajo.",
 };
 
 function treeControlPreviewErrorCopy(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return "Only board users can preview subtree controls.";
-    if (error.status === 409) return "Preview is stale because subtree hold state changed. Retry to refresh.";
-    if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
+    if (error.status === 403) return "Solo usuarios del board pueden previsualizar controles de subárbol.";
+    if (error.status === 409) return "La previsualización está desactualizada porque cambió el estado de retención del subárbol. Reintenta para refrescar.";
+    if (error.status === 422) return "Esta acción de subárbol no es válida actualmente para los issues seleccionados.";
   }
-  return error instanceof Error ? error.message : "Unable to load preview.";
+  return error instanceof Error ? error.message : "No se pudo cargar la previsualización.";
 }
 
 function resolveRunningIssueRun(
@@ -783,7 +783,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             disabled={commentsLoadingOlder}
             onClick={onLoadOlderComments}
           >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+            {commentsLoadingOlder ? "Cargando comentarios anteriores..." : "Cargar comentarios anteriores"}
           </Button>
         </div>
       ) : null}
@@ -1359,7 +1359,7 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: "Yo" });
     }
     return options;
   }, [agents, companyMembers?.users, currentUserId]);
@@ -1522,8 +1522,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        title: "Actualización de issue fallida",
+        body: err instanceof Error ? err.message : "No se pudieron guardar los cambios del issue",
         tone: "error",
       });
     },
@@ -1603,8 +1603,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to apply subtree control",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: "No se pudo aplicar el control del subárbol",
+        body: err instanceof Error ? err.message : "Inténtalo de nuevo.",
         tone: "error",
       });
     },
@@ -1623,8 +1623,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save sub-issue changes",
+        title: "Actualización de issue fallida",
+        body: err instanceof Error ? err.message : "No se pudieron guardar los cambios del sub-issue",
         tone: "error",
       });
     },
@@ -1652,14 +1652,14 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
       }
       pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        title: variables.action === "approve" ? "Aprobación aprobada" : "Aprobación rechazada",
         tone: "success",
       });
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
+        title: variables.action === "approve" ? "Fallo al aprobar" : "Fallo al rechazar",
+        body: err instanceof Error ? err.message : "No se pudo actualizar la aprobación",
         tone: "error",
       });
     },
@@ -1720,8 +1720,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: "Error al cancelar",
+            body: err instanceof Error ? err.message : "No se pudo cancelar el comentario en cola",
             tone: "error",
           });
         }
@@ -1754,8 +1754,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: "Error al comentar",
+        body: err instanceof Error ? err.message : "No se pudo publicar el comentario",
         tone: "error",
       });
     },
@@ -1792,7 +1792,7 @@ export function IssueDetail() {
         : 0;
       pushToast({
         title: interaction.kind === "request_confirmation"
-          ? "Request confirmed"
+          ? "Solicitud confirmada"
           : skippedCount > 0
           ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
           : "Suggested tasks accepted",
@@ -1801,7 +1801,7 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Accept failed",
+        title: "Error al aceptar",
         body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
         tone: "error",
       });
@@ -1821,7 +1821,7 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Reject failed",
+        title: "Error al rechazar",
         body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
         tone: "error",
       });
@@ -1840,14 +1840,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Answers submitted",
+        title: "Respuestas enviadas",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Submit failed",
-        body: err instanceof Error ? err.message : "Unable to submit answers",
+        title: "Error al enviar",
+        body: err instanceof Error ? err.message : "No se pudieron enviar las respuestas",
         tone: "error",
       });
     },
@@ -1924,8 +1924,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: "Error al cancelar",
+            body: err instanceof Error ? err.message : "No se pudo cancelar el comentario en cola",
             tone: "error",
           });
         }
@@ -1960,8 +1960,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: "Error al comentar",
+        body: err instanceof Error ? err.message : "No se pudo publicar el comentario",
         tone: "error",
       });
     },
@@ -2032,8 +2032,8 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
-        title: "Interrupt requested",
-        body: "The active run is stopping so queued comments can continue next.",
+        title: "Interrupción solicitada",
+        body: "La ejecución activa se está deteniendo para que los comentarios en cola puedan continuar.",
         tone: "success",
       });
     },
@@ -2046,8 +2046,8 @@ export function IssueDetail() {
         setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
       }
       pushToast({
-        title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        title: "Fallo al interrumpir",
+        body: err instanceof Error ? err.message : "No se pudo interrumpir la ejecución activa",
         tone: "error",
       });
     },
@@ -2068,15 +2068,15 @@ export function IssueDetail() {
       invalidateIssueThreadLazily();
       invalidateIssueCollections();
       pushToast({
-        title: "Queued comment canceled",
-        body: "The queued message was restored to the composer.",
+        title: "Comentario en cola cancelado",
+        body: "El mensaje en cola se restauró en el editor.",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+        title: "Error al cancelar",
+        body: err instanceof Error ? err.message : "No se pudo cancelar el comentario en cola",
         tone: "error",
       });
     },
@@ -2094,8 +2094,8 @@ export function IssueDetail() {
       if (cancelledCommentBody) {
         restoreQueuedCommentDraft(cancelledCommentBody);
         pushToast({
-          title: "Queued comment canceled",
-          body: "The queued message was restored to the composer.",
+          title: "Comentario en cola cancelado",
+          body: "El mensaje en cola se restauró en el editor.",
           tone: "success",
         });
       }
@@ -2163,8 +2163,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
       }
       pushToast({
-        title: "Failed to save feedback",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: "No se pudo guardar el feedback",
+        body: err instanceof Error ? err.message : "Error desconocido",
         tone: "error",
       });
     },
@@ -2181,7 +2181,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : "Fallo de carga");
     },
   });
 
@@ -2701,12 +2701,12 @@ export function IssueDetail() {
   const previewAffectedAgentCount = treeControlPreview?.totals.affectedAgents ?? 0;
   const treeControlPrimaryButtonLabel =
     treeControlMode === "pause"
-      ? "Pause and stop work"
+      ? "Pausar y detener trabajo"
       : treeControlMode === "cancel"
-        ? `Cancel ${previewAffectedIssueCount} issues`
+        ? `Cancelar ${previewAffectedIssueCount} issues`
       : treeControlMode === "restore"
-          ? `Restore ${previewAffectedIssueCount} issues`
-          : "Resume subtree";
+          ? `Restaurar ${previewAffectedIssueCount} issues`
+          : "Reanudar subárbol";
   const treePreviewAffectedIssueRows = treePreviewDisplayIssues.map((candidate) => ({
     candidate,
     issue: {
@@ -2802,7 +2802,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          This issue is hidden
+          Este issue está oculto
         </div>
       )}
       {activePauseHold && (
@@ -2810,14 +2810,14 @@ export function IssueDetail() {
           {activePauseHold.isRoot ? (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">Subtree pause is active.</span>
+                <span className="font-medium">La pausa del subárbol está activa.</span>
                 <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
-                  Root and descendant execution is held until resume. Human comments can still wake assignees for triage.
+                  La ejecución raíz y descendiente está retenida hasta reanudar. Los comentarios humanos aún pueden despertar asignados para triage.
                 </span>
               </div>
               <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
-                {heldDescendantCount} descendant{heldDescendantCount === 1 ? "" : "s"} held
-                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+                {heldDescendantCount} descendiente{heldDescendantCount === 1 ? "" : "s"} retenido{heldDescendantCount === 1 ? "" : "s"}
+                {activeRootPauseHold?.createdAt ? ` · inició ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
               </div>
               {canShowSubtreeControls ? (
                 <div className="flex flex-wrap items-center gap-2">
@@ -2829,7 +2829,7 @@ export function IssueDetail() {
                       setTreeControlOpen(true);
                     }}
                   >
-                    Resume subtree
+                    Reanudar subárbol
                   </Button>
                   <Button
                     variant="outline"
@@ -2840,7 +2840,7 @@ export function IssueDetail() {
                       setTreeControlOpen(true);
                     }}
                   >
-                    View affected ({heldDescendantCount})
+                    Ver afectados ({heldDescendantCount})
                   </Button>
                   <Button
                     variant="ghost"
@@ -2852,14 +2852,14 @@ export function IssueDetail() {
                       setTreeControlOpen(true);
                     }}
                   >
-                    Cancel subtree...
+                    Cancelar subárbol...
                   </Button>
                 </div>
               ) : null}
             </div>
           ) : (
             <div className="text-xs">
-              This issue is paused by ancestor{" "}
+              Este issue está pausado por el ancestro{" "}
               {activePauseHoldRoot?.identifier ? (
                 <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
                   {activePauseHoldRoot.identifier}
@@ -2867,7 +2867,7 @@ export function IssueDetail() {
               ) : (
                 activePauseHold.rootIssueId.slice(0, 8)
               )}
-              . Resume from the root issue to deliver deferred work.
+              . Reanuda desde el issue raíz para entregar trabajo diferido.
             </div>
           )}
         </div>
@@ -2917,7 +2917,7 @@ export function IssueDetail() {
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
               <Hexagon className="h-3 w-3 shrink-0" />
-              No project
+              Sin proyecto
             </span>
           )}
 
@@ -2948,7 +2948,7 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={copyIssueToClipboard}
-                title="Copy issue as markdown"
+                title="Copiar issue como markdown"
               >
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
               </Button>
@@ -2956,7 +2956,7 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={() => setMobilePropsOpen(true)}
-                title="Properties"
+                title="Propiedades"
               >
                 <SlidersHorizontal className="h-4 w-4" />
               </Button>
@@ -2972,8 +2972,8 @@ export function IssueDetail() {
                   if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
                 }}
                 disabled={archivePending}
-                title="Archive from inbox"
-                aria-label="Archive from inbox"
+                title="Archivar desde inbox"
+                aria-label="Archivar desde inbox"
               >
                 <Archive className="h-4 w-4" />
               </Button>
@@ -2982,7 +2982,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title="Copiar issue como markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -2994,7 +2994,7 @@ export function IssueDetail() {
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              title="Mostrar propiedades"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -3005,8 +3005,8 @@ export function IssueDetail() {
                   variant="ghost"
                   size="icon-xs"
                   className="shrink-0"
-                  aria-label="More issue actions"
-                  title="More issue actions"
+                  aria-label="Más acciones del issue"
+                  title="Más acciones del issue"
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
@@ -3030,7 +3030,7 @@ export function IssueDetail() {
                     }}
                   >
                     <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
+                    Pausar subárbol...
                   </button>
                   {canResumeSubtree ? (
                     <button
@@ -3043,7 +3043,7 @@ export function IssueDetail() {
                       }}
                     >
                       <PlayCircle className="h-3 w-3" />
-                      Resume subtree
+                      Reanudar subárbol
                     </button>
                   ) : null}
                   <button
@@ -3056,7 +3056,7 @@ export function IssueDetail() {
                     }}
                   >
                     <XCircle className="h-3 w-3" />
-                    Cancel subtree...
+                    Cancelar subárbol...
                   </button>
                   {canRestoreSubtree ? (
                     <button
@@ -3070,7 +3070,7 @@ export function IssueDetail() {
                       }}
                     >
                       <Repeat className="h-3 w-3" />
-                      Restore subtree...
+                      Restaurar subárbol...
                     </button>
                   ) : null}
                 </>
@@ -3086,7 +3086,7 @@ export function IssueDetail() {
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                Ocultar este issue
               </button>
             </PopoverContent>
             </Popover>
@@ -3105,7 +3105,7 @@ export function IssueDetail() {
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
           className="text-[15px] leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder="Agregar una descripción..."
           multiline
           foldable
           mentions={mentionOptions}

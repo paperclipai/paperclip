@@ -369,7 +369,7 @@ export function CompanyAccess() {
                   </div>
                   <div>
                     <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
-                      {member.status.replace("_", " ")}
+                      {member.status?.replace("_", " ") ?? "unknown"}
                     </Badge>
                   </div>
                   <div className="min-w-0 text-sm text-muted-foreground">{formatGrantSummary(member)}</div>

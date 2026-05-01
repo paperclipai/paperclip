@@ -17,15 +17,15 @@ export function InstanceSidebar() {
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
         <span className="flex-1 text-sm font-bold text-foreground truncate">
-          Instance Settings
+          Configuración de la instancia
         </span>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/instance/settings/profile" label="Profile" icon={UserRoundPen} end />
+          <SidebarNavItem to="/instance/settings/profile" label="Perfil" icon={UserRoundPen} end />
           <SidebarNavItem to="/instance/settings/general" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem to="/instance/settings/access" label="Access" icon={Shield} end />
+          <SidebarNavItem to="/instance/settings/access" label="Acceso" icon={Shield} end />
           <SidebarNavItem to="/instance/settings/heartbeats" label="Heartbeats" icon={Clock3} end />
           <SidebarNavItem to="/instance/settings/experimental" label="Experimental" icon={FlaskConical} />
           <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Puzzle} />

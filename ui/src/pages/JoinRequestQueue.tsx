@@ -128,7 +128,7 @@ export function JoinRequestQueue() {
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={request.status === "pending_approval" ? "secondary" : request.status === "approved" ? "outline" : "destructive"}>
-                      {request.status.replace("_", " ")}
+                      {request.status?.replace("_", " ") ?? "unknown"}
                     </Badge>
                     <Badge variant="outline">{request.requestType}</Badge>
                     {request.adapterType ? <Badge variant="outline">{request.adapterType}</Badge> : null}

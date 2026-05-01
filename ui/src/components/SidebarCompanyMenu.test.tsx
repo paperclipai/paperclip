@@ -94,7 +94,7 @@ describe("SidebarCompanyMenu", () => {
 
     expect(container.textContent).toContain("Acme Labs");
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs menu"]');
+    const trigger = container.querySelector('button[aria-label="Abrir menú de Acme Labs"]');
     expect(trigger).not.toBeNull();
 
     await act(async () => {
@@ -103,12 +103,12 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Invite people to Acme Labs");
-    expect(document.body.textContent).toContain("Company settings");
-    expect(document.body.textContent).toContain("Sign out");
+    expect(document.body.textContent).toContain("Invitar personas a Acme Labs");
+    expect(document.body.textContent).toContain("Configuración de empresa");
+    expect(document.body.textContent).toContain("Cerrar sesión");
 
     const signOutButton = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Sign out"));
+      .find((element) => element.textContent?.includes("Cerrar sesión"));
     expect(signOutButton).toBeTruthy();
 
     await act(async () => {

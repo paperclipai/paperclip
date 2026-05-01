@@ -2,6 +2,7 @@ import { cn } from "../lib/utils";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 
 export function StatusBadge({ status }: { status: string }) {
+  if (status == null) return null;
   return (
     <span
       className={cn(

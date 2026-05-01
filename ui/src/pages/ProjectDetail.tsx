@@ -333,17 +333,17 @@ export function ProjectDetail() {
       ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? "Proyecto";
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({ title: `Se archivó "${name}"`, tone: "success" });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({ title: `Se desarchivó "${name}"`, tone: "success" });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived ? "No se pudo archivar el proyecto" : "No se pudo desarchivar el proyecto",
         tone: "error",
       });
     },
@@ -351,7 +351,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error("No hay empresa seleccionada");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -366,8 +366,8 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: "Proyectos", href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? "Proyecto" },
     ]);
   }, [setBreadcrumbs, project, routeProjectRef]);
 
@@ -463,7 +463,7 @@ export function ProjectDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
-      scopeName: project?.name ?? "Project",
+      scopeName: project?.name ?? "Proyecto",
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
@@ -580,7 +580,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              Pausado por límite duro de presupuesto
             </div>
           ) : null}
         </div>
@@ -621,10 +621,10 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "overview", label: "Resumen" },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Espacios de trabajo" }] : []),
+            { value: "configuration", label: "Configuración" },
+            { value: "budget", label: "Presupuesto" },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -664,7 +664,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">Cargando espacios de trabajo...</p>
         )
       ) : null}
 

@@ -41,20 +41,20 @@ export function BoardClaimPage() {
   });
 
   if (!token || !code) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid board claim URL.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">URL de reclamo del board inválida.</div>;
   }
 
   if (statusQuery.isLoading || sessionQuery.isLoading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading claim challenge...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Cargando desafío de reclamo...</div>;
   }
 
   if (statusQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Claim challenge unavailable</h1>
+          <h1 className="text-lg font-semibold">Desafío de reclamo no disponible</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            {statusQuery.error instanceof Error ? statusQuery.error.message : "Challenge is invalid or expired."}
+            {statusQuery.error instanceof Error ? statusQuery.error.message : "El desafío es inválido o expiró."}
           </p>
         </div>
       </div>
@@ -63,19 +63,19 @@ export function BoardClaimPage() {
 
   const status = statusQuery.data;
   if (!status) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Claim challenge unavailable.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Desafío de reclamo no disponible.</div>;
   }
 
   if (status.status === "claimed") {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Board ownership claimed</h1>
+          <h1 className="text-lg font-semibold">Propiedad del board reclamada</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is now linked to your authenticated user.
+            Esta instancia ahora está vinculada a tu usuario autenticado.
           </p>
           <Button asChild className="mt-4">
-            <Link to="/">Open board</Link>
+            <Link to="/">Abrir board</Link>
           </Button>
         </div>
       </div>
@@ -86,12 +86,12 @@ export function BoardClaimPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Sign in required</h1>
+          <h1 className="text-lg font-semibold">Inicio de sesión requerido</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Sign in or create an account, then return to this page to claim Board ownership.
+            Inicia sesión o crea una cuenta y vuelve a esta página para reclamar la propiedad del board.
           </p>
           <Button asChild className="mt-4">
-            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
+            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Iniciar sesión / Crear cuenta</Link>
           </Button>
         </div>
       </div>
@@ -101,14 +101,14 @@ export function BoardClaimPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Claim Board ownership</h1>
+        <h1 className="text-xl font-semibold">Reclamar propiedad del board</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This will promote your user to instance admin and migrate company ownership access from local trusted mode.
+          Esto promoverá tu usuario a admin de instancia y migrará el acceso de propiedad de la empresa desde el modo local confiable.
         </p>
 
         {claimMutation.error && (
           <p className="mt-3 text-sm text-destructive">
-            {claimMutation.error instanceof Error ? claimMutation.error.message : "Failed to claim board ownership"}
+            {claimMutation.error instanceof Error ? claimMutation.error.message : "No se pudo reclamar la propiedad del board"}
           </p>
         )}
 
@@ -117,7 +117,7 @@ export function BoardClaimPage() {
           onClick={() => claimMutation.mutate()}
           disabled={claimMutation.isPending}
         >
-          {claimMutation.isPending ? "Claiming…" : "Claim ownership"}
+          {claimMutation.isPending ? "Reclamando…" : "Reclamar propiedad"}
         </Button>
       </div>
     </div>

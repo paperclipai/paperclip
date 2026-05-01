@@ -56,7 +56,7 @@ export function IssueQuicklookCard({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
         <span>&middot;</span>
-        <span>{issue.status.replace(/_/g, " ")}</span>
+        <span>{issue.status?.replace(/_/g, " ") ?? "unknown"}</span>
         <span>&middot;</span>
         <span>{timeAgo(new Date(issue.updatedAt))}</span>
       </div>
