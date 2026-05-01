@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  closeDb,
   companies,
   companySecrets,
   companySecretVersions,
@@ -62,6 +63,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 

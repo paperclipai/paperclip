@@ -7,6 +7,7 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  closeDb,
   companies,
   companyMemberships,
   createDb,
@@ -116,6 +117,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 

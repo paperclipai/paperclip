@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  closeDb,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -80,6 +81,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     childProcesses.clear();
     runningProcesses.clear();
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 

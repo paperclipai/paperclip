@@ -11,6 +11,7 @@ import {
   agents,
   agentWakeupRequests,
   applyPendingMigrations,
+  closeDb,
   companies,
   createDb,
   creditLedger,
@@ -226,6 +227,7 @@ describe("heartbeat comment wake batching", () => {
   }, 20_000);
 
   afterAll(async () => {
+    await closeDb(db);
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });

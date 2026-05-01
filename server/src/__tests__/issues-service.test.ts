@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   companies,
+  closeDb,
   createDb,
   executionWorkspaces,
   instanceSettings,
@@ -55,6 +56,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 
@@ -610,6 +612,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 

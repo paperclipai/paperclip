@@ -50,6 +50,10 @@ export function createDb(url: string) {
   return drizzlePg(sql, { schema });
 }
 
+export async function closeDb(db: ReturnType<typeof createDb>): Promise<void> {
+  await db.$client.end();
+}
+
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {
   const sql = createUtilitySql(url);
   try {

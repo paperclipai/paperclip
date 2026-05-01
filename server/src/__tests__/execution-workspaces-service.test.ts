@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  closeDb,
   companies,
   createDb,
   executionWorkspaces,
@@ -147,6 +148,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 

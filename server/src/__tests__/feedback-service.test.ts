@@ -12,6 +12,7 @@ import {
   companies,
   companySkills,
   costEvents,
+  closeDb,
   createDb,
   documents,
   documentRevisions,
@@ -129,6 +130,7 @@ describe("feedbackService.saveIssueVote", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });

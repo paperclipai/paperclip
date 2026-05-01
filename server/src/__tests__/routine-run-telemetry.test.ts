@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  closeDb,
   companies,
   createDb,
   executionWorkspaces,
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("routine run telemetry", () => {
   });
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 

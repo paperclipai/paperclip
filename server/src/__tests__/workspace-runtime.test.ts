@@ -9,6 +9,7 @@ import { parse as parseEnvContents } from "dotenv";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  closeDb,
   companies,
   createDb,
   executionWorkspaces,
@@ -1521,6 +1522,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   }, 20_000);
 
   afterAll(async () => {
+    await closeDb(db);
     await tempDb?.cleanup();
   });
 
