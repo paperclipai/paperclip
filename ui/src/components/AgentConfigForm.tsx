@@ -1268,7 +1268,12 @@ function ModelDropdown({
         }}
       >
         <PopoverTrigger asChild>
-          <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+          <button
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between"
+          >
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
                 ? selected.label
