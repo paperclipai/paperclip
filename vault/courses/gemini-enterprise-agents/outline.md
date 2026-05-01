@@ -33,7 +33,15 @@ Most agent tutorials end at "hello world with a tool." This course starts where 
 
 By the end of Chapter 7 you will have a fully deployed multi-agent system behind Agent Gateway, with IAM policies, Model Armor, structured observability, and an evaluation pipeline — and the runbook to operate it.
 
-**Not a duplicate of our existing course.** The *Gemini Enterprise Agent Platform: A Hands-On Tour* (4 chapters) is an intro-to-comparison course for developers new to GEAP. This course is production-first: it assumes you've decided to build on GEAP and need to ship something your CISO signs off on.
+**Merged 2026-05-01 with the former hands-on-tour course.** Per Vardaan's instruction, the two Gemini Enterprise courses (`gemini-enterprise-agent-platform-hands-on-tour` + this one) have been consolidated under this canonical slug. The 4 written chapter drafts from the hands-on-tour course are now in this directory as Ch1-Ch4 stubs and need to be **rewritten by course-author** to fit the production focus described in this outline (current chapter content is intro-level; this outline targets production/CISO-defensible). Ch5-Ch7 are net-new and need to be written from scratch. The hands-on-tour outline shell is archived at `vault/_dedupe-archive/2026-05-01/courses/gemini-enterprise-agent-platform-hands-on-tour/`.
+
+**Action items for course-author (post-merge):**
+- Rewrite Ch1 (currently "What GEAP is and isn't" — intro) to fit "The production agent landscape — why GEAP exists"
+- Rewrite Ch2 (currently "Hello-world: tool, state, persistence") to fit "Single-agent setup — build, tool, persist"
+- INSERT Ch3 (RAG and grounding) — net-new, no existing draft
+- Rewrite Ch3 (currently "Multi-agent w/ Vertex") and renumber to Ch4 to fit "Multi-agent orchestration"
+- Move Ch4 (currently "Comparing to Claude Agent SDK and Cloudflare Agents") to an Appendix or fold into Ch1 as a "what GEAP is not" section
+- Write Ch5 (Enterprise security), Ch6 (Observability), Ch7 (Scale + cost)
 
 ## Course outline
 
