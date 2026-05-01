@@ -157,6 +157,35 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("clears agent strategy in shared_workspace / operator_branch mode even without a project policy (reviewer feedback on PR #4951)", () => {
+    // Reviewer flagged: when issueSettings.mode triggers a managed mode but
+    // projectPolicy is null and no explicit workspaceStrategy override exists,
+    // the agent's strategy must still yield — these modes are project-managed
+    // by definition and a residual agent-level git_worktree would conflict
+    // with the resolved cwd.
+    const baseConfig = {
+      workspaceStrategy: { type: "git_worktree", baseRef: "master" },
+    };
+
+    const sharedNoPolicy = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: baseConfig,
+      projectPolicy: null,
+      issueSettings: { mode: "shared_workspace" },
+      mode: "shared_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+    expect(sharedNoPolicy.workspaceStrategy).toBeUndefined();
+
+    const operatorNoPolicy = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: baseConfig,
+      projectPolicy: null,
+      issueSettings: { mode: "operator_branch" },
+      mode: "operator_branch",
+      legacyUseProjectWorkspace: null,
+    });
+    expect(operatorNoPolicy.workspaceStrategy).toBeUndefined();
+  });
+
   it("issue.workspaceStrategy override wins over agent's own strategy in non-isolated modes", () => {
     // When the issue explicitly provides its own workspaceStrategy, that wins
     // over the agent's — preserves the override semantics for caller-driven

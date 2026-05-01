@@ -218,22 +218,23 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
         ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
-      // Preserve the agent's own workspaceStrategy unless the issue or project
-      // explicitly asserts a different one, OR the project policy is enforcing
-      // a managed workspace (shared_workspace / operator_branch under an
-      // enabled policy). Previously this branch unconditionally deleted the
-      // strategy, which silently dropped agent-level git_worktree config when
-      // hasWorkspaceControl was triggered only by legacyUseProjectWorkspace
-      // === false or an issue mode of "agent_default" — see upstream issue
-      // #4946 and the recovery cascade it caused.
+      // Resolve the strategy per mode:
+      //   - explicit issue/project override always wins
+      //   - shared_workspace / operator_branch are project-managed modes: the
+      //     project's primary cwd owns execution and the agent's strategy
+      //     yields (consistent with project-policy-enforced behaviour, but
+      //     also fires when the mode comes from issueSettings.mode without an
+      //     enabled policy — flagged by reviewer on PR #4951)
+      //   - agent_default means no managed workspace overlay, so the agent's
+      //     own strategy survives (the silent-drop fix for upstream #4946)
       const explicitOverride =
         input.issueSettings?.workspaceStrategy ?? input.projectPolicy?.workspaceStrategy ?? null;
       if (explicitOverride) {
         nextConfig.workspaceStrategy = explicitOverride as unknown as Record<string, unknown>;
-      } else if (input.projectPolicy?.enabled && input.mode !== "agent_default") {
+      } else if (input.mode === "shared_workspace" || input.mode === "operator_branch") {
         delete nextConfig.workspaceStrategy;
       }
-      // else: preserve the agent's existing workspaceStrategy (no override).
+      // else (input.mode === "agent_default"): preserve agent's strategy.
     }
 
     if (input.mode === "agent_default") {
