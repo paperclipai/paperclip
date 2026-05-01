@@ -7,10 +7,11 @@ import {
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "@paperclipai/shared";
-import { LogOut, SlidersHorizontal } from "lucide-react";
+import { LogOut, Power, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { systemApi } from "@/api/system";
 import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -32,6 +33,36 @@ export function InstanceGeneralSettings() {
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+    },
+  });
+
+  const [systemActionMessage, setSystemActionMessage] = useState<string | null>(null);
+
+  const restartMutation = useMutation({
+    mutationFn: () => systemApi.restart(),
+    onSuccess: (resp) => {
+      setActionError(null);
+      setSystemActionMessage(
+        resp.message ??
+          "Paperclip is restarting. Wait a few seconds and refresh the page.",
+      );
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to restart Paperclip.");
+    },
+  });
+
+  const shutdownMutation = useMutation({
+    mutationFn: () => systemApi.shutdown(),
+    onSuccess: (resp) => {
+      setActionError(null);
+      setSystemActionMessage(
+        resp.message ??
+          "Paperclip is shutting down. Re-launch it from your launcher script when ready.",
+      );
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to shut down Paperclip.");
     },
   });
 
@@ -346,6 +377,63 @@ export function InstanceGeneralSettings() {
             <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
             chosen yet.
           </p>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Server lifecycle</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Stop or restart the running Paperclip server. Affects every user
+              connected to this instance, not just you. Restart spawns a fresh
+              server in a few seconds; shutdown leaves it stopped until you
+              re-launch it.
+            </p>
+          </div>
+          {systemActionMessage && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+              {systemActionMessage}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={restartMutation.isPending || shutdownMutation.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Restart the Paperclip server? Everyone connected will be disconnected briefly while a new instance boots.",
+                  )
+                ) {
+                  restartMutation.mutate();
+                }
+              }}
+            >
+              <RefreshCw
+                className={cn("size-4", restartMutation.isPending && "animate-spin")}
+              />
+              {restartMutation.isPending ? "Restarting…" : "Restart"}
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={restartMutation.isPending || shutdownMutation.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Shut down the Paperclip server? Everyone connected will be disconnected and the server will stay stopped until you re-launch it manually.",
+                  )
+                ) {
+                  shutdownMutation.mutate();
+                }
+              }}
+            >
+              <Power className="size-4" />
+              {shutdownMutation.isPending ? "Shutting down…" : "Shut down"}
+            </Button>
+          </div>
         </div>
       </section>
 
