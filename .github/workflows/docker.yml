@@ -69,8 +69,16 @@ jobs:
           # reliably serve attestation manifests.
           provenance: false
           sbom: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed cache instead of GHA cache. The GHA backend
+          # bottlenecked on a single ~675 s layer upload (full export 720+ s
+          # vs. ~74 s for the actual build+push). Self-hosted runner has
+          # LAN-speed access to the Blockcast registry, so storing the
+          # buildcache image alongside the app image stays on-LAN, has no
+          # GHA quota, and matches mode=max behavior. image-manifest=true +
+          # oci-mediatypes=true keep the cache as a single OCI image
+          # manifest, consistent with provenance/sbom=false above.
+          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache
+          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
