@@ -4,6 +4,7 @@ import {
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
+  companySkillUpdateAuthSchema,
   companySkillProjectScanRequestSchema,
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
@@ -194,7 +195,8 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId);
       const source = String(req.body.source ?? "");
-      const result = await svc.importFromSource(companyId, source);
+      const authToken = typeof req.body.authToken === "string" ? req.body.authToken.trim() : undefined;
+      const result = await svc.importFromSource(companyId, source, authToken || undefined);
 
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -317,6 +319,39 @@ export function companySkillRoutes(db: Db) {
 
     res.json(result);
   });
+
+  router.patch(
+    "/companies/:companyId/skills/:skillId/auth",
+    validate(companySkillUpdateAuthSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const authToken = req.body.authToken as string | null;
+      const result = await svc.updateSkillAuth(companyId, skillId, authToken);
+      if (!result) {
+        res.status(404).json({ error: "Skill not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: authToken ? "company.skill_auth_updated" : "company.skill_auth_removed",
+        entityType: "company_skill",
+        entityId: result.id,
+        details: {
+          slug: result.slug,
+        },
+      });
+
+      res.json(result);
+    },
+  );
 
   return router;
 }

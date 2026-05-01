@@ -68,6 +68,11 @@ export const companySkillUpdateStatusSchema = z.object({
 
 export const companySkillImportSchema = z.object({
   source: z.string().min(1),
+  authToken: z.string().min(1).optional(),
+});
+
+export const companySkillUpdateAuthSchema = z.object({
+  authToken: z.string().min(1).nullable(),
 });
 
 export const companySkillProjectScanRequestSchema = z.object({
@@ -135,3 +140,4 @@ export type CompanySkillImport = z.infer<typeof companySkillImportSchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
+export type CompanySkillUpdateAuth = z.infer<typeof companySkillUpdateAuthSchema>;

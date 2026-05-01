@@ -14,6 +14,8 @@ const mockAccessService = vi.hoisted(() => ({
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
   deleteSkill: vi.fn(),
+  updateSkillAuth: vi.fn(),
+  scanProjectWorkspaces: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -96,6 +98,15 @@ describe("company skill mutation permissions", () => {
       id: "skill-1",
       slug: "find-skills",
       name: "Find Skills",
+    });
+    mockCompanySkillService.scanProjectWorkspaces.mockResolvedValue({
+      scannedProjects: 1,
+      scannedWorkspaces: 2,
+      discovered: [],
+      imported: [],
+      updated: [],
+      conflicts: [],
+      warnings: [],
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -294,7 +305,118 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
+      undefined,
     );
+  });
+
+  it("passes a PAT through skill import requests", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({
+        source: "https://github.com/vercel-labs/agent-browser",
+        authToken: "ghp_private_token",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
+      "company-1",
+      "https://github.com/vercel-labs/agent-browser",
+      "ghp_private_token",
+    );
+  });
+
+  it("updates a skill auth token", async () => {
+    mockCompanySkillService.updateSkillAuth.mockResolvedValue({
+      id: "skill-1",
+      slug: "find-skills",
+    });
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/companies/company-1/skills/skill-1/auth")
+      .send({ authToken: "ghp_private_token" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.updateSkillAuth).toHaveBeenCalledWith(
+      "company-1",
+      "skill-1",
+      "ghp_private_token",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "company.skill_auth_updated",
+        entityType: "company_skill",
+        entityId: "skill-1",
+        details: { slug: "find-skills" },
+      }),
+    );
+  });
+
+  it("clears a skill auth token", async () => {
+    mockCompanySkillService.updateSkillAuth.mockResolvedValue({
+      id: "skill-1",
+      slug: "find-skills",
+    });
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/companies/company-1/skills/skill-1/auth")
+      .send({ authToken: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.updateSkillAuth).toHaveBeenCalledWith(
+      "company-1",
+      "skill-1",
+      null,
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "company.skill_auth_removed",
+        entityType: "company_skill",
+        entityId: "skill-1",
+        details: { slug: "find-skills" },
+      }),
+    );
+  });
+
+  it("allows agents with canCreateAgents to scan project workspaces", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateAgents: true },
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/scan-projects")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.scanProjectWorkspaces).toHaveBeenCalledWith("company-1", {});
   });
 
   it("returns a blocking error when attempting to delete a skill still used by agents", async () => {

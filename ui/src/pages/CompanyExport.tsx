@@ -17,6 +17,15 @@ import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { projectsApi } from "../api/projects";
 import { Button } from "@/components/ui/button";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -603,6 +612,8 @@ export function CompanyExport() {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [checkedFiles, setCheckedFiles] = useState<Set<string>>(new Set());
   const [treeSearch, setTreeSearch] = useState("");
+  const [includeSecrets, setIncludeSecrets] = useState(false);
+  const [secretsConfirmOpen, setSecretsConfirmOpen] = useState(false);
   const [taskLimit, setTaskLimit] = useState(TASKS_PAGE_SIZE);
   const savedExpandedRef = useRef<Set<string> | null>(null);
   const initialFileFromUrl = useRef(filePathFromLocation(location.pathname));
@@ -731,6 +742,7 @@ export function CompanyExport() {
         include: { company: true, agents: true, projects: true, issues: true },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,
+        includeSecrets,
       }),
     onSuccess: (result) => {
       const resultCheckedFiles = new Set(Object.keys(result.files));
@@ -945,6 +957,11 @@ export function CompanyExport() {
                 {warnings.length} warning{warnings.length === 1 ? "" : "s"}
               </span>
             )}
+            {includeSecrets && (
+              <span className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-0.5 text-xs text-amber-500">
+                Secrets included
+              </span>
+            )}
           </div>
           <Button
             size="sm"
@@ -973,6 +990,29 @@ export function CompanyExport() {
         <aside className="flex flex-col border-r border-border overflow-hidden">
           <div className="border-b border-border px-4 py-3 shrink-0">
             <h2 className="text-base font-semibold">Package files</h2>
+          </div>
+          <div className="border-b border-border px-4 py-2.5 shrink-0">
+            <div className="flex items-center gap-2 text-sm">
+              <ToggleSwitch
+                checked={includeSecrets}
+                onCheckedChange={(checked) => {
+                  if (checked) {
+                    setSecretsConfirmOpen(true);
+                  } else {
+                    setIncludeSecrets(false);
+                  }
+                }}
+              />
+              <span className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors" onClick={() => {
+                if (includeSecrets) {
+                  setIncludeSecrets(false);
+                } else {
+                  setSecretsConfirmOpen(true);
+                }
+              }}>
+                Include secrets
+              </span>
+            </div>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
@@ -1014,6 +1054,26 @@ export function CompanyExport() {
           <ExportPreviewPane selectedFile={selectedFile} content={previewContent} allFiles={effectiveFiles} onSkillClick={handleSkillClick} />
         </div>
       </div>
+
+      {/* Secrets confirmation dialog */}
+      <Dialog open={secretsConfirmOpen} onOpenChange={setSecretsConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Include secrets?</DialogTitle>
+            <DialogDescription>
+              Secrets will be exported as plaintext in the package file. Handle the exported package with care.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSecretsConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => { setIncludeSecrets(true); setSecretsConfirmOpen(false); }}>
+              Include secrets
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,12 +1,32 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ThemeProvider } from "../context/ThemeContext";
 import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+}));
+
+vi.mock("../api/issues", () => ({
+  issuesApi: { get: vi.fn() },
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function withProviders(children: ReactNode) {
+  return (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <ThemeProvider>{children}</ThemeProvider>
+    </QueryClientProvider>
+  );
+}
 
 describe("approvalLabel", () => {
   it("uses payload titles for generic board approvals", () => {
@@ -35,17 +55,19 @@ describe("ApprovalPayloadRenderer", () => {
 
     act(() => {
       root.render(
-        <ApprovalPayloadRenderer
-          type="request_board_approval"
-          payload={{
-            title: "Reply with an ASCII frog",
-            summary: "Board asked for approval before posting the frog.",
-            recommendedAction: "Approve the frog reply.",
-            nextActionOnApproval: "Post the frog comment on the issue.",
-            risks: ["The frog might be too powerful."],
-            proposedComment: "(o)<",
-          }}
-        />,
+        withProviders(
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              title: "Reply with an ASCII frog",
+              summary: "Board asked for approval before posting the frog.",
+              recommendedAction: "Approve the frog reply.",
+              nextActionOnApproval: "Post the frog comment on the issue.",
+              risks: ["The frog might be too powerful."],
+              proposedComment: "(o)<",
+            }}
+          />,
+        ),
       );
     });
 
@@ -67,14 +89,16 @@ describe("ApprovalPayloadRenderer", () => {
 
     act(() => {
       root.render(
-        <ApprovalPayloadRenderer
-          type="request_board_approval"
-          hidePrimaryTitle
-          payload={{
-            title: "Reply with an ASCII frog",
-            summary: "Board asked for approval before posting the frog.",
-          }}
-        />,
+        withProviders(
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            hidePrimaryTitle
+            payload={{
+              title: "Reply with an ASCII frog",
+              summary: "Board asked for approval before posting the frog.",
+            }}
+          />,
+        ),
       );
     });
 
@@ -84,5 +108,92 @@ describe("ApprovalPayloadRenderer", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+describe("BoardApprovalPayloadContent markdown rendering", () => {
+  it("renders a ## header in summary as an h2 element", () => {
+    const html = renderToStaticMarkup(
+      withProviders(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{ summary: "## Analysis\n\nThis is the summary." }}
+        />,
+      ),
+    );
+    expect(html).toContain("<h2");
+    expect(html).toContain("Analysis");
+    expect(html).toContain("This is the summary.");
+  });
+
+  it("renders a bulleted list in summary as ul and li elements", () => {
+    const html = renderToStaticMarkup(
+      withProviders(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{ summary: "- Item one\n- Item two" }}
+        />,
+      ),
+    );
+    expect(html).toContain("<ul");
+    expect(html).toContain("<li");
+    expect(html).toContain("Item one");
+    expect(html).toContain("Item two");
+  });
+
+  it("renders a ## header in recommendedAction as an h2 element", () => {
+    const html = renderToStaticMarkup(
+      withProviders(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{ recommendedAction: "## Approve\n\nApprove this action." }}
+        />,
+      ),
+    );
+    expect(html).toContain("<h2");
+    expect(html).toContain("Approve");
+    expect(html).toContain("Approve this action.");
+  });
+
+  it("renders a bulleted list in recommendedAction as ul and li elements", () => {
+    const html = renderToStaticMarkup(
+      withProviders(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{ recommendedAction: "- Step one\n- Step two" }}
+        />,
+      ),
+    );
+    expect(html).toContain("<ul");
+    expect(html).toContain("<li");
+    expect(html).toContain("Step one");
+  });
+
+  it("renders plain prose summary without adding list or heading markup", () => {
+    const html = renderToStaticMarkup(
+      withProviders(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{ summary: "This is a simple one-line summary." }}
+        />,
+      ),
+    );
+    expect(html).toContain("This is a simple one-line summary.");
+    expect(html).not.toContain("<ul");
+    expect(html).not.toContain("<h2");
+  });
+
+  it("renders plain prose recommendedAction without markdown markup", () => {
+    const html = renderToStaticMarkup(
+      withProviders(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{ recommendedAction: "Approve the deployment." }}
+        />,
+      ),
+    );
+    expect(html).toContain("Approve the deployment.");
+    expect(html).not.toContain("<ul");
+    expect(html).not.toContain("<h2");
   });
 });

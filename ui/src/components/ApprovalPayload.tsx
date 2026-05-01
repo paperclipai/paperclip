@@ -1,5 +1,6 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { formatCents } from "../lib/utils";
+import { MarkdownBody } from "./MarkdownBody";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -185,7 +186,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {summary && (
         <div className="space-y-1">
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Summary</p>
-          <p className="leading-6 text-foreground/90">{summary}</p>
+          <MarkdownBody softBreaks>{summary}</MarkdownBody>
         </div>
       )}
       {recommendedAction && (
@@ -193,13 +194,13 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
             Recommended action
           </p>
-          <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
+          <MarkdownBody softBreaks className="mt-1">{recommendedAction}</MarkdownBody>
         </div>
       )}
       {nextActionOnApproval && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">On approval</p>
-          <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
+          <MarkdownBody softBreaks className="mt-1">{nextActionOnApproval}</MarkdownBody>
         </div>
       )}
       {risks.length > 0 && (
