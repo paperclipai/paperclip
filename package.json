@@ -36,6 +36,8 @@
     "test:identity-gate": "node scripts/rt2-identity-gate.test.mjs",
     "rt2:devplan-alignment-gate": "node scripts/rt2-devplan-alignment-gate.mjs",
     "test:devplan-alignment-gate": "node scripts/rt2-devplan-alignment-gate.test.mjs",
+    "rt2:v31-acceptance-gate": "node scripts/rt2-v31-acceptance-gate.mjs",
+    "test:v31-acceptance-gate": "node scripts/rt2-v31-acceptance-gate.test.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",

@@ -43,10 +43,10 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 ### Graphify v3 Engine Alignment
 
-- [ ] **GRAPH-01**: Graphify sidecar는 repo/docs/wiki source file을 SHA256 file cache와 source location metadata로 증분 ingest한다.
-- [ ] **GRAPH-02**: graph build path는 code/docs extraction interface, confidence score, relation provenance를 저장한다.
-- [ ] **GRAPH-03**: graph query API는 node, neighbors, community, shortest path, god nodes, graph stats를 제공하고 실제 clustering algorithm 또는 명시된 fallback을 사용한다.
-- [ ] **GRAPH-04**: graph report는 RT2 product graph와 corpus graph를 구분하고 knowledge gap, surprising connection, suggested question을 노출한다.
+- [x] **GRAPH-01**: Graphify sidecar는 repo/docs/wiki source file을 SHA256 file cache와 source location metadata로 증분 ingest한다.
+- [x] **GRAPH-02**: graph build path는 code/docs extraction interface, confidence score, relation provenance를 저장한다.
+- [x] **GRAPH-03**: graph query API는 node, neighbors, community, shortest path, god nodes, graph stats를 제공하고 실제 clustering algorithm 또는 명시된 fallback을 사용한다.
+- [x] **GRAPH-04**: graph report는 RT2 product graph와 corpus graph를 구분하고 knowledge gap, surprising connection, suggested question을 노출한다.
 
 ### Economy, Marketplace, and CareerMate Loop
 
@@ -103,4 +103,4 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 | GATE-02 | Phase 71 |
 
 ---
-*마지막 업데이트: 2026-05-01, Phase 68 completed*
+*마지막 업데이트: 2026-05-01, Phase 69 completed*
