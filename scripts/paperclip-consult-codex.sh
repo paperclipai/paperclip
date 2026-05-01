@@ -117,6 +117,16 @@ def toml_str(v):
 for name, spec in servers.items():
     if not isinstance(spec, dict):
         continue
+    # Skip SSE entries — codex's "remote" MCP transport speaks streamable
+    # HTTP, not SSE, and tries to load the URL as an MCP-over-HTTP endpoint.
+    # The kubernetes-mcp-server we run only exposes /sse, which produces a
+    # noisy per-server `UnexpectedContentType ... sessionid must be provided`
+    # error at startup. Better to drop the entry than ship a broken wire.
+    # When kubernetes-mcp-server gains a streamable-HTTP endpoint, drop this.
+    if spec.get("type") == "sse" or (
+        isinstance(spec.get("url"), str) and spec["url"].rstrip("/").endswith("/sse")
+    ):
+        continue
     print(f"[mcp_servers.{name}]")
     if "command" in spec:
         print(f"command = {toml_str(spec['command'])}")
