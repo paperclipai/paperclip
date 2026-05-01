@@ -1928,6 +1928,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
   });
 
+  it("skips recovery issue creation when DB re-fetch shows source.status=blocked (ELE-32 race guard)", async () => {
+    // Seed same scenario that would normally escalate and create a recovery issue.
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Intercept the DB re-fetch inside ensureStrandedIssueRecoveryIssue.
+    // The re-fetch is uniquely identified by db.select({ id, status }) — exactly 2 keys.
+    // This simulates the race condition where the source issue transitions to
+    // blocked between the candidates scan and recovery creation (memory 10f05083).
+    const originalSelect = (db.select as (...args: unknown[]) => unknown).bind(db);
+    const selectSpy = vi.spyOn(db, "select").mockImplementation((columns?: unknown) => {
+      if (
+        columns !== null &&
+        columns !== undefined &&
+        typeof columns === "object" &&
+        !Array.isArray(columns) &&
+        Object.keys(columns as object).sort().join(",") === "id,status"
+      ) {
+        return {
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([{ id: issueId, status: "blocked" }]),
+            }),
+          }),
+        } as unknown as ReturnType<typeof db.select>;
+      }
+      return originalSelect(columns) as ReturnType<typeof db.select>;
+    });
+
+    try {
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.escalated).toBe(1);
+
+      const recoveries = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+      expect(recoveries).toHaveLength(0);
+    } finally {
+      selectSpy.mockRestore();
+    }
+  });
+
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
