@@ -131,6 +131,7 @@ function makePersistedExecutionWorkspace(
     name: "workspace",
     status: "open",
     cwd: "/workspace/project",
+    agentCwd: "/workspace/project",
     repoUrl: null,
     baseRef: null,
     branchName: null,

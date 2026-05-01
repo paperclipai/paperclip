@@ -310,10 +310,25 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
   };
 }
 
+export function deriveAgentCwd(
+  metadata: Record<string, unknown> | null,
+  fallback: string | null,
+): string | null {
+  if (!metadata) return fallback;
+  const realization = (metadata as { workspaceRealization?: unknown }).workspaceRealization;
+  if (!realization || typeof realization !== "object") return fallback;
+  const r = realization as { transport?: unknown; remote?: unknown };
+  if (r.transport !== "ssh") return fallback;
+  const remote = r.remote && typeof r.remote === "object" ? (r.remote as { path?: unknown }) : null;
+  const remotePath = remote && typeof remote.path === "string" ? remote.path.trim() : "";
+  return remotePath.length > 0 ? remotePath : fallback;
+}
+
 function toExecutionWorkspace(
   row: ExecutionWorkspaceRow,
   runtimeServices: WorkspaceRuntimeService[] = [],
 ): ExecutionWorkspace {
+  const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
   return {
     id: row.id,
     companyId: row.companyId,
@@ -325,6 +340,7 @@ function toExecutionWorkspace(
     name: row.name,
     status: row.status as ExecutionWorkspace["status"],
     cwd: row.cwd ?? null,
+    agentCwd: deriveAgentCwd(metadata, row.cwd ?? null),
     repoUrl: row.repoUrl ?? null,
     baseRef: row.baseRef ?? null,
     branchName: row.branchName ?? null,
@@ -336,8 +352,8 @@ function toExecutionWorkspace(
     closedAt: row.closedAt ?? null,
     cleanupEligibleAt: row.cleanupEligibleAt ?? null,
     cleanupReason: row.cleanupReason ?? null,
-    config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    config: readExecutionWorkspaceConfig(metadata),
+    metadata,
     runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

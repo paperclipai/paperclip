@@ -182,6 +182,8 @@ export interface ExecutionWorkspace {
   name: string;
   status: ExecutionWorkspaceStatus;
   cwd: string | null;
+  /** Path the agent runtime can actually `cd` into. Equals `cwd` for local realizations; for `ssh` transport realizations equals `metadata.workspaceRealization.remote.path`. Always prefer `agentCwd` over `cwd` for filesystem ops inside the adapter session. */
+  agentCwd: string | null;
   repoUrl: string | null;
   baseRef: string | null;
   branchName: string | null;
