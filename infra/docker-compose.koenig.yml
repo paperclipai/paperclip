@@ -106,6 +106,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 90s
+    # Memory limit + Node V8 heap headroom — fix for SIGKILL crash loop
+    # (monitor 2026-05-01 confirmed exit 137 even with cron-driver stopped;
+    #  Docker Desktop allots 7.65GiB total; spend-tail + cron-driver use some;
+    #  give paperclip the lion's share with a hard ceiling so OOMs are diagnostic)
+    mem_limit: 4g
+    mem_reservation: 1g
     logging:
       driver: json-file
       options:
