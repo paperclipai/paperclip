@@ -23,7 +23,10 @@ interface CompanyContextValue {
   selectionSource: CompanySelectionSource;
   loading: boolean;
   error: Error | null;
-  setSelectedCompanyId: (companyId: string, options?: CompanySelectionOptions) => void;
+  setSelectedCompanyId: (
+    companyId: string,
+    options?: CompanySelectionOptions,
+  ) => void;
   reloadCompanies: () => Promise<void>;
   createCompany: (data: {
     name: string;
@@ -44,13 +47,22 @@ export function resolveBootstrapCompanySelection(input: {
 }) {
   if (input.companies.length === 0) return null;
 
-  const selectableCompanies = input.sidebarCompanies.length > 0
-    ? input.sidebarCompanies
-    : input.companies;
-  if (input.selectedCompanyId && selectableCompanies.some((company) => company.id === input.selectedCompanyId)) {
+  const selectableCompanies =
+    input.sidebarCompanies.length > 0
+      ? input.sidebarCompanies
+      : input.companies;
+  if (
+    input.selectedCompanyId &&
+    selectableCompanies.some(
+      (company) => company.id === input.selectedCompanyId,
+    )
+  ) {
     return input.selectedCompanyId;
   }
-  if (input.storedCompanyId && selectableCompanies.some((company) => company.id === input.storedCompanyId)) {
+  if (
+    input.storedCompanyId &&
+    selectableCompanies.some((company) => company.id === input.storedCompanyId)
+  ) {
     return input.storedCompanyId;
   }
   return selectableCompanies[0]?.id ?? null;
@@ -61,15 +73,24 @@ export function shouldClearStoredCompanySelection(input: {
   isLoading: boolean;
   unauthorized: boolean;
 }) {
-  return !input.isLoading && !input.unauthorized && input.companies.length === 0;
+  return (
+    !input.isLoading && !input.unauthorized && input.companies.length === 0
+  );
 }
 
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
-  const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
+  const [selectionSource, setSelectionSource] =
+    useState<CompanySelectionSource>("bootstrap");
+  const [selectedCompanyId, setSelectedCompanyIdState] = useState<
+    string | null
+  >(null);
 
-  const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } = useQuery<CompanyListResult>({
+  const {
+    data: companiesResult = { companies: [], unauthorized: false },
+    isLoading,
+    error,
+  } = useQuery<CompanyListResult>({
     queryKey: queryKeys.companies.all,
     queryFn: async () => {
       try {
@@ -81,7 +102,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
         throw err;
       }
     },
-    retry: false,
+    retry: (failureCount, err) => {
+      if (err instanceof ApiError && err.status === 401) {
+        return false;
+      }
+      return failureCount < 2;
+    },
   });
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
@@ -94,7 +120,13 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isLoading) return;
     if (companies.length === 0) {
-      if (shouldClearStoredCompanySelection({ companies, isLoading: false, unauthorized: companyListUnauthorized })) {
+      if (
+        shouldClearStoredCompanySelection({
+          companies,
+          isLoading: false,
+          unauthorized: companyListUnauthorized,
+        })
+      ) {
         if (selectedCompanyId !== null) {
           setSelectedCompanyIdState(null);
         }
@@ -113,13 +145,22 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, companyListUnauthorized, isLoading, selectedCompanyId, sidebarCompanies]);
+  }, [
+    companies,
+    companyListUnauthorized,
+    isLoading,
+    selectedCompanyId,
+    sidebarCompanies,
+  ]);
 
-  const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
-    setSelectedCompanyIdState(companyId);
-    setSelectionSource(options?.source ?? "manual");
-    localStorage.setItem(STORAGE_KEY, companyId);
-  }, []);
+  const setSelectedCompanyId = useCallback(
+    (companyId: string, options?: CompanySelectionOptions) => {
+      setSelectedCompanyIdState(companyId);
+      setSelectionSource(options?.source ?? "manual");
+      localStorage.setItem(STORAGE_KEY, companyId);
+    },
+    [],
+  );
 
   const reloadCompanies = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -130,8 +171,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       name: string;
       description?: string | null;
       budgetMonthlyCents?: number;
-    }) =>
-      companiesApi.create(data),
+    }) => companiesApi.create(data),
     onSuccess: (company) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       setSelectedCompanyId(company.id);
@@ -179,7 +219,9 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <CompanyContext.Provider value={value}>{children}</CompanyContext.Provider>;
+  return (
+    <CompanyContext.Provider value={value}>{children}</CompanyContext.Provider>
+  );
 }
 
 export function useCompany() {
