@@ -4071,6 +4071,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
+    // The status gate is the auto-dispatch sticky-status invariant (ONE-504): if the
+    // issue has been parked at any non-actionable state since the run was queued,
+    // the lock must not be re-stamped — otherwise the dispatch tick silently
+    // re-arms execution after a user/agent intentionally moved the issue out of
+    // the `todo`/`in_progress` lane.
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
@@ -4089,6 +4094,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             // Mention/context runs can touch an issue, but only the current assignee
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
+            inArray(issues.status, ["todo", "in_progress"]),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
         );
@@ -4164,6 +4170,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_found"
           | "issue_assignee_changed"
           | "issue_terminal_status"
+          | "issue_parked_status"
           | "issue_review_participant_changed";
         details: Record<string, unknown>;
       };
@@ -4220,6 +4227,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           details: { issueId, currentStatus: issue.status },
         };
       }
+    }
+
+    // Issues parked at `blocked` or `backlog` are not actionable: a user/agent
+    // has explicitly removed them from the dispatch path. Queued runs from
+    // before the park must be cancelled — including comment-driven wakes —
+    // so that the dispatch tick cannot silently flip the status back to
+    // `in_progress` via a downstream checkout.
+    if (issue.status === "blocked" || issue.status === "backlog") {
+      return {
+        stale: true,
+        errorCode: "issue_parked_status",
+        reason:
+          `Cancelled because issue was parked at non-actionable status (${issue.status}) before the queued run could start; ` +
+          "the assignee will be woken once the issue is moved back to `todo` or `in_progress`",
+        details: { issueId, currentStatus: issue.status },
+      };
     }
 
     if (issue.status === "in_review") {
@@ -6912,6 +6935,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
+              activeExecutionRun = null;
+            } else if (issue.status !== "todo" && issue.status !== "in_progress") {
+              // Auto-dispatch sticky-status invariant (ONE-504): never re-stamp an
+              // execution lock onto an issue that has been parked at a non-actionable
+              // status (`done`, `cancelled`, `blocked`, `in_review`, `backlog`).
+              // Without this guard, a wake arriving for a parked issue can adopt a
+              // stale legacy run and silently advance `executionLockedAt`, which is
+              // the smoking-gun observation behind the silent-revert bug.
               activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
