@@ -32,9 +32,12 @@ describe("adapter model listing", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("returns copilot fallback models", async () => {
+  it("returns copilot models including all fallback models", async () => {
     const models = await listAdapterModels("copilot_local");
-    expect(models).toEqual(copilotFallbackModels);
+    const labelsById = new Map(models.map((model) => [model.id, model.label]));
+    for (const fallbackModel of copilotFallbackModels) {
+      expect(labelsById.get(fallbackModel.id)).toBe(fallbackModel.label);
+    }
   });
 
   it("loads codex models dynamically and merges fallback options", async () => {
