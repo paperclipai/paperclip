@@ -1,0 +1,245 @@
+{
+  "title": "MCP Flashcards",
+  "cards": [
+    {
+      "front": "What specific structural problem does the Model Context Protocol (MCP) aim to solve?",
+      "back": "The $N \\times M$ integration problem, where every application must create unique adapters for every tool it uses."
+    },
+    {
+      "front": "Which company introduced the Model Context Protocol in November 2024?",
+      "back": "Anthropic."
+    },
+    {
+      "front": "What is the primary wire format used by the Model Context Protocol?",
+      "back": "JSON-RPC 2.0."
+    },
+    {
+      "front": "What are the two main transport mechanisms supported by MCP?",
+      "back": "stdio and HTTP+SSE (Streamable HTTP)."
+    },
+    {
+      "front": "In MCP, what is the term for model-initiated actions that can produce side-effects?",
+      "back": "Tools."
+    },
+    {
+      "front": "In MCP, what primitive describes app-controlled, read-only data provided to the model?",
+      "back": "Resources."
+    },
+    {
+      "front": "In MCP, what primitive refers to user-initiated templates used for model interaction?",
+      "back": "Prompts."
+    },
+    {
+      "front": "Why are custom REST adapters considered a failure mode for LLM tool calls?",
+      "back": "They assume human-operated lifecycles and lack programmatic handling for ephemeral, concurrent inference tasks."
+    },
+    {
+      "front": "What is the specific failure mode of using a stateful WebSocket hub as an integration middleware?",
+      "back": "It becomes a single point of failure and makes reaching local-process tools difficult without public network addresses."
+    },
+    {
+      "front": "Why is OpenAPI spec passthrough insufficient for describing tools to an LLM?",
+      "back": "It lacks the natural-language semantics and instructions required for a model to know how and when to call the API."
+    },
+    {
+      "front": "Which established protocol served as the architectural lineage for MCP?",
+      "back": "The Language Server Protocol (LSP)."
+    },
+    {
+      "front": "What insight did LSP provide in 2016 that MCP applies to AI integrations?",
+      "back": "Separating intelligence (language support or tool logic) from the user interface (editor or LLM host) via a standard protocol."
+    },
+    {
+      "front": "Why does MCP use JSON-RPC 2.0 over stdio for local servers?",
+      "back": "It is a simple IPC primitive that requires no network setup, no OS-specific APIs, and no extra authentication surface."
+    },
+    {
+      "front": "What process allows an MCP client and server to agree on supported features before work begins?",
+      "back": "Capability negotiation during the initialize handshake."
+    },
+    {
+      "front": "How does MCP's stateful session model differ from the standard REST API design?",
+      "back": "MCP maintains a session per client to preserve context like database connections, whereas REST is stateless by design."
+    },
+    {
+      "front": "In the MCP triad, what is the primary responsibility of the Host?",
+      "back": "Starting and stopping server processes, managing user sessions, and holding the LLM inference loop."
+    },
+    {
+      "front": "What is the role of the Client within the MCP host architecture?",
+      "back": "Managing a single MCP server connection, handling framing, and multiplexing requests."
+    },
+    {
+      "front": "What is the key security constraint regarding information flow in MCP?",
+      "back": "Information flow is unidirectional: servers never call the host or other servers."
+    },
+    {
+      "front": "Why is the unidirectional constraint in MCP considered a security feature?",
+      "back": "It prevents malicious servers from initiating unauthorized actions against the host or other connected services."
+    },
+    {
+      "front": "Which component in an MCP system is responsible for orchestration, such as deciding tool call order?",
+      "back": "The host (LLM application)."
+    },
+    {
+      "front": "Why does MCP deliberately exclude agent orchestration from its specification?",
+      "back": "To ensure the protocol can be used with any orchestration model, such as ReAct or plan-and-execute, without modification."
+    },
+    {
+      "front": "In the MCP model, which layer is responsible for persistent session memory?",
+      "back": "The host application layer."
+    },
+    {
+      "front": "How does the 2026 MCP roadmap plan to handle gateway discovery?",
+      "back": "Via .well-known metadata."
+    },
+    {
+      "front": "What authentication standard does the 2026 MCP roadmap target for remote servers?",
+      "back": "OAuth 2.1 with DPoP token binding (SEP-1932)."
+    },
+    {
+      "front": "During the MCP handshake, what field allows the client to know the server's protocol version?",
+      "back": "The `protocolVersion` field in the initialize response."
+    },
+    {
+      "front": "What is the significance of the `capabilities` object in the MCP initialize request?",
+      "back": "It advertises to the server which features the client is capable of handling, such as roots or sampling."
+    },
+    {
+      "front": "What are the three possible values for the `type` field in an MCP tool response content array?",
+      "back": "text, image, and resource."
+    },
+    {
+      "front": "Why are MCP servers designed to be \"narrow\"?",
+      "back": "To ensure they serve only one specific domain, such as a single database or a specific third-party API."
+    },
+    {
+      "front": "What happens if a server does not include `\"resources\": {}` in its capabilities object during initialization?",
+      "back": "The client will not attempt to call resource-related methods like `resources/list`."
+    },
+    {
+      "front": "The principle of \"negotiating down\" in the MCP handshake ensures _____.",
+      "back": "That both parties agree on the lowest common protocol version to prevent parsing errors."
+    },
+    {
+      "front": "Which layer of the MCP triad decides which tool results to include in the model's context?",
+      "back": "The host."
+    },
+    {
+      "front": "What is the license for the Model Context Protocol specification?",
+      "back": "Apache 2.0."
+    },
+    {
+      "front": "Why is stdio described as the simplest IPC primitive for MCP?",
+      "back": "It involves a process reading from stdin and writing to stdout, requiring no sockets or OS-specific memory APIs."
+    },
+    {
+      "front": "In the context of the N+M relationship, what does the 'M' represent?",
+      "back": "The number of distinct tools or data sources available in the ecosystem."
+    },
+    {
+      "front": "How does MCP provide structured signals for a model to retry a failed tool call?",
+      "back": "By using typed error responses including error codes and structured error data."
+    },
+    {
+      "front": "Why is the host responsible for rate limiting rather than the raw MCP server?",
+      "back": "A raw MCP server has no inherent concept of users or global application traffic quotas."
+    },
+    {
+      "front": "What is the purpose of the `serverInfo` field in the initialize response?",
+      "back": "It provides the server's name and version for diagnostic and logging purposes."
+    },
+    {
+      "front": "Which MCP primitive would be used to provide a model with a read-only view of a database table?",
+      "back": "Resources."
+    },
+    {
+      "front": "Which MCP primitive would be used to allow a model to post a message to a Slack channel?",
+      "back": "Tools."
+    },
+    {
+      "front": "Why is OpenAPI passthrough lacking in terms of capability negotiation?",
+      "back": "It does not provide a mechanism for the model to know which version of a tool is available before calling it."
+    },
+    {
+      "front": "In the MCP initialize lifecycle, what message follows the server's initialize response?",
+      "back": "The `notifications/initialized` notification from the client."
+    },
+    {
+      "front": "Why is it unsafe for an MCP server to return a callback URL to trigger another tool?",
+      "back": "It bypasses the host's orchestration control and the unidirectional security constraint."
+    },
+    {
+      "front": "What is the benefit of the stateful session model for authentication tokens?",
+      "back": "Servers can cache an authentication token for the duration of the session instead of re-authenticating on every request."
+    },
+    {
+      "front": "How does MCP avoid the stateful multiplexing problems of a WebSocket hub when running local tools?",
+      "back": "By running the server as a child process of the host, avoiding the need for public network address management."
+    },
+    {
+      "front": "In the N\u00d7M integration problem, what is the result of having 4 applications and 6 tools without a protocol?",
+      "back": "24 individual, bespoke integration adapters."
+    },
+    {
+      "front": "What term describes the reduction of integration work from $N \\times M$ to $N + M$ using MCP?",
+      "back": "The textbook fix for integration proliferation."
+    },
+    {
+      "front": "Which MCP component acts as the 'plumbing' that manages the technical connection to a server?",
+      "back": "The client."
+    },
+    {
+      "front": "In a minimal MCP server, which field in a tool definition provides instructions for the LLM?",
+      "back": "The `description` field."
+    },
+    {
+      "front": "What happens if an MCP server tries to call another MCP server directly?",
+      "back": "It violates the unidirectional constraint of the MCP architecture."
+    },
+    {
+      "front": "Why is model selection (routing) excluded from the MCP specification?",
+      "back": "MCP is positioned below the model layer, serving as the context-delivery mechanism rather than the model-invocation mechanism."
+    },
+    {
+      "front": "In the MCP roadmap, what does 'DPoP' stand for in the context of token binding?",
+      "back": "Demonstrating Proof-of-Possession."
+    },
+    {
+      "front": "What transport is used for remote MCP servers that require unidirectional streaming updates?",
+      "back": "HTTP+SSE (Server-Sent Events)."
+    },
+    {
+      "front": "How does MCP ensure that a new client can safely interact with an old server?",
+      "back": "Through protocol version negotiation during the initialize handshake."
+    },
+    {
+      "front": "What is the primary risk of a standard protocol being too general?",
+      "back": "Least-common-denominator risk."
+    },
+    {
+      "front": "Which primitive is designed for data that the model should read but not necessarily initiate the fetching of?",
+      "back": "Resources."
+    },
+    {
+      "front": "Why is JSON-RPC 2.0 preferred over REST for MCP's transport logic?",
+      "back": "It provides a clear request-response and notification framework that is transport-agnostic."
+    },
+    {
+      "front": "In MCP, what determines which tool results are actually presented to the model?",
+      "back": "The host application."
+    },
+    {
+      "front": "What is the primary advantage of MCP's deliberate narrowness in scope?",
+      "back": "It remains simple enough to ensure widespread compatibility and deployment across different implementations."
+    },
+    {
+      "front": "In the MCP specification, what does the `method` field `tools/list` retrieve?",
+      "back": "The list of all tools exposed by the MCP server."
+    },
+    {
+      "front": "Which primitive would include a JSON Schema defining valid model inputs?",
+      "back": "Tools."
+    }
+  ]
+}

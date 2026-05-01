@@ -1,0 +1,146 @@
+{
+  "name": "Model Context Protocol (MCP)",
+  "children": [
+    {
+      "name": "The Design Problem",
+      "children": [
+        {
+          "name": "N×M Integration Trap",
+          "children": [
+            {
+              "name": "Bespoke adapters for every app/tool"
+            },
+            {
+              "name": "Redundant and incompatible code"
+            },
+            {
+              "name": "Standard reduces complexity to N+M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Rejected Alternatives",
+      "children": [
+        {
+          "name": "Custom REST Adapters",
+          "children": [
+            {
+              "name": "Failure: Ephemeral tool calls vs stable lifecycles"
+            },
+            {
+              "name": "Failure: No re-authentication for AI"
+            }
+          ]
+        },
+        {
+          "name": "WebSocket Hub",
+          "children": [
+            {
+              "name": "Failure: Stateful single point of failure"
+            },
+            {
+              "name": "Failure: Network reachability/security for local tools"
+            }
+          ]
+        },
+        {
+          "name": "OpenAPI Spec Passthrough",
+          "children": [
+            {
+              "name": "Failure: Lacks natural-language semantics"
+            },
+            {
+              "name": "Failure: No streaming or structured error typing"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "LSP Lineage",
+      "children": [
+        {
+          "name": "JSON-RPC 2.0 over stdio"
+        },
+        {
+          "name": "Capability negotiation handshake"
+        },
+        {
+          "name": "Stateful session model"
+        }
+      ]
+    },
+    {
+      "name": "Core Architecture",
+      "children": [
+        {
+          "name": "Three Primitives",
+          "children": [
+            {
+              "name": "Tools (side-effects)"
+            },
+            {
+              "name": "Resources (read-only data)"
+            },
+            {
+              "name": "Prompts (templates)"
+            }
+          ]
+        },
+        {
+          "name": "Topology",
+          "children": [
+            {
+              "name": "Host: Orchestrates AI loop"
+            },
+            {
+              "name": "Client: Manages connection"
+            },
+            {
+              "name": "Server: Exposes domain-specific data"
+            },
+            {
+              "name": "Unidirectional: Server never initiates"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Deliberate Exclusions",
+      "children": [
+        {
+          "name": "Agent orchestration"
+        },
+        {
+          "name": "Multi-agent coordination"
+        },
+        {
+          "name": "Session memory and persistence"
+        },
+        {
+          "name": "Model routing and inference"
+        },
+        {
+          "name": "Billing and rate limiting"
+        }
+      ]
+    },
+    {
+      "name": "Implementation Details",
+      "children": [
+        {
+          "name": "Transport: stdio or HTTP+SSE"
+        },
+        {
+          "name": "Roadmap: OAuth 2.1 and Gateway discovery"
+        },
+        {
+          "name": "Governance: Apache 2.0 open standard"
+        }
+      ]
+    }
+  ]
+}
