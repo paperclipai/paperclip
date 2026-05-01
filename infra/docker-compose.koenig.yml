@@ -71,6 +71,15 @@ services:
       USER_GID: "${USER_GID:-20}"
       # HOME inside container = /paperclip so adapter CLIs (claude/codex/opencode) find their auth at $HOME/.claude etc.
       HOME: "/paperclip"
+      # Force claude_local agents to use subscription OAuth (~/.claude/.credentials.json)
+      # NOT metered API. Empty = unset for the claude CLI inside the container.
+      # Vardaan extracted Keychain → file 2026-05-01.
+      ANTHROPIC_API_KEY: ""
+      # Disable startup productivity-review reconciliation — was generating
+      # 13 "Review productivity for KOEA-XXX" tickets per restart, dumping on CEO.
+      # Other startup reconciliations (stranded-assigned, issue-graph-liveness,
+      # silent-active-runs) remain enabled — they're useful state consistency.
+      PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEWS: "1"
     env_file:
       - ../.env.koenig
     volumes:
@@ -118,6 +127,32 @@ services:
     volumes:
       - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/scripts:/scripts:ro
     command: ["python3", "/scripts/koenig-cron-driver.py"]
+    depends_on:
+      paperclip:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  notifier:
+    # Telegram bridge — polls Paperclip + accepts /meeting <URL>, /status, /done commands.
+    # User authorized 2026-05-01.
+    image: python:3.12-slim
+    container_name: koenig-notifier
+    restart: unless-stopped
+    environment:
+      PAPERCLIP_BASE_URL: "http://host.docker.internal:3100"
+      KOENIG_COMPANY_ID: "2a77f89b-33f0-4133-a20c-77ddaac5e744"
+      MEETING_ATTENDEE_URL: "http://host.docker.internal:8200"
+    env_file:
+      - ../.env.koenig
+    volumes:
+      - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org/services/notifier:/app:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["sh", "-c", "pip install --quiet -r /app/requirements.txt && python3 /app/main.py"]
     depends_on:
       paperclip:
         condition: service_healthy

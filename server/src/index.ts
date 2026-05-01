@@ -706,6 +706,9 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
+        if (process.env.PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEWS === "1") {
+          return;
+        }
         const reviewed = await heartbeat.reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
