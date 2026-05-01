@@ -344,6 +344,18 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
   });
 
+  it("returns empty array by default when no runs are queued or running", async () => {
+    const { db } = createLiveRunsDbStub([]);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(0);
+  });
+
   it("treats explicit zero live run limits as the capped default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,

@@ -2844,7 +2844,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
-    const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 50);
+    const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
     const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
 
     const columns = {
