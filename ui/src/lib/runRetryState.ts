@@ -76,8 +76,10 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
       kind: "exhausted",
       badgeLabel: "Retry exhausted",
       tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-      detail: joinFragments([attemptLabel, reasonLabel, "No further automatic retry queued"]),
-      secondary: exhaustedReason,
+      detail: joinFragments([attemptLabel, reasonLabel, "Automatic retries exhausted"]),
+      secondary: exhaustedReason.includes("Manual intervention required")
+        ? exhaustedReason
+        : `${exhaustedReason} Manual intervention required.`,
       retryOfRunId,
     };
   }

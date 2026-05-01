@@ -90,6 +90,30 @@ export interface PluginToolDeclaration {
 }
 
 /**
+ * Declares an environment runtime driver contributed by the plugin.
+ *
+ * Requires the `environment.drivers.register` capability.
+ */
+export interface PluginEnvironmentDriverDeclaration {
+  /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
+  driverKey: string;
+  /**
+   * Driver classification.
+   *
+   * `environment_driver` is used by core `driver: "plugin"` environments.
+   * `sandbox_provider` is used by core `driver: "sandbox"` environments whose
+   * provider key is implemented by a plugin.
+   */
+  kind?: "environment_driver" | "sandbox_provider";
+  /** Human-readable name shown in environment configuration UI. */
+  displayName: string;
+  /** Optional description for operator-facing docs or UI affordances. */
+  description?: string;
+  /** JSON Schema describing the driver's provider-specific configuration. */
+  configSchema: JsonSchema;
+}
+
+/**
  * Declares a UI extension slot the plugin fills with a React component.
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
@@ -296,6 +320,8 @@ export interface PaperclipPluginManifestV1 {
   database?: PluginDatabaseDeclaration;
   /** Scoped JSON API routes mounted under `/api/plugins/:pluginId/api/*`. */
   apiRoutes?: PluginApiRouteDeclaration[];
+  /** Environment drivers this plugin contributes. Requires `environment.drivers.register` capability. */
+  environmentDrivers?: PluginEnvironmentDriverDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

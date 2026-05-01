@@ -523,6 +523,36 @@ export function projectService(db: Db) {
       return enriched ?? null;
     },
 
+    clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
+      const rows = await db
+        .select({
+          id: projects.id,
+          executionWorkspacePolicy: projects.executionWorkspacePolicy,
+        })
+        .from(projects)
+        .where(eq(projects.companyId, companyId));
+
+      let cleared = 0;
+      for (const row of rows) {
+        const policy = parseProjectExecutionWorkspacePolicy(row.executionWorkspacePolicy);
+        if (policy?.environmentId !== environmentId) continue;
+
+        await db
+          .update(projects)
+          .set({
+            executionWorkspacePolicy: {
+              ...policy,
+              environmentId: null,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, row.id));
+        cleared += 1;
+      }
+
+      return cleared;
+    },
+
     remove: (id: string) =>
       db
         .delete(projects)

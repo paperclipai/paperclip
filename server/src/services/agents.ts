@@ -38,6 +38,7 @@ const CONFIG_REVISION_FIELDS = [
   "adapterType",
   "adapterConfig",
   "runtimeConfig",
+  "defaultEnvironmentId",
   "budgetMonthlyCents",
   "metadata",
 ] as const;
@@ -98,6 +99,7 @@ function buildConfigSnapshot(
     adapterType: row.adapterType,
     adapterConfig,
     runtimeConfig,
+    defaultEnvironmentId: row.defaultEnvironmentId,
     budgetMonthlyCents: row.budgetMonthlyCents,
     metadata,
   };
@@ -169,6 +171,10 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     adapterType: snapshot.adapterType,
     adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
     runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+    defaultEnvironmentId:
+      typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null
+        ? snapshot.defaultEnvironmentId
+        : null,
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };

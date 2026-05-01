@@ -2,6 +2,9 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { AdapterExecutionTarget } from "./execution-target.js";
+
 export interface AdapterAgent {
   id: string;
   companyId: string;
@@ -61,12 +64,16 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export type AdapterExecutionErrorFamily = "transient_upstream";
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
   errorMessage?: string | null;
   errorCode?: string | null;
+  errorFamily?: AdapterExecutionErrorFamily | null;
+  retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
@@ -118,6 +125,14 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Legacy remote transport view. Prefer `executionTarget`, which is the
+   * provider-neutral contract produced by core runtime code.
+   */
+  executionTransport?: {
+    remoteExecution?: Record<string, unknown> | null;
+  };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -127,6 +142,16 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+}
+
+export type AdapterModelProfileKey = "cheap";
+
+export interface AdapterModelProfileDefinition {
+  key: AdapterModelProfileKey;
+  label: string;
+  description?: string;
+  adapterConfig: Record<string, unknown>;
+  source?: "adapter_default" | "discovered";
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -201,6 +226,20 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  /**
+   * Optional execution target the adapter should run probes against.
+   *
+   * If omitted (or `kind === "local"`), the adapter tests on the Paperclip
+   * host. For SSH/sandbox targets the adapter should run command/auth probes
+   * inside the remote environment so the result reflects what an agent run
+   * would actually see at execution time.
+   */
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Friendly name of the environment being tested (when `executionTarget` is set).
+   * Surfaced in check messages so users see which environment the probe ran in.
+   */
+  environmentName?: string | null;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";
@@ -300,6 +339,15 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  modelProfiles?: AdapterModelProfileDefinition[];
+  listModelProfiles?: () => Promise<AdapterModelProfileDefinition[]>;
+  /**
+   * Optional explicit refresh hook for model discovery.
+   * Use this when the adapter caches discovered models and needs a bypass path
+   * so the UI can fetch newly released models without waiting for cache expiry
+   * or a Paperclip code update.
+   */
+  refreshModels?: () => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -399,6 +447,14 @@ export interface CreateConfigValues {
   promptTemplate: string;
   model: string;
   thinkingEffort: string;
+  /**
+   * Optional cheap model profile config for new agents on adapters that
+   * support model profiles. Persisted under
+   * `runtimeConfig.modelProfiles.cheap.adapterConfig`, never on the primary
+   * `adapterConfig`.
+   */
+  cheapModel?: string;
+  cheapModelEnabled?: boolean;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;
@@ -417,6 +473,7 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

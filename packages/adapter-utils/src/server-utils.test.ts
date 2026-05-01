@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  materializePaperclipSkillCopy,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -37,6 +43,82 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
   }
   return read().match(pattern);
 }
+
+describe("buildInvocationEnvForLogs", () => {
+  it("redacts inline secrets from resolved command metadata", () => {
+    const loggedEnv = buildInvocationEnvForLogs(
+      { SAFE_VALUE: "visible" },
+      {
+        resolvedCommand: "env OPENAI_API_KEY=sk-live-example custom-acp --token ghp_example_secret",
+      },
+    );
+
+    expect(loggedEnv.SAFE_VALUE).toBe("visible");
+    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
+      "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
+    );
+  });
+});
+
+describe("materializePaperclipSkillCopy", () => {
+  it("refuses to materialize into an ancestor of the source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "parent", "skill");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      await expect(materializePaperclipSkillCopy(source, path.join(root, "parent"))).rejects.toThrow(
+        /ancestor/,
+      );
+      await expect(fs.readFile(path.join(source, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not delete and recopy an unchanged materialized skill target", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+      await fs.writeFile(path.join(target, "local-marker.txt"), "keep\n", "utf8");
+
+      const second = await materializePaperclipSkillCopy(source, target);
+      expect(second.copiedFiles).toBe(0);
+      await expect(fs.readFile(path.join(target, "local-marker.txt"), "utf8")).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("breaks stale materialization locks left by dead processes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.mkdir(lock, { recursive: true });
+      await fs.writeFile(
+        path.join(lock, "owner.json"),
+        JSON.stringify({ pid: 999_999_999, createdAt: "2000-01-01T00:00:00.000Z" }),
+        "utf8",
+      );
+
+      await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+      await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("runChildProcess", () => {
   it("does not arm a timeout when timeoutSec is 0", async () => {
@@ -254,6 +336,7 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
@@ -326,6 +409,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
   });
 
+  it("renders loose review request instructions for execution handoffs", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2011",
+        title: "Review request handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        reviewRequest: {
+          instructions: "Please focus on edge cases and leave a short risk summary.",
+        },
+        allowedActions: ["approve", "request_changes"],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Review request instructions:");
+    expect(prompt).toContain("Please focus on edge cases and leave a short risk summary.");
+    expect(prompt).toContain("You are waking as the active reviewer for this issue.");
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
@@ -393,6 +504,50 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("applyPaperclipWorkspaceEnv", () => {
+  it("adds shared workspace env vars including AGENT_HOME", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "/tmp/workspace",
+        workspaceSource: "project_primary",
+        workspaceStrategy: "git_worktree",
+        workspaceId: "workspace-1",
+        workspaceRepoUrl: "https://github.com/paperclipai/paperclip.git",
+        workspaceRepoRef: "main",
+        workspaceBranch: "feature/test",
+        workspaceWorktreePath: "/tmp/worktree",
+        agentHome: "/tmp/agent-home",
+      },
+    );
+
+    expect(env).toEqual({
+      PAPERCLIP_WORKSPACE_CWD: "/tmp/workspace",
+      PAPERCLIP_WORKSPACE_SOURCE: "project_primary",
+      PAPERCLIP_WORKSPACE_STRATEGY: "git_worktree",
+      PAPERCLIP_WORKSPACE_ID: "workspace-1",
+      PAPERCLIP_WORKSPACE_REPO_URL: "https://github.com/paperclipai/paperclip.git",
+      PAPERCLIP_WORKSPACE_REPO_REF: "main",
+      PAPERCLIP_WORKSPACE_BRANCH: "feature/test",
+      PAPERCLIP_WORKSPACE_WORKTREE_PATH: "/tmp/worktree",
+      AGENT_HOME: "/tmp/agent-home",
+    });
+  });
+
+  it("skips empty workspace env values", () => {
+    const env = applyPaperclipWorkspaceEnv(
+      {},
+      {
+        workspaceCwd: "",
+        workspaceSource: null,
+        agentHome: "",
+      },
+    );
+
+    expect(env).toEqual({});
   });
 });
 

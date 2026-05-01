@@ -1,5 +1,8 @@
+import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+
 export const type = "cursor";
 export const label = "Cursor CLI (local)";
+
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 const CURSOR_FALLBACK_MODEL_IDS = [
@@ -46,6 +49,18 @@ const CURSOR_FALLBACK_MODEL_IDS = [
 
 export const models = CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id }));
 
+export const modelProfiles: AdapterModelProfileDefinition[] = [
+  {
+    key: "cheap",
+    label: "Cheap",
+    description: "Use Cursor's known Codex mini model as the budget lane instead of assuming auto is cheap.",
+    adapterConfig: {
+      model: "gpt-5.1-codex-mini",
+    },
+    source: "adapter_default",
+  },
+];
+
 export const agentConfigurationDoc = `# cursor agent configuration
 
 Adapter: cursor
@@ -80,4 +95,5 @@ Notes:
 - Sessions are resumed with --resume when stored session cwd matches current cwd.
 - Paperclip auto-injects local skills into "~/.cursor/skills" when missing, so Cursor can discover "$paperclip" and related skills on local runs.
 - Paperclip auto-adds --yolo unless one of --trust/--yolo/-f is already present in extraArgs.
+- Remote sandbox runs prepend "~/.local/bin" to PATH and prefer "~/.local/bin/cursor-agent" when the default Cursor entrypoint is requested, so standard E2B-style installs do not need hardcoded absolute command paths.
 `;
