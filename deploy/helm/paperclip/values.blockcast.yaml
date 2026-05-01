@@ -86,6 +86,16 @@ env:
         secretKeyRef:
           name: paperclip-github-mcp-token
           key: token
+    # V8 default heap ceiling is ~2.18 GiB regardless of cgroup limits, so a
+    # Node process inside a 4 GiB container hits the heap ceiling well before
+    # the cgroup OOM and spends CPU on Scavenger/ConcurrentMarking/Sweeper
+    # cycles instead of work (verified via pyroscope eBPF profile of paperclip-0
+    # on 2026-05-01: top frames were V8 GC). Raise the limit so V8 can use most
+    # of the container budget while leaving ~1 GiB for libuv / native deps /
+    # binary code / stack / fs cache. Tune up further if the heap-used metric
+    # gets close to this ceiling under load.
+    - name: NODE_OPTIONS
+      value: "--max-old-space-size=3072"
 
 persistence:
   enabled: true
