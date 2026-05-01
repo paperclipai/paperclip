@@ -110,6 +110,13 @@ services:
       # the host only (do not mount).
       - /Users/vardaankoenig/.hermes:/paperclip/.hermes:rw
       - /Users/vardaankoenig/.local/bin/hermes:/usr/local/bin/hermes:ro
+      # Cursor CLI: bind-mount the JS bundle + auth state. cursor-agent is a
+      # bash wrapper that exec's a bundled Mac arm64 `node` — won't run as-is
+      # in the Linux container. The Dockerfile installs a wrapper at
+      # /usr/local/bin/cursor-agent that uses the container's system node
+      # (v24+) against the bundled index.js.
+      - /Users/vardaankoenig/.local/share/cursor-agent:/paperclip/.local/share/cursor-agent:ro
+      - /Users/vardaankoenig/.cursor:/paperclip/.cursor:rw
       # Koenig project sources (live mount — agents read+write here)
       - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org:/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org:rw
       # Sibling repo for skills referenced by absolute path
