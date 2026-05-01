@@ -16,6 +16,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { groupCompanySkills, resolveCompanySkillGroup } from "../lib/company-skill-groups";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -404,9 +405,11 @@ function SkillList({
   onSelectPath: (skillId: string, path: string) => void;
 }) {
   const filteredSkills = skills.filter((skill) => {
-    const haystack = `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""}`.toLowerCase();
+    const group = resolveCompanySkillGroup(skill);
+    const haystack = `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""} ${group.label}`.toLowerCase();
     return haystack.includes(skillFilter.toLowerCase());
   });
+  const groupedSkills = groupCompanySkills(filteredSkills);
 
   if (filteredSkills.length === 0) {
     return (
@@ -418,71 +421,80 @@ function SkillList({
 
   return (
     <div>
-      {filteredSkills.map((skill) => {
-        const expanded = expandedSkillId === skill.id;
-        const tree = buildTree(skill.fileInventory);
-        const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
-        const SourceIcon = source.icon;
-
-        return (
-          <div key={skill.id} className="border-b border-border">
-            <div
-              className={cn(
-                "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
-                skill.id === selectedSkillId && "text-foreground",
-              )}
-            >
-              <Link
-                to={skillRoute(skill.id)}
-                className="flex min-w-0 items-center self-stretch pr-2 text-left no-underline"
-                onClick={() => onSelectSkill(skill.id)}
-              >
-                <span className="flex min-w-0 items-center gap-2 self-center">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground opacity-75 transition-opacity group-hover:opacity-100">
-                        <SourceIcon className="h-3.5 w-3.5" />
-                        <span className="sr-only">{source.managedLabel}</span>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">{source.managedLabel}</TooltipContent>
-                  </Tooltip>
-                  <span className="min-w-0 overflow-hidden text-[13px] font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
-                    {skill.name}
-                  </span>
-                </span>
-              </Link>
-              <button
-                type="button"
-                className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
-                onClick={() => onToggleSkill(skill.id)}
-                aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
-              >
-                {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              </button>
-            </div>
-            <div
-              aria-hidden={!expanded}
-              className={cn(
-                "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-                expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
-              )}
-            >
-              <div className="min-h-0 overflow-hidden">
-                <SkillTree
-                  nodes={tree}
-                  skillId={skill.id}
-                  selectedPath={selectedPaths[skill.id] ?? "SKILL.md"}
-                  expandedDirs={expandedDirs[skill.id] ?? new Set<string>()}
-                  onToggleDir={(path) => onToggleDir(skill.id, path)}
-                  onSelectPath={(path) => onSelectPath(skill.id, path)}
-                  depth={1}
-                />
-              </div>
-            </div>
+      {groupedSkills.map((group) => (
+        <section key={group.id} className="border-b border-border last:border-b-0">
+          <div className="flex items-center justify-between gap-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <span>{group.label}</span>
+            <span>{group.skills.length}</span>
           </div>
-        );
-      })}
+
+          {group.skills.map((skill) => {
+            const expanded = expandedSkillId === skill.id;
+            const tree = buildTree(skill.fileInventory);
+            const source = sourceMeta(skill.sourceBadge, skill.sourceLabel);
+            const SourceIcon = source.icon;
+
+            return (
+              <div key={skill.id} className="border-t border-border/60 first:border-t-0">
+                <div
+                  className={cn(
+                    "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
+                    skill.id === selectedSkillId && "text-foreground",
+                  )}
+                >
+                  <Link
+                    to={skillRoute(skill.id)}
+                    className="flex min-w-0 items-center self-stretch pr-2 text-left no-underline"
+                    onClick={() => onSelectSkill(skill.id)}
+                  >
+                    <span className="flex min-w-0 items-center gap-2 self-center">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground opacity-75 transition-opacity group-hover:opacity-100">
+                            <SourceIcon className="h-3.5 w-3.5" />
+                            <span className="sr-only">{source.managedLabel}</span>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">{source.managedLabel}</TooltipContent>
+                      </Tooltip>
+                      <span className="min-w-0 overflow-hidden text-[13px] font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+                        {skill.name}
+                      </span>
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                    onClick={() => onToggleSkill(skill.id)}
+                    aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
+                  >
+                    {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                <div
+                  aria-hidden={!expanded}
+                  className={cn(
+                    "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
+                    expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+                  )}
+                >
+                  <div className="min-h-0 overflow-hidden">
+                    <SkillTree
+                      nodes={tree}
+                      skillId={skill.id}
+                      selectedPath={selectedPaths[skill.id] ?? "SKILL.md"}
+                      expandedDirs={expandedDirs[skill.id] ?? new Set<string>()}
+                      onToggleDir={(path) => onToggleDir(skill.id, path)}
+                      onSelectPath={(path) => onSelectPath(skill.id, path)}
+                      depth={1}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      ))}
     </div>
   );
 }

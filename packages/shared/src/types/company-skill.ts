@@ -43,6 +43,7 @@ export interface CompanySkillListItem {
   trustLevel: CompanySkillTrustLevel;
   compatibility: CompanySkillCompatibility;
   fileInventory: CompanySkillFileInventoryEntry[];
+  metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
   attachedAgentCount: number;
