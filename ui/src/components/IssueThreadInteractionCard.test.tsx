@@ -203,6 +203,18 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("emphasizes pending confirmation cards as decision-blocked work", () => {
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+    });
+
+    expect(host.textContent).toContain("Decision needed");
+    expect(host.textContent).toContain("Review target");
+    expect(host.textContent).toContain("Open target");
+    expect(host.textContent).toContain("Assignee resumes after confirmation");
+    expect(host.textContent).toContain("Review context");
+  });
+
   it("labels accept-only continuation policies in the card header", () => {
     const host = renderCard({
       interaction: {
