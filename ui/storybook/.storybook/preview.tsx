@@ -26,6 +26,12 @@ import "@mdxeditor/editor/style.css";
 import "./tailwind-entry.css";
 import "./styles.css";
 
+// Install fetch monkeypatch eagerly so any module-load-time fetches (e.g. schema
+// caches in adapter config renderers) hit our fixtures before they reach the
+// network. Some renderers issue a fetch from useEffect on first paint, which
+// can otherwise race the StorybookProviders mount.
+installStorybookApiFixtures();
+
 function installStorybookApiFixtures() {
   if (typeof window === "undefined") return;
   const currentWindow = window as typeof window & {
@@ -148,6 +154,16 @@ function installStorybookApiFixtures() {
       return Response.json([]);
     }
 
+    const adapterSchemaMatch = url.pathname.match(/^\/api\/adapters\/([^/]+)\/config-schema$/);
+    if (adapterSchemaMatch) {
+      const [, adapterType] = adapterSchemaMatch;
+      const schemas = (window as typeof window & {
+        __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
+      }).__paperclipStorybookAdapterSchemas;
+      const schema = schemas?.[adapterType];
+      if (schema) return Response.json(schema);
+    }
+
     const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
     if (companyResourceMatch) {
       const [, companyId, resource] = companyResourceMatch;
@@ -233,7 +249,6 @@ function StorybookProviders({
 
   useEffect(() => {
     applyStorybookTheme(theme);
-    installStorybookApiFixtures();
   }, [theme]);
 
   return (
