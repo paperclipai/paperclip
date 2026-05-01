@@ -39,7 +39,9 @@ export type CompanySkillGroup = {
   skills: CompanySkillListItem[];
 };
 
-export function resolveCompanySkillGroup(skill: Pick<CompanySkillListItem, "key" | "sourceBadge" | "metadata">) {
+export type ResolvedCompanySkillGroup = Omit<CompanySkillGroup, "skills">;
+
+export function resolveCompanySkillGroup(skill: Pick<CompanySkillListItem, "key" | "sourceBadge" | "metadata">): ResolvedCompanySkillGroup {
   const metadata = asRecord(skill.metadata);
   const paperclipMeta = asRecord(metadata?.paperclip);
   const explicitCategory = firstString(
@@ -52,7 +54,7 @@ export function resolveCompanySkillGroup(skill: Pick<CompanySkillListItem, "key"
   if (explicitCategory) {
     return {
       id: `category:${normalizeGroupId(explicitCategory)}`,
-      label: explicitCategory,
+      label: humanize(explicitCategory),
       sortOrder: 0,
     };
   }
@@ -83,11 +85,13 @@ export function resolveCompanySkillGroup(skill: Pick<CompanySkillListItem, "key"
   }
 }
 
-export function groupCompanySkills(skills: readonly CompanySkillListItem[]) {
+export function groupResolvedCompanySkills(
+  skills: readonly { skill: CompanySkillListItem; group: ResolvedCompanySkillGroup }[],
+) {
   const groups = new Map<string, CompanySkillGroup>();
 
-  for (const skill of skills) {
-    const group = resolveCompanySkillGroup(skill);
+  for (const entry of skills) {
+    const { skill, group } = entry;
     const existing = groups.get(group.id);
     if (existing) {
       existing.skills.push(skill);
@@ -108,4 +112,13 @@ export function groupCompanySkills(skills: readonly CompanySkillListItem[]) {
       if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
       return left.label.localeCompare(right.label);
     });
+}
+
+export function groupCompanySkills(skills: readonly CompanySkillListItem[]) {
+  return groupResolvedCompanySkills(
+    skills.map((skill) => ({
+      skill,
+      group: resolveCompanySkillGroup(skill),
+    })),
+  );
 }

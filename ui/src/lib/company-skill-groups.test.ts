@@ -40,6 +40,16 @@ describe("company skill grouping", () => {
     });
   });
 
+  it("normalizes explicit category labels for mixed capitalization", () => {
+    const groups = groupCompanySkills([
+      createSkill({ id: "1", metadata: { category: "delivery" }, key: "delivery-a" }),
+      createSkill({ id: "2", metadata: { category: "Delivery" }, key: "delivery-b" }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBe("Delivery");
+  });
+
   it("falls back to the skill namespace when the key is segmented", () => {
     const group = resolveCompanySkillGroup(createSkill({ metadata: null, key: "research/interview-notes" }));
 
