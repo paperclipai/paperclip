@@ -90,7 +90,7 @@ describe("IssueWorkProductsSection", () => {
     );
 
     expect(comment).toBe(
-      "**Work product review — Plan draft**\nSource: https://example.com/plan.md\nLooks good overall.",
+      "**Work product review — Plan draft**\nSource: https://example.com/plan.md\n\nLooks good overall.",
     );
   });
 
@@ -132,9 +132,9 @@ describe("IssueWorkProductsSection", () => {
     });
 
     expect(onAddComment).toHaveBeenCalledWith(
-      "**Work product review — Execution summary**\nSource: https://example.com/review.md\nPlease tighten the acceptance criteria.",
+      "**Work product review — Execution summary**\nSource: https://example.com/review.md\n\nPlease tighten the acceptance criteria.",
     );
-  });
+  }, 10000);
 
   it("fetches markdown previews from markdown URLs when inline content is missing", async () => {
     const fetchMock = vi.fn(async () => ({
@@ -159,5 +159,30 @@ describe("IssueWorkProductsSection", () => {
 
     expect(fetchMock).toHaveBeenCalledWith("https://example.com/output.md");
     expect(document.body.textContent).toContain("Remote preview");
+  });
+
+  it("treats .markdown URLs as inline-previewable markdown", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      text: async () => "# Long form markdown",
+    }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const host = renderSection({
+      workProducts: [createWorkProduct({ url: "https://example.com/output.markdown", metadata: null })],
+    });
+
+    const viewButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("View"),
+    );
+    expect(viewButton).toBeTruthy();
+
+    await act(async () => {
+      viewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/output.markdown");
+    expect(document.body.textContent).toContain("Long form markdown");
   });
 });

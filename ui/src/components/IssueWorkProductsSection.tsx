@@ -69,7 +69,7 @@ function workProductIcon(type: IssueWorkProduct["type"]) {
 
 function looksLikeMarkdownPath(value: string | null | undefined) {
   if (!value) return false;
-  return /\.md(?:own)?(?:[#?].*)?$/i.test(value);
+  return /\.md(?:own|arkdown)?(?:[#?].*)?$/i.test(value);
 }
 
 function isMarkdownWorkProduct(product: IssueWorkProduct) {
@@ -122,12 +122,14 @@ function MetaPill({ label, value, tone = "default" }: { label: string; value: st
 }
 
 export function buildIssueWorkProductComment(product: Pick<IssueWorkProduct, "title" | "url">, comment: string) {
-  return [
+  const header = [
     `**Work product review — ${product.title}**`,
     product.url ? `Source: ${product.url}` : null,
-    "",
-    comment.trim(),
-  ].filter((value): value is string => Boolean(value && value.trim().length > 0)).join("\n");
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+
+  return [header, comment.trim()].join("\n\n");
 }
 
 export function IssueWorkProductsSection({
