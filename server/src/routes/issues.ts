@@ -2090,7 +2090,8 @@ export function issueRoutes(
     if (
       req.actor.type === "agent" &&
       req.body.executionPolicy !== undefined &&
-      executionPolicyHasUserParticipants(nextExecutionPolicy)
+      (executionPolicyHasUserParticipants(previousExecutionPolicy) ||
+        executionPolicyHasUserParticipants(nextExecutionPolicy))
     ) {
       res.status(403).json({
         error: "Agents cannot author execution policies with user participants",

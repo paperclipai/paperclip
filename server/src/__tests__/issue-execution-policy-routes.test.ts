@@ -6,6 +6,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  createChild: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -248,6 +249,80 @@ describe("issue execution policy routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agents cannot author execution policies with user participants");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-created child issues with user-participant execution policies", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const parent = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-999",
+      title: "Parent issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(parent);
+
+    const res = await request(await createApp(agentActor()))
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({
+        title: "Escalation child issue",
+        executionPolicy: policy,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot author execution policies with user participants");
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent attempts to clear existing user-participant execution policies", async () => {
+    const existingPolicy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-999",
+      title: "Board approval issue",
+      executionPolicy: existingPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp(agentActor()))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot author execution policies with user participants");
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
