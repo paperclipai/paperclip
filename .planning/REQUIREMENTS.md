@@ -37,9 +37,9 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 ### wikiLLM Living Memory
 
-- [ ] **WIKI-01**: RT2 event/wiki store는 `index.md`, `log.md`, topic/project/schema page 형태의 wikiLLM-compatible file model로 export 또는 materialize될 수 있다.
-- [ ] **WIKI-02**: wiki ingest/update workflow는 provenance, confidence, contradiction flag, related page update evidence를 남긴다.
-- [ ] **WIKI-03**: Jarvis grounded answer는 wiki page citation을 제공하고, 가치 있는 답변은 review 가능한 wiki draft/update로 되돌릴 수 있다.
+- [x] **WIKI-01**: RT2 event/wiki store는 `index.md`, `log.md`, topic/project/schema page 형태의 wikiLLM-compatible file model로 export 또는 materialize될 수 있다.
+- [x] **WIKI-02**: wiki ingest/update workflow는 provenance, confidence, contradiction flag, related page update evidence를 남긴다.
+- [x] **WIKI-03**: Jarvis grounded answer는 wiki page citation을 제공하고, 가치 있는 답변은 review 가능한 wiki draft/update로 되돌릴 수 있다.
 
 ### Graphify v3 Engine Alignment
 
@@ -103,4 +103,4 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 | GATE-02 | Phase 71 |
 
 ---
-*마지막 업데이트: 2026-05-01, Phase 66 completed*
+*마지막 업데이트: 2026-05-01, Phase 68 completed*
