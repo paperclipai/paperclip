@@ -166,7 +166,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   const risks = Array.isArray(payload.risks)
     ? payload.risks
         .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
+        .map((value) => value.trim().replace(/^[-*•]\s+/, ""))
         .filter(Boolean)
     : [];
   const title = firstNonEmptyString(payload.title);
