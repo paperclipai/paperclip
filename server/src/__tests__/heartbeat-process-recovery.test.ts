@@ -858,6 +858,192 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function seedAutoCompleteIssueRunFixture(input?: {
+    autoCompleteIssueOnSuccess?: boolean;
+  }) {
+    const fixture = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: input?.autoCompleteIssueOnSuccess === undefined
+          ? {}
+          : { autoCompleteIssueOnSuccess: input.autoCompleteIssueOnSuccess },
+      })
+      .where(eq(agents.id, fixture.agentId));
+    return fixture;
+  }
+
+  async function executeAutoCompleteFixture(input: {
+    autoCompleteIssueOnSuccess?: boolean;
+    adapterResult?: Awaited<ReturnType<typeof mockAdapterExecute>>;
+  }) {
+    if (input.adapterResult) {
+      mockAdapterExecute.mockResolvedValueOnce(input.adapterResult);
+    }
+    const fixture = await seedAutoCompleteIssueRunFixture({
+      autoCompleteIssueOnSuccess: input.autoCompleteIssueOnSuccess,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, fixture.runId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, fixture.issueId)).then((rows) => rows[0] ?? null);
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)).then((rows) => rows[0] ?? null);
+    return { ...fixture, issue, run };
+  }
+
+  it("auto-completes the assigned issue after a successful live-content run when explicitly enabled", async () => {
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { agent: { id: string; companyId: string }; runId: string; context: Record<string, unknown> }) => {
+      await db.insert(issueComments).values({
+        companyId: ctx.agent.companyId,
+        issueId: String(ctx.context.issueId),
+        authorAgentId: ctx.agent.id,
+        createdByRunId: ctx.runId,
+        body: "Implemented the requested fix and verified the targeted behavior.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the requested fix and verified the targeted behavior.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { issue, run } = await executeAutoCompleteFixture({
+      autoCompleteIssueOnSuccess: true,
+    });
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.livenessState).not.toBe("plan_only");
+    expect(run?.livenessState).not.toBe("empty_response");
+    expect(issue?.status).toBe("done");
+  });
+
+  it("does not auto-complete when the run is classified plan-only", async () => {
+    const { issue, run } = await executeAutoCompleteFixture({
+      autoCompleteIssueOnSuccess: true,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      },
+    });
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.livenessState).toBe("plan_only");
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("does not auto-complete when the run has no concrete action evidence", async () => {
+    const { issue, run } = await executeAutoCompleteFixture({
+      autoCompleteIssueOnSuccess: true,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+      },
+    });
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.livenessState).not.toBe("advanced");
+    expect(run?.livenessState).not.toBe("completed");
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("does not auto-complete unless the adapter config explicitly enables it", async () => {
+    const absent = await executeAutoCompleteFixture({
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the requested fix and verified the targeted behavior.",
+        provider: "test",
+        model: "test-model",
+      },
+    });
+    expect(absent.issue?.status).toBe("in_progress");
+  });
+
+  it("does not auto-complete if the issue assignee changes before run completion", async () => {
+    const newAssigneeId = randomUUID();
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { agent: { companyId: string }; context: Record<string, unknown> }) => {
+      await db.insert(agents).values({
+        id: newAssigneeId,
+        companyId: ctx.agent.companyId,
+        name: "NewOwner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: newAssigneeId })
+        .where(eq(issues.id, String(ctx.context.issueId)));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the requested fix and verified the targeted behavior.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { issue } = await executeAutoCompleteFixture({ autoCompleteIssueOnSuccess: true });
+
+    expect(issue?.assigneeAgentId).toBe(newAssigneeId);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("does not auto-complete if the issue execution lock changes before run completion", async () => {
+    const replacementRunId = randomUUID();
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { agent: { id: string; companyId: string }; context: Record<string, unknown> }) => {
+      await db.insert(heartbeatRuns).values({
+        id: replacementRunId,
+        companyId: ctx.agent.companyId,
+        agentId: ctx.agent.id,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId: ctx.context.issueId },
+      });
+      await db
+        .update(issues)
+        .set({ executionRunId: replacementRunId })
+        .where(eq(issues.id, String(ctx.context.issueId)));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the requested fix and verified the targeted behavior.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { issue } = await executeAutoCompleteFixture({ autoCompleteIssueOnSuccess: true });
+
+    expect(issue?.executionRunId).toBe(replacementRunId);
+    expect(issue?.status).toBe("in_progress");
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);

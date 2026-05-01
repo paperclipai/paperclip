@@ -22,6 +22,9 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `allowedWritePaths` | string[] | No | Enables the Claude mutation guard for these absolute write paths/directories. The adapter passes a per-run `--settings` PreToolUse hook for built-in mutation tools that validates real paths, rejects symlinks, blocks unsupported mutation payloads, and disables session persistence for the guarded run. This is a path guard, not a full OS sandbox; keep scoped workspaces and normal adapter isolation in place. |
+| `allowedBashCommands` | string[] | No | Exact Bash command strings allowed when the mutation guard is active. Bash is denied by default; prefer leaving this empty for mutation pilots. |
+| `autoCompleteIssueOnSuccess` | boolean | No | Server-side heartbeat option: when true, a successful assigned issue run with concrete liveness evidence marks the issue `done` only if the assignee and execution lock still match. Use for bounded one-shot worker calls to avoid completion-comment loops. |
 
 ## Prompt Templates
 

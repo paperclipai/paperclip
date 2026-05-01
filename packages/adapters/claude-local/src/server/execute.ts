@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -110,6 +111,207 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
+
+type ClaudeMutationGuard = {
+  settingsPath: string;
+  hookPath: string;
+  auditPath: string;
+  tempDir: string;
+  allowedWritePaths: string[];
+  allowedBashCommands: string[];
+};
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
+}
+
+function assertSafeConfiguredPath(rawPath: string, fieldName: string) {
+  if (rawPath.includes("\0")) {
+    throw new Error(`${fieldName} must not contain NUL bytes`);
+  }
+  if (!path.isAbsolute(rawPath)) {
+    throw new Error(`${fieldName} must be an absolute path: ${rawPath}`);
+  }
+}
+
+async function prepareClaudeMutationGuard(config: Record<string, unknown>, runId: string): Promise<ClaudeMutationGuard | null> {
+  const allowedWritePaths = uniqueStrings(asStringArray(config.allowedWritePaths).map((value) => value.trim()).filter(Boolean));
+  if (allowedWritePaths.length === 0) return null;
+
+  const allowedBashCommands = uniqueStrings(
+    asStringArray(config.allowedBashCommands).map((value) => value.trim()).filter(Boolean),
+  );
+  for (const [index, rawPath] of allowedWritePaths.entries()) {
+    assertSafeConfiguredPath(rawPath, `allowedWritePaths[${index}]`);
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-claude-guard-${runId}-`));
+  await fs.chmod(tempDir, 0o700);
+  const hookPath = path.join(tempDir, "mutation-guard.cjs");
+  const settingsPath = path.join(tempDir, "settings.json");
+  const auditPath = path.join(tempDir, "audit.jsonl");
+
+  const hookSource = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+
+const RUN_ID = ${JSON.stringify(runId)};
+const AUDIT_PATH = ${JSON.stringify(auditPath)};
+const ALLOWED_WRITE_PATHS = ${JSON.stringify(allowedWritePaths)};
+const ALLOWED_BASH_COMMANDS = new Set(${JSON.stringify(allowedBashCommands)});
+
+function audit(event) {
+  try {
+    fs.appendFileSync(AUDIT_PATH, JSON.stringify({ ts: new Date().toISOString(), runId: RUN_ID, ...event }) + "\\n", { mode: 0o600 });
+  } catch {}
+}
+
+function decision(decision, reason, extra = {}) {
+  audit({ decision, reason, ...extra });
+  process.stdout.write(JSON.stringify({ decision, reason }));
+}
+
+function safeParts(absPath) {
+  const parsed = path.parse(absPath);
+  return path.resolve(absPath).slice(parsed.root.length).split(path.sep).filter(Boolean);
+}
+
+function symlinkComponents(absPath, { allowMissingFinal }) {
+  const resolved = path.resolve(absPath);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  const parts = safeParts(resolved);
+  const symlinks = [];
+  for (let i = 0; i < parts.length; i++) {
+    current = path.join(current, parts[i]);
+    let st;
+    try {
+      st = fs.lstatSync(current);
+    } catch (err) {
+      if (allowMissingFinal && i === parts.length - 1 && err && err.code === "ENOENT") return symlinks;
+      throw err;
+    }
+    if (st.isSymbolicLink()) symlinks.push(current);
+  }
+  return symlinks;
+}
+
+function assertNoSymlinkComponents(absPath, { allowMissingFinal, toleratedSymlinks = new Set() }) {
+  for (const symlinkPath of symlinkComponents(absPath, { allowMissingFinal })) {
+    if (!toleratedSymlinks.has(symlinkPath)) throw new Error("symlink component rejected: " + symlinkPath);
+  }
+}
+
+const TOLERATED_ALLOWED_PREFIX_SYMLINKS = new Set(
+  ALLOWED_WRITE_PATHS.flatMap((raw) => symlinkComponents(raw, { allowMissingFinal: true })),
+);
+
+function canonicalTarget(rawPath, toleratedSymlinks = TOLERATED_ALLOWED_PREFIX_SYMLINKS) {
+  if (typeof rawPath !== "string" || rawPath.trim().length === 0) throw new Error("path must be a non-empty string");
+  if (rawPath.includes("\\0")) throw new Error("path contains NUL byte");
+  if (!path.isAbsolute(rawPath)) throw new Error("path must be absolute: " + rawPath);
+  const resolved = path.resolve(rawPath);
+  let st = null;
+  try {
+    st = fs.lstatSync(resolved);
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") throw err;
+  }
+  if (st && st.isSymbolicLink()) throw new Error("symlink target rejected: " + rawPath);
+  assertNoSymlinkComponents(resolved, { allowMissingFinal: !st, toleratedSymlinks });
+  if (st) return fs.realpathSync.native(resolved);
+  const parent = path.dirname(resolved);
+  assertNoSymlinkComponents(parent, { allowMissingFinal: false, toleratedSymlinks });
+  const parentReal = fs.realpathSync.native(parent);
+  return path.join(parentReal, path.basename(resolved));
+}
+
+function isSameOrInside(candidate, allowed) {
+  const rel = path.relative(allowed, candidate);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function allowedTargets() {
+  return ALLOWED_WRITE_PATHS.map((raw) => {
+    const target = canonicalTarget(raw);
+    let isDir = false;
+    try { isDir = fs.statSync(target).isDirectory(); } catch {}
+    return { raw, target, isDir };
+  });
+}
+
+function validateWritePath(rawPath) {
+  const target = canonicalTarget(rawPath);
+  const allowed = allowedTargets();
+  const ok = allowed.some((entry) => entry.isDir ? isSameOrInside(target, entry.target) : target === entry.target);
+  if (!ok) throw new Error("write path not allowed: " + rawPath + " -> " + target);
+  return target;
+}
+
+function collectPaths(toolName, input) {
+  if (!input || typeof input !== "object") throw new Error("tool input must be an object");
+  if (toolName === "NotebookEdit") throw new Error("NotebookEdit is denied until its schema is explicitly supported");
+  const paths = [];
+  for (const key of ["file_path", "path"]) {
+    if (typeof input[key] === "string") paths.push(input[key]);
+  }
+  if (Array.isArray(input.edits)) {
+    for (const edit of input.edits) {
+      if (edit && typeof edit === "object") {
+        for (const key of ["file_path", "path"]) {
+          if (typeof edit[key] === "string") paths.push(edit[key]);
+        }
+      }
+    }
+  }
+  if (paths.length === 0) throw new Error("unknown payload shape for " + toolName);
+  return [...new Set(paths)];
+}
+
+try {
+  const raw = fs.readFileSync(0, "utf8");
+  const event = JSON.parse(raw);
+  const toolName = event.tool_name || event.toolName || "";
+  const input = event.tool_input || event.toolInput || {};
+  if (toolName === "Bash") {
+    const command = typeof input.command === "string" ? input.command : "";
+    if (ALLOWED_BASH_COMMANDS.size > 0 && ALLOWED_BASH_COMMANDS.has(command)) {
+      decision("approve", "allowed exact Bash command", { toolName, command });
+      process.exit(0);
+    }
+    decision("block", "Bash is denied by claude_local mutation guard", { toolName, command });
+    process.exit(0);
+  }
+  if (!["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(toolName)) {
+    decision("block", "unknown mutation tool denied: " + toolName, { toolName });
+    process.exit(0);
+  }
+  const paths = collectPaths(toolName, input);
+  const resolvedPaths = paths.map((targetPath) => ({ raw: targetPath, resolved: validateWritePath(targetPath) }));
+  decision("approve", "mutation guard allowed path", { toolName, paths: resolvedPaths });
+} catch (err) {
+  decision("block", err && err.message ? err.message : String(err));
+}
+`;
+
+  const settings = {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: "Write|Edit|MultiEdit|NotebookEdit|Bash",
+          hooks: [{ type: "command", command: hookPath }],
+        },
+      ],
+    },
+  };
+
+  await fs.writeFile(hookPath, hookSource, { encoding: "utf8", mode: 0o700 });
+  await fs.writeFile(settingsPath, JSON.stringify(settings), { encoding: "utf8", mode: 0o600 });
+  await fs.writeFile(auditPath, "", { encoding: "utf8", mode: 0o600 });
+
+  return { settingsPath, hookPath, auditPath, tempDir, allowedWritePaths, allowedBashCommands };
+}
+
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, executionTarget, authToken } = input;
@@ -491,6 +693,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   }
+  const mutationGuard = await prepareClaudeMutationGuard(config, runId);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -500,6 +703,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
   const canResumeSession =
+    !mutationGuard &&
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
@@ -586,6 +790,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+    if (mutationGuard) {
+      args.push("--settings", mutationGuard.settingsPath);
+      args.push("--no-session-persistence");
+    }
     // On resumed sessions the instructions are already in the session cache;
     // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
     // per heartbeat and the Claude CLI may reject the combination outright.
@@ -623,6 +831,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(
         `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+      );
+    }
+    if (mutationGuard) {
+      commandNotes.push(
+        `Enabled Claude mutation guard for ${mutationGuard.allowedWritePaths.length} allowed write path(s); audit log ${mutationGuard.auditPath}`,
       );
     }
     if (onMeta) {
@@ -848,6 +1061,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
+    }
+    if (mutationGuard) {
+      await onLog("stdout", `[paperclip] Claude mutation guard audit log: ${mutationGuard.auditPath}\n`);
     }
     if (restoreRemoteWorkspace) {
       await onLog(
