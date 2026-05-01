@@ -42,6 +42,16 @@ process.exit(1);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeAuthRefreshHangingCodexCommand(commandPath: string, errorMessage: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.error(${JSON.stringify(errorMessage)});
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1000);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -599,6 +609,64 @@ describe("codex execute", () => {
       );
     } finally {
       vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when Codex reports auth refresh failure and then hangs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-auth-refresh-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeAuthRefreshHangingCodexCommand(
+      commandPath,
+      "Login refresh failed: refresh token expired. Please run `codex login`.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-auth-refresh-failure",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "codex-session-auth-refresh",
+          sessionParams: {
+            sessionId: "codex-session-auth-refresh",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-auth-refresh",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          timeoutSec: 2,
+          graceSec: 1,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.timedOut).toBe(false);
+      expect(result.errorCode).toBe("codex_auth_refresh_failed");
+      expect(result.errorMeta).toEqual({
+        category: "auth",
+        subtype: "refresh_failed",
+      });
+      expect(String(result.resultJson?.stderr ?? "")).toContain("Login refresh failed");
+    } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });

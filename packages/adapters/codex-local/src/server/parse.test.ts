@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexRetryNotBefore,
+  isCodexAuthRefreshFailure,
+  isCodexAuthRequiredError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -119,6 +121,14 @@ describe("isCodexTransientUpstreamError", () => {
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-04-23T04:31:00.000Z",
     );
+  });
+
+  it("does not classify login refresh failures as transient", () => {
+    const stderr = "Login refresh failed: refresh token expired. Please run `codex login`.";
+
+    expect(isCodexTransientUpstreamError({ stderr })).toBe(false);
+    expect(isCodexAuthRefreshFailure({ stderr })).toBe(true);
+    expect(isCodexAuthRequiredError({ stderr })).toBe(true);
   });
 
   it("does not classify deterministic compaction errors as transient", () => {

@@ -37,6 +37,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
+  isCodexAuthRefreshFailure,
+  isCodexAuthRequiredError,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -667,6 +669,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
+      terminalResultCleanup: {
+        graceMs: 250,
+        forceAfterMs: 1_000,
+        hasTerminalResult: ({ stdout, stderr }) =>
+          isCodexAuthRequiredError({
+            stdout,
+            stderr,
+          }),
+      },
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
           await onLog(stream, chunk);
@@ -742,6 +753,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: attempt.proc.stderr,
         errorMessage: fallbackErrorMessage,
       });
+    const authRefreshFailure = isCodexAuthRefreshFailure({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: fallbackErrorMessage,
+    });
+    const authRequired = isCodexAuthRequiredError({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: fallbackErrorMessage,
+    });
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -754,8 +775,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorCode:
         transientUpstream
           ? "codex_transient_upstream"
+          : authRefreshFailure
+            ? "codex_auth_refresh_failed"
+            : authRequired
+              ? "codex_auth_required"
           : null,
       errorFamily: transientUpstream ? "transient_upstream" : null,
+      errorMeta:
+        authRequired
+          ? {
+              category: "auth",
+              ...(authRefreshFailure ? { subtype: "refresh_failed" } : {}),
+            }
+          : undefined,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
