@@ -85,7 +85,8 @@ RUN apt-get update -qq \
     && apt-get install -y --no-install-recommends python3-venv python3-pip python3-dev build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/hermes-venv \
-    && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip
+    && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && chown -R ${USER_UID}:${USER_GID} /opt/hermes-venv
 # Hermes install happens at runtime via entrypoint (see scripts/docker-entrypoint.sh).
 # At build time we don't have the bind-mounted source yet, so we create the wrapper
 # that lazily installs hermes-agent on first invocation.
