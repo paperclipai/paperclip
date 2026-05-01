@@ -1018,6 +1018,19 @@ export function isEmptyResult(
   return !hasSubstantiveValue;
 }
 
+// Detect 429 rate-limit-exhaustion runs.  The claude/opencode binaries exit
+// cleanly (exit 0) when the Anthropic API returns 429 "out of extra usage",
+// surfacing the status only via api_error_status in the final result event.
+// Without this detection the run is bucketed as `succeeded` and never enters
+// the bounded transient retry path.
+export function isRateLimitExhausted(
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!resultJson) return false;
+  const status = resultJson.api_error_status;
+  return status === 429 || status === "429";
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -5892,8 +5905,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else {
         outcome = "failed";
       }
-      const runErrorMessage =
-        outcome === "cancelled"
+      // Override succeeded → failed when the result reports a 429 rate-limit
+      // exhaustion.  Mark it transient_upstream so scheduleBoundedRetryForRun
+      // (called downstream when outcome === "failed") schedules the retry.
+      let rateLimitExhaustedOverride = false;
+      if (outcome === "succeeded" && isRateLimitExhausted(adapterResult.resultJson)) {
+        outcome = "failed";
+        rateLimitExhaustedOverride = true;
+      }
+      const runErrorMessage = rateLimitExhaustedOverride
+        ? "Run hit Anthropic rate limit (out of extra usage); scheduled for transient retry"
+        : outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
@@ -5901,8 +5923,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 silentFailureMessage ?? adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               );
-      const runErrorCode =
-        outcome === "timed_out"
+      const runErrorCode = rateLimitExhaustedOverride
+        ? "rate_limit_exhausted"
+        : outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
@@ -5970,7 +5993,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeAdapterRecoveryMetadata({
             resultJson: adapterResult.resultJson ?? null,
-            errorFamily: adapterResult.errorFamily ?? null,
+            // Force transient_upstream when we overrode for 429 so the bounded
+            // retry contract picks it up regardless of what the adapter set.
+            errorFamily: rateLimitExhaustedOverride
+              ? "transient_upstream"
+              : (adapterResult.errorFamily ?? null),
             retryNotBefore: adapterResult.retryNotBefore ?? null,
           }),
           errorCode: runErrorCode,
