@@ -25,7 +25,11 @@ const mockHeartbeatService = vi.hoisted(() => ({
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({
+        id: "company-1",
+        attachmentMaxBytes: 10 * 1024 * 1024,
+        issuePrefix: "PAP",
+      })),
     }),
     accessService: () => ({
       canUser: vi.fn(async () => false),
@@ -76,7 +80,27 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+function boardActor() {
+  return {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  };
+}
+
+function agentActor() {
+  return {
+    type: "agent",
+    agentId: "22222222-2222-4222-8222-222222222222",
+    companyId: "company-1",
+    source: "agent_key",
+    runId: "33333333-3333-4333-8333-333333333333",
+  };
+}
+
+async function createApp(actor: Record<string, unknown> = boardActor()) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/issues.js"),
@@ -84,13 +108,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
@@ -161,5 +179,99 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-authored execution policies with user participants", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-999",
+      title: "Execution policy escalation",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp(agentActor()))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: policy,
+        status: "in_review",
+        comment: "Escalate to the board.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot author execution policies with user participants");
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-created issues with user-participant execution policies", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+
+    const res = await request(await createApp(agentActor()))
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Escalation issue",
+        executionPolicy: policy,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot author execution policies with user participants");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent PATCH attempts to assign issues directly to users", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-999",
+      title: "Direct user assignment",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp(agentActor()))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ assigneeAgentId: null, assigneeUserId: "local-board" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot assign issues to users");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

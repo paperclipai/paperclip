@@ -111,6 +111,10 @@ type ExecutionStageWakeContext = {
   allowedActions: string[];
 };
 
+function executionPolicyHasUserParticipants(policy: NormalizedExecutionPolicy | null): boolean {
+  return Boolean(policy?.stages.some((stage) => stage.participants.some((participant) => participant.type === "user")));
+}
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
@@ -596,12 +600,25 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (issue.assigneeUserId) {
+      res.status(403).json({
+        error: "Agent cannot mutate a user-assigned issue",
+        details: {
+          issueId: issue.id,
+          assigneeUserId: issue.assigneeUserId,
+          actorAgentId,
+          status: issue.status,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
       return false;
     }
     if (issue.assigneeAgentId === null) {
@@ -1813,6 +1830,16 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    if (req.actor.type === "agent" && executionPolicyHasUserParticipants(executionPolicy)) {
+      res.status(403).json({
+        error: "Agents cannot author execution policies with user participants",
+        details: {
+          companyId,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return;
+    }
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -1880,6 +1907,16 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    if (req.actor.type === "agent" && executionPolicyHasUserParticipants(executionPolicy)) {
+      res.status(403).json({
+        error: "Agents cannot author execution policies with user participants",
+        details: {
+          parentIssueId: parent.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return;
+    }
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...req.body,
       executionPolicy,
@@ -2050,6 +2087,35 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    if (
+      req.actor.type === "agent" &&
+      req.body.executionPolicy !== undefined &&
+      executionPolicyHasUserParticipants(nextExecutionPolicy)
+    ) {
+      res.status(403).json({
+        error: "Agents cannot author execution policies with user participants",
+        details: {
+          issueId: existing.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return;
+    }
+    if (
+      req.actor.type === "agent" &&
+      req.body.assigneeUserId !== undefined &&
+      req.body.assigneeUserId !== existing.assigneeUserId
+    ) {
+      res.status(403).json({
+        error: "Agents cannot assign issues to users",
+        details: {
+          issueId: existing.id,
+          assigneeUserId: req.body.assigneeUserId ?? null,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return;
+    }
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
