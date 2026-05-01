@@ -23,25 +23,27 @@ Write an inline script `/tmp/qa-walk.cjs` for each QA task, then run it:
 ```javascript
 const { chromium } = require('playwright'); // NODE_PATH makes this resolvable
 
-const browser = await chromium.launch({
-  executablePath: '/usr/bin/chromium',
-  args: ['--headless', '--no-sandbox', '--disable-dev-shm-usage'],
-});
-const page = await browser.newPage();
+(async () => {
+  const browser = await chromium.launch({
+    executablePath: '/usr/bin/chromium',
+    args: ['--headless', '--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  const page = await browser.newPage();
 
-// --- Verification checks ---
-await page.goto('http://localhost:3010/blog/my-slug');
-// Check 1: page title
-const title = await page.title();
-if (!title.includes('Expected Title')) throw new Error(`Title mismatch: ${title}`);
+  // --- Verification checks ---
+  await page.goto('http://localhost:3010/blog/my-slug');
+  // Check 1: page title
+  const title = await page.title();
+  if (!title.includes('Expected Title')) throw new Error(`Title mismatch: ${title}`);
 
-// Check 2: element visible
-await page.waitForSelector('.blog-hero-image', { timeout: 5000 });
+  // Check 2: element visible
+  await page.waitForSelector('.blog-hero-image', { timeout: 5000 });
 
-// Add checks from the plan's Verification section here
+  // Add checks from the plan's Verification section here
 
-await browser.close();
-console.log('All checks passed');
+  await browser.close();
+  console.log('All checks passed');
+})();
 ```
 
 Run it:
