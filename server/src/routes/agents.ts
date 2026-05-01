@@ -72,6 +72,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { DEFAULT_COPILOT_LOCAL_MODEL } from "@paperclipai/adapter-copilot-local";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
   DEFAULT_ACPX_LOCAL_MODE,
@@ -118,6 +119,7 @@ export function agentRoutes(
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     acpx_local: "instructionsFilePath",
     claude_local: "instructionsFilePath",
+    copilot_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
@@ -862,6 +864,10 @@ export function agentRoutes(
     }
     if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
+    if (adapterType === "copilot_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_COPILOT_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
     // OpenCode requires explicit model selection — no default

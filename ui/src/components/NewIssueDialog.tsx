@@ -100,11 +100,16 @@ import {
   ISSUE_OVERRIDE_ADAPTER_TYPES,
   type IssueModelLane,
 } from "../lib/issue-assignee-overrides";
-
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
+    { value: "", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ],
+  copilot_local: [
     { value: "", label: "Default" },
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
@@ -791,6 +796,8 @@ export function NewIssueDialog() {
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
+          : assigneeAdapterType === "copilot_local"
+            ? ISSUE_THINKING_EFFORT_OPTIONS.copilot_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
@@ -1027,8 +1034,10 @@ export function NewIssueDialog() {
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
-      : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        : assigneeAdapterType === "codex_local"
+          ? "Codex options"
+        : assigneeAdapterType === "copilot_local"
+          ? "Copilot options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
         : "Agent options";
@@ -1037,6 +1046,8 @@ export function NewIssueDialog() {
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
+      : assigneeAdapterType === "copilot_local"
+        ? ISSUE_THINKING_EFFORT_OPTIONS.copilot_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
