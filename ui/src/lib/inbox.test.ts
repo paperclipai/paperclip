@@ -634,6 +634,71 @@ describe("inbox helpers", () => {
     ]);
   });
 
+  it("keeps nested grandchild issues visible in keyboard navigation", () => {
+    const parentIssue = makeIssue("parent", true);
+    parentIssue.lastActivityAt = new Date("2026-03-11T01:00:00.000Z");
+    const childIssue = makeIssue("child", true);
+    childIssue.parentId = parentIssue.id;
+    childIssue.lastActivityAt = new Date("2026-03-11T02:00:00.000Z");
+    const grandchildIssue = makeIssue("grandchild", false);
+    grandchildIssue.parentId = childIssue.id;
+    grandchildIssue.lastActivityAt = new Date("2026-03-11T05:00:00.000Z");
+
+    const [section] = buildGroupedInboxSections(
+      getInboxWorkItems({ issues: [parentIssue, childIssue, grandchildIssue], approvals: [] }),
+      "none",
+      {},
+      { nestingEnabled: true },
+    );
+
+    expect(section?.displayItems.map((item) => item.kind === "issue" ? item.issue.id : "other")).toEqual([
+      parentIssue.id,
+    ]);
+    expect(section?.displayItems[0]?.timestamp).toBe(new Date("2026-03-11T05:00:00.000Z").getTime());
+
+    expect(
+      buildInboxKeyboardNavEntries([section!], new Set(), new Set()).map((entry) => entry.type === "top"
+        ? entry.item.kind === "issue" ? entry.item.issue.id : "other"
+        : entry.type === "child"
+          ? entry.issueId
+          : entry.groupKey),
+    ).toEqual([parentIssue.id, childIssue.id, grandchildIssue.id]);
+
+    expect(
+      buildInboxKeyboardNavEntries([section!], new Set(), new Set([childIssue.id])).map((entry) => entry.type === "top"
+        ? entry.item.kind === "issue" ? entry.item.issue.id : "other"
+        : entry.type === "child"
+          ? entry.issueId
+          : entry.groupKey),
+    ).toEqual([parentIssue.id, childIssue.id]);
+  });
+
+  it("stops cyclic child issue traversal when building keyboard navigation", () => {
+    const parentIssue = makeIssue("parent", true);
+    const childIssue = makeIssue("child", true);
+    childIssue.parentId = parentIssue.id;
+    parentIssue.parentId = childIssue.id;
+
+    const groupedSections = [
+      {
+        key: "workspace:default",
+        displayItems: [{ kind: "issue", timestamp: 2, issue: parentIssue } satisfies InboxWorkItem],
+        childrenByIssueId: new Map([
+          [parentIssue.id, [childIssue]],
+          [childIssue.id, [parentIssue]],
+        ]),
+      },
+    ];
+
+    expect(
+      buildInboxKeyboardNavEntries(groupedSections, new Set(), new Set()).map((entry) => entry.type === "top"
+        ? entry.item.kind === "issue" ? entry.item.issue.id : "other"
+        : entry.type === "child"
+          ? entry.issueId
+          : entry.groupKey),
+    ).toEqual([parentIssue.id, childIssue.id]);
+  });
+
   it("emits a group nav entry for labeled groups and omits children when the group is collapsed", () => {
     const visibleIssue = makeIssue("visible", true);
     const hiddenIssue = makeIssue("hidden", true);
