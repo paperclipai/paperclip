@@ -1,4 +1,11 @@
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import {
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useParams,
+} from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
@@ -65,7 +72,10 @@ function boardRoutes() {
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
-      <Route path="company/settings/environments" element={<CompanyEnvironments />} />
+      <Route
+        path="company/settings/environments"
+        element={<CompanyEnvironments />}
+      />
       <Route path="company/settings/access" element={<CompanyAccess />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
       <Route path="company/export/*" element={<CompanyExport />} />
@@ -88,31 +98,64 @@ function boardRoutes() {
       <Route path="projects/:projectId" element={<ProjectDetail />} />
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
-      <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
+      <Route
+        path="projects/:projectId/issues/:filter"
+        element={<ProjectDetail />}
+      />
+      <Route
+        path="projects/:projectId/workspaces/:workspaceId"
+        element={<ProjectWorkspaceDetail />}
+      />
+      <Route
+        path="projects/:projectId/workspaces"
+        element={<ProjectDetail />}
+      />
+      <Route
+        path="projects/:projectId/configuration"
+        element={<ProjectDetail />}
+      />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
       <Route path="workspaces" element={<Workspaces />} />
       <Route path="issues" element={<Issues />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/backlog" element={<Navigate to="/issues" replace />} />
+      <Route
+        path="issues/backlog"
+        element={<Navigate to="/issues" replace />}
+      />
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
       <Route path="issues/:issueId" element={<IssueDetail />} />
       {import.meta.env.DEV ? (
-        <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
+        <Route
+          path="tests/perf/long-thread"
+          element={<IssueChatLongThreadPerf />}
+        />
       ) : null}
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
-      <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
+      <Route
+        path="execution-workspaces/:workspaceId"
+        element={<ExecutionWorkspaceDetail />}
+      />
+      <Route
+        path="execution-workspaces/:workspaceId/configuration"
+        element={<ExecutionWorkspaceDetail />}
+      />
+      <Route
+        path="execution-workspaces/:workspaceId/runtime-logs"
+        element={<ExecutionWorkspaceDetail />}
+      />
+      <Route
+        path="execution-workspaces/:workspaceId/issues"
+        element={<ExecutionWorkspaceDetail />}
+      />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
-      <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
+      <Route
+        path="approvals"
+        element={<Navigate to="/approvals/pending" replace />}
+      />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
@@ -140,7 +183,12 @@ function InboxRootRedirect() {
 
 function LegacySettingsRedirect() {
   const location = useLocation();
-  return <Navigate to={`/instance/settings/general${location.search}${location.hash}`} replace />;
+  return (
+    <Navigate
+      to={`/instance/settings/general${location.search}${location.hash}`}
+      replace
+    />
+  );
 }
 
 function OnboardingRoutePage() {
@@ -148,7 +196,10 @@ function OnboardingRoutePage() {
   const { openOnboarding } = useDialogActions();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const matchedCompany = companyPrefix
-    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
+    ? (companies.find(
+        (company) =>
+          company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
+      ) ?? null)
     : null;
 
   const title = matchedCompany
@@ -171,7 +222,10 @@ function OnboardingRoutePage() {
           <Button
             onClick={() =>
               matchedCompany
-                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                ? openOnboarding({
+                    initialStep: 2,
+                    companyId: matchedCompany.id,
+                  })
                 : openOnboarding()
             }
           >
@@ -184,11 +238,16 @@ function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
-  const { companies, selectedCompany, loading, error, reloadCompanies } = useCompany();
+  const { companies, selectedCompany, loading, error, reloadCompanies } =
+    useCompany();
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-foreground">Loading...</div>;
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-foreground">
+        Loading...
+      </div>
+    );
   }
 
   if (error) {
@@ -223,10 +282,15 @@ function CompanyRootRedirect() {
 
 function UnprefixedBoardRedirect() {
   const location = useLocation();
-  const { companies, selectedCompany, loading, error, reloadCompanies } = useCompany();
+  const { companies, selectedCompany, loading, error, reloadCompanies } =
+    useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-foreground">Loading...</div>;
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-foreground">
+        Loading...
+      </div>
+    );
   }
 
   if (error) {
@@ -290,19 +354,28 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
-        <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
+        <Route
+          path="tests/perf/long-thread"
+          element={<IssueChatLongThreadPerf />}
+        />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
-          <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
+          <Route
+            path="instance"
+            element={<Navigate to="/instance/settings/general" replace />}
+          />
           <Route path="instance/settings" element={<Layout />}>
             <Route index element={<Navigate to="general" replace />} />
             <Route path="profile" element={<ProfileSettings />} />
             <Route path="general" element={<InstanceGeneralSettings />} />
             <Route path="access" element={<InstanceAccess />} />
             <Route path="heartbeats" element={<InstanceSettings />} />
-            <Route path="experimental" element={<InstanceExperimentalSettings />} />
+            <Route
+              path="experimental"
+              element={<InstanceExperimentalSettings />}
+            />
             <Route path="plugins" element={<PluginManager />} />
             <Route path="plugins/:pluginId" element={<PluginSettings />} />
             <Route path="adapters" element={<AdapterManager />} />
@@ -311,7 +384,10 @@ export function App() {
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
-          <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
+          <Route
+            path="routines/:routineId"
+            element={<UnprefixedBoardRedirect />}
+          />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
@@ -319,21 +395,60 @@ export function App() {
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
+          <Route
+            path="agents/:agentId/:tab"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="agents/:agentId/runs/:runId"
+            element={<UnprefixedBoardRedirect />}
+          />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/workspaces" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+          <Route
+            path="projects/:projectId"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="projects/:projectId/overview"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="projects/:projectId/issues"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="projects/:projectId/issues/:filter"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="projects/:projectId/workspaces"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="projects/:projectId/workspaces/:workspaceId"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="projects/:projectId/configuration"
+            element={<UnprefixedBoardRedirect />}
+          />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
+          <Route
+            path="execution-workspaces/:workspaceId"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="execution-workspaces/:workspaceId/configuration"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="execution-workspaces/:workspaceId/runtime-logs"
+            element={<UnprefixedBoardRedirect />}
+          />
+          <Route
+            path="execution-workspaces/:workspaceId/issues"
+            element={<UnprefixedBoardRedirect />}
+          />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>
