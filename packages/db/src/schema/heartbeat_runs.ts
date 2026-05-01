@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -54,6 +55,18 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Generated stored columns mirroring the hot context_snapshot keys.
+    // See migration 0079. Populated automatically by Postgres on insert /
+    // update; do not write to these directly. Reading them avoids per-row
+    // JSONB detoast on the heartbeat list query path.
+    contextIssueId: text("context_issue_id").generatedAlwaysAs(sql`context_snapshot ->> 'issueId'`),
+    contextTaskId: text("context_task_id").generatedAlwaysAs(sql`context_snapshot ->> 'taskId'`),
+    contextTaskKey: text("context_task_key").generatedAlwaysAs(sql`context_snapshot ->> 'taskKey'`),
+    contextCommentId: text("context_comment_id").generatedAlwaysAs(sql`context_snapshot ->> 'commentId'`),
+    contextWakeCommentId: text("context_wake_comment_id").generatedAlwaysAs(sql`context_snapshot ->> 'wakeCommentId'`),
+    contextWakeReason: text("context_wake_reason").generatedAlwaysAs(sql`context_snapshot ->> 'wakeReason'`),
+    contextWakeSource: text("context_wake_source").generatedAlwaysAs(sql`context_snapshot ->> 'wakeSource'`),
+    contextWakeTriggerDetail: text("context_wake_trigger_detail").generatedAlwaysAs(sql`context_snapshot ->> 'wakeTriggerDetail'`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

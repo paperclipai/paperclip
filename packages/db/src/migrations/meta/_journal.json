@@ -554,6 +554,13 @@
       "when": 1777400003000,
       "tag": "0078_synthetic_ssh_probe_results",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1777400004000,
+      "tag": "0079_heartbeat_runs_context_columns",
+      "breakpoints": true
     }
   ]
 }
