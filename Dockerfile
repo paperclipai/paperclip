@@ -3,7 +3,7 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 dos2unix \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
@@ -60,6 +60,9 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends dos2unix \
+  && rm -rf /var/lib/apt/lists/*
 RUN dos2unix /usr/local/bin/docker-entrypoint.sh
 RUN apt-get -y remove dos2unix && apt-get -y autoremove && apt-get -y autoclean
 
