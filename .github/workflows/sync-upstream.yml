@@ -1,0 +1,70 @@
+name: Sync upstream
+
+# Syncs upstream/master into this fork's master, then re-applies fork overrides
+# for any upstream workflow files that should not run in the fork (docker.yml, release.yml).
+# Triggers assemble-local.yml automatically via the master push.
+#
+# Run manually or on a schedule to keep master current with upstream.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # daily at 2am EST (UTC-5)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: runners-farhoodlabs
+    timeout-minutes: 10
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git 2>/dev/null || true
+          git fetch upstream
+
+      - name: Fast-forward master to upstream
+        run: |
+          git merge --ff-only upstream/master || {
+            echo "::error::Cannot fast-forward master to upstream/master — diverged history"
+            echo "::error::Resolve manually: git fetch upstream && git rebase upstream/master"
+            exit 1
+          }
+
+      - name: Re-apply fork workflow overrides
+        run: |
+          # These files are overridden in the fork to prevent upstream workflows from
+          # running on fork pushes. Re-apply after each upstream sync.
+          OVERRIDE_FILES=(
+            ".github/workflows/docker.yml"
+            ".github/workflows/release.yml"
+          )
+          changed=false
+          for f in "${OVERRIDE_FILES[@]}"; do
+            fork_version=$(git show origin/master:"$f" 2>/dev/null || true)
+            current=$(cat "$f" 2>/dev/null || true)
+            if [ "$fork_version" != "$current" ]; then
+              echo "Re-applying fork override: $f"
+              git checkout origin/master -- "$f"
+              changed=true
+            fi
+          done
+          if [ "$changed" = true ]; then
+            git add "${OVERRIDE_FILES[@]}"
+            git commit -m "chore(ci): re-apply fork workflow overrides after upstream sync"
+          fi
+
+      - name: Push master
+        run: git push origin master

@@ -1,0 +1,193 @@
+name: Assemble local branch
+
+# Triggers on every master push (i.e. after syncing upstream) and on demand.
+# Builds the `local` branch: master + fork overlay + cherry-picked pending upstream PRs.
+# Syncs build-dev.yml to the `dev` branch so every dev push triggers a build.
+#
+# PR entries support an optional "exclude:BRANCH" suffix to handle cases where
+# one PR branch was rebased onto another. The exclude branch's commits are subtracted
+# from the cherry-pick range so they aren't double-applied.
+#
+# When upstream merges a PR, remove its entry from PR_CHERRY_PICK or PR_SQUASH below.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  assemble:
+    runs-on: runners-farhoodlabs
+    timeout-minutes: 15
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch all remotes
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git 2>/dev/null || true
+          git fetch --all --quiet
+
+      - name: Assemble local branch
+        run: |
+          set -euo pipefail
+
+          # Start local from master (which mirrors upstream)
+          git checkout -B local origin/master
+
+          # Apply fork overlay: Dockerfile, build workflows, CLAUDE.md
+          cp .farhoodlabs/Dockerfile Dockerfile
+          cp .farhoodlabs/CLAUDE.md CLAUDE.md
+          mkdir -p .github/workflows
+          cp .farhoodlabs/.github/workflows/build-prod.yml .github/workflows/build-prod.yml
+          cp .farhoodlabs/.github/workflows/build-dev.yml .github/workflows/build-dev.yml
+          git add Dockerfile CLAUDE.md .github/workflows/build-prod.yml .github/workflows/build-dev.yml
+          git commit -m "chore: apply fork overlay from .farhoodlabs"
+
+          # --- PRs to cherry-pick commit-by-commit (clean, no merge commits) ---
+          # Format: "PR-number branch-name [exclude:base-branch]"
+          # Use exclude: when a branch was rebased onto another PR branch to avoid double-applying commits.
+          # Remove an entry here when upstream merges the PR.
+          PR_CHERRY_PICK=(
+            "3237 skill-pat-feature"
+            "3351 skill-scan-refresh exclude:skill-pat-feature"
+            "4162 fix/far-108-k8s-adapter-reaper-liveness"
+          )
+
+          for entry in "${PR_CHERRY_PICK[@]}"; do
+            # Parse: pr_num, branch, optional exclude branch
+            pr_num=$(echo "$entry" | awk '{print $1}')
+            branch=$(echo "$entry" | awk '{print $2}')
+            exclude_branch=$(echo "$entry" | grep -oP '(?<=exclude:)\S+' || true)
+            remote_branch="origin/$branch"
+            exclude_arg=""
+            if [ -n "$exclude_branch" ]; then
+              exclude_arg="--not origin/$exclude_branch"
+            fi
+
+            if ! git rev-parse "$remote_branch" &>/dev/null; then
+              echo "WARNING: $remote_branch not found, skipping PR #$pr_num"
+              continue
+            fi
+
+            # Exclude commits already on origin/master (fork-overlay/CI infra
+            # that landed on master via the .farhoodlabs/ overlay path). PR
+            # branches sometimes pull these in via `git merge origin/master`,
+            # but cherry-picking them onto `local` (which is already master)
+            # is redundant and produces conflicts on the assemble-local file.
+            mapfile -t commits < <(git log --no-merges --reverse --format="%H" upstream/master.."$remote_branch" ^origin/master $exclude_arg)
+
+            if [ ${#commits[@]} -eq 0 ]; then
+              echo "PR #$pr_num ($branch): no unique commits — likely merged upstream, skipping"
+              continue
+            fi
+
+            echo "PR #$pr_num ($branch): cherry-picking ${#commits[@]} commit(s)"
+            for sha in "${commits[@]}"; do
+              git cherry-pick "$sha" || {
+                # If the cherry-pick produced an empty result (commit's content
+                # is already in HEAD via auto-merge), skip it instead of failing.
+                # State signature: CHERRY_PICK_HEAD set, no unmerged paths,
+                # nothing staged.
+                if [ -f .git/CHERRY_PICK_HEAD ] \
+                  && [ -z "$(git diff --name-only --diff-filter=U)" ] \
+                  && git diff --staged --quiet; then
+                  echo "PR #$pr_num: $sha became empty after merge, skipping"
+                  git cherry-pick --skip
+                  continue
+                fi
+                echo "::error::Cherry-pick conflict at $sha from PR #$pr_num ($branch)"
+                echo "::error::Resolve the conflict, force-push the branch, then re-run this workflow"
+                git cherry-pick --abort
+                exit 1
+              }
+            done
+          done
+
+          # --- PRs to apply as a single squash (complex history with merge commits) ---
+          # git merge --squash applies the net final diff of the branch, bypassing
+          # intra-PR commit ordering issues. CI commits that cancel out are ignored.
+          # Remove an entry here when upstream merges the PR.
+          PR_SQUASH=(
+            "3987 feat/company-portability-complete"
+          )
+
+          for entry in "${PR_SQUASH[@]}"; do
+            pr_num="${entry%% *}"
+            branch="${entry#* }"
+            remote_branch="origin/$branch"
+
+            if ! git rev-parse "$remote_branch" &>/dev/null; then
+              echo "WARNING: $remote_branch not found, skipping PR #$pr_num"
+              continue
+            fi
+
+            # Check if the branch has any unique non-merge commits
+            unique=$(git log --no-merges --oneline upstream/master.."$remote_branch" | wc -l)
+            if [ "$unique" -eq 0 ]; then
+              echo "PR #$pr_num ($branch): no unique commits — likely merged upstream, skipping"
+              continue
+            fi
+
+            echo "PR #$pr_num ($branch): applying as squash ($unique non-merge commits)"
+            git merge --squash "$remote_branch" || {
+              echo "::error::Squash conflict for PR #$pr_num ($branch)"
+              git merge --abort 2>/dev/null || git reset --hard HEAD
+              exit 1
+            }
+            # Only commit if there are staged changes
+            git diff --staged --quiet || git commit -m "feat: apply PR #$pr_num ($branch)"
+          done
+
+          git push origin local --force
+          echo "local branch assembled and pushed"
+
+      - name: Trigger prod build
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-prod.yml/dispatches \
+            -d '{"ref":"local"}'
+
+      - name: Sync build-dev.yml to dev branch
+        run: |
+          set -euo pipefail
+
+          if ! git rev-parse origin/dev &>/dev/null; then
+            echo "dev branch not found on origin, skipping"
+            exit 0
+          fi
+
+          canonical=".farhoodlabs/.github/workflows/build-dev.yml"
+          target=".github/workflows/build-dev.yml"
+
+          if git show origin/dev:"$target" 2>/dev/null | diff --brief - "$canonical" &>/dev/null; then
+            echo "build-dev.yml on dev is up to date, skipping"
+            exit 0
+          fi
+
+          echo "Syncing build-dev.yml to dev branch..."
+          # Save canonical content before switching branches (.farhoodlabs/ only exists on master)
+          tmp=$(mktemp)
+          cp "$canonical" "$tmp"
+          git checkout -B dev-wf-sync origin/dev
+          mkdir -p "$(dirname "$target")"
+          cp "$tmp" "$target"
+          rm "$tmp"
+          git add "$target"
+          git commit -m "chore(ci): sync build-dev.yml from .farhoodlabs"
+          git push origin dev-wf-sync:dev
+          echo "build-dev.yml synced to dev"
