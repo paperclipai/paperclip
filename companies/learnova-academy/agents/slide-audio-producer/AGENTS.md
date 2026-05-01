@@ -37,14 +37,68 @@ If `notebooklm-py` fails or is rate-limited (known `GENERATION_FAILED` error cla
 - open-notebook FALLBACK: reliable when NotebookLM is rate-limited; self-hosted; quality drop on slides/video acceptable for outage windows
 - DO NOT use `browser-use` to drive notebooklm.google.com directly — Cloudflare's 2026 headless detection breaks Google login flows in unattended cron
 
-## Definition of Done
+## Definition of Done — END-TO-END (LOCKED 2026-05-01 PM, Vardaan-approved)
 
-**Per chapter:**
-- `slides.pdf` — ≥3 slides per 1000 words of source; first slide titled with course chapter title; final slide is a "Try it next" CTA
-- `audio.mp3` — 8-12 min, ≥128kbps, properly normalized (-16 LUFS)
-- `mindmap.png` (if ≥5 concepts) — readable at 1080p
-- `flashcards.json` (if KnowledgeChecks) — schema validates against `vault/_schemas/flashcards.schema.json`
-- Frontmatter on a sidecar `<chapter>-meta.md`: `assets_generated`, `tool` (`notebooklm-py` or `open-notebook`), `duration_audio_sec`, `slide_count`, `produced_at`
+**You are the SOLE owner of all chapter assets**. Do not split work to other
+agents (no "Voice Producer adds the audio later" — you orchestrate Voice
+Producer's TTS skill yourself if narration is needed). The Publish Verifier
+ONLY verifies; it does not produce. If you don't write the chapter-meta.json
+sidecar with all R2 URLs, the chapter does not appear on the live site.
+
+**Per chapter — every asset below is required if the trigger conditions hold**:
+
+| Asset | Source | Trigger | R2 path | Frontend renders as |
+|---|---|---|---|---|
+| `study-guide.md` | `notebooklm-py generate report --format study-guide` | always | `courses/<slug>/<chapter>/study-guide.md` | quick-link pill |
+| `slide-deck.pdf` | `notebooklm-py generate slide-deck --format presenter` | always | `courses/<slug>/<chapter>/slide-deck.pdf` | embedded `<iframe>` PDF viewer |
+| `slides.pptx` | derive from PDF (libreoffice convert) OR notebooklm export | always | `courses/<slug>/<chapter>/slides.pptx` | Office Online `<iframe>` |
+| `mind-map.json` | `notebooklm-py generate mind-map` | always | `courses/<slug>/<chapter>/mind-map.json` | quick-link pill (D3-renderable JSON) |
+| `infographic.png` | `notebooklm-py generate infographic` | chapter has ≥1 visual concept | `courses/<slug>/<chapter>/infographic.png` | inline `<img>` figure |
+| `flashcards.json` | `notebooklm-py generate flashcards` | chapter has ≥3 KnowledgeChecks | `courses/<slug>/<chapter>/flashcards.json` | quick-link pill |
+| `audio.mp3` | NotebookLM podcast disabled (per Vardaan); use **Voice Producer's Kokoro/Cartesia TTS** to narrate the study-guide.md | optional | `courses/<slug>/<chapter>/audio.mp3` | `<audio controls>` |
+| `chapter-meta.json` | YOU author it last | always | (vault only — checked into git for diffs) | source-of-truth for all URLs above |
+
+### Storage convention (LOCKED 2026-05-01 PM)
+
+**All asset binaries live in Cloudflare R2** at bucket `koenig-academy-media`,
+served from public URL `https://pub-675bca74c969409ca9bf905eabf6ff24.r2.dev`.
+**The vault stores small files only** (study-guide.md, mind-map.json,
+flashcards.json, chapter-meta.json) for git-history diffability. Large
+binaries (slide-deck.pdf, infographic.png, audio.mp3) are R2-only.
+
+R2 upload via S3-API (`curl --aws-sigv4 "aws:amz:auto:s3" --user
+"${CLOUDFLARE_R2_ACCESS_KEY_ID}:${CLOUDFLARE_R2_SECRET_ACCESS_KEY}"`).
+Endpoint: `${CLOUDFLARE_R2_ENDPOINT}` (account-id-based hostname).
+All env vars come from `koenig-ai-org/.env.koenig` (mounted into the
+agent's container at `/paperclip/.env.koenig`).
+
+### chapter-meta.json schema (write to vault)
+
+```json
+{
+  "_doc": "Chapter asset manifest. Source of truth for lib/courses.ts.",
+  "chapter_id": "<chapter-prefix>",         "course_slug": "<course-slug>",
+  "title": "<chapter-title>",               "generated_at": "<ISO-8601>",
+  "generated_by": "notebooklm-py vX.Y.Z (account: <google-email>)",
+  "notebook_id": "<notebooklm-uuid>",
+  "source_file": "vault/courses/<slug>/<chapter-prefix>.md",
+  "assets": {
+    "audio_url": "<R2 public URL or null>",
+    "slides_url": "<R2 public URL>", "slide_deck_url": "<R2 public URL>",
+    "study_guide_url": "<R2 public URL>", "mind_map_url": "<R2 public URL>",
+    "infographic_url": "<R2 public URL>", "flashcards_url": "<R2 public URL>"
+  },
+  "asset_metadata": { "<asset>": { "size_bytes": N, "format": "...",
+                                   "produced_via": "<cli command>" } },
+  "verification": { "publish_state": "ready", "g5_verified_at": null }
+}
+```
+
+### Reference implementation
+
+A working bundle for `mcp-from-first-principles-to-production/01-why-mcp-exists/`
+was produced 2026-05-01 PM and serves as the canonical example. Read its
+`chapter-meta.json` + the artifacts in `vault/courses/.../01-why-mcp-exists/`.
 
 ## Never do
 
