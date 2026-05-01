@@ -69,7 +69,11 @@ export function sidebarBadgeRoutes(db: Db) {
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
     });
-    const summary = await dashboard.summary(companyId);
+    // sidebar-badges only needs agent.error and costs from the dashboard
+    // payload, so call core() instead of summary() to skip the issue-activity
+    // GROUP BY queries. Sidebar polls run on every page; avoid paying the
+    // issues-table cost on every poll.
+    const summary = await dashboard.core(companyId);
     const hasFailedRuns = badges.failedRuns > 0;
     const alertsCount =
       (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +

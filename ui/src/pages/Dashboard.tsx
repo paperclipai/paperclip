@@ -80,6 +80,21 @@ export function Dashboard() {
   const issueActivity = data?.issueActivity ?? [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
+  // Rolling-deploy guard: if the UI bundle ships before (or alongside) the
+  // server bundle, /api/companies/<id>/dashboard might return the older
+  // shape without `recentIssues` / `issueActivity`, and the falsy fallbacks
+  // above would render an empty dashboard with no signal that anything is
+  // wrong. Warn loudly once per page load so the regression is observable.
+  const deploySkewWarned = useRef(false);
+  useEffect(() => {
+    if (deploySkewWarned.current) return;
+    if (!data) return;
+    if (data.recentIssues === undefined || data.issueActivity === undefined) {
+      deploySkewWarned.current = true;
+      console.warn("[paperclip] dashboard summary missing recentIssues/issueActivity — likely a server/client deploy skew");
+    }
+  }, [data]);
+
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
       window.clearTimeout(timer);

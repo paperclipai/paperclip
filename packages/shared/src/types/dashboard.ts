@@ -1,3 +1,5 @@
+import type { IssuePriority, IssueStatus } from "../constants.js";
+
 export interface DashboardRunActivityDay {
   date: string;
   succeeded: number;
@@ -7,36 +9,37 @@ export interface DashboardRunActivityDay {
 }
 
 /**
- * Daily breakdown of issues created in a 14-day window, sliced by both
- * priority and status. The dashboard charts (PriorityChart, IssueStatusChart)
- * render bars per day; this lets the server pre-aggregate so the client doesn't
- * have to ship the entire issue list.
+ * Daily breakdown of issues bucketed by their `createdAt` day. `byPriority`
+ * and `byStatus` reflect each issue's *current* priority/status against the
+ * day it was created — they are not historical state-on-day-X. Producer
+ * zero-fills every enum key, so consumers can iterate without optional
+ * chaining.
  */
 export interface DashboardIssueActivityDay {
   date: string;
   total: number;
-  byPriority: Partial<Record<"critical" | "high" | "medium" | "low" | "none", number>>;
-  byStatus: Partial<Record<"backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled", number>>;
+  byPriority: Record<IssuePriority, number>;
+  byStatus: Record<IssueStatus, number>;
 }
 
 /**
- * Trimmed issue projection used by the dashboard "Recent Issues" panel and
- * by the activity feed's `entityNameMap` / `entityTitleMap` to resolve issue
- * references to identifiers and titles. Excludes description, jsonb columns,
- * labels, and run state — those are loaded on demand by IssueDetail.
+ * Trimmed issue projection used by the dashboard "Recent Issues" panel
+ * (renders the top 10) and the activity feed's id->identifier/title lookup
+ * map. Omits description, labels, and runtime state; the full issue is
+ * fetched on demand from the issue-detail endpoint.
  */
 export interface DashboardRecentIssue {
   id: string;
   identifier: string | null;
   title: string;
-  status: string;
-  priority: string;
+  status: IssueStatus;
+  priority: IssuePriority;
   projectId: string | null;
   parentId: string | null;
   assigneeAgentId: string | null;
-  createdAt: Date | string;
-  updatedAt: Date | string;
-  lastActivityAt: Date | string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  lastActivityAt: Date;
 }
 
 export interface DashboardSummary {

@@ -1,4 +1,4 @@
-import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { DashboardIssueActivityDay, DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 
@@ -130,10 +130,9 @@ const priorityColors: Record<string, string> = {
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
-type IssueActivityDay = { date: string; byPriority?: Record<string, number>; byStatus?: Record<string, number> };
 type PriorityChartProps =
   | { issues: { priority: string; createdAt: Date }[]; activity?: never }
-  | { activity: IssueActivityDay[]; issues?: never };
+  | { activity: DashboardIssueActivityDay[]; issues?: never };
 
 export function PriorityChart(props: PriorityChartProps) {
   const days = getLast14Days();
@@ -211,7 +210,7 @@ const statusLabels: Record<string, string> = {
 
 type IssueStatusChartProps =
   | { issues: { status: string; createdAt: Date }[]; activity?: never }
-  | { activity: IssueActivityDay[]; issues?: never };
+  | { activity: DashboardIssueActivityDay[]; issues?: never };
 
 export function IssueStatusChart(props: IssueStatusChartProps) {
   const days = getLast14Days();
