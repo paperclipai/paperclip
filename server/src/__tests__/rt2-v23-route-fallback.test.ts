@@ -58,6 +58,7 @@ const mocks = vi.hoisted(() => ({
     listRewriteProposals: vi.fn(),
     requestRewriteApproval: vi.fn(),
     decideRewriteProposal: vi.fn(),
+    applyApprovedWikiRewrite: vi.fn(),
   },
   workBoard: {
     createInboundDraft: vi.fn(),
@@ -559,6 +560,27 @@ describe("RT2 v2.3 fallback route contracts", () => {
       createdAt: "2026-04-29T00:00:00.000Z",
       updatedAt: "2026-04-29T00:00:00.000Z",
     });
+    mocks.jarvis.applyApprovedWikiRewrite.mockResolvedValue({
+      id: "proposal-1",
+      companyId,
+      projectId: null,
+      targetType: "wiki_page",
+      targetId: "wiki-1",
+      targetKey: "daily/test.md",
+      title: "Rewrite test",
+      status: "applied",
+      riskLevel: "low",
+      proposedDiff: { before: "old", after: "new", summary: "Rewrite proposal changes 3 chars to 3 chars." },
+      rationale: null,
+      citations: [],
+      contradictionIds: [],
+      approvalId: "approval-1",
+      approvalRoute: "/approvals/approval-1",
+      latestEval: null,
+      createdBy: "board-user",
+      createdAt: "2026-04-29T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:01:00.000Z",
+    });
 
     mocks.workBoard.getBoardOverview.mockResolvedValue({
       companyId,
@@ -877,7 +899,9 @@ describe("RT2 v2.3 fallback route contracts", () => {
     const directApply = await request(app)
       .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/proposal-1/apply`)
       .send({});
-    expect(directApply.status).toBe(404);
+    expect(directApply.status).toBe(200);
+    expect(directApply.body).toEqual(expect.objectContaining({ status: "applied" }));
+    expect(mocks.jarvis.applyApprovedWikiRewrite).toHaveBeenCalledWith(companyId, "proposal-1", "board-user", undefined);
 
     const approval = await request(app)
       .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/proposal-1/request-approval`)

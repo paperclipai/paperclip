@@ -15,6 +15,7 @@ import {
   rt2V33GraphNodes,
   rt2V33TaskParticipants,
   rt2V33TaskProfiles,
+  rt2V33DailyWikiPages,
   rt2V33WikiPages,
 } from "@paperclipai/db";
 import type {
@@ -28,7 +29,7 @@ import type {
   Rt2JarvisRewriteProposalList,
   Rt2JarvisRewriteRiskLevel,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { conflict, notFound } from "../errors.js";
 import { rt2HybridSearchService, type SearchResult } from "./rt2-hybrid-search.js";
 
 type TaskContext = {
@@ -80,6 +81,14 @@ function asMetadata(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function summarizeWikiRewrite(markdown: string): string[] {
+  return markdown
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .slice(0, 3);
 }
 
 export function rt2JarvisService(db: Db) {
@@ -402,6 +411,119 @@ export function rt2JarvisService(db: Db) {
           targetType: proposal.targetType,
           targetKey: proposal.targetKey,
           riskLevel: proposal.riskLevel,
+        },
+      });
+
+      return mapRewriteProposal(updated);
+    },
+
+    applyApprovedWikiRewrite: async (
+      companyId: string,
+      proposalId: string,
+      actorId = "system",
+      reason?: string,
+    ) => {
+      const proposal = await getRewriteProposal(companyId, proposalId);
+      if (proposal.targetType !== "wiki_page" && proposal.targetType !== "daily_wiki_page") {
+        throw conflict("Only wiki rewrite proposals can be applied to living memory pages");
+      }
+      if (proposal.status !== "approved") {
+        throw conflict("Only approved Jarvis wiki rewrite proposals can be applied");
+      }
+
+      const now = new Date();
+      const appliedAt = now.toISOString();
+      const before = proposal.proposedDiff.before.trim();
+      const after = proposal.proposedDiff.after;
+      const citationIds = proposal.citations.map((citation) => citation.id);
+
+      if (proposal.targetType === "wiki_page") {
+        const row = await db.select()
+          .from(rt2V33WikiPages)
+          .where(and(eq(rt2V33WikiPages.companyId, companyId), eq(rt2V33WikiPages.pageKey, proposal.targetKey)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw notFound("RT2 wiki page not found for Jarvis rewrite proposal");
+        if (row.markdown.trim() !== before) {
+          throw conflict("RT2 wiki page changed since the Jarvis rewrite proposal was created");
+        }
+        const metadata = asMetadata(row.metadata);
+        const relatedPageKeys = Array.isArray(metadata.relatedPageKeys)
+          ? metadata.relatedPageKeys.filter((item): item is string => typeof item === "string")
+          : [];
+        await db.update(rt2V33WikiPages).set({
+          markdown: after,
+          summary: summarizeWikiRewrite(after),
+          metadata: {
+            ...metadata,
+            wikillmCompatible: true,
+            provenance: {
+              source: "jarvis_rewrite",
+              sourceEventIds: row.sourceEventIds ?? [],
+              sourceEventTypes: [],
+              entityRefs: [],
+              generatedAt: appliedAt,
+            },
+            updateEvidence: {
+              reason: reason ?? "jarvis_approved_wiki_rewrite",
+              touchedPageKeys: [proposal.targetKey, ...relatedPageKeys],
+              sourceEventIds: row.sourceEventIds ?? [],
+              sourceEventCount: row.sourceEventIds?.length ?? 0,
+              relatedPageKeys,
+              generatedAt: appliedAt,
+              actorId,
+              proposalId,
+              citationIds,
+            },
+            jarvisRewrite: {
+              proposalId,
+              appliedBy: actorId,
+              appliedAt,
+              reason: reason ?? null,
+            },
+          },
+          updatedAt: now,
+        }).where(and(eq(rt2V33WikiPages.companyId, companyId), eq(rt2V33WikiPages.pageKey, proposal.targetKey)));
+      } else {
+        const row = await db.select()
+          .from(rt2V33DailyWikiPages)
+          .where(and(eq(rt2V33DailyWikiPages.companyId, companyId), eq(rt2V33DailyWikiPages.pageKey, proposal.targetKey)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw notFound("RT2 daily wiki page not found for Jarvis rewrite proposal");
+        if (row.markdown.trim() !== before) {
+          throw conflict("RT2 daily wiki page changed since the Jarvis rewrite proposal was created");
+        }
+        await db.update(rt2V33DailyWikiPages).set({
+          markdown: after,
+          shortSummary: summarizeWikiRewrite(after),
+          updatedAt: now,
+        }).where(and(eq(rt2V33DailyWikiPages.companyId, companyId), eq(rt2V33DailyWikiPages.pageKey, proposal.targetKey)));
+      }
+
+      const [updated] = await db.update(rt2JarvisRewriteProposals).set({
+        status: "applied",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(rt2JarvisRewriteProposals.companyId, companyId),
+        eq(rt2JarvisRewriteProposals.id, proposalId),
+      )).returning();
+
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: actorId === "system" ? "system" : "user",
+        actorId,
+        action: "rt2.jarvis.wiki_rewrite_applied",
+        entityType: proposal.targetType,
+        entityId: proposal.targetKey,
+        details: {
+          proposalId,
+          targetType: proposal.targetType,
+          targetKey: proposal.targetKey,
+          citationIds,
+          contradictionIds: proposal.contradictionIds,
+          reason: reason ?? null,
+          appliedAt,
         },
       });
 
@@ -754,6 +876,7 @@ function summarizeRewriteProposals(proposals: Rt2JarvisRewriteProposalList["prop
     proposed: proposals.filter((proposal) => proposal.status === "proposed").length,
     approvalRequested: proposals.filter((proposal) => proposal.status === "approval_requested").length,
     approved: proposals.filter((proposal) => proposal.status === "approved").length,
+    applied: proposals.filter((proposal) => proposal.status === "applied").length,
     rejected: proposals.filter((proposal) => proposal.status === "rejected").length,
     blocked: proposals.filter((proposal) => proposal.status === "blocked").length,
     highRisk: proposals.filter((proposal) => proposal.riskLevel === "high").length,

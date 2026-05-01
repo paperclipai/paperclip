@@ -58,6 +58,16 @@ export const rt2JarvisRuntimeApi = {
       {},
     ),
 
+  applyApprovedWikiRewrite: (
+    companyId: string,
+    proposalId: string,
+    reason?: string,
+  ): Promise<Rt2JarvisRewriteProposal> =>
+    api.post<Rt2JarvisRewriteProposal>(
+      `/companies/${encodeURIComponent(companyId)}/rt2/jarvis/rewrite-proposals/${encodeURIComponent(proposalId)}/apply`,
+      { reason },
+    ),
+
   approveQualityReview: (
     companyId: string,
     evaluationId: string,

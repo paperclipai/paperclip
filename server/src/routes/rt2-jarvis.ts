@@ -50,6 +50,14 @@ export function rt2JarvisRoutes(db: Db) {
     res.json(await svc.decideRewriteProposal(companyId, proposalId, "rejected", actorId, req.body?.reason));
   });
 
+  router.post("/companies/:companyId/rt2/jarvis/rewrite-proposals/:proposalId/apply", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const proposalId = req.params.proposalId as string;
+    assertCompanyAccess(req, companyId);
+    const actorId = String(req.actor.userId ?? "system");
+    res.json(await svc.applyApprovedWikiRewrite(companyId, proposalId, actorId, req.body?.reason));
+  });
+
   router.get("/companies/:companyId/rt2/jarvis/tasks/:taskIssueId/advice", async (req, res) => {
     const companyId = req.params.companyId as string;
     const taskIssueId = req.params.taskIssueId as string;

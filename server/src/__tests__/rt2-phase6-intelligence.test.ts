@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   activityLog,
   approvals,
@@ -456,7 +457,7 @@ describeEmbeddedPostgres("rt2 phase 6 intelligence", () => {
     const directApply = await request(app)
       .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/${created.body.id}/apply`)
       .send({});
-    expect(directApply.status).toBe(404);
+    expect(directApply.status).toBe(409);
 
     const approval = await request(app)
       .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/${created.body.id}/request-approval`)
@@ -467,6 +468,67 @@ describeEmbeddedPostgres("rt2 phase 6 intelligence", () => {
       status: "approval_requested",
       approvalId: expect.any(String),
       approvalRoute: expect.stringContaining("/approvals/"),
+    }));
+  });
+
+  it("applies approved Jarvis wiki rewrites back to the living memory page with audit evidence", async () => {
+    await seedRt2Task();
+    const app = createApp(companyId);
+    const targetKey = `topics/projects/${projectId}.md`;
+    const before = "Revenue forecast automation should reuse live task and deliverable evidence.";
+    const after = "Revenue forecast automation should cite live task, deliverable, wiki, and graph evidence before Jarvis answers.";
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals`)
+      .send({
+        targetType: "wiki_page",
+        targetId: "wiki-1",
+        targetKey,
+        projectId,
+        title: "Apply grounded project wiki rewrite",
+        before,
+        after,
+        citations: [
+          {
+            id: "wiki:fresh",
+            sourceType: "wiki_page",
+            sourceId: "wiki-1",
+            sourceKey: targetKey,
+            freshness: "fresh",
+            contradictionStatus: "none",
+            score: 100,
+          },
+        ],
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body).toEqual(expect.objectContaining({ status: "proposed", riskLevel: "low" }));
+
+    const approved = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/${created.body.id}/approve`)
+      .send({ reason: "Grounded rewrite accepted." });
+    expect(approved.status).toBe(200);
+    expect(approved.body.status).toBe("approved");
+
+    const applied = await request(app)
+      .post(`/api/companies/${companyId}/rt2/jarvis/rewrite-proposals/${created.body.id}/apply`)
+      .send({ reason: "Operator applied approved wiki draft." });
+    expect(applied.status).toBe(200);
+    expect(applied.body).toEqual(expect.objectContaining({ status: "applied" }));
+
+    const [page] = await db.select().from(rt2V33WikiPages).where(eq(rt2V33WikiPages.pageKey, targetKey));
+    expect(page?.markdown).toBe(after);
+    expect(page?.metadata).toEqual(expect.objectContaining({
+      wikillmCompatible: true,
+      updateEvidence: expect.objectContaining({
+        reason: "Operator applied approved wiki draft.",
+        proposalId: created.body.id,
+        citationIds: ["wiki:fresh"],
+      }),
+      jarvisRewrite: expect.objectContaining({
+        proposalId: created.body.id,
+        appliedBy: "board-user",
+      }),
     }));
   });
 
