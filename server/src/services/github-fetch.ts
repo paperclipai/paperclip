@@ -16,9 +16,13 @@ export function resolveRawGitHubUrl(hostname: string, owner: string, repo: strin
     : `https://${hostname}/raw/${owner}/${repo}/${ref}/${p}`;
 }
 
-export async function ghFetch(url: string, init?: RequestInit): Promise<Response> {
+export async function ghFetch(url: string, init?: RequestInit, authToken?: string): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (authToken) {
+    headers.set("Authorization", `Bearer ${authToken}`);
+  }
   try {
-    return await fetch(url, init);
+    return await fetch(url, { ...init, headers });
   } catch {
     throw unprocessable(`Could not connect to ${new URL(url).hostname} — ensure the URL points to a GitHub or GitHub Enterprise instance`);
   }

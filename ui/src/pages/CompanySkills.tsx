@@ -52,6 +52,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 
@@ -487,6 +488,103 @@ function SkillList({
   );
 }
 
+function SkillAuthSection({
+  companyId,
+  skillId,
+  hasAuth,
+}: {
+  companyId: string;
+  skillId: string;
+  hasAuth: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [editing, setEditing] = useState(false);
+  const [token, setToken] = useState("");
+
+  const updateAuth = useMutation({
+    mutationFn: (authToken: string | null) =>
+      companySkillsApi.updateAuth(companyId, skillId, authToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(companyId, skillId) });
+      setEditing(false);
+      setToken("");
+      pushToast({ tone: "success", title: "Auth updated" });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Failed to update auth",
+        body: error instanceof Error ? error.message : "Unknown error",
+      });
+    },
+  });
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Auth</span>
+      {!editing ? (
+        <>
+          {hasAuth ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditing(true)}
+              >
+                <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                PAT configured
+              </Button>
+              <button
+                className="inline-flex items-center text-muted-foreground/50 hover:text-destructive transition-colors"
+                onClick={() => updateAuth.mutate(null)}
+                disabled={updateAuth.isPending}
+                title="Remove PAT"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setEditing(true)}
+            >
+              Add PAT
+            </Button>
+          )}
+        </>
+      ) : (
+        <>
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="GitHub Personal Access Token"
+            className="flex-1 min-w-[200px] rounded-md border border-border px-2 py-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/50"
+            autoComplete="off"
+            autoFocus
+          />
+          <Button
+            size="sm"
+            onClick={() => updateAuth.mutate(token.trim())}
+            disabled={!token.trim() || updateAuth.isPending}
+          >
+            {updateAuth.isPending ? "Saving..." : "Save"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setEditing(false); setToken(""); }}
+          >
+            Cancel
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SkillPane({
   loading,
   detail,
@@ -614,6 +712,13 @@ function SkillPane({
                 )}
               </span>
             </div>
+            {(detail.sourceType === "github" || detail.sourceType === "skills_sh") && (
+              <SkillAuthSection
+                companyId={detail.companyId}
+                skillId={detail.id}
+                hasAuth={Boolean((detail.metadata as Record<string, unknown> | null)?.sourceAuthSecretId)}
+              />
+            )}
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
@@ -762,6 +867,7 @@ export function CompanySkills() {
   const { pushToast } = useToastActions();
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
+  const [importAuthToken, setImportAuthToken] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
   const [expandedSkillId, setExpandedSkillId] = useState<string | null>(null);
@@ -887,7 +993,8 @@ export function CompanySkills() {
   }
 
   const importSkill = useMutation({
-    mutationFn: (importSource: string) => companySkillsApi.importFromSource(selectedCompanyId!, importSource),
+    mutationFn: ({ importSource, authToken }: { importSource: string; authToken?: string }) =>
+      companySkillsApi.importFromSource(selectedCompanyId!, importSource, authToken),
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
@@ -900,6 +1007,7 @@ export function CompanySkills() {
         pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
       }
       setSource("");
+      setImportAuthToken("");
     },
     onError: (error) => {
       pushToast({
@@ -1073,7 +1181,8 @@ export function CompanySkills() {
       setEmptySourceHelpOpen(true);
       return;
     }
-    importSkill.mutate(trimmedSource);
+    const token = importAuthToken.trim() || undefined;
+    importSkill.mutate({ importSource: trimmedSource, authToken: token });
   }
 
   return (
@@ -1220,6 +1329,18 @@ export function CompanySkills() {
                 {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
               </Button>
             </div>
+            {source.trim().length > 0 && /github\.com|^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+/.test(source.trim()) && (
+              <div className="mt-1 flex items-center gap-2 border-b border-border pb-2">
+                <input
+                  type="password"
+                  value={importAuthToken}
+                  onChange={(event) => setImportAuthToken(event.target.value)}
+                  placeholder="GitHub PAT (optional, for private repos)"
+                  className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  autoComplete="off"
+                />
+              </div>
+            )}
             {scanStatusMessage && (
               <p className="mt-3 text-xs text-muted-foreground">
                 {scanStatusMessage}

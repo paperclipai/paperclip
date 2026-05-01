@@ -36,10 +36,15 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills`,
       payload,
     ),
-  importFromSource: (companyId: string, source: string) =>
+  importFromSource: (companyId: string, source: string, authToken?: string) =>
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
+      { source, ...(authToken ? { authToken } : {}) },
+    ),
+  updateAuth: (companyId: string, skillId: string, authToken: string | null) =>
+    api.patch<CompanySkill>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/auth`,
+      { authToken },
     ),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(
