@@ -23,11 +23,13 @@ Environment variables (from ../../.env.koenig):
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hmac
 import hashlib
 import json
 import os
+import re as _re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -415,6 +417,32 @@ async def recall_leave(bot_id: str) -> None:
         )
 
 
+async def recall_send_chat(bot_id: str, message: str, to: str = "everyone") -> bool:
+    """Post a message in the meeting's chat panel.
+
+    Recall.ai endpoint: POST /api/v1/bot/{id}/output_chat/ — supported on
+    Teams/Zoom/Google Meet. Returns False on error so callers can degrade
+    gracefully (chat is supplementary; a chat-send failure must not block
+    the speak path).
+    """
+    if not message or not message.strip():
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{RECALL_BASE}/bot/{bot_id}/output_chat/",
+                json={"to": to, "message": message[:4000]},
+                headers={"Authorization": f"Token {RECALL_API_KEY}"},
+            )
+            if resp.status_code >= 400:
+                print(f"[chat] send failed: {resp.status_code} {resp.text[:200]}")
+                return False
+            return True
+    except Exception as e:
+        print(f"[chat] exception: {e}")
+        return False
+
+
 # ──── TTS providers (cascading: Cartesia → OpenAI → Kokoro local) ────
 
 async def cartesia_tts(text: str) -> bytes:
@@ -422,7 +450,10 @@ async def cartesia_tts(text: str) -> bytes:
     if not CARTESIA_API_KEY:
         raise RuntimeError("CARTESIA_API_KEY not set")
     voice_id = TTS_VOICE_CARTESIA or "f786b574-daa5-4673-aa0c-cbe3e8534c02"
-    speed = _ENV.get("TTS_SPEED_CARTESIA", "slow")  # "slowest" | "slow" | "normal" | "fast" | "fastest"
+    # Default "slowest" for measured, human-like cadence. Vardaan reported the
+    # bot sounded rushed at "slow"; "slowest" gives natural pacing closer to
+    # a calm human speaker. Override via TTS_SPEED_CARTESIA env var if needed.
+    speed = _ENV.get("TTS_SPEED_CARTESIA", "slowest")  # "slowest" | "slow" | "normal" | "fast" | "fastest"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             "https://api.cartesia.ai/tts/bytes",
@@ -925,7 +956,9 @@ async def decide(state: MeetingState, utterance: str, speaker: str) -> dict[str,
                 return obj
             except json.JSONDecodeError:
                 # Fallback: regex-extract a balanced { ... } block
-                import re as _re
+                # (module-level `import re as _re` covers this; do not re-import
+                # locally — it would shadow the module-level binding and break
+                # other _re references in the same function via Python scoping.)
                 m = _re.search(r"\{[\s\S]*?\}", text)
                 if m:
                     return json.loads(m.group(0))
@@ -1386,14 +1419,19 @@ async def _proactive_opening_task(bot_id: str, delay_s: int) -> None:
 
 
 async def _poll_bot_status(bot_id: str) -> None:
-    """Background poller: checks Recall every 30s for bot lifecycle.
-    When bot reaches done/call_ended state, auto-finalizes the meeting
-    (writes vault summary + creates Paperclip child tickets + dispatches follow-up).
-    Reliable fallback for when the workspace status webhook isn't configured.
+    """Background poller: checks Recall every 15s for bot lifecycle.
+    Two responsibilities:
+      1. **Greet on admit** — when the bot transitions from waiting_room → in_call,
+         post a one-time chat greeting telling participants the wake words and
+         that the bot is now ready. This is review-style + non-intrusive.
+      2. **Auto-finalize on call-end** — when bot reaches done/call_ended, write
+         vault summary + create Paperclip child tickets + dispatch follow-up.
     """
-    import asyncio
+    in_call_codes = {"in_call_recording", "in_call_not_recording"}
+    terminal_codes = {"call_ended", "done", "fatal", "recording_done"}
+    greeted = False
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
         state = _meetings.get(bot_id)
         if not state:
             return
@@ -1407,7 +1445,20 @@ async def _poll_bot_status(bot_id: str) -> None:
                     continue
                 data = resp.json()
                 changes = data.get("status_changes") or []
-                terminal_codes = {"call_ended", "done", "fatal", "recording_done"}
+                # Greet on first detection of in_call status. One-shot.
+                if not greeted and any(c.get("code") in in_call_codes for c in changes):
+                    greeted = True
+                    greeting = (
+                        "👋 Hi all — Ronald (the Koenig AI Academy meeting bot) is now in the call. "
+                        "How to talk to me:\n"
+                        "• Say my name to wake me — I respond to: Ronald, Donald, Roland, Reynold, "
+                        "Renault, Nova, hey bot, hey claude, or just \"bot\".\n"
+                        "• Ask anything about the org, vault, current tickets, or recent decisions — "
+                        "I have access to live context.\n"
+                        "• I'll mirror anything I say into this chat so you can review it later.\n"
+                        "• I'll also post a structured summary at the end of the meeting."
+                    )
+                    asyncio.create_task(recall_send_chat(bot_id, greeting))
                 terminal = next((c for c in changes if c.get("code") in terminal_codes), None)
                 if terminal:
                     print(f"[poller] bot {bot_id} reached terminal status: {terminal['code']}")
@@ -1714,12 +1765,14 @@ class SpeakRequest(BaseModel):
 @app.post("/meetings/{meeting_id}/speak")
 async def admin_speak(meeting_id: str, req: SpeakRequest) -> dict[str, Any]:
     """Admin-only: synthesize + inject arbitrary text into a live meeting.
-    Useful for testing the TTS pipeline without waiting for a Sonnet decision."""
+    Useful for testing the TTS pipeline without waiting for a Sonnet decision.
+    Mirrors the spoken text into the meeting chat panel (best-effort)."""
     state = _meetings.get(meeting_id)
     if not state:
         raise HTTPException(404, "unknown meeting")
     mp3, provider = await synthesize(req.text)
     await recall_inject_audio(state.bot_id, mp3)
+    asyncio.create_task(recall_send_chat(state.bot_id, req.text))
     state.bot_interventions.append({
         "ts": time.time(),
         "text": req.text,
@@ -1727,6 +1780,23 @@ async def admin_speak(meeting_id: str, req: SpeakRequest) -> dict[str, Any]:
         "tts_provider": provider,
     })
     return {"status": "spoken", "provider": provider, "bytes": len(mp3)}
+
+
+class ChatRequest(BaseModel):
+    message: str
+    to: str | None = "everyone"
+
+
+@app.post("/meetings/{meeting_id}/chat")
+async def admin_chat(meeting_id: str, req: ChatRequest) -> dict[str, Any]:
+    """Admin-only: post a chat message in the meeting WITHOUT speaking.
+    Useful for posting status updates, links, or transcripts of decisions
+    without interrupting the audio."""
+    state = _meetings.get(meeting_id)
+    if not state:
+        raise HTTPException(404, "unknown meeting")
+    ok = await recall_send_chat(state.bot_id, req.message, to=req.to or "everyone")
+    return {"status": "sent" if ok else "failed", "message": req.message[:200]}
 
 
 class TTSTestRequest(BaseModel):
@@ -1793,11 +1863,72 @@ def _extract_utterance(payload: dict[str, Any]) -> tuple[str, str, float]:
     return text, speaker, ts
 
 
+def _extract_is_final(payload: dict[str, Any]) -> bool:
+    """Recall transcript webhooks emit both partial (`transcript.partial_data`)
+    and final (`transcript.data`) events. Partials fire 5–50× per utterance as
+    the ASR refines its hypothesis. Only finals should drive LLM calls.
+
+    Heuristics (in order):
+    - event field literally says ".partial_data" → False
+    - event field literally says ".data" → True
+    - inner payload has explicit is_final flag → use it
+    - default to True (treat unknown events as final to avoid silent drops)
+    """
+    event = (payload.get("event") or "").lower()
+    if event.endswith(".partial_data") or "partial" in event:
+        return False
+    if event.endswith(".data"):
+        return True
+    data = payload.get("data", {}) or {}
+    inner = data.get("data", {}) if isinstance(data.get("data"), dict) else {}
+    for src in (inner, data, payload):
+        if isinstance(src, dict) and "is_final" in src:
+            return bool(src.get("is_final"))
+    return True
+
+
+# Webhook idempotency cache — Recall + Svix retries can deliver the same
+# webhook up to 60×; store svix-id keys with a 60s TTL.
+_SEEN_WEBHOOKS: dict[str, float] = {}
+_SEEN_WEBHOOKS_TTL_S = 60.0
+
+
+def _is_duplicate_webhook(svix_id: str | None, now: float) -> bool:
+    if not svix_id:
+        return False
+    # Drop expired entries cheaply (small set; runs ~once/sec when busy).
+    if len(_SEEN_WEBHOOKS) > 256:
+        cutoff = now - _SEEN_WEBHOOKS_TTL_S
+        for k in [k for k, t in _SEEN_WEBHOOKS.items() if t < cutoff]:
+            _SEEN_WEBHOOKS.pop(k, None)
+    last = _SEEN_WEBHOOKS.get(svix_id)
+    if last and (now - last) < _SEEN_WEBHOOKS_TTL_S:
+        return True
+    _SEEN_WEBHOOKS[svix_id] = now
+    return False
+
+
+# Bot-is-speaking lock window. While the bot is mid-utterance, we suppress
+# auto-speak from `decide()` so we don't talk over ourselves. The window is
+# short by design — long enough to cover Cartesia/OpenAI mp3 generation +
+# Recall.ai ingress + a few seconds of typical reply audio, but shorter than
+# the prior 30s cooldown so the bot stays responsive.
+BOT_SPEAKING_LOCK_S = 6.0
+BARGE_IN_RESET_S = 1.5  # if a non-bot utterance arrives this long after we
+                        # spoke, treat it as user-resumed and end the lock
+
+
 @app.post("/webhook/transcript")
 async def transcript(request: Request) -> dict[str, Any]:
     body = await request.body()
     if not _verify_recall_signature(body, request.headers):
         raise HTTPException(401, "invalid webhook signature")
+
+    # Svix-id idempotency dedup (cheapest gate; covers retry storm) ──────────
+    svix_id = request.headers.get("svix-id") or request.headers.get("Svix-Id")
+    now = time.time()
+    if _is_duplicate_webhook(svix_id, now):
+        return {"status": "duplicate-webhook-id"}
 
     payload = json.loads(body)
     bot_id = _extract_bot_id(payload)
@@ -1811,32 +1942,63 @@ async def transcript(request: Request) -> dict[str, Any]:
     if not utterance.strip():
         return {"status": "empty-utterance"}
 
+    # Skip partial transcripts — only finals drive LLM decisions. ────────────
+    # Recall emits ~5-50 partial_data per utterance; processing each one was
+    # the dominant Sonnet/Haiku cost driver. Buffer partials for context but
+    # do not call decide().
+    is_final = _extract_is_final(payload)
+    if not is_final:
+        state.transcript_buffer.append({
+            "ts": ts, "speaker": speaker, "text": utterance, "partial": True,
+        })
+        return {"status": "partial-buffered"}
+
+    # Content-hash dedup as belt-and-braces (handles cases where the same
+    # final fires twice with different svix-ids — rare but observed). ────────
+    import hashlib as _hashlib
+    utt_hash = _hashlib.md5(
+        f"{(speaker or '').lower().strip()}|{utterance.lower().strip()}".encode("utf-8")
+    ).hexdigest()
+    DEDUP_WINDOW_S = 10.0
+    recent_finals = [e for e in state.transcript_buffer[-15:]
+                     if not e.get("partial") and (ts - e.get("ts", 0)) < DEDUP_WINDOW_S]
+    if any(e.get("hash") == utt_hash for e in recent_finals):
+        return {"status": "duplicate-content-skipped"}
+
     # Confidentiality check first
     if _is_confidential(utterance):
         state.confidential = True
         return {"status": "silent-confidential"}
 
-    state.transcript_buffer.append({"ts": ts, "speaker": speaker, "text": utterance})
+    state.transcript_buffer.append({
+        "ts": ts, "speaker": speaker, "text": utterance, "hash": utt_hash,
+    })
 
     decision = await decide(state, utterance, speaker)
     action = decision["action"]
     if action == "speak":
-        # Cooldown: skip auto-speak if the bot just spoke within the last 30 seconds.
-        # Prevents the layered-audio overlap when the user repeats a question while
-        # the previous response is still being played out by Recall (TTS for a 170-word
-        # answer is ~60s of audio, plus join-lobby variance). Manual /speak endpoint
-        # is exempt — admin override speaks regardless.
-        # Default cooldown 8s; reduced further to 4s when user is directly addressing.
-        BOT_SPEAK_COOLDOWN_S = 4 if _re.search(r"\b(bot|nova|ronald|claude|agent|hey)\b", utterance.lower()) else 8
+        # Bot-speaking lock: if we spoke recently, suppress auto-speak so we
+        # don't talk over our own previous reply. Wake-word ("Ronald, …") gets
+        # a shorter window since the user is asking us to interrupt; default
+        # gets the full BOT_SPEAKING_LOCK_S window.
+        is_addressed = bool(_re.search(
+            r"\b(bot|nova|ronald|donald|roland|reynold|claude|agent|hey)\b",
+            utterance.lower(),
+        ))
+        speak_lock_s = 3.0 if is_addressed else BOT_SPEAKING_LOCK_S
         if state.bot_interventions:
             last_spoken_ts = state.bot_interventions[-1].get("ts", 0)
             elapsed = ts - last_spoken_ts
-            if elapsed < BOT_SPEAK_COOLDOWN_S:
-                print(f"[cooldown] silencing speak — last spoke {elapsed:.1f}s ago (< {BOT_SPEAK_COOLDOWN_S}s)")
-                return {"status": "silent-cooldown", "elapsed_s": elapsed}
+            if elapsed < speak_lock_s:
+                print(f"[speak-lock] suppressed — last spoke {elapsed:.1f}s ago (< {speak_lock_s}s)")
+                return {"status": "silent-speaking-lock", "elapsed_s": elapsed}
         try:
             mp3, provider = await synthesize(decision["text"])
             await recall_inject_audio(state.bot_id, mp3)
+            # Mirror the spoken text into the meeting chat panel so participants
+            # can scan back through what the bot said. Best-effort; chat-send
+            # failures don't fail the speak path.
+            asyncio.create_task(recall_send_chat(state.bot_id, decision["text"]))
             state.bot_interventions.append({
                 "ts": ts,
                 "text": decision["text"],

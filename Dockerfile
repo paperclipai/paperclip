@@ -57,7 +57,7 @@ COPY --chown=node:node --from=build /app /app
 # Koenig customization 2026-05-01: add chromium + lighthouse + Playwright for QA Verifier (KOEA-251)
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai lighthouse playwright \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq chromium fonts-liberation libnss3 libasound2t64 \
+  && apt-get install -y --no-install-recommends openssh-client jq chromium fonts-liberation libnss3 libasound2t64 python3-pip python3-venv \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
@@ -69,6 +69,18 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # work inside the container the same way they would on a host.
 RUN printf '#!/bin/sh\nexec node /app/cli/dist/index.js "$@"\n' > /usr/local/bin/paperclipai \
     && chmod +x /usr/local/bin/paperclipai
+
+# Koenig customization 2026-05-01: hermes-agent install for hermes_local adapter.
+# The host-side hermes binary is a Mach-O Python launcher that won't run in this
+# Linux container; install hermes-agent into a container-local venv and provide a
+# wrapper script. The hermes-agent SOURCE is bind-mounted at runtime via the
+# compose file (/paperclip/.hermes/hermes-agent/) — install from that path.
+# Runtime dep: the source must be present at /paperclip/.hermes/hermes-agent before
+# any hermes_local agent runs. The wrapper handles the case where it isn't yet.
+RUN python3 -m venv /opt/hermes-venv \
+    && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && printf '#!/bin/sh\nset -e\nHERMES_SRC="${HERMES_SRC:-/paperclip/.hermes/hermes-agent}"\nif [ ! -d "$HERMES_SRC" ]; then\n  echo "hermes-agent source not found at $HERMES_SRC; bind-mount the host ~/.hermes/hermes-agent into the container or set HERMES_SRC" >&2\n  exit 127\nfi\nif ! /opt/hermes-venv/bin/python -c "import agent" 2>/dev/null; then\n  /opt/hermes-venv/bin/pip install --quiet --no-cache-dir -e "$HERMES_SRC" >/dev/null 2>&1 || true\nfi\nexec /opt/hermes-venv/bin/python "$HERMES_SRC/cli.py" "$@"\n' > /usr/local/bin/hermes-container \
+    && chmod +x /usr/local/bin/hermes-container
 
 ENV NODE_ENV=production \
   HOME=/paperclip \

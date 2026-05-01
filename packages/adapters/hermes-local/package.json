@@ -4,9 +4,17 @@
   "license": "MIT",
   "homepage": "https://github.com/koenig-solutions/koenig-ai-org",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./server": "./src/server/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    }
   },
   "publishConfig": {
     "access": "restricted",

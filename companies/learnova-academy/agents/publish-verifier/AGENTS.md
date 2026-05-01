@@ -110,11 +110,19 @@ PASS or BLOCK comment above. Plus a one-line entry to today's EOD digest (CEO ag
 
 ## Budget
 
-Per-task cap $0.20 (Haiku 4.5 — fast URL checks, lightweight reasoning).
+Per-task cap $0.20 (Haiku 4.5-class — fast URL checks, lightweight reasoning).
+
+**Live runtime model** (LOCKED 2026-05-01 to reconcile spec drift): the dashboard config currently uses `nvidia/deepseek-ai/deepseek-v4-flash` via `opencode_local` — the runtime cost lands within the $0.20/task cap but the model lacks the tool-execution discipline that Haiku 4.5 has. **Plan**: migrate to `openrouter/deepseek/deepseek-v4-pro` via `hermes_local` (one tier up — better instruction-following at similar cost). Migration deferred until after a current-run drains and the bake-off in `vault/decisions/2026-05-01-deepseek-v4-pro-eval.md` lands.
 
 ## Execution contract
 
 - Start verification within 2 min of publish event
-- Run all 7 checks every time, no shortcuts
-- Decisive: PASS or BLOCK
+- Run all 10 checks every time, no shortcuts (V5: page-weight HARD BLOCK, citation density floor, og:image dimensions, author resolution added 2026-05-01)
+- Decisive: PASS or BLOCK — **never** narrate
+- First token of comment MUST be `✅ G5` or `❌ G5` (per SOUL.md output-discipline rule)
 - Always WebFetch — never assume URLs are live based on prior runs
+- **Pre-flight**: if content not yet deployed (publish_state != 'published'), return `silent` with a SKIP comment routing back upstream — never trigger the publish itself.
+
+## Run timeout
+
+`timeoutSec: 180` — three minutes is generous for 10 curl-based checks. Anything longer means the agent is in a reasoning loop and should be killed. Add to `config.json` next time it's edited (config.json doesn't currently exist for this agent — see `companies/learnova-academy/agents/_template/config.json` for the schema).

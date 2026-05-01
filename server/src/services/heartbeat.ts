@@ -1324,6 +1324,28 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+
+  // Parent→child continuity: when a child ticket gets assigned and our prior
+  // saved session ran on the parent (or the same issue), preserve the session
+  // so the agent doesn't lose narrative context. Decision logic:
+  //  - same issue (defensive; rare for issue_assigned) → resume
+  //  - new issue is the child of the prior session's issue → resume
+  // Both checks rely on `priorIssueId` and `parentIssueId` being injected into
+  // the context snapshot upstream (in the wake handler) — they default to
+  // null/missing if no parent or no prior session was found, in which case we
+  // fall through to the original reset behavior.
+  if (wakeReason === "issue_assigned") {
+    const currentIssueId = readNonEmptyString(contextSnapshot?.issueId);
+    const priorIssueId = readNonEmptyString(contextSnapshot?.priorIssueId);
+    const parentIssueId = readNonEmptyString(contextSnapshot?.parentIssueId);
+    if (currentIssueId && priorIssueId && currentIssueId === priorIssueId) {
+      return false;
+    }
+    if (parentIssueId && priorIssueId && parentIssueId === priorIssueId) {
+      return false;
+    }
+  }
+
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
@@ -1399,7 +1421,16 @@ function describeSessionResetReason(
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_assigned") {
+    // Mirror the parent→child guard in shouldResetTaskSessionForWake — if
+    // continuity applies, we are NOT resetting, so report no reason.
+    const currentIssueId = readNonEmptyString(contextSnapshot?.issueId);
+    const priorIssueId = readNonEmptyString(contextSnapshot?.priorIssueId);
+    const parentIssueId = readNonEmptyString(contextSnapshot?.parentIssueId);
+    if (currentIssueId && priorIssueId && currentIssueId === priorIssueId) return null;
+    if (parentIssueId && priorIssueId && parentIssueId === priorIssueId) return null;
+    return "wake reason is issue_assigned";
+  }
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
@@ -4780,6 +4811,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
+
+    // Parent→child session continuity (audit: docs/SESSION_RESUME_AUDIT.md).
+    // Pull priorIssueId from the persisted session JSON (we stash it there at
+    // upsert time below). For issue_assigned wakes, also look up the new
+    // issue's parent_id so shouldResetTaskSessionForWake can preserve the
+    // session when the new issue is a child of the prior one. Both fields
+    // are silently absent if not applicable; the reset logic falls through.
+    const priorIssueIdFromSession = readNonEmptyString(
+      (taskSession?.sessionParamsJson as Record<string, unknown> | null | undefined)?.priorIssueId,
+    );
+    if (priorIssueIdFromSession) {
+      context.priorIssueId = priorIssueIdFromSession;
+    }
+    const wakeReasonForParentLookup = readNonEmptyString(context.wakeReason);
+    const currentIssueIdForParentLookup = readNonEmptyString(context.issueId);
+    if (
+      wakeReasonForParentLookup === "issue_assigned" &&
+      currentIssueIdForParentLookup &&
+      priorIssueIdFromSession
+    ) {
+      const parentRow = await db
+        .select({ parentId: issues.parentId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, currentIssueIdForParentLookup),
+            eq(issues.companyId, agent.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const parentIdValue = readNonEmptyString(parentRow?.parentId ?? null);
+      if (parentIdValue) {
+        context.parentIssueId = parentIdValue;
+      }
+    }
+
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
@@ -5757,12 +5824,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               adapterType: agent.adapterType,
             });
           } else {
+            // Stash the run's issueId in the persisted session so that on the
+            // next wake we can detect parent→child continuity (see
+            // shouldResetTaskSessionForWake). Non-issue runs (timer ticks)
+            // simply persist priorIssueId=null.
+            const persistedSessionParams = nextSessionState.params
+              ? {
+                  ...(nextSessionState.params as Record<string, unknown>),
+                  priorIssueId: readNonEmptyString(context.issueId) ?? null,
+                }
+              : null;
             await upsertTaskSession({
               companyId: agent.companyId,
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: nextSessionState.params,
+              sessionParamsJson: persistedSessionParams,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -5835,12 +5912,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
 
         if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+          // Preserve priorIssueId on failed-run preservation path so that a
+          // retry doesn't lose parent-link continuity.
+          const failedSessionParams = previousSessionParams
+            ? {
+                ...(previousSessionParams as Record<string, unknown>),
+                priorIssueId:
+                  readNonEmptyString(context.issueId) ??
+                  readNonEmptyString(
+                    (previousSessionParams as Record<string, unknown>).priorIssueId,
+                  ) ??
+                  null,
+              }
+            : previousSessionParams;
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: previousSessionParams,
+            sessionParamsJson: failedSessionParams,
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,

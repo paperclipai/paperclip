@@ -100,26 +100,75 @@ curl -s https://academy.kspl.tech/llms.txt | grep -F "$URL"
 
 Missing → BLOCK to chief-engineering ("Page not in llms.txt — GEO regression").
 
-### 7. Page weight check
+### 7. Page weight check (HARD BLOCK at threshold — V5)
 
 ```bash
 SIZE=$(curl -s "$URL" | wc -c)
 echo "Page weight: $SIZE bytes"
 ```
 
-Threshold: blog ≤80KB, course ≤90KB, lesson ≤100KB. Above target → flag (warn, don't block); >20% over prior comparable page → BLOCK.
+Threshold: blog ≤80KB, course ≤90KB, lesson ≤100KB. **HARD BLOCK** when over (no warn-only). The thresholds were set tight intentionally; bloat is a regression signal. The MCP-2026-roadmap post hit 107KB live — that should never have escaped this gate.
 
-### Decide + comment
+### 8. Citation density floor (NEW — V3 Citation Authority addendum, hard floor)
+
+```bash
+# Count outbound non-academy.kspl.tech links in the body
+CITES=$(curl -s "$URL" \
+  | grep -oE 'href="https?://[^"]+"' \
+  | grep -v 'academy\.kspl\.tech' \
+  | grep -v 'koenig-solutions\.com' \
+  | sort -u | wc -l)
+echo "Outbound citations: $CITES"
+```
+
+Threshold: blog ≥3, course ≥5, lesson ≥3. **HARD BLOCK** below threshold → routes to `@content-author` via `@chief-content` ("source-thin draft escaped G0").
+
+### 9. og:image validation (NEW — image format + dimensions)
+
+```bash
+OG_URL=$(curl -s "$URL" | grep -oE 'property="og:image"[^>]*content="[^"]+"' | sed -E 's/.*content="([^"]+)".*/\1/')
+TYPE=$(curl -sI "$OG_URL" | grep -i '^content-type:')
+DIMS=$(curl -s "$OG_URL" | identify -format '%wx%h' - 2>/dev/null || echo "unknown")
+echo "og:image $OG_URL → $TYPE → $DIMS"
+```
+
+`Content-Type: image/*` and `1200x630` required. **HARD BLOCK** if dynamic `/api/og` returns HTML (a misconfigured 200 error page).
+
+### 10. Author resolution check (NEW — enforces SOUL.md V3 addendum)
+
+```bash
+# Pull author URL from BlogPosting JSON-LD
+AUTHOR=$(curl -s "$URL" | python3 -c "import json,sys,re; html=sys.stdin.read(); m=re.search(r'<script type=\"application/ld\\+json\">(.*?)</script>',html,re.S); d=json.loads(m.group(1)) if m else {}; print((d.get('author') or {}).get('url',''))")
+test -n "$AUTHOR" && curl -sI "$AUTHOR" | head -1
+```
+
+Author URL must resolve to `/authors/<slug>` returning 200 + valid `Person` or `Organization` JSON-LD. **HARD BLOCK** if author is a raw agent slug like `blog-author` or returns 404.
+
+### Decide + comment (LOCKED 2026-05-01 — STRUCTURED ONLY)
+
+**First token of comment MUST be ✅ or ❌**. No "Let me look at this…" preamble. No exploratory monologue. If you cannot produce the structured template below, return action=`silent` (do not author a comment) — it is better to wait one tick and try again than to leak a half-formed thought.
+
+**Pre-flight gate (NEW — addresses observed reasoning-loop bug 2026-05-01)**:
+Before running ANY checks, query the issue:
+- If `issue.metadata.publish_state != 'published'` AND no live URL exists at the expected slug → DO NOT VERIFY. Comment:
+  ```
+  ❌ G5 SKIP · <slug>
+  Content not yet deployed — publish_state=<state>, draft.status=<status>.
+  Routing → @chief-content (advance through G0/G3/G4) and/or @chief-engineering (publish-action.sh dispatch).
+  ```
+  Then return action=`silent` for THIS heartbeat. You have NOT failed the verification; you simply skipped a non-applicable run.
+- Only proceed to checks 1-10 if the URL is live.
 
 PASS:
 ```
 ✅ G5 PUBLISH VERIFIED · <URL>
 - HTTP 200 ✓
 - JSON-LD: <N> blocks (BlogPosting ✓ BreadcrumbList ✓)
-- Citations: 3/3 verified live + on-claim
-- og:image: 200, 1200×630
+- Citations: 3/3 verified live + on-claim, citation density <N>/min-3
+- og:image: 200, 1200×630, image/png
+- Author: <name> resolves to /authors/<slug> ✓
 - sitemap.xml ✓ · llms.txt ✓
-- Page weight <X>KB (within target)
+- Page weight <X>KB (target 80KB)
 
 Routing → @ceo for retro
 ```

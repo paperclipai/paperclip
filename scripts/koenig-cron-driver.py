@@ -48,6 +48,22 @@ CHIEF_ENGINEERING_ID = "b90788a0-d3de-42da-8e77-7dc8f7c01fd3"
 # Tick cadence. 5 min keeps the inbox warm without burning Claude Max hours.
 TICK_INTERVAL_S = int(os.environ.get("KOENIG_CRON_TICK_S", "300"))
 
+# Daily-cadence agents that need wake calls outside of Chief Engineering's
+# delegate loop. These use the BOARD_TOKEN (user-scoped, can invoke any agent),
+# not the watchdog JWT (agent-scoped, self-invoke only). Each entry fires once
+# per UTC calendar day at the given UTC hour.
+VAULT_HISTORIAN_ID = "eeed7524-0662-4ca9-a103-057c921efd96"
+DAILY_AGENT_SCHEDULES: list[dict] = [
+    # Vault Historian — daily synthesis at 23:00 UTC. Reads the day's vault
+    # writes and rolls them into _index/by-date.md. Off-subscription
+    # (opencode_local + DeepSeek V4 Pro), so safe even during Claude rate-limit
+    # windows.
+    {"agent_id": VAULT_HISTORIAN_ID, "name": "Vault Historian", "hour_utc": 23},
+]
+# Track last-fired UTC date per agent so we don't re-fire within the same day
+# even if the cron-driver is restarted.
+_LAST_FIRED_DATE: dict[str, str] = {}
+
 
 def parse_env_file(path: Path) -> dict:
     """Tiny .env reader — handles `KEY=value`, `KEY="value with spaces"`, comments."""
@@ -156,12 +172,42 @@ def has_pending_work(token: str) -> bool:
         return True
 
 
-def tick(token: str) -> None:
+def fire_daily_schedules(board_token: str | None) -> None:
+    """Once per UTC calendar day, wake the agents in DAILY_AGENT_SCHEDULES at
+    their configured hour. Uses the BOARD_TOKEN (user-scoped) so it can invoke
+    cross-agent — the watchdog JWT is self-only and would 403 here.
+    Silently no-ops if no board token is configured.
+    """
+    if not board_token:
+        return
+    now = datetime.now(timezone.utc)
+    today_iso = now.strftime("%Y-%m-%d")
+    for entry in DAILY_AGENT_SCHEDULES:
+        agent_id = entry["agent_id"]
+        target_hour = entry.get("hour_utc", 23)
+        if now.hour < target_hour:
+            continue  # Not yet
+        if _LAST_FIRED_DATE.get(agent_id) == today_iso:
+            continue  # Already fired today
+        url = f"{PAPERCLIP_HOST}/api/agents/{agent_id}/heartbeat/invoke"
+        status, body = post(url, board_token)
+        if status in (200, 201, 500):
+            _LAST_FIRED_DATE[agent_id] = today_iso
+            log(f"daily-schedule fired {entry['name']} status={status}")
+        else:
+            log(f"daily-schedule FAIL {entry['name']} status={status} body={body[:160]}")
+
+
+def tick(token: str, board_token: str | None) -> None:
     # Smart-skip — don't invoke Chief Engineering when there's nothing to do.
     # Every 6th tick fires unconditionally so the org doesn't go fully dark
     # if pre-check misses something or a periodic-only task is needed.
     global _TICK_COUNT
     _TICK_COUNT += 1
+
+    # First, run the daily schedule check (cheap, no-op most ticks).
+    fire_daily_schedules(board_token)
+
     force_fire = (_TICK_COUNT % 6) == 0
     if not force_fire and not has_pending_work(token):
         log(f"tick SKIP (no pending work) :: tick #{_TICK_COUNT}")
@@ -186,17 +232,22 @@ _TICK_COUNT = 0
 def main() -> int:
     # Prefer process env (set by docker compose env_file) over the on-disk .env.koenig
     # so the script works inside containers without mounting the env file.
-    token = os.environ.get("PAPERCLIP_API_KEY") or parse_env_file(ENV_FILE).get("PAPERCLIP_API_KEY")
+    env_from_file = parse_env_file(ENV_FILE)
+    token = os.environ.get("PAPERCLIP_API_KEY") or env_from_file.get("PAPERCLIP_API_KEY")
+    board_token = os.environ.get("PAPERCLIP_BOARD_TOKEN") or env_from_file.get("PAPERCLIP_BOARD_TOKEN")
     if not token:
         log("FATAL: PAPERCLIP_API_KEY not in env or .env.koenig")
         return 1
     log(f"cron-driver up — poking {CHIEF_ENGINEERING_ID[:8]} every {TICK_INTERVAL_S}s")
+    if board_token and DAILY_AGENT_SCHEDULES:
+        names = ", ".join(e["name"] for e in DAILY_AGENT_SCHEDULES)
+        log(f"daily-schedule registered: {names} (board-token present)")
     # Fire once immediately
-    tick(token)
+    tick(token, board_token)
     while True:
         try:
             time.sleep(TICK_INTERVAL_S)
-            tick(token)
+            tick(token, board_token)
         except KeyboardInterrupt:
             log("shutdown via SIGINT")
             return 0
