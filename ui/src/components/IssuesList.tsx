@@ -51,6 +51,7 @@ import {
 } from "./IssueColumns";
 import { StatusIcon } from "./StatusIcon";
 import { EmptyState } from "./EmptyState";
+import { IssueStatusGuide } from "./IssueStatusGuide";
 import { Identity } from "./Identity";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
@@ -308,6 +309,7 @@ interface IssuesListProps {
   enableRoutineVisibilityFilter?: boolean;
   mutedIssueIds?: Set<string>;
   issueBadgeById?: Map<string, string>;
+  showStatusGuide?: boolean;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -477,6 +479,7 @@ export function IssuesList({
   enableRoutineVisibilityFilter = false,
   mutedIssueIds,
   issueBadgeById,
+  showStatusGuide = false,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -1191,6 +1194,10 @@ export function IssuesList({
           )}
         </div>
       </div>
+
+      {showStatusGuide && !isLoading && filtered.length > 0 && (
+        <IssueStatusGuide />
+      )}
 
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
