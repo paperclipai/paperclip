@@ -652,18 +652,36 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    // listMineByMe / listTouchedByMe / listUnreadTouchedByMe drive the Inbox
-    // page tabs and the inbox-badge sidebar dot. Both share the same query
-    // prefix, so invalidating with refetchType:"active" (the default) fires
-    // a fresh fetch on every issue activity event — which on an active
-    // company is many per second and exhausted the browser's per-host
-    // connection budget (browser-side ERR_INSUFFICIENT_RESOURCES verified
-    // 2026-05-01: 242 /companies/<id>/issues calls in 2 minutes from the
-    // same client). The badge already uses staleTime: 30s, so we can
-    // afford to mark these stale without a forced refetch — react-query
-    // will refresh them on tab focus / reconnect / next user interaction.
-    // Same pattern dashboard/sidebarBadges already use just below.
+    // Earlier this fired `invalidateQueries({ queryKey: queryKeys.issues.list(companyId) })`
+    // which prefix-matches every `["issues", companyId, …]` key — meaning the
+    // Inbox queries (mine-by-me / touched-by-me / unread-touched-by-me), the
+    // bare list key shared by Dashboard / MyIssues / CommandPalette, AND the
+    // suffixed Issues / Routines / AgentDetail keys — all triggered an immediate
+    // refetch on every issue-activity event, regardless of the explicit
+    // `refetchType: "none"` calls below (those run after the default-active
+    // invalidation has already kicked off the refetch). On a busy dashboard
+    // load this produced 8× the unbounded /api/companies/<id>/issues fetch
+    // (1.28 MB each) and 25× the inbox /issues fetch (273 KB each), ~26 MB
+    // duplicate downloads in seconds and a stalled UI.
+    //
+    // Now: use a predicate that targets the suffixed keys only — the Issues
+    // and Routines pages still refresh — and explicitly mark the bare /
+    // inbox keys stale via `refetchType: "none"`. Those views all rely on
+    // staleTime + tab-focus / next-mount to refresh, so they stay correct
+    // without a synchronous refetch storm.
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        if (key[0] !== "issues" || key[1] !== companyId) return false;
+        if (key.length < 3) return false; // bare list key — handled below with refetchType: "none"
+        const variant = key[2];
+        if (variant === "mine-by-me" || variant === "touched-by-me" || variant === "unread-touched-by-me") {
+          return false; // inbox-badge keys — handled below with refetchType: "none"
+        }
+        return true;
+      },
+    });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId), exact: true, refetchType: "none" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId), refetchType: "none" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
