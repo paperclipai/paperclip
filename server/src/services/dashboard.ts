@@ -10,6 +10,12 @@ function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+function formatIsoDateTime(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 export function getUtcMonthStart(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
@@ -97,6 +103,32 @@ export function dashboardService(db: Db) {
 
       const monthSpendCents = Number(monthSpend);
       const runActivityDayExpr = sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+      const inputTokensExpr = sql<number>`
+        coalesce(
+          (${heartbeatRuns.usageJson} ->> 'inputTokens')::double precision,
+          (${heartbeatRuns.usageJson} ->> 'input_tokens')::double precision,
+          0
+        )
+      `;
+      const outputTokensExpr = sql<number>`
+        coalesce(
+          (${heartbeatRuns.usageJson} ->> 'outputTokens')::double precision,
+          (${heartbeatRuns.usageJson} ->> 'output_tokens')::double precision,
+          0
+        )
+      `;
+      const cachedInputTokensExpr = sql<number>`
+        coalesce(
+          (${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::double precision,
+          (${heartbeatRuns.usageJson} ->> 'cached_input_tokens')::double precision,
+          (${heartbeatRuns.usageJson} ->> 'cache_read_input_tokens')::double precision,
+          0
+        )
+      `;
+      const totalTokensExpr = sql<number>`(${inputTokensExpr} + ${outputTokensExpr} + ${cachedInputTokensExpr})`;
+      const billingTypeExpr = sql<string | null>`
+        coalesce(${heartbeatRuns.usageJson} ->> 'billingType', ${heartbeatRuns.usageJson} ->> 'billing_type')
+      `;
       const runActivityRows = await db
         .select({
           date: runActivityDayExpr,
@@ -111,6 +143,32 @@ export function dashboardService(db: Db) {
           ),
         )
         .groupBy(runActivityDayExpr, heartbeatRuns.status);
+
+      const [tokenActivityRow] = await db
+        .select({
+          recentSuccessfulRuns: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::double precision`,
+          tokenizedRuns: sql<number>`count(*) filter (where ${totalTokensExpr} > 0)::double precision`,
+          subscriptionIncludedRuns: sql<number>`
+            count(*) filter (
+              where ${billingTypeExpr} = 'subscription_included'
+                and ${totalTokensExpr} > 0
+            )::double precision
+          `,
+          inputTokens: sql<number>`coalesce(sum(${inputTokensExpr}), 0)::double precision`,
+          cachedInputTokens: sql<number>`coalesce(sum(${cachedInputTokensExpr}), 0)::double precision`,
+          outputTokens: sql<number>`coalesce(sum(${outputTokensExpr}), 0)::double precision`,
+          lastTokenAt: sql<Date | null>`
+            max(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}))
+              filter (where ${totalTokensExpr} > 0)
+          `,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            gte(heartbeatRuns.createdAt, runActivityStart),
+          ),
+        );
 
       const runActivity = new Map(
         runActivityDays.map((date) => [
@@ -156,6 +214,19 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        tokenActivity: {
+          recentSuccessfulRuns: Number(tokenActivityRow?.recentSuccessfulRuns ?? 0),
+          tokenizedRuns: Number(tokenActivityRow?.tokenizedRuns ?? 0),
+          subscriptionIncludedRuns: Number(tokenActivityRow?.subscriptionIncludedRuns ?? 0),
+          inputTokens: Number(tokenActivityRow?.inputTokens ?? 0),
+          cachedInputTokens: Number(tokenActivityRow?.cachedInputTokens ?? 0),
+          outputTokens: Number(tokenActivityRow?.outputTokens ?? 0),
+          totalTokens:
+            Number(tokenActivityRow?.inputTokens ?? 0)
+            + Number(tokenActivityRow?.cachedInputTokens ?? 0)
+            + Number(tokenActivityRow?.outputTokens ?? 0),
+          lastTokenAt: formatIsoDateTime(tokenActivityRow?.lastTokenAt),
+        },
       };
     },
   };

@@ -166,4 +166,79 @@ describeEmbeddedPostgres("dashboard service", () => {
       total: 3,
     });
   });
+
+  it("surfaces zero-cost subscription token activity without adding spend", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const today = utcDay(0);
+    const yesterday = utcDay(-1);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: yesterday,
+        finishedAt: yesterday,
+        usageJson: {
+          billingType: "subscription_included",
+          inputTokens: 1200,
+          outputTokens: 300,
+          cachedInputTokens: 80,
+          costUsd: 0,
+        },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: today,
+        finishedAt: today,
+        usageJson: {
+          billing_type: "subscription_included",
+          input_tokens: 45,
+          output_tokens: 12,
+          cache_read_input_tokens: 7,
+          cost_usd: 0,
+        },
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs.monthSpendCents).toBe(0);
+    expect(summary.tokenActivity).toMatchObject({
+      recentSuccessfulRuns: 2,
+      tokenizedRuns: 2,
+      subscriptionIncludedRuns: 2,
+      inputTokens: 1245,
+      outputTokens: 312,
+      cachedInputTokens: 87,
+      totalTokens: 1644,
+      lastTokenAt: today.toISOString(),
+    });
+  });
 });

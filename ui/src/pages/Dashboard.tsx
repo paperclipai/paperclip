@@ -19,12 +19,12 @@ import { StatusIcon } from "../components/StatusIcon";
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { formatCents, formatTokens } from "../lib/utils";
+import { Activity, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, DashboardTokenActivity, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
@@ -32,6 +32,58 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+function TokenActivityPanel({ activity }: { activity: DashboardTokenActivity }) {
+  const lastTokenLabel = activity.lastTokenAt ? timeAgo(activity.lastTokenAt) : "No token flow";
+  const hasSubscriptionIncluded = activity.subscriptionIncludedRuns > 0;
+  const stats = [
+    { label: "Successful runs", value: activity.recentSuccessfulRuns.toLocaleString("en-US") },
+    { label: "Last token", value: lastTokenLabel },
+    { label: "Input", value: formatTokens(activity.inputTokens) },
+    { label: "Output", value: formatTokens(activity.outputTokens) },
+    { label: "Cached", value: formatTokens(activity.cachedInputTokens) },
+  ];
+
+  return (
+    <div className="rounded-lg border border-border p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Activity className="h-4 w-4 shrink-0 text-muted-foreground/70" />
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-foreground">Token Activity</h3>
+            <p className="text-xs text-muted-foreground">Last 14 days</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="font-mono text-2xl font-semibold leading-none tabular-nums">
+            {formatTokens(activity.totalTokens)}
+          </p>
+          <p className="mt-1 text-[10px] uppercase text-muted-foreground">tokens</p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        {stats.map((stat) => (
+          <div key={stat.label} className="min-w-0">
+            <p className="truncate font-mono text-sm font-medium tabular-nums">{stat.value}</p>
+            <p className="mt-1 truncate text-[10px] uppercase text-muted-foreground">
+              {stat.label}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {hasSubscriptionIncluded && (
+        <div className="mt-3 inline-flex max-w-full items-center rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-700 dark:text-emerald-300">
+          <span className="truncate">
+            Subscription included: {activity.subscriptionIncludedRuns.toLocaleString("en-US")} run
+            {activity.subscriptionIncludedRuns === 1 ? "" : "s"}
+          </span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Dashboard() {
@@ -290,6 +342,8 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <TokenActivityPanel activity={data.tokenActivity} />
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
