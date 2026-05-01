@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, sql, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   estateAssets,
@@ -12,6 +12,11 @@ import {
   estateCollectibles,
   estateTaxLots,
   estateNetWorthSnapshots,
+  estateValuationReminders,
+  estateDocumentAlerts,
+  estateReviews,
+  estatePropertyTaxBills,
+  DEFAULT_REVIEW_CHECKLIST,
 } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
@@ -1537,6 +1542,382 @@ export function estateRoutes(db: Db) {
       },
       projections,
     });
+  });
+
+  // ── Priority 3: Compliance & Automation ──────────────────────────────────
+
+  // ---- Valuation Reminders -------------------------------------------------
+
+  /** List valuation reminders for a user */
+  router.get("/estate/valuation-reminders", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+
+    const rows = await db
+      .select()
+      .from(estateValuationReminders)
+      .where(and(eq(estateValuationReminders.companyId, companyId), eq(estateValuationReminders.userId, userId)))
+      .orderBy(asc(estateValuationReminders.nextDueAt));
+
+    res.json({ reminders: rows });
+  });
+
+  /** Create a valuation reminder for an asset */
+  router.post("/estate/valuation-reminders", async (req, res) => {
+    assertBoard(req);
+    const { companyId, userId: bodyUserId, assetId, frequency, frequencyDays, nextDueAt, notes } = req.body ?? {};
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    if (!assetId) throw badRequest("assetId is required");
+    if (!nextDueAt) throw badRequest("nextDueAt is required");
+    const userId = bodyUserId ?? req.actor!.userId;
+
+    const freqDays = frequencyDays ?? (frequency === "quarterly" ? 91 : frequency === "monthly" ? 30 : frequency === "semi_annual" ? 182 : 365);
+
+    const [reminder] = await db
+      .insert(estateValuationReminders)
+      .values({ companyId, userId, assetId, frequency: frequency ?? "annual", frequencyDays: freqDays, nextDueAt: new Date(nextDueAt), notes })
+      .returning();
+
+    res.status(201).json(reminder);
+  });
+
+  /** Update a valuation reminder */
+  router.patch("/estate/valuation-reminders/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params;
+    const { nextDueAt, lastRemindedAt, isActive, notes, frequency, frequencyDays } = req.body ?? {};
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (nextDueAt !== undefined) updates.nextDueAt = new Date(nextDueAt);
+    if (lastRemindedAt !== undefined) updates.lastRemindedAt = new Date(lastRemindedAt);
+    if (isActive !== undefined) updates.isActive = isActive;
+    if (notes !== undefined) updates.notes = notes;
+    if (frequency !== undefined) updates.frequency = frequency;
+    if (frequencyDays !== undefined) updates.frequencyDays = frequencyDays;
+
+    const [updated] = await db
+      .update(estateValuationReminders)
+      .set(updates)
+      .where(eq(estateValuationReminders.id, id))
+      .returning();
+
+    if (!updated) throw notFound("Valuation reminder not found");
+    res.json(updated);
+  });
+
+  /** Delete a valuation reminder */
+  router.delete("/estate/valuation-reminders/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(estateValuationReminders)
+      .where(eq(estateValuationReminders.id, id))
+      .returning();
+    if (!deleted) throw notFound("Valuation reminder not found");
+    res.json({ deleted: true });
+  });
+
+  // ---- Document Expiry Alerts ----------------------------------------------
+
+  /** List document alerts for a user */
+  router.get("/estate/document-alerts", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    const statusFilter = typeof req.query.status === "string" ? req.query.status.trim() : null;
+
+    const conditions = [
+      eq(estateDocumentAlerts.companyId, companyId),
+      eq(estateDocumentAlerts.userId, userId),
+    ];
+    if (statusFilter) {
+      conditions.push(eq(estateDocumentAlerts.status, statusFilter as "active" | "dismissed" | "expired"));
+    }
+
+    const rows = await db
+      .select()
+      .from(estateDocumentAlerts)
+      .where(and(...conditions))
+      .orderBy(asc(estateDocumentAlerts.expiresAt));
+
+    // Annotate each alert with urgency: days until expiry
+    const now = Date.now();
+    const annotated = rows.map((r) => ({
+      ...r,
+      daysUntilExpiry: Math.ceil((new Date(r.expiresAt).getTime() - now) / 86_400_000),
+    }));
+
+    res.json({ alerts: annotated });
+  });
+
+  /** Create a document alert */
+  router.post("/estate/document-alerts", async (req, res) => {
+    assertBoard(req);
+    const { companyId, userId: bodyUserId, assetId, documentName, alertType, expiresAt, alertDaysBefore, notes } = req.body ?? {};
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    if (!documentName) throw badRequest("documentName is required");
+    if (!expiresAt) throw badRequest("expiresAt is required");
+    const userId = bodyUserId ?? req.actor!.userId;
+
+    const [alert] = await db
+      .insert(estateDocumentAlerts)
+      .values({
+        companyId,
+        userId,
+        assetId: assetId ?? null,
+        documentName,
+        alertType: alertType ?? "other",
+        expiresAt: new Date(expiresAt),
+        alertDaysBefore: alertDaysBefore ?? [30, 60, 90],
+        notes,
+      })
+      .returning();
+
+    res.status(201).json(alert);
+  });
+
+  /** Update a document alert (status, notes, etc.) */
+  router.patch("/estate/document-alerts/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params;
+    const { status, notes, expiresAt, alertDaysBefore, lastAlertedAt } = req.body ?? {};
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (status !== undefined) updates.status = status;
+    if (notes !== undefined) updates.notes = notes;
+    if (expiresAt !== undefined) updates.expiresAt = new Date(expiresAt);
+    if (alertDaysBefore !== undefined) updates.alertDaysBefore = alertDaysBefore;
+    if (lastAlertedAt !== undefined) updates.lastAlertedAt = new Date(lastAlertedAt);
+
+    const [updated] = await db
+      .update(estateDocumentAlerts)
+      .set(updates)
+      .where(eq(estateDocumentAlerts.id, id))
+      .returning();
+
+    if (!updated) throw notFound("Document alert not found");
+    res.json(updated);
+  });
+
+  /** Delete a document alert */
+  router.delete("/estate/document-alerts/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(estateDocumentAlerts)
+      .where(eq(estateDocumentAlerts.id, id))
+      .returning();
+    if (!deleted) throw notFound("Document alert not found");
+    res.json({ deleted: true });
+  });
+
+  // ---- Annual Estate Review Workflow ---------------------------------------
+
+  /** Get or create the estate review for a given year */
+  router.get("/estate/reviews/:year", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    const reviewYear = parseInt(req.params.year, 10);
+    if (isNaN(reviewYear)) throw badRequest("Invalid year");
+
+    const [existing] = await db
+      .select()
+      .from(estateReviews)
+      .where(and(eq(estateReviews.companyId, companyId), eq(estateReviews.userId, userId), eq(estateReviews.reviewYear, reviewYear)));
+
+    if (existing) {
+      res.json(existing);
+      return;
+    }
+
+    // Auto-create with default checklist
+    const [created] = await db
+      .insert(estateReviews)
+      .values({ companyId, userId, reviewYear, checklist: DEFAULT_REVIEW_CHECKLIST })
+      .returning();
+
+    res.status(201).json(created);
+  });
+
+  /** Update a checklist item or overall review status/notes */
+  router.patch("/estate/reviews/:year", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    const reviewYear = parseInt(req.params.year, 10);
+    if (isNaN(reviewYear)) throw badRequest("Invalid year");
+
+    const [existing] = await db
+      .select()
+      .from(estateReviews)
+      .where(and(eq(estateReviews.companyId, companyId), eq(estateReviews.userId, userId), eq(estateReviews.reviewYear, reviewYear)));
+
+    if (!existing) throw notFound("Estate review not found for this year");
+
+    const { status, notes, checklist, checklistItemId, checklistCompleted } = req.body ?? {};
+
+    let updatedChecklist = existing.checklist;
+    if (checklistItemId !== undefined && checklistCompleted !== undefined) {
+      updatedChecklist = (existing.checklist ?? []).map((item) =>
+        item.id === checklistItemId
+          ? { ...item, completed: checklistCompleted, completedAt: checklistCompleted ? new Date().toISOString() : undefined }
+          : item,
+      );
+    } else if (checklist !== undefined) {
+      updatedChecklist = checklist;
+    }
+
+    const allDone = updatedChecklist.length > 0 && updatedChecklist.every((i) => i.completed);
+    const derivedStatus = status ?? (allDone ? "complete" : updatedChecklist.some((i) => i.completed) ? "in_progress" : existing.status);
+
+    const updates: Record<string, unknown> = {
+      checklist: updatedChecklist,
+      status: derivedStatus,
+      updatedAt: new Date(),
+    };
+    if (notes !== undefined) updates.notes = notes;
+    if (derivedStatus === "complete" && !existing.reviewedAt) updates.reviewedAt = new Date();
+
+    const [updated] = await db
+      .update(estateReviews)
+      .set(updates)
+      .where(eq(estateReviews.id, existing.id))
+      .returning();
+
+    res.json(updated);
+  });
+
+  /** List all estate reviews for a user */
+  router.get("/estate/reviews", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+
+    const rows = await db
+      .select()
+      .from(estateReviews)
+      .where(and(eq(estateReviews.companyId, companyId), eq(estateReviews.userId, userId)))
+      .orderBy(desc(estateReviews.reviewYear));
+
+    res.json({ reviews: rows });
+  });
+
+  // ---- Multi-State Property Tax Calendar ----------------------------------
+
+  /** List property tax bills for a user */
+  router.get("/estate/property-tax", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    const stateFilter = typeof req.query.state === "string" ? req.query.state.trim().toUpperCase() : null;
+    const yearFilter = typeof req.query.year === "string" ? parseInt(req.query.year, 10) : null;
+
+    const conditions = [
+      eq(estatePropertyTaxBills.companyId, companyId),
+      eq(estatePropertyTaxBills.userId, userId),
+    ];
+    if (stateFilter) conditions.push(eq(estatePropertyTaxBills.state, stateFilter));
+    if (yearFilter && !isNaN(yearFilter)) conditions.push(eq(estatePropertyTaxBills.taxYear, yearFilter));
+
+    const rows = await db
+      .select()
+      .from(estatePropertyTaxBills)
+      .where(and(...conditions))
+      .orderBy(asc(estatePropertyTaxBills.dueDate));
+
+    // Compute overdue status on-the-fly for upcoming bills past due
+    const now = new Date();
+    const annotated = rows.map((r) => ({
+      ...r,
+      isOverdue: r.status === "upcoming" && new Date(r.dueDate) < now,
+      daysUntilDue: Math.ceil((new Date(r.dueDate).getTime() - now.getTime()) / 86_400_000),
+    }));
+
+    res.json({ bills: annotated });
+  });
+
+  /** Add a property tax bill */
+  router.post("/estate/property-tax", async (req, res) => {
+    assertBoard(req);
+    const { companyId, userId: bodyUserId, assetId, state, county, taxYear, installment, dueDate, amountCents, notes } = req.body ?? {};
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+    if (!assetId) throw badRequest("assetId is required");
+    if (!state) throw badRequest("state is required");
+    if (!taxYear) throw badRequest("taxYear is required");
+    if (!dueDate) throw badRequest("dueDate is required");
+    const userId = bodyUserId ?? req.actor!.userId;
+
+    const [bill] = await db
+      .insert(estatePropertyTaxBills)
+      .values({
+        companyId,
+        userId,
+        assetId,
+        state: state.toUpperCase(),
+        county: county ?? null,
+        taxYear,
+        installment: installment ?? 1,
+        dueDate: new Date(dueDate),
+        amountCents: amountCents ? String(amountCents) : null,
+        notes,
+      })
+      .returning();
+
+    res.status(201).json(bill);
+  });
+
+  /** Mark a property tax bill as paid or update it */
+  router.patch("/estate/property-tax/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params;
+    const { status, paidAt, paidAmountCents, amountCents, notes, dueDate } = req.body ?? {};
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (status !== undefined) updates.status = status;
+    if (paidAt !== undefined) updates.paidAt = new Date(paidAt);
+    if (paidAmountCents !== undefined) updates.paidAmountCents = String(paidAmountCents);
+    if (amountCents !== undefined) updates.amountCents = String(amountCents);
+    if (notes !== undefined) updates.notes = notes;
+    if (dueDate !== undefined) updates.dueDate = new Date(dueDate);
+    if (status === "paid" && !paidAt) updates.paidAt = new Date();
+
+    const [updated] = await db
+      .update(estatePropertyTaxBills)
+      .set(updates)
+      .where(eq(estatePropertyTaxBills.id, id))
+      .returning();
+
+    if (!updated) throw notFound("Property tax bill not found");
+    res.json(updated);
+  });
+
+  /** Delete a property tax bill */
+  router.delete("/estate/property-tax/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(estatePropertyTaxBills)
+      .where(eq(estatePropertyTaxBills.id, id))
+      .returning();
+    if (!deleted) throw notFound("Property tax bill not found");
+    res.json({ deleted: true });
   });
 
   return router;
