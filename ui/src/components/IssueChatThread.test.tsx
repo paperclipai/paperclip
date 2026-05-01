@@ -1487,6 +1487,49 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("invokes the cancel callback for pending question interactions", async () => {
+    const root = createRoot(container);
+    const onCancelInteraction = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createQuestionInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onCancelInteraction={onCancelInteraction}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Cancel question"),
+    );
+    expect(cancelButton).toBeTruthy();
+
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onCancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-question-1",
+        kind: "ask_user_questions",
+      }),
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("folds expired request confirmations into an activity row by default", async () => {
     const root = createRoot(container);
 
