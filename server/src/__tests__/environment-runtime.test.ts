@@ -434,11 +434,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const runtimeApiUrl = `http://127.0.0.1:${address.port}`;
     const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
     const previousBackoff = process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON;
-    const previousRetries = process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES;
+    const previousAttempts = process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS;
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([runtimeApiUrl]);
     // Tight backoff so the test doesn't add 7s of sleep wall time.
     process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON = JSON.stringify([10, 10]);
-    process.env.PAPERCLIP_RUNTIME_API_PROBE_RETRIES = "3";
+    process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS = "3";
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "ssh",
       name: "Fixture SSH 503",
@@ -469,7 +469,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       };
       restore("PAPERCLIP_RUNTIME_API_CANDIDATES_JSON", previousCandidates);
       restore("PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON", previousBackoff);
-      restore("PAPERCLIP_RUNTIME_API_PROBE_RETRIES", previousRetries);
+      restore("PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS", previousAttempts);
       await new Promise<void>((resolve) => healthServer.close(() => resolve()));
       await stopSshEnvLabFixture(statePath).catch(() => undefined);
     }
