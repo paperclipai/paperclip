@@ -26,9 +26,13 @@ const [ceo] = await db
     role: "ceo",
     title: "Chief Executive Officer",
     status: "idle",
+    orgLevel: "executive",
+    primaryWorkflowRole: "approval",
+    specialty: "leadership",
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from ceo"] },
     budgetMonthlyCents: 15000,
+    // orgLevel is required by the post-0076 NOT NULL constraint in agents.org_level.
   })
   .returning();
 
@@ -41,6 +45,9 @@ const [engineer] = await db
     title: "Software Engineer",
     status: "idle",
     reportsTo: ceo!.id,
+    orgLevel: "executor",
+    primaryWorkflowRole: "execution",
+    specialty: "tech",
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from engineer"] },
     budgetMonthlyCents: 10000,

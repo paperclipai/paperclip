@@ -3,7 +3,8 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { issueExecutionDecisions } from "@paperclipai/db";
+import { agents as agentsTable, issues as issuesTable, issueExecutionDecisions } from "@paperclipai/db";
+import { eq, inArray } from "drizzle-orm";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -18,6 +19,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  ISSUE_WORKFLOW_ROLES_REQUIRING_SOURCE,
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
@@ -58,7 +60,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -452,6 +454,82 @@ export function issueRoutes(
       environmentId,
       { allowedDrivers: ["local", "ssh", "sandbox"] },
     );
+  }
+
+  /**
+   * Validates the workflow-role / verification-stage fields on an issue mutation:
+   * - workflowRole ∈ {review, qa, approval} ⇒ effective sourceIssueId must be non-null.
+   * - reviewAgentId / qaAgentId, when present, must reference an agent in the same company.
+   * - sourceIssueId, when present, must reference an issue in the same company.
+   *
+   * Pass `existing` for PATCH so we can resolve the *effective* role/source after the patch,
+   * not just the values present in the request body.
+   */
+  async function assertIssueWorkflowReferences(opts: {
+    companyId: string;
+    body: Record<string, unknown>;
+    existing?: { workflowRole: string | null; sourceIssueId: string | null } | null;
+  }) {
+    const { companyId, body, existing } = opts;
+
+    const workflowRoleProvided = Object.prototype.hasOwnProperty.call(body, "workflowRole");
+    const sourceIssueIdProvided = Object.prototype.hasOwnProperty.call(body, "sourceIssueId");
+    const reviewAgentIdProvided = Object.prototype.hasOwnProperty.call(body, "reviewAgentId");
+    const qaAgentIdProvided = Object.prototype.hasOwnProperty.call(body, "qaAgentId");
+
+    const effectiveRole = workflowRoleProvided
+      ? (typeof body.workflowRole === "string" ? body.workflowRole : null)
+      : (existing?.workflowRole ?? null);
+    const effectiveSourceIssueId = sourceIssueIdProvided
+      ? (typeof body.sourceIssueId === "string" ? body.sourceIssueId : null)
+      : (existing?.sourceIssueId ?? null);
+
+    if (
+      effectiveRole !== null
+      && (ISSUE_WORKFLOW_ROLES_REQUIRING_SOURCE as readonly string[]).includes(effectiveRole)
+      && !effectiveSourceIssueId
+    ) {
+      throw unprocessable(
+        `workflowRole=${effectiveRole} requires sourceIssueId to identify the original execution issue`,
+      );
+    }
+
+    const agentIdsToCheck: string[] = [];
+    if (reviewAgentIdProvided && typeof body.reviewAgentId === "string") {
+      agentIdsToCheck.push(body.reviewAgentId);
+    }
+    if (qaAgentIdProvided && typeof body.qaAgentId === "string") {
+      agentIdsToCheck.push(body.qaAgentId);
+    }
+    if (agentIdsToCheck.length > 0) {
+      const rows = await db
+        .select({ id: agentsTable.id, companyId: agentsTable.companyId })
+        .from(agentsTable)
+        .where(inArray(agentsTable.id, agentIdsToCheck));
+      for (const id of agentIdsToCheck) {
+        const row = rows.find((r) => r.id === id);
+        if (!row) {
+          throw unprocessable(`Referenced agent ${id} not found`);
+        }
+        if (row.companyId !== companyId) {
+          throw unprocessable(`Referenced agent ${id} belongs to a different company`);
+        }
+      }
+    }
+
+    if (sourceIssueIdProvided && typeof body.sourceIssueId === "string") {
+      const sourceRow = await db
+        .select({ id: issuesTable.id, companyId: issuesTable.companyId })
+        .from(issuesTable)
+        .where(eq(issuesTable.id, body.sourceIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceRow) {
+        throw unprocessable(`Referenced sourceIssue ${body.sourceIssueId} not found`);
+      }
+      if (sourceRow.companyId !== companyId) {
+        throw unprocessable("sourceIssueId must reference an issue in the same company");
+      }
+    }
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -1810,6 +1888,7 @@ export function issueRoutes(
       await assertCanAssignTasks(req, companyId);
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertIssueWorkflowReferences({ companyId, body: req.body });
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -1877,6 +1956,7 @@ export function issueRoutes(
       await assertCanAssignTasks(req, parent.companyId);
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertIssueWorkflowReferences({ companyId: parent.companyId, body: req.body });
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -1931,6 +2011,11 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    await assertIssueWorkflowReferences({
+      companyId: existing.companyId,
+      body: req.body,
+      existing: { workflowRole: existing.workflowRole, sourceIssueId: existing.sourceIssueId },
+    });
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);

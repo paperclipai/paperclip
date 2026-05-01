@@ -319,6 +319,7 @@ describe("worktree helpers", () => {
             wakeOnDemand: true,
           },
           permissions: {},
+          orgLevel: "executor",
         },
         {
           id: idleAgentId,
@@ -330,6 +331,7 @@ describe("worktree helpers", () => {
           adapterConfig: {},
           runtimeConfig: { heartbeat: { enabled: false, intervalSec: 300 } },
           permissions: {},
+          orgLevel: "executor",
         },
       ]);
       await db.insert(issues).values([
@@ -1212,6 +1214,7 @@ describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
+        orgLevel: "executor",
       });
       await db.insert(projects).values({
         id: projectId,

@@ -1,10 +1,12 @@
 import { z } from "zod";
 import {
+  ISSUE_COMPLETION_REQUIRES,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_PRIORITIES,
+  ISSUE_WORKFLOW_ROLES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
@@ -153,6 +155,15 @@ export const createIssueSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  // Workflow-role / verification-stage fields. Cross-field rule
+  // (workflowRole ∈ {review, qa, approval} requires sourceIssueId) and the
+  // sourceIssueId-must-belong-to-same-company check are enforced at the route layer
+  // because they need DB lookups.
+  workflowRole: z.enum(ISSUE_WORKFLOW_ROLES).optional().nullable(),
+  reviewAgentId: z.string().uuid().optional().nullable(),
+  qaAgentId: z.string().uuid().optional().nullable(),
+  sourceIssueId: z.string().uuid().optional().nullable(),
+  completionRequires: z.enum(ISSUE_COMPLETION_REQUIRES).optional().nullable(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;

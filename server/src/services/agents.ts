@@ -41,6 +41,11 @@ const CONFIG_REVISION_FIELDS = [
   "defaultEnvironmentId",
   "budgetMonthlyCents",
   "metadata",
+  "orgLevel",
+  "primaryWorkflowRole",
+  "specialty",
+  "defaultReviewAgentId",
+  "defaultQaAgentId",
 ] as const;
 
 type ConfigRevisionField = (typeof CONFIG_REVISION_FIELDS)[number];
@@ -102,6 +107,11 @@ function buildConfigSnapshot(
     defaultEnvironmentId: row.defaultEnvironmentId,
     budgetMonthlyCents: row.budgetMonthlyCents,
     metadata,
+    orgLevel: row.orgLevel,
+    primaryWorkflowRole: row.primaryWorkflowRole,
+    specialty: row.specialty,
+    defaultReviewAgentId: row.defaultReviewAgentId,
+    defaultQaAgentId: row.defaultQaAgentId,
   };
 }
 
@@ -177,6 +187,22 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
         : null,
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
+    orgLevel:
+      typeof snapshot.orgLevel === "string" || snapshot.orgLevel === null ? snapshot.orgLevel : null,
+    primaryWorkflowRole:
+      typeof snapshot.primaryWorkflowRole === "string" || snapshot.primaryWorkflowRole === null
+        ? snapshot.primaryWorkflowRole
+        : null,
+    specialty:
+      typeof snapshot.specialty === "string" || snapshot.specialty === null ? snapshot.specialty : null,
+    defaultReviewAgentId:
+      typeof snapshot.defaultReviewAgentId === "string" || snapshot.defaultReviewAgentId === null
+        ? snapshot.defaultReviewAgentId
+        : null,
+    defaultQaAgentId:
+      typeof snapshot.defaultQaAgentId === "string" || snapshot.defaultQaAgentId === null
+        ? snapshot.defaultQaAgentId
+        : null,
   };
 }
 
@@ -424,9 +450,13 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      // CMP-648: agents.org_level became NOT NULL in migration 0076. Callers that
+      // omit orgLevel (legacy company-portability imports, older API clients) get
+      // "executor" as a safe default. Phase 2 will tighten this to required input.
+      const orgLevel = data.orgLevel ?? "executor";
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+        .values({ ...data, name: uniqueName, companyId, role, orgLevel, permissions: normalizedPermissions, runtimeConfig })
         .returning()
         .then((rows) => rows[0]);
 

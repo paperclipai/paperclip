@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
+  AGENT_ORG_LEVELS,
+  AGENT_PRIMARY_WORKFLOW_ROLES,
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
@@ -79,6 +81,14 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
+  // Hierarchy / review-QA fields. Self-FK guards (defaultReviewAgentId/defaultQaAgentId
+  // pointing at the agent itself) are enforced at the route layer because they need
+  // the resolved agent id, which is not available here for create flows.
+  orgLevel: z.enum(AGENT_ORG_LEVELS).optional().nullable(),
+  primaryWorkflowRole: z.enum(AGENT_PRIMARY_WORKFLOW_ROLES).optional().nullable(),
+  specialty: z.string().trim().min(1).max(64).optional().nullable(),
+  defaultReviewAgentId: z.string().uuid().optional().nullable(),
+  defaultQaAgentId: z.string().uuid().optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

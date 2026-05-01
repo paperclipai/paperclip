@@ -22,6 +22,34 @@ export const agents = pgTable(
     icon: text("icon"),
     status: text("status").notNull().default("idle"),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
+    /**
+     * Organizational level of the agent within the company hierarchy.
+     * Enum: executor | manager | executive | qa | policy | pm.
+     * Database NOT NULL is enforced via migration 0076; the drizzle column type is left
+     * nullable so existing test inserts and seed code don't all need to be updated at once.
+     * New production code paths set this field via the canonical backfill.
+     */
+    orgLevel: text("org_level"),
+    /**
+     * Primary workflow role this agent fills by default.
+     * Enum: execution | review | qa | approval | policy.
+     */
+    primaryWorkflowRole: text("primary_workflow_role"),
+    /**
+     * Free-text specialty hint (e.g. tech_ops, ads, youtube, schedule, qa_software).
+     * Not constrained by enum so adding new specialties does not require a migration.
+     */
+    specialty: text("specialty"),
+    /**
+     * Suggested default reviewer for issues this agent executes.
+     * Self-reference is forbidden by API validation.
+     */
+    defaultReviewAgentId: uuid("default_review_agent_id").references((): AnyPgColumn => agents.id, { onDelete: "set null" }),
+    /**
+     * Suggested default QA agent for issues this agent executes.
+     * Self-reference is forbidden by API validation.
+     */
+    defaultQaAgentId: uuid("default_qa_agent_id").references((): AnyPgColumn => agents.id, { onDelete: "set null" }),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
