@@ -22,7 +22,7 @@ export async function ghFetch(url: string, init?: RequestInit, authToken?: strin
     headers.set("Authorization", `Bearer ${authToken}`);
   }
   try {
-    return await fetch(url, { ...init, headers });
+    return await fetch(url, { ...init, headers, redirect: authToken ? "manual" : "follow" });
   } catch {
     throw unprocessable(`Could not connect to ${new URL(url).hostname} — ensure the URL points to a GitHub or GitHub Enterprise instance`);
   }
