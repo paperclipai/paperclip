@@ -1,149 +1,162 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  CircleDashed,
-  ClipboardList,
-  ExternalLink,
-  MinusCircle,
-} from "lucide-react";
-import { Link } from "@/lib/router";
+import { AlertTriangle, CheckCircle2, CircleDashed, ClipboardList, MinusCircle } from "lucide-react";
 import { useBreadcrumbs } from "../../context/BreadcrumbContext";
 
-type AlignmentStatus = "shipped" | "partial" | "missing";
-type ValidationStatus = "validated" | "tech_debt" | "deferred";
+type AlignmentStatus = "complete" | "partial" | "tech_debt" | "missing";
 
 type AlignmentItem = {
   id: string;
   area: string;
   status: AlignmentStatus;
-  validationStatus: ValidationStatus;
+  weight: number;
+  ownerPhase: string;
+  requirements: string[];
+  evidence: string;
   current: string;
   gap: string;
-  phase: string;
 };
 
 const STATUS_LABELS: Record<AlignmentStatus, string> = {
-  shipped: "Shipped",
-  partial: "Partial",
-  missing: "Missing",
-};
-
-const VALIDATION_LABELS: Record<ValidationStatus, string> = {
-  validated: "Validated",
-  tech_debt: "Tech debt",
-  deferred: "Deferred",
+  complete: "완료",
+  partial: "부분 반영",
+  tech_debt: "기술 부채",
+  missing: "미구현",
 };
 
 const STATUS_STYLES: Record<AlignmentStatus, string> = {
-  shipped: "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-100",
-  partial: "border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100",
+  complete:
+    "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-100",
+  partial:
+    "border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100",
+  tech_debt:
+    "border-orange-200 bg-orange-50 text-orange-950 dark:border-orange-900/70 dark:bg-orange-950/30 dark:text-orange-100",
   missing: "border-rose-200 bg-rose-50 text-rose-950 dark:border-rose-900/70 dark:bg-rose-950/30 dark:text-rose-100",
-};
-
-const VALIDATION_STYLES: Record<ValidationStatus, string> = {
-  validated: "border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-100",
-  tech_debt: "border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100",
-  deferred: "border-border bg-background text-muted-foreground",
 };
 
 const ALIGNMENT_ITEMS: AlignmentItem[] = [
   {
-    id: "rt2-shell",
-    area: "RT2 shell and product identity",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "Company-prefixed RealTycoon2 shell, 일일 업무 기록, 지식 위키/그래프, Jarvis 마켓, 성과 정산, 승인/거버넌스, control-plane routes exist. Phase 15 strict validation now records product-facing RT2 identity evidence.",
-    gap: "Internal package/API/route compatibility names remain engine-layer only.",
-    phase: "Phase 15",
+    id: "alignment-truth",
+    area: "개발기획서 근거 매트릭스",
+    status: "complete",
+    weight: 10,
+    ownerPhase: "65",
+    requirements: ["ALIGN-01", "ALIGN-02"],
+    evidence: "gate, UI, context",
+    current: "Phase 65가 개발기획서 축별 상태와 근거 파일을 한 화면과 gate 산출물로 고정했습니다.",
+    gap: "이후 phase가 새 근거를 추가할 때 같은 기준으로 score를 갱신해야 합니다.",
   },
   {
-    id: "one-liner",
-    area: "일일 업무 기록",
-    status: "shipped",
-    validationStatus: "deferred",
-    current: "Structured capture, floating widget, global shortcut, voice draft, messenger inbound draft, and immediate reward evidence are present.",
-    gap: "Native/mobile inbound queue promotion is Phase 23 scope.",
-    phase: "Phase 16 / 23",
+    id: "identity-boundary",
+    area: "RealTycoon2 제품 정체성 경계",
+    status: "complete",
+    weight: 10,
+    ownerPhase: "65",
+    requirements: ["IDENTITY-01", "IDENTITY-03"],
+    evidence: "compatibility docs",
+    current: "RealTycoon2는 제품 정체성이고 legacy control-plane 명칭은 호환성 계층으로 분리했습니다.",
+    gap: "패키지와 환경 변수 이름은 호환성 문맥으로 유지됩니다.",
   },
   {
-    id: "daily-report",
-    area: "Daily report cockpit",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "Three-panel daily cockpit shows report/task activity, deliverables, quality state, gold/XP impact, Jarvis detail, and Trello-style drag/drop lane move. Phase 14 strict validation is present.",
-    gap: "Checklist, due date, attachment preview, and advanced board filtering remain Phase 23 scope.",
-    phase: "Phase 14",
+    id: "identity-regression",
+    area: "제품 표면 정체성 회귀 스캔",
+    status: "complete",
+    weight: 10,
+    ownerPhase: "65",
+    requirements: ["IDENTITY-02"],
+    evidence: "identity gate",
+    current: "UI, docs, server-facing copy가 RealTycoon2-first Korean identity 기준으로 검사됩니다.",
+    gap: "새 표면이 생기면 identity gate 대상에 추가해야 합니다.",
   },
   {
-    id: "okr-kpi",
-    area: "Mission to To-Do traceability",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "Daily cockpit exposes available Mission, Objective, Key Result, Project, Task, and To-Do trace rows and gap flags.",
-    gap: "Enterprise rollout can tighten template defaults for missing hierarchy data.",
-    phase: "Phase 10",
+    id: "daily-cockpit",
+    area: "일일 업무 cockpit",
+    status: "partial",
+    weight: 12,
+    ownerPhase: "66",
+    requirements: ["DAILY-01", "DAILY-02", "DAILY-03"],
+    evidence: "DailyWorkPage, Rt2DailyBoard",
+    current: "일일 업무 기록과 보드 근거는 있으나 v3.1 3-panel cockpit 수렴은 아직 완료되지 않았습니다.",
+    gap: "Phase 66에서 Mission부터 To-Do까지의 업무 흐름과 cockpit proof를 닫습니다.",
   },
   {
-    id: "task-mesh",
-    area: "Task Mesh",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "Task Mesh exposes hierarchy, dependency, timeline, collaborator, deliverable, knowledge, and economy views with node evidence.",
-    gap: "Future work can add richer graph interaction and layout persistence.",
-    phase: "Phase 11",
+    id: "mission-okr-rollup",
+    area: "Mission to To-Do 계층",
+    status: "partial",
+    weight: 8,
+    ownerPhase: "66",
+    requirements: ["DAILY-03"],
+    evidence: "daily report types, service",
+    current: "계층 데이터는 여러 경로에 존재하지만 API와 UI가 하나의 rollup 근거로 닫히지 않았습니다.",
+    gap: "Phase 66에서 누락 flag와 rollup evidence를 같은 화면에 연결합니다.",
   },
   {
-    id: "knowledge",
-    area: "wikiLLM and Graphify knowledge loop",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "Knowledge workspace includes wiki pages, real graph panel, graph reports, God Nodes, warnings, pending events, vault writer dry-run, import preview candidates, approved import apply, conflict resolution, and route fallback validation.",
-    gap: "Actual desktop Obsidian writer daemon and continuous file watcher remain future hardening.",
-    phase: "Phase 17 / 19 / 21",
+    id: "runtime-execution",
+    area: "참조 런타임 실행 parity",
+    status: "tech_debt",
+    weight: 12,
+    ownerPhase: "67",
+    requirements: ["RUNTIME-01", "RUNTIME-02", "RUNTIME-03"],
+    evidence: "task execution service, reference audit",
+    current: "실행 서비스는 있으나 heartbeat cleanup, cancellation, progress stream parity는 완료 근거가 부족합니다.",
+    gap: "Phase 67에서 runtime-aware claim과 progress/cancel 경계를 검증합니다.",
   },
   {
-    id: "jarvis",
-    area: "Jarvis modes and change management",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "Jarvis manager review, policy threshold routing, reverse-designed task proposal, and governed runtime skill capability are present.",
-    gap: "Future work can connect reverse-designed proposals to task creation approvals.",
-    phase: "Phase 12",
+    id: "wikillm-memory",
+    area: "wikiLLM 누적 메모리",
+    status: "partial",
+    weight: 10,
+    ownerPhase: "68",
+    requirements: ["WIKI-01", "WIKI-02", "WIKI-03"],
+    evidence: "knowledge projector, wiki schema",
+    current: "지식 projection과 schema 근거는 있으나 living memory export loop는 부분 구현 상태입니다.",
+    gap: "Phase 68에서 index, log, topic page export와 Jarvis 검토 루프를 연결합니다.",
   },
   {
-    id: "economy",
-    area: "Amoeba economy and marketplace",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "P&L, coin ledger, marketplace evidence, collaboration rewards, quality-backed pricing, settlement evidence, settlement approval/rejection, negotiation comments, anti-gaming signals, and Phase 19/22 fallback validation are materially present.",
-    gap: "Automatic penalty/reputation demotion and external payroll export remain future governance hardening.",
-    phase: "Phase 18 / 19 / 22",
+    id: "graphify-v3-sidecar",
+    area: "Graphify v3 지식 그래프 sidecar",
+    status: "tech_debt",
+    weight: 12,
+    ownerPhase: "69",
+    requirements: ["GRAPH-01", "GRAPH-02", "GRAPH-03", "GRAPH-04"],
+    evidence: "graph projection schema, reference audit",
+    current: "projection schema는 있으나 corpus ingest, provenance, clustering, path query parity는 debt로 남아 있습니다.",
+    gap: "Phase 69에서 실제 corpus graph sidecar 근거를 닫습니다.",
   },
   {
-    id: "enterprise",
-    area: "Enterprise rollout",
-    status: "shipped",
-    validationStatus: "validated",
-    current: "RT2-labeled rollout surface configures SSO, company template, access mode, and policy defaults with saved-value hydrate, SSO metadata validation, SCIM preview, readiness checks, and audit log.",
-    gap: "Live IdP handshake and SCIM apply mutation remain future hardening.",
-    phase: "Phase 18 / 20",
+    id: "economy-loop",
+    area: "경제, 마켓플레이스, P&L, CareerMate loop",
+    status: "partial",
+    weight: 12,
+    ownerPhase: "70",
+    requirements: ["ECON-01", "ECON-02", "ECON-03"],
+    evidence: "P&L routes, marketplace routes, gamification panel",
+    current: "ledger, marketplace, quality pricing 근거는 있으나 주 navigation loop와 성장 흐름은 연결 debt가 있습니다.",
+    gap: "Phase 70에서 품질 근거, 정산, CareerMate progression을 하나의 운영 loop로 묶습니다.",
   },
   {
-    id: "mobile-native",
-    area: "Native mobile distribution",
+    id: "v31-acceptance-gate",
+    area: "v3.1 acceptance score delta",
     status: "missing",
-    validationStatus: "deferred",
-    current: "Responsive web surfaces exist.",
-    gap: "Store-distributed native app remains future scope; inbound native capture queue is Phase 23.",
-    phase: "Future",
+    weight: 4,
+    ownerPhase: "71",
+    requirements: ["GATE-01", "GATE-02"],
+    evidence: "roadmap, requirements",
+    current: "최종 score delta 감사는 Phase 66-70 완료 후 실행할 수 있습니다.",
+    gap: "Phase 71에서 64% 기준선 대비 상승분과 남은 debt를 감사합니다.",
   },
 ];
 
 function StatusIcon({ status }: { status: AlignmentStatus }) {
-  if (status === "shipped") return <CheckCircle2 className="h-4 w-4" />;
-  if (status === "partial") return <CircleDashed className="h-4 w-4" />;
-  return <MinusCircle className="h-4 w-4" />;
+  if (status === "complete") return <CheckCircle2 className="h-4 w-4" />;
+  if (status === "missing") return <MinusCircle className="h-4 w-4" />;
+  return <CircleDashed className="h-4 w-4" />;
+}
+
+function scoreFor(status: AlignmentStatus) {
+  if (status === "complete") return 1;
+  if (status === "partial") return 0.6;
+  if (status === "tech_debt") return 0.35;
+  return 0;
 }
 
 export function PlanAlignmentPage() {
@@ -151,67 +164,73 @@ export function PlanAlignmentPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | AlignmentStatus>("all");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Plan Alignment" }]);
+    setBreadcrumbs([{ label: "DevPlan 정합성" }]);
   }, [setBreadcrumbs]);
 
-  const counts = useMemo(
-    () => ({
-      shipped: ALIGNMENT_ITEMS.filter((item) => item.status === "shipped").length,
-      partial: ALIGNMENT_ITEMS.filter((item) => item.status === "partial").length,
-      missing: ALIGNMENT_ITEMS.filter((item) => item.status === "missing").length,
-      validated: ALIGNMENT_ITEMS.filter((item) => item.validationStatus === "validated").length,
-      techDebt: ALIGNMENT_ITEMS.filter((item) => item.validationStatus === "tech_debt").length,
-      deferred: ALIGNMENT_ITEMS.filter((item) => item.validationStatus === "deferred").length,
-    }),
-    [],
-  );
+  const summary = useMemo(() => {
+    const counts = ALIGNMENT_ITEMS.reduce(
+      (acc, item) => {
+        acc[item.status] += 1;
+        return acc;
+      },
+      { complete: 0, partial: 0, tech_debt: 0, missing: 0 } as Record<AlignmentStatus, number>,
+    );
+    const totalWeight = ALIGNMENT_ITEMS.reduce((sum, item) => sum + item.weight, 0);
+    const earnedWeight = ALIGNMENT_ITEMS.reduce((sum, item) => sum + item.weight * scoreFor(item.status), 0);
+    return {
+      counts,
+      score: Math.round((earnedWeight / totalWeight) * 100),
+      totalWeight,
+    };
+  }, []);
 
   const filteredItems = useMemo(
-    () => statusFilter === "all" ? ALIGNMENT_ITEMS : ALIGNMENT_ITEMS.filter((item) => item.status === statusFilter),
+    () => (statusFilter === "all" ? ALIGNMENT_ITEMS : ALIGNMENT_ITEMS.filter((item) => item.status === statusFilter)),
     [statusFilter],
   );
 
   return (
     <div className="space-y-6">
       <section className="rounded-lg border border-border bg-card px-6 py-5">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-          <div className="max-w-3xl space-y-3">
+        <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-start">
+          <div className="space-y-3">
             <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
               <ClipboardList className="h-4 w-4" />
-              Development Plan Alignment
+              DevPlan 정합성 기준선
             </div>
             <div className="space-y-2">
-              <h1 className="text-2xl font-semibold">RealTycoon2 development-plan reflection map</h1>
+              <h1 className="text-2xl font-semibold">v3.1 개발기획서 반영 현황</h1>
               <p className="text-sm leading-6 text-muted-foreground">
-                Uploaded development plan 기준으로 현재 앱이 반영한 영역, 부분 반영 영역, 아직 빠진 영역을 한 화면에 고정합니다.
-                Phase 19 이후에는 validation artifact, route fallback, deferred scope도 함께 추적합니다.
+                Phase 65 기준 정적 싱크로율은 64%입니다. 완료 주장은 근거가 있을 때만 완료로 표시하고,
+                참조 엔진 parity와 핵심 제품 흐름의 남은 gap은 이후 phase owner에 연결합니다.
               </p>
             </div>
           </div>
-          <div className="grid min-w-[18rem] grid-cols-3 gap-2">
-            <div className="rounded-lg border border-border bg-background px-3 py-2">
-              <div className="text-lg font-semibold">{counts.shipped}</div>
-              <div className="text-xs text-muted-foreground">Shipped</div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="text-xl font-semibold">{summary.score}%</div>
+              <div className="text-xs text-muted-foreground">현재 점수</div>
             </div>
-            <div className="rounded-lg border border-border bg-background px-3 py-2">
-              <div className="text-lg font-semibold">{counts.partial}</div>
-              <div className="text-xs text-muted-foreground">Partial</div>
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="text-xl font-semibold">{summary.totalWeight}</div>
+              <div className="text-xs text-muted-foreground">총 weight</div>
             </div>
-            <div className="rounded-lg border border-border bg-background px-3 py-2">
-              <div className="text-lg font-semibold">{counts.missing}</div>
-              <div className="text-xs text-muted-foreground">Missing</div>
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="text-xl font-semibold">{summary.counts.complete}</div>
+              <div className="text-xs text-muted-foreground">완료 축</div>
             </div>
-            <div className="rounded-lg border border-border bg-background px-3 py-2">
-              <div className="text-lg font-semibold">{counts.validated}</div>
-              <div className="text-xs text-muted-foreground">Validated</div>
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="text-xl font-semibold">{summary.counts.partial}</div>
+              <div className="text-xs text-muted-foreground">부분 반영</div>
             </div>
-            <div className="rounded-lg border border-border bg-background px-3 py-2">
-              <div className="text-lg font-semibold">{counts.techDebt}</div>
-              <div className="text-xs text-muted-foreground">Tech debt</div>
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="text-xl font-semibold">{summary.counts.tech_debt}</div>
+              <div className="text-xs text-muted-foreground">기술 부채</div>
             </div>
-            <div className="rounded-lg border border-border bg-background px-3 py-2">
-              <div className="text-lg font-semibold">{counts.deferred}</div>
-              <div className="text-xs text-muted-foreground">Deferred</div>
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="text-xl font-semibold">{summary.counts.missing}</div>
+              <div className="text-xs text-muted-foreground">미구현</div>
             </div>
           </div>
         </div>
@@ -220,13 +239,13 @@ export function PlanAlignmentPage() {
       <section className="rounded-lg border border-border bg-card px-5 py-4">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold">Adoption baseline</h2>
+            <h2 className="text-sm font-semibold">상태 필터</h2>
             <p className="text-sm text-muted-foreground">
-              Status는 `.planning/DEVPLAN-ALIGNMENT.md`와 Phase 19 validation artifact를 앱에서 볼 수 있게 정리한 것입니다.
+              complete는 근거가 있는 완료만 의미하며, 나머지는 다음 phase owner가 닫아야 할 gap입니다.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(["all", "shipped", "partial", "missing"] as const).map((status) => (
+            {(["all", "complete", "partial", "tech_debt", "missing"] as const).map((status) => (
               <button
                 key={status}
                 type="button"
@@ -237,7 +256,7 @@ export function PlanAlignmentPage() {
                     : "border-border bg-background text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {status === "all" ? "All" : STATUS_LABELS[status]}
+                {status === "all" ? "전체" : STATUS_LABELS[status]}
               </button>
             ))}
           </div>
@@ -247,29 +266,42 @@ export function PlanAlignmentPage() {
       <section className="grid gap-3">
         {filteredItems.map((item) => (
           <article key={item.id} className="rounded-lg border border-border bg-card px-5 py-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="grid gap-4 lg:grid-cols-[1fr_24rem] lg:items-start">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium ${STATUS_STYLES[item.status]}`}>
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium ${STATUS_STYLES[item.status]}`}
+                  >
                     <StatusIcon status={item.status} />
                     {STATUS_LABELS[item.status]}
                   </span>
-                  <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium ${VALIDATION_STYLES[item.validationStatus]}`}>
-                    {VALIDATION_LABELS[item.validationStatus]}
+                  <span className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground">
+                    Phase {item.ownerPhase}
                   </span>
-                  <span className="text-xs font-medium text-muted-foreground">{item.phase}</span>
+                  <span className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground">
+                    weight {item.weight}
+                  </span>
                 </div>
                 <div>
                   <h3 className="text-base font-semibold">{item.area}</h3>
                   <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.current}</p>
                 </div>
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  {item.requirements.map((requirement) => (
+                    <span key={requirement} className="rounded-md bg-muted px-2 py-1">
+                      {requirement}
+                    </span>
+                  ))}
+                </div>
               </div>
-              <div className="rounded-lg border border-border bg-background px-4 py-3 lg:w-[24rem]">
+
+              <div className="rounded-lg border border-border bg-background px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   <AlertTriangle className="h-4 w-4" />
-                  Gap / next action
+                  다음 근거
                 </div>
                 <p className="text-sm leading-6">{item.gap}</p>
+                <p className="mt-3 text-xs text-muted-foreground">근거: {item.evidence}</p>
               </div>
             </div>
           </article>
@@ -277,20 +309,12 @@ export function PlanAlignmentPage() {
       </section>
 
       <section className="rounded-lg border border-border bg-card px-5 py-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-sm font-semibold">Next implementation owner</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Phase 19에서 v2.2 validation debt는 닫혔고, Phase 20에서 enterprise connector 검수 흐름을 완료했습니다.
-            </p>
-          </div>
-          <Link
-            to="/enterprise-rollout"
-            className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-accent/40"
-          >
-            기업 연동
-            <ExternalLink className="h-4 w-4" />
-          </Link>
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold">다음 구현 owner</h2>
+          <p className="text-sm leading-6 text-muted-foreground">
+            Phase 66은 일일 업무 cockpit과 Mission to To-Do rollup을 먼저 닫고, Phase 67-70은 runtime,
+            wikiLLM, Graphify, economy loop의 evidence debt를 순서대로 줄입니다.
+          </p>
         </div>
       </section>
     </div>

@@ -1,5 +1,7 @@
 # Paperclip — Product Definition
 
+> RealTycoon2 is the current product identity. Paperclip remains the inherited control-plane infrastructure and compatibility reference layer for package/API history. Product-facing UI, onboarding, docs, and operator copy should use RealTycoon2-first Korean language unless the text is explicitly documenting compatibility.
+
 ## What It Is
 
 Paperclip is the control plane for autonomous AI companies. One instance of Paperclip can run multiple companies. A **company** is a first-order object.

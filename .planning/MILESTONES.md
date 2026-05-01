@@ -14,7 +14,7 @@
 | v2.8 | RealTycoon2 Product Identity and Daily Work UX | Shipped | 2026-04-30 | 2026-04-30 | Phase 48-53 완료. 요구사항 15/15, integration 5/5, flows 5/5 충족. Korean-first daily work board, One-Liner board review, supporting evidence, identity gate 완료 |
 | v2.9 | Native Capture and Draft Reliability | Shipped | 2026-04-30 | 2026-04-30 | Phase 54-58 완료. 요구사항 13/13 완료. Persistent draft revision, PWA/mobile quick capture, signed messaging inbound, review reliability, distribution boundary closure 완료 |
 | v3.0 | Native Distribution Readiness | Shipped | 2026-04-30 | 2026-05-01 | Phase 59-64 complete. Requirements 12/12, audit `tech_debt`; signing/updater/resident surface/push/final distribution evidence gates 완료 |
-| v3.1 | DevPlan Core Convergence | Active | 2026-05-01 | - | Phase 65-71 planned. 개발기획서 대비 약 64% 정적 싱크로율을 기준선으로 alignment truth, identity cleanup, daily cockpit, Multica runtime, wikiLLM, Graphify v3, economy loop, acceptance gate를 닫는다 |
+| v3.1 | DevPlan Core Convergence | Active | 2026-05-01 | - | Phase 65 complete, Phase 66-71 planned. 개발기획서 대비 약 64% 정적 싱크로율을 기준선으로 alignment truth, identity cleanup, daily cockpit, Multica runtime, wikiLLM, Graphify v3, economy loop, acceptance gate를 닫는다 |
 
 ## v2.0 RT2 Refoundation
 
@@ -601,8 +601,8 @@ v3.0 audit status는 `tech_debt`다. 요구사항 12/12, phases 6/6, integration
 **상태:** Active
 **시작:** 2026-05-01
 **완료:** -
-**Phases:** 7 planned
-**Requirements:** 24 planned
+**Phases:** 1 complete, 6 planned
+**Requirements:** 6 complete, 18 planned
 **Baseline:** RealTycoon2 개발기획서 대비 정적 싱크로율 약 64%
 
 ### 목표
@@ -613,7 +613,7 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
-| 65 | DevPlan Truth and Identity Cleanup | ALIGN-01..03, IDENTITY-01..03 | Planned |
+| 65 | DevPlan Truth and Identity Cleanup | ALIGN-01..03, IDENTITY-01..03 | Complete |
 | 66 | Daily Work and OKR Cockpit Convergence | DAILY-01..03 | Planned |
 | 67 | Multica Runtime Execution Alignment | RUNTIME-01..03 | Planned |
 | 68 | wikiLLM Living Memory Workflow | WIKI-01..03 | Planned |

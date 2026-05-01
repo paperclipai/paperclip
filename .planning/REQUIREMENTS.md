@@ -13,15 +13,15 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 ### DevPlan Truth and Traceability
 
-- [ ] **ALIGN-01**: 운영자는 개발기획서 장/핵심 축별로 구현됨, 부분 구현, 미구현, tech debt 상태와 근거 파일을 한 곳에서 확인할 수 있다.
-- [ ] **ALIGN-02**: 완료 주장에는 code path, route/schema, UI surface, test/evidence 중 최소 하나 이상의 근거가 연결되고, 근거가 없으면 partial/debt로 표시된다.
-- [ ] **ALIGN-03**: milestone close gate는 Graphify, wikiLLM, Multica 수준의 엔진 parity 주장을 근거 없이 `complete`로 표시하지 못하게 막는다.
+- [x] **ALIGN-01**: 운영자는 개발기획서 장/핵심 축별로 구현됨, 부분 구현, 미구현, tech debt 상태와 근거 파일을 한 곳에서 확인할 수 있다.
+- [x] **ALIGN-02**: 완료 주장에는 code path, route/schema, UI surface, test/evidence 중 최소 하나 이상의 근거가 연결되고, 근거가 없으면 partial/debt로 표시된다.
+- [x] **ALIGN-03**: milestone close gate는 Graphify, wikiLLM, Multica 수준의 엔진 parity 주장을 근거 없이 `complete`로 표시하지 못하게 막는다.
 
 ### RealTycoon2 Identity Cleanup
 
-- [ ] **IDENTITY-01**: 제품 표면 문서, UI copy, onboarding/default state는 RealTycoon2-first Korean identity를 사용하고 Paperclip은 infrastructure/reference로만 설명된다.
-- [ ] **IDENTITY-02**: identity regression scan은 UI, docs, server-facing copy에서 product-facing Paperclip/Paper Company/legacy English default copy를 탐지한다.
-- [ ] **IDENTITY-03**: `@paperclipai/*`, `PAPERCLIP_*` 같은 호환성 명칭은 public product identity가 아니라 legacy compatibility layer로 문서화된다.
+- [x] **IDENTITY-01**: 제품 표면 문서, UI copy, onboarding/default state는 RealTycoon2-first Korean identity를 사용하고 Paperclip은 infrastructure/reference로만 설명된다.
+- [x] **IDENTITY-02**: identity regression scan은 UI, docs, server-facing copy에서 product-facing Paperclip/Paper Company/legacy English default copy를 탐지한다.
+- [x] **IDENTITY-03**: `@paperclipai/*`, `PAPERCLIP_*` 같은 호환성 명칭은 public product identity가 아니라 legacy compatibility layer로 문서화된다.
 
 ### Daily Work and OKR Cockpit
 

@@ -1,5 +1,7 @@
 # Paperclip Specification
 
+> RealTycoon2 is the current product identity. Paperclip remains the inherited control-plane infrastructure, runtime compatibility layer, and reference name for package/API history. Public product surfaces should use RealTycoon2-first Korean terminology unless this document is explicitly describing compatibility boundaries.
+
 Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
 
 ---

@@ -206,8 +206,8 @@ v2.0-v2.2에서 완료한 것:
 
 ### 다음 요구사항
 
-- [ ] v3.1 DevPlan truth and traceability 요구사항 3개. - Phase 65
-- [ ] v3.1 RealTycoon2 identity cleanup 요구사항 3개. - Phase 65
+- [x] v3.1 DevPlan truth and traceability 요구사항 3개. - Phase 65
+- [x] v3.1 RealTycoon2 identity cleanup 요구사항 3개. - Phase 65
 - [ ] v3.1 Daily Work and OKR cockpit 요구사항 3개. - Phase 66
 - [ ] v3.1 Multica runtime alignment 요구사항 3개. - Phase 67
 - [ ] v3.1 wikiLLM living memory 요구사항 3개. - Phase 68
@@ -252,6 +252,7 @@ v2.0-v2.2에서 완료한 것:
 - 2026-05-01 개발기획서 재점검에서 현재 repo의 정적 싱크로율은 약 64%로 판단했다. 방향성은 맞지만 제품 핵심 루프와 엔진 parity가 아직 부족하다.
 - `.planning/research/ENGINE-REFERENCE-AUDIT.md`는 Multica를 runtime/daemon/queue reference로, Graphify v3를 corpus graph sidecar reference로 삼아야 한다고 결론냈다.
 - v3.1은 distribution 확장이 아니라 DevPlan Core Convergence다. Phase 65-71은 과장된 completion claim을 줄이고 실제 제품/엔진 증거를 맞추는 데 집중한다.
+- Phase 65는 개발기획서 alignment matrix, RealTycoon2 compatibility boundary, docs/server-facing identity scan, 64% 기준선 UI, DevPlan alignment gate를 완료했다.
 
 ## 제약
 
@@ -284,12 +285,12 @@ v2.0-v2.2에서 완료한 것:
 | Phase 62에서 resident tray/global shortcut을 native dependency 없이 evidence gate로 닫음 | 실제 Tauri shell 추가 전에도 tray 상태, shortcut lifecycle/privacy, capture review handoff의 release blocker contract를 고정해야 한다 | 좋음 - Phase 64 final distribution gate가 resident surface readiness summary를 소비할 수 있음 |
 | Phase 63에서 Mobile/Web Push/APNs loop를 provider 전송 없이 evidence gate로 닫음 | push credential, APNs/Web Push provider availability, native mobile packaging이 없어도 subscription scope, minimal payload, delivery/retry/click/reliability contract는 먼저 고정할 수 있다 | 좋음 - Phase 64 final distribution gate가 push readiness summary를 소비할 수 있음 |
 | Phase 64에서 final distribution gate를 summary aggregator로 닫음 | 실제 native artifact와 credential은 operator evidence이며 repo는 release readiness contract와 fail-closed blocker taxonomy를 제공해야 한다 | 좋음 - v3.0 completion truth가 code, docs, requirements, roadmap, verification에서 일치함 |
-| v3.1을 DevPlan Core Convergence로 전환 | 개발기획서 대비 방향성은 맞지만 정적 싱크로율이 약 64%이고 Graphify/wikiLLM/Multica engine parity와 핵심 제품 경험이 덜 닫혔다 | 진행 중 - Phase 65-71에서 alignment truth, identity, cockpit, runtime, wiki, graph, economy, acceptance gate를 순서대로 닫음 |
+| v3.1을 DevPlan Core Convergence로 전환 | 개발기획서 대비 방향성은 맞지만 정적 싱크로율이 약 64%이고 Graphify/wikiLLM/Multica engine parity와 핵심 제품 경험이 덜 닫혔다 | 진행 중 - Phase 65에서 alignment truth와 identity boundary를 닫았고, Phase 66-71에서 cockpit, runtime, wiki, graph, economy, acceptance gate를 순서대로 닫음 |
 | Graphify를 RT2 product graph와 분리된 corpus graph sidecar로 다룸 | 현재 RT2 graph는 product event projection이고 Graphify v3는 corpus extraction/query engine이므로 같은 것으로 주장하면 completion이 과장된다 | 좋음 - v3.1 Phase 69가 source cache, provenance, clustering, path/query API를 명시적으로 담당 |
 
 ## 다음 마일스톤 목표
 
-v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 alignment truth와 identity cleanup을 시작하고, Phase 66-70에서 Daily cockpit, Multica runtime, wikiLLM living memory, Graphify v3 sidecar, Economy/Marketplace/P&L/CareerMate loop를 닫은 뒤 Phase 71에서 64% baseline 대비 score delta와 남은 debt를 감사한다.
+v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 alignment truth와 identity cleanup을 완료했으며, Phase 66-70에서 Daily cockpit, Multica runtime, wikiLLM living memory, Graphify v3 sidecar, Economy/Marketplace/P&L/CareerMate loop를 닫은 뒤 Phase 71에서 64% baseline 대비 score delta와 남은 debt를 감사한다.
 
 ## Evolution
 

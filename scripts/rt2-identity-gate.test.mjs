@@ -8,6 +8,8 @@ function fixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), "rt2-identity-gate-"));
   mkdirSync(join(root, "ui", "src", "components"), { recursive: true });
   mkdirSync(join(root, "ui", "public"), { recursive: true });
+  mkdirSync(join(root, "doc"), { recursive: true });
+  mkdirSync(join(root, "server", "src", "routes"), { recursive: true });
   return root;
 }
 
@@ -87,6 +89,51 @@ function run(root, targets = ["ui/src/components"]) {
   assert.equal(result.code, 1);
   assert.match(result.errors.join("\n"), /legacy-product-name/);
   assert.match(result.errors.join("\n"), /site\.webmanifest/);
+}
+
+{
+  const root = fixtureRoot();
+  writeFileSync(
+    join(root, "doc", "PRODUCT.md"),
+    "# RealTycoon2\n\nPaperclip dashboard를 제품 표면 이름으로 노출합니다.\n",
+  );
+
+  const result = run(root, [{ path: "doc/PRODUCT.md", surface: "product_doc" }]);
+  assert.equal(result.code, 1);
+  assert.match(result.errors.join("\n"), /product_doc\/legacy-product-name/);
+  assert.match(result.errors.join("\n"), /Paperclip/);
+}
+
+{
+  const root = fixtureRoot();
+  writeFileSync(
+    join(root, "doc", "REALTYCOON2-COMPATIBILITY.md"),
+    [
+      "# RealTycoon2 Compatibility Boundary",
+      "",
+      "RealTycoon2 is the product identity.",
+      "Paperclip is the inherited control-plane infrastructure and compatibility reference layer.",
+      "Multica can appear only as a reference runtime comparison, not as product-facing copy.",
+      "",
+    ].join("\n"),
+  );
+
+  const result = run(root, [
+    { path: "doc/REALTYCOON2-COMPATIBILITY.md", surface: "compatibility_doc", allowCompatibilityBoundary: true },
+  ]);
+  assert.equal(result.code, 0);
+}
+
+{
+  const root = fixtureRoot();
+  writeFileSync(
+    join(root, "server", "src", "routes", "llms.ts"),
+    'export const text = "# Paperclip Agent Configuration Index";\n',
+  );
+
+  const result = run(root, [{ path: "server/src/routes/llms.ts", surface: "server_operator_copy" }]);
+  assert.equal(result.code, 1);
+  assert.match(result.errors.join("\n"), /server_operator_copy\/legacy-product-name/);
 }
 
 console.log("rt2-identity-gate tests passed");
