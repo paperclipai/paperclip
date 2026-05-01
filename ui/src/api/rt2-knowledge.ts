@@ -11,6 +11,7 @@ import type {
   Rt2ObsidianVaultWriterSettingsInput,
   Rt2KnowledgeProjectionResult,
   Rt2KnowledgeOperationsHealth,
+  Rt2WikiLLMExport,
   Rt2LocalBridgeHealth,
   Rt2LocalBridgeHeartbeatInput,
   Rt2LocalBridgePairingRequest,
@@ -59,6 +60,8 @@ export const rt2KnowledgeApi = {
     ),
   exportVault: (companyId: string, input: { pageType?: Rt2WikiPageType; limit?: number } = {}) =>
     api.get<Rt2ObsidianVaultExport>(`/companies/${companyId}/rt2/knowledge/vault-export?${query(input)}`),
+  exportWikiLLM: (companyId: string, input: { pageType?: Rt2WikiPageType; limit?: number } = {}) =>
+    api.get<Rt2WikiLLMExport>(`/companies/${companyId}/rt2/knowledge/wikillm-export?${query(input)}`),
   getVaultWriter: (companyId: string) =>
     api.get<Rt2ObsidianVaultWriterSettings | null>(`/companies/${companyId}/rt2/knowledge/vault-writer`),
   saveVaultWriter: (companyId: string, input: Rt2ObsidianVaultWriterSettingsInput) =>

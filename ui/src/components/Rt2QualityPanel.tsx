@@ -79,6 +79,15 @@ export function Rt2QualityPanel({
     },
   });
 
+  const applyWikiRewriteMutation = useMutation({
+    mutationFn: (proposalId: string) =>
+      rt2JarvisRuntimeApi.applyApprovedWikiRewrite(companyId, proposalId, "관리자 cockpit에서 승인된 wiki draft 적용"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rt2-jarvis-rewrite-proposals", companyId] });
+      queryClient.invalidateQueries({ queryKey: ["rt2-knowledge", companyId, "pages"] });
+    },
+  });
+
   const approveMutation = useMutation({
     mutationFn: (evaluationId: string) =>
       rt2JarvisRuntimeApi.approveQualityReview(companyId, evaluationId, "관리자 cockpit에서 승인"),
@@ -312,16 +321,28 @@ export function Rt2QualityPanel({
                       </div>
                     ) : null}
                   </div>
-                  {proposal.status === "proposed" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => requestRewriteApprovalMutation.mutate(proposal.id)}
-                      disabled={requestRewriteApprovalMutation.isPending}
-                    >
-                      승인 요청
-                    </Button>
-                  )}
+                  <div className="flex shrink-0 gap-1">
+                    {proposal.status === "proposed" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => requestRewriteApprovalMutation.mutate(proposal.id)}
+                        disabled={requestRewriteApprovalMutation.isPending}
+                      >
+                        승인 요청
+                      </Button>
+                    )}
+                    {proposal.status === "approved" && ["wiki_page", "daily_wiki_page"].includes(proposal.targetType) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => applyWikiRewriteMutation.mutate(proposal.id)}
+                        disabled={applyWikiRewriteMutation.isPending}
+                      >
+                        적용
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

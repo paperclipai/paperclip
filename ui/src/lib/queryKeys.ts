@@ -85,6 +85,8 @@ export const queryKeys = {
       ["rt2-knowledge", companyId, "pages", pageType ?? "__all__", limit ?? "__default__"] as const,
     vault: (companyId: string, pageType?: string, limit?: number) =>
       ["rt2-knowledge", companyId, "vault", pageType ?? "__all__", limit ?? "__default__"] as const,
+    wikillm: (companyId: string, pageType?: string, limit?: number) =>
+      ["rt2-knowledge", companyId, "wikillm", pageType ?? "__all__", limit ?? "__default__"] as const,
     vaultWriter: (companyId: string) => ["rt2-knowledge", companyId, "vault-writer"] as const,
     localBridgeHealth: (companyId: string) => ["rt2-knowledge", companyId, "local-bridge-health"] as const,
     localBridgeQueue: (companyId: string) => ["rt2-knowledge", companyId, "local-bridge-queue"] as const,

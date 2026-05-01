@@ -25,7 +25,9 @@ export function Rt2DailyWikiPanel({
 
       <div className="rounded-xl border border-border bg-background p-3">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <span className="text-xs text-muted-foreground">{page.pageKey}</span>
+          <span className="text-xs text-muted-foreground">
+            {page.pageKey} · {page.sourceEventIds?.length ?? 0} source events
+          </span>
           <Button size="sm" variant="outline" disabled={queryPending} onClick={() => onAsk("오늘 뭐 했지?")}>
             오늘 뭐 했지?
           </Button>

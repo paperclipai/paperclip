@@ -160,6 +160,13 @@ export function KnowledgePage() {
     queryFn: () => rt2KnowledgeApi.exportVault(selectedCompanyId!, { limit: 20 }),
     enabled: Boolean(selectedCompanyId && (view === "wiki" || view === "bridge")),
   });
+  const wikillmExport = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.rt2Knowledge.wikillm(selectedCompanyId, undefined, 20)
+      : (["rt2-knowledge", "wikillm-disabled"] as const),
+    queryFn: () => rt2KnowledgeApi.exportWikiLLM(selectedCompanyId!, { limit: 20 }),
+    enabled: Boolean(selectedCompanyId && (view === "wiki" || view === "bridge")),
+  });
   const vaultWriter = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.rt2Knowledge.vaultWriter(selectedCompanyId)
@@ -239,6 +246,7 @@ export function KnowledgePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.pages(selectedCompanyId!, undefined, 20) });
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.vault(selectedCompanyId!, undefined, 20) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.wikillm(selectedCompanyId!, undefined, 20) });
       if (selectedProjectId) {
         queryClient.invalidateQueries({
           queryKey: ["rt2-knowledge", selectedCompanyId, selectedProjectId, "operator-graph-report"],
@@ -329,6 +337,7 @@ export function KnowledgePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.pages(selectedCompanyId!, undefined, 20) });
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.vault(selectedCompanyId!, undefined, 20) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.wikillm(selectedCompanyId!, undefined, 20) });
     },
   });
   const resolveConflict = useMutation({
@@ -346,6 +355,7 @@ export function KnowledgePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.pages(selectedCompanyId!, undefined, 20) });
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.vault(selectedCompanyId!, undefined, 20) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Knowledge.wikillm(selectedCompanyId!, undefined, 20) });
     },
   });
   const generateContradictions = useMutation({
@@ -717,6 +727,17 @@ export function KnowledgePage() {
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     Primary write path는 DB/event projector이며, markdown은 inspection/export output입니다.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-dashed border-border px-3 py-2">
+                  <div className="text-xs font-medium uppercase text-muted-foreground">wikiLLM export</div>
+                  <div className="mt-1 text-sm">
+                    {wikillmExport.data ? `${wikillmExport.data.fileCount} files with provenance` : "Preparing wikiLLM bundle"}
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {wikillmExport.data?.files[0]?.updateEvidence
+                      ? `${wikillmExport.data.files[0].pageKey} · ${wikillmExport.data.files[0].updateEvidence.sourceEventCount} evidence events`
+                      : "provenance, confidence, contradiction status를 포함합니다."}
                   </div>
                 </div>
               </aside>
