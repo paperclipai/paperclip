@@ -22,6 +22,19 @@ describe("isGeminiUnknownSessionError", () => {
       ),
     ).toBe(false);
   });
+
+  test("matches token-overflow during chat compression — recovery is a fresh session", () => {
+    const stderr =
+      `_ApiError: {"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed 1048576","status":"INVALID_ARGUMENT"}}` +
+      ` at ChatCompressionService.compress (.../gemini-cli/...)`;
+    expect(isGeminiUnknownSessionError("", stderr)).toBe(true);
+  });
+
+  test("matches 'input token count exceeds' phrasing", () => {
+    expect(
+      isGeminiUnknownSessionError("", "Error: input token count exceeds maximum allowed"),
+    ).toBe(true);
+  });
 });
 
 describe("isGeminiTransientNetworkError", () => {

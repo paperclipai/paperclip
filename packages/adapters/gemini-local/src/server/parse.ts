@@ -185,7 +185,7 @@ export function isGeminiUnknownSessionError(stdout: string, stderr: string): boo
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\s+.*\s+not\s+found|resume\s+.*\s+not\s+found|checkpoint\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume/i.test(
+  return /unknown\s+session|session\s+.*\s+not\s+found|resume\s+.*\s+not\s+found|checkpoint\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume|exceeds\s+the\s+maximum\s+number\s+of\s+tokens|input\s+token\s+count\s+exceeds/i.test(
     haystack,
   );
 }
