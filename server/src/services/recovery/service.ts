@@ -1360,14 +1360,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { recovery: null, skipReason: "inert_status" };
     }
 
-    // ELE-36 condition 2: debounce races — skip if any recovery for this source was created in the last 5 min.
-    // We select the full sibling row (not just id) so loser callers in an 8-way
-    // race can return the winner's recovery and let the caller link the source
-    // to it via blockedByIssueIds — equivalent to the pre-iter-2 race-conflict
-    // catch-block path. Without this, concurrent reconcileStrandedAssignedIssues
-    // calls would have the gate-skipping callers overwrite the winner's linkage
-    // with []. (Regression caught by the
-    // "reuses the raced stranded recovery issue" integration test.)
+    // ELE-36 condition 2 + bemsas review: debounce races. Skip if any recovery
+    // for this source was created in the last 5 min, regardless of its status.
+    // We need the full row (not just id) so an OPEN sibling can be returned to
+    // the caller for linkage via blockedByIssueIds — equivalent to the
+    // pre-iter-2 race-conflict catch-block path. Without this, concurrent
+    // reconcileStrandedAssignedIssues callers would have the gate-skipping
+    // losers overwrite the winner's linkage with [].
+    //
+    // bemsas review (blocking): if the recent sibling is CLOSED (done/cancelled
+    // or hidden), do NOT return it — linking source.blockedByIssueIds to a
+    // closed issue is misleading. We still suppress new-recovery creation
+    // (debounce semantics), just don't carry a closed recovery as the linkage.
     const SIBLING_TIME_WINDOW_MS = 5 * 60_000;
     const [recentSibling] = await db
       .select()
@@ -1380,16 +1384,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           gt(issues.createdAt, new Date(Date.now() - SIBLING_TIME_WINDOW_MS)),
         ),
       )
+      .orderBy(desc(issues.createdAt))
       .limit(1);
     if (recentSibling) {
+      const siblingIsOpen =
+        !["done", "cancelled"].includes(recentSibling.status) &&
+        recentSibling.hiddenAt === null;
       logger.info(
-        { event: "recovery.skipped_due_to_recent_sibling", sourceIssueId: input.issue.id, siblingId: recentSibling.id },
+        {
+          event: "recovery.skipped_due_to_recent_sibling",
+          sourceIssueId: input.issue.id,
+          siblingId: recentSibling.id,
+          siblingStatus: recentSibling.status,
+          siblingIsOpen,
+        },
         "recovery.skipped_due_to_recent_sibling"
       );
-      return { recovery: recentSibling, skipReason: "recent_sibling" };
+      return {
+        recovery: siblingIsOpen ? recentSibling : null,
+        skipReason: "recent_sibling",
+      };
     }
 
-    // ELE-36 condition 3: respect manual ops escalation — skip if an open [FOR OPS] issue mentions this source
+    // ELE-36 condition 3 + bemsas review: respect manual ops escalation. Skip if
+    // an open and visible [FOR OPS] issue mentions this source. `isNull(hiddenAt)`
+    // ensures archived/hidden ops issues do not suppress recovery.
     if (input.issue.identifier) {
       const [opsActive] = await db
         .select({ id: issues.id })
@@ -1399,6 +1418,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(issues.companyId, input.issue.companyId),
             ilike(issues.title, "[FOR OPS]%"),
             notInArray(issues.status, ["done", "cancelled"]),
+            isNull(issues.hiddenAt),
             ilike(issues.description, `%${input.issue.identifier}%`),
           ),
         )
@@ -1605,6 +1625,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
     });
+
+    // bemsas review (blocking): if the source's fresh DB status is already
+    // inert (blocked/cancelled/done), abort the escalation. Otherwise the
+    // status=blocked update below would resurrect a done/cancelled issue or
+    // duplicate a manual block, AND the recovery-line comment would be added
+    // to a closed thread. The gate fired upstream because the source is
+    // already in manual-review state — leave it alone.
+    if (skipReason === "inert_status") {
+      logger.info(
+        {
+          event: "recovery.escalation_aborted_due_to_inert_source_status",
+          sourceIssueId: input.issue.id,
+        },
+        "recovery.escalation_aborted_due_to_inert_source_status",
+      );
+      return null;
+    }
+
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]

@@ -1975,7 +1975,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const heartbeat = heartbeatService(db);
       const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-      expect(result.escalated).toBe(1);
+      // bemsas review (blocking #1, 2026-05-01): when fresh DB status is inert,
+      // escalateStrandedAssignedIssue now early-returns BEFORE the issuesSvc.update
+      // call. That means the run is observed and skipped, but `escalated` counter
+      // does not increment (no actual escalation work performed). Previously this
+      // returned 1 because the function ran the no-op blocked→blocked update.
+      expect(result.escalated).toBe(0);
 
       const recoveries = await db
         .select()

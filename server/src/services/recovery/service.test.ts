@@ -58,17 +58,18 @@ describe("ensureStrandedIssueRecoveryIssue status gate (ELE-32)", () => {
     mockAddComment.mockReset().mockResolvedValue(undefined);
   });
 
-  // DB call order for the blocked/cancelled/done path inside escalateStrandedAssignedIssue:
-  //   1. ensureStrandedIssueRecoveryIssue: re-fetch source → inert status → early return, no create
-  //   2. existingUnresolvedBlockerIssueIds: innerJoin query → no blockers
-  //   3. issuesSvc.update → returns null → escalate returns null (no further DB calls)
+  // bemsas review (blocking): when fresh DB status is inert, escalation must
+  // ALSO short-circuit BEFORE calling issuesSvc.update — otherwise the
+  // status=blocked update would resurrect a done/cancelled source.
+  // DB call order for the inert path inside escalateStrandedAssignedIssue:
+  //   1. ensureStrandedIssueRecoveryIssue: re-fetch source → inert status → return { skipReason: 'inert_status' }
+  //   (no further DB calls; caller early-returns before existingUnresolvedBlockerIssueIds)
   const inertStatuses = ["blocked", "cancelled", "done"] as const;
 
   for (const sourceStatus of inertStatuses) {
-    it(`does NOT call issuesSvc.create when fresh DB status is '${sourceStatus}'`, async () => {
+    it(`does NOT call issuesSvc.create OR issuesSvc.update when fresh DB status is '${sourceStatus}'`, async () => {
       const db = makeDb([
         [{ id: "src-1", status: sourceStatus }], // re-fetch in ensureStrandedIssueRecoveryIssue
-        [], // existingUnresolvedBlockerIssueIds
       ]);
 
       const svc = recoveryService(db, { enqueueWakeup: vi.fn().mockResolvedValue(undefined) });
@@ -101,6 +102,11 @@ describe("ensureStrandedIssueRecoveryIssue status gate (ELE-32)", () => {
       });
 
       expect(mockCreate).not.toHaveBeenCalled();
+      // Critical for bemsas-blocking #1: update MUST NOT fire on inert source.
+      expect(mockUpdate).not.toHaveBeenCalled();
+      // Exactly 1 select call = freshSource only; the early-return in the caller
+      // prevents any subsequent queries (existingUnresolvedBlockerIssueIds etc).
+      expect((db.select as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     });
   }
 });
@@ -136,16 +142,23 @@ describe("ensureStrandedIssueRecoveryIssue sibling-time-window gate (ELE-36)", (
     mockAddComment.mockReset().mockResolvedValue(undefined);
   });
 
-  // DB call order when sibling found (skipped path):
-  //   1. freshSource re-fetch → in_progress
-  //   2. sibling check → [found] → early return null
-  //   3. existingUnresolvedBlockerIssueIds
-  it("does NOT call issuesSvc.create when a recovery sibling was created 4 min ago", async () => {
+  // bemsas review (blocking): when an OPEN recovery sibling exists within the 5-min
+  // window, the gate suppresses creation AND returns the sibling so the caller can
+  // link source.blockedByIssueIds → sibling.id (preserves the pre-iter-2 race-conflict
+  // catch-block invariant).
+  // DB call order:
+  //   1. freshSource → in_progress
+  //   2. sibling check → [open sibling found] → return { recovery: sibling, skipReason: 'recent_sibling' }
+  //   3. existingUnresolvedBlockerIssueIds (caller proceeds to update)
+  //   4. (issuesSvc.update is mocked; no extra DB call)
+  it("returns OPEN sibling for linkage when a recovery sibling was created 4 min ago", async () => {
     const db = makeDb([
-      [{ id: "src-1", status: "in_progress" }], // freshSource
-      [{ id: "sib-1" }],                         // sibling check → found → skip
-      [],                                         // existingUnresolvedBlockerIssueIds
+      [{ id: "src-1", status: "in_progress" }],                    // freshSource
+      [{ id: "sib-1", status: "in_progress", hiddenAt: null }],   // open sibling
+      [],                                                            // existingUnresolvedBlockerIssueIds
     ]);
+
+    mockUpdate.mockResolvedValueOnce({ id: "src-1" }); // simulate successful update so caller proceeds
 
     const svc = recoveryService(db, { enqueueWakeup: vi.fn().mockResolvedValue(undefined) });
     await svc.escalateStrandedAssignedIssue({
@@ -156,8 +169,73 @@ describe("ensureStrandedIssueRecoveryIssue sibling-time-window gate (ELE-36)", (
     });
 
     expect(mockCreate).not.toHaveBeenCalled();
-    // 3 select calls confirms early return from sibling gate (not from status gate or later)
-    expect((db.select as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+    // Caller MUST link source.blockedByIssueIds to the open sibling's id.
+    expect(mockUpdate).toHaveBeenCalledWith(
+      "src-1",
+      expect.objectContaining({
+        status: "blocked",
+        blockedByIssueIds: ["sib-1"],
+      }),
+    );
+    expect((db.select as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+  });
+
+  // bemsas review (blocking): a CLOSED sibling within the window must NOT be
+  // linked (linking source to a `done` recovery is misleading). Gate still
+  // suppresses creation — debounce semantics — but recoveryIssue is null,
+  // so blockedByIssueIds stays empty.
+  it("suppresses creation but does NOT link when sibling within window is closed", async () => {
+    const db = makeDb([
+      [{ id: "src-1", status: "in_progress" }],                    // freshSource
+      [{ id: "sib-1", status: "done", hiddenAt: null }],           // closed sibling
+      [],                                                            // existingUnresolvedBlockerIssueIds
+    ]);
+
+    mockUpdate.mockResolvedValueOnce({ id: "src-1" });
+
+    const svc = recoveryService(db, { enqueueWakeup: vi.fn().mockResolvedValue(undefined) });
+    await svc.escalateStrandedAssignedIssue({
+      issue: ele36BaseIssue,
+      previousStatus: "in_progress",
+      latestRun: null,
+      comment: "recovery escalation",
+    });
+
+    expect(mockCreate).not.toHaveBeenCalled();
+    // Critical: blockedByIssueIds must be EMPTY — closed sibling is not a valid blocker.
+    expect(mockUpdate).toHaveBeenCalledWith(
+      "src-1",
+      expect.objectContaining({
+        status: "blocked",
+        blockedByIssueIds: [],
+      }),
+    );
+    expect((db.select as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+  });
+
+  // Hidden sibling (hiddenAt set) is treated the same as closed — no linkage.
+  it("suppresses creation but does NOT link when sibling within window is hidden", async () => {
+    const db = makeDb([
+      [{ id: "src-1", status: "in_progress" }],
+      [{ id: "sib-1", status: "in_progress", hiddenAt: new Date() }], // open status, but hidden
+      [],
+    ]);
+
+    mockUpdate.mockResolvedValueOnce({ id: "src-1" });
+
+    const svc = recoveryService(db, { enqueueWakeup: vi.fn().mockResolvedValue(undefined) });
+    await svc.escalateStrandedAssignedIssue({
+      issue: ele36BaseIssue,
+      previousStatus: "in_progress",
+      latestRun: null,
+      comment: "recovery escalation",
+    });
+
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockUpdate).toHaveBeenCalledWith(
+      "src-1",
+      expect.objectContaining({ blockedByIssueIds: [] }),
+    );
   });
 
   // DB call order when sibling is outside window (allowed path):
