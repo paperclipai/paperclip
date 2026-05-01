@@ -263,8 +263,8 @@ export function Dashboard() {
               description={
                 <span>
                   {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} · ${formatCents(data.costs.dailyBurnRateCents)}/day`
+                    : `${formatCents(data.costs.dailyBurnRateCents)}/day · ${formatCents(data.costs.projectedMonthSpendCents)} projected`}
                 </span>
               }
             />

@@ -62,7 +62,11 @@ export function dashboardService(db: Db) {
       }
 
       const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+      const daysInMonth = (nextMonthStart.getTime() - monthStart.getTime()) / 86400000;
+      const daysElapsed = Math.max(1, (now.getTime() - monthStart.getTime()) / 86400000);
+
       const [{ monthSpend }] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
@@ -80,6 +84,8 @@ export function dashboardService(db: Db) {
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
+      const dailyBurnRateCents = Math.round(monthSpendCents / daysElapsed);
+      const projectedMonthSpendCents = Math.round(dailyBurnRateCents * daysInMonth);
       const budgetOverview = await budgets.overview(companyId);
 
       return {
@@ -95,6 +101,8 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          dailyBurnRateCents,
+          projectedMonthSpendCents,
         },
         pendingApprovals,
         budgets: {

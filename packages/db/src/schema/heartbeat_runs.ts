@@ -27,6 +27,7 @@ export const heartbeatRuns = pgTable(
     logBytes: bigint("log_bytes", { mode: "number" }),
     logSha256: text("log_sha256"),
     logCompressed: boolean("log_compressed").notNull().default(false),
+    summaryText: text("summary_text"),
     stdoutExcerpt: text("stdout_excerpt"),
     stderrExcerpt: text("stderr_excerpt"),
     errorCode: text("error_code"),
