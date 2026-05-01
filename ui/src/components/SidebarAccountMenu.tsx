@@ -5,6 +5,8 @@ import {
   LogOut,
   type LucideIcon,
   Moon,
+  Power,
+  RefreshCw,
   Settings,
   UserRound,
   Sun,
@@ -13,6 +15,7 @@ import {
 import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
+import { systemApi } from "@/api/system";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
@@ -128,6 +131,22 @@ export function SidebarAccountMenu({
     },
   });
 
+  const restartMutation = useMutation({
+    mutationFn: () => systemApi.restart(),
+    onSettled: () => {
+      setOpen(false);
+    },
+  });
+
+  const shutdownMutation = useMutation({
+    mutationFn: () => systemApi.shutdown(),
+    onSettled: () => {
+      setOpen(false);
+    },
+  });
+
+  const lifecycleBusy = restartMutation.isPending || shutdownMutation.isPending;
+
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
     session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
@@ -224,6 +243,55 @@ export function SidebarAccountMenu({
                   setOpen(false);
                 }}
               />
+
+              <div className="my-1 border-t border-border/60" />
+
+              <MenuAction
+                label={restartMutation.isPending ? "Restarting…" : "Restart Paperclip"}
+                description="Bounce the server. Everyone connected drops briefly while a new instance boots."
+                icon={RefreshCw}
+                onClick={() => {
+                  if (lifecycleBusy) return;
+                  if (
+                    window.confirm(
+                      "Restart the Paperclip server? Everyone connected will be disconnected briefly while a new instance boots.",
+                    )
+                  ) {
+                    restartMutation.mutate();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
+                  lifecycleBusy && "cursor-not-allowed opacity-60",
+                )}
+                onClick={() => {
+                  if (lifecycleBusy) return;
+                  if (
+                    window.confirm(
+                      "Shut down the Paperclip server? Everyone connected will be disconnected and the server will stay stopped until you re-launch it manually.",
+                    )
+                  ) {
+                    shutdownMutation.mutate();
+                  }
+                }}
+                disabled={lifecycleBusy}
+              >
+                <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">
+                  <Power className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-foreground">
+                    {shutdownMutation.isPending ? "Shutting down…" : "Shut down Paperclip"}
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    Stop the server. Re-launch manually when you're ready.
+                  </span>
+                </span>
+              </button>
+
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
