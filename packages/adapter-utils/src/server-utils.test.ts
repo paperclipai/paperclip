@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  materializePaperclipSkillCopy,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -38,6 +43,82 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
   }
   return read().match(pattern);
 }
+
+describe("buildInvocationEnvForLogs", () => {
+  it("redacts inline secrets from resolved command metadata", () => {
+    const loggedEnv = buildInvocationEnvForLogs(
+      { SAFE_VALUE: "visible" },
+      {
+        resolvedCommand: "env OPENAI_API_KEY=sk-live-example custom-acp --token ghp_example_secret",
+      },
+    );
+
+    expect(loggedEnv.SAFE_VALUE).toBe("visible");
+    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
+      "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
+    );
+  });
+});
+
+describe("materializePaperclipSkillCopy", () => {
+  it("refuses to materialize into an ancestor of the source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "parent", "skill");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      await expect(materializePaperclipSkillCopy(source, path.join(root, "parent"))).rejects.toThrow(
+        /ancestor/,
+      );
+      await expect(fs.readFile(path.join(source, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not delete and recopy an unchanged materialized skill target", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+      await fs.writeFile(path.join(target, "local-marker.txt"), "keep\n", "utf8");
+
+      const second = await materializePaperclipSkillCopy(source, target);
+      expect(second.copiedFiles).toBe(0);
+      await expect(fs.readFile(path.join(target, "local-marker.txt"), "utf8")).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("breaks stale materialization locks left by dead processes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.mkdir(lock, { recursive: true });
+      await fs.writeFile(
+        path.join(lock, "owner.json"),
+        JSON.stringify({ pid: 999_999_999, createdAt: "2000-01-01T00:00:00.000Z" }),
+        "utf8",
+      );
+
+      await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+      await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("runChildProcess", () => {
   it("does not arm a timeout when timeoutSec is 0", async () => {
