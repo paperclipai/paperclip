@@ -85,9 +85,21 @@ export function Workspaces() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
   });
+  // Workspaces.tsx groups issues by `executionWorkspaceId` /
+  // `projectWorkspaceId` to render workspace summaries per project. Until
+  // there's a server-side grouping endpoint (or a `hasWorkspaceAssignment`
+  // filter) the page needs all issues that *could* have a workspace
+  // assignment. Cap at 2000 — covers companies up to that size — and use a
+  // dedicated cache key so this query no longer shares the bare
+  // `["issues", companyId]` slot with Dashboard / MyIssues / CommandPalette.
+  // For companies above the cap, a server-side aggregation endpoint is the
+  // right next step.
+  const WORKSPACES_ISSUE_CAP = 2000;
   const { data: issues = [], isLoading: issuesLoading, error: issuesError } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.issues.list(selectedCompanyId) : ["issues", "__workspaces__", "disabled"],
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: selectedCompanyId
+      ? [...queryKeys.issues.list(selectedCompanyId), "workspaces-page", WORKSPACES_ISSUE_CAP]
+      : ["issues", "__workspaces__", "disabled"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { limit: WORKSPACES_ISSUE_CAP }),
     enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
   });
   const {
