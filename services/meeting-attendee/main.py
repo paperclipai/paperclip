@@ -1786,6 +1786,18 @@ async def transcript(request: Request) -> dict[str, Any]:
     decision = await decide(state, utterance, speaker)
     action = decision["action"]
     if action == "speak":
+        # Cooldown: skip auto-speak if the bot just spoke within the last 30 seconds.
+        # Prevents the layered-audio overlap when the user repeats a question while
+        # the previous response is still being played out by Recall (TTS for a 170-word
+        # answer is ~60s of audio, plus join-lobby variance). Manual /speak endpoint
+        # is exempt — admin override speaks regardless.
+        BOT_SPEAK_COOLDOWN_S = 30
+        if state.bot_interventions:
+            last_spoken_ts = state.bot_interventions[-1].get("ts", 0)
+            elapsed = ts - last_spoken_ts
+            if elapsed < BOT_SPEAK_COOLDOWN_S:
+                print(f"[cooldown] silencing speak — last spoke {elapsed:.1f}s ago (< {BOT_SPEAK_COOLDOWN_S}s)")
+                return {"status": "silent-cooldown", "elapsed_s": elapsed}
         try:
             mp3, provider = await synthesize(decision["text"])
             await recall_inject_audio(state.bot_id, mp3)
