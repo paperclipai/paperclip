@@ -50,7 +50,7 @@ WORKDIR /vendor
 # every image build.
 ARG CCROTATE_REF=882e62ac7111ed29efd56861241eed4b4fe956b0
 ARG CLAUDE_K8S_REF=8cc43fdc2ed26ea05ca69d260650a6a79078c7f7
-ARG OPENCODE_K8S_REF=1395ace6d9e035f04251aca89e9c9a8ee82d247f
+ARG OPENCODE_K8S_REF=0785d4ddd458c916ac63101428108ffbf1815bf1
 
 RUN git clone https://github.com/kkroo/ccrotate.git ccrotate \
   && cd ccrotate && git checkout "${CCROTATE_REF}" \
