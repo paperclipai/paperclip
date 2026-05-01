@@ -38,6 +38,43 @@ export type CreateRt2Task = z.infer<typeof createRt2TaskSchema>;
 
 export const oneLinerInboundDraftSourceSchema = z.enum(["web", "floating", "voice", "slack", "teams", "webhook", "mobile", "native"]);
 export const rt2MessagingInboundSourceSchema = z.enum(["slack", "teams", "webhook"]);
+export const rt2CaptureDraftStatusSchema = z.enum([
+  "review_required",
+  "revised",
+  "on_hold",
+  "revision_requested",
+  "rejected",
+  "duplicate",
+  "permission_blocked",
+  "failed",
+  "promoted",
+  "discarded",
+]);
+export const rt2CaptureQueueEvidenceFilterSchema = z.enum(["duplicate", "failed_sync", "approval_waiting", "revised"]);
+export const rt2CaptureQueueQuerySchema = z
+  .object({
+    source: z.union([z.string(), z.array(z.string())]).optional(),
+    sources: z.union([z.string(), z.array(z.string())]).optional(),
+    status: z.union([z.string(), z.array(z.string())]).optional(),
+    statuses: z.union([z.string(), z.array(z.string())]).optional(),
+    evidence: z.union([z.string(), z.array(z.string())]).optional(),
+  })
+  .passthrough()
+  .transform((value) => ({
+    sources: filterKnownCaptureValues(
+      mergeQueryLists(value.source, value.sources),
+      oneLinerInboundDraftSourceSchema,
+    ),
+    statuses: filterKnownCaptureValues(
+      mergeQueryLists(value.status, value.statuses),
+      rt2CaptureDraftStatusSchema,
+    ),
+    evidence: filterKnownCaptureValues(
+      mergeQueryLists(value.evidence),
+      rt2CaptureQueueEvidenceFilterSchema,
+    ),
+  }));
+export type Rt2CaptureQueueQuery = z.infer<typeof rt2CaptureQueueQuerySchema>;
 export const rt2CaptureSourceInstallationStateSchema = z.enum(["not_installed", "installed", "blocked", "stale", "error"]);
 export const rt2CaptureSourceSigningStatusSchema = z.enum(["unsigned", "signed", "invalid", "missing", "stale"]);
 export const rt2CaptureSourceEvidenceMetadataSchema = z
@@ -64,6 +101,27 @@ export const upsertRt2CaptureSourceSchema = z.object({
 });
 
 export type UpsertRt2CaptureSource = z.infer<typeof upsertRt2CaptureSourceSchema>;
+
+function splitQueryList(value: string | string[] | undefined) {
+  const raw = Array.isArray(value) ? value : value ? [value] : [];
+  return raw.flatMap((entry) =>
+    entry
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+}
+
+function mergeQueryLists(...values: Array<string | string[] | undefined>) {
+  return [...new Set(values.flatMap(splitQueryList))];
+}
+
+function filterKnownCaptureValues<T extends string>(
+  values: string[],
+  schema: z.ZodEnum<[T, ...T[]]>,
+): T[] {
+  return values.filter((value): value is T => schema.safeParse(value).success);
+}
 
 export const createOneLinerInboundDraftSchema = z.object({
   source: oneLinerInboundDraftSourceSchema.default("webhook"),

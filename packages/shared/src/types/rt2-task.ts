@@ -161,6 +161,12 @@ export type Rt2CaptureDraftStatus =
   | "failed"
   | "promoted"
   | "discarded";
+export type Rt2CaptureQueueEvidenceFilter = "duplicate" | "failed_sync" | "approval_waiting" | "revised";
+export interface Rt2CaptureQueueFilters {
+  sources: Rt2CaptureDraftSource[];
+  statuses: Rt2CaptureDraftStatus[];
+  evidence: Rt2CaptureQueueEvidenceFilter[];
+}
 export type Rt2CaptureSourceInstallationState = "not_installed" | "installed" | "blocked" | "stale" | "error";
 export type Rt2CaptureSourceSigningStatus = "unsigned" | "signed" | "invalid" | "missing" | "stale";
 
@@ -253,4 +259,29 @@ export interface Rt2CaptureQueue {
     promoted: number;
   };
   drafts: Rt2CaptureDraftSummary[];
+}
+
+export interface Rt2CaptureReliabilityReportMetrics {
+  draftCount: number;
+  reviewRequiredCount: number;
+  revisedCount: number;
+  duplicateCount: number;
+  failureCount: number;
+  permissionBlockedCount: number;
+  promotedCount: number;
+  retryCount: number;
+  averagePromotionLatencyMinutes: number | null;
+  maxPromotionLatencyMinutes: number | null;
+}
+
+export interface Rt2CaptureReliabilityReportSourceRow extends Rt2CaptureReliabilityReportMetrics {
+  source: Rt2CaptureDraftSource;
+  label: string;
+}
+
+export interface Rt2CaptureReliabilityReport {
+  companyId: string;
+  generatedAt: Date;
+  totals: Rt2CaptureReliabilityReportMetrics;
+  rows: Rt2CaptureReliabilityReportSourceRow[];
 }

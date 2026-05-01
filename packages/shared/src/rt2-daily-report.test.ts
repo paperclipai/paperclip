@@ -145,6 +145,103 @@ describe("RT2 daily report shared contracts", () => {
     );
   });
 
+  it("models Mission to To-Do hierarchy rollup inside the daily cockpit contract", () => {
+    const board: Rt2DailyBoard = {
+      companyId: "550e8400-e29b-41d4-a716-446655440020",
+      projectId: "550e8400-e29b-41d4-a716-446655440021",
+      userId: "550e8400-e29b-41d4-a716-446655440022",
+      reportDate: "2026-05-01",
+      cards: [],
+      cockpit: {
+        summary: {
+          tasksWorked: 1,
+          todosCompleted: 1,
+          deliverablesDefined: 1,
+          deliverablesSubmitted: 1,
+          effortNoteCount: 1,
+          goldImpact: 50,
+          xpImpact: 30,
+          qualityStatus: "reviewed",
+        },
+        traceRows: [],
+        hierarchyRows: [
+          {
+            taskIssueId: "550e8400-e29b-41d4-a716-446655440030",
+            todoIssueId: "550e8400-e29b-41d4-a716-446655440031",
+            path: [
+              {
+                id: "550e8400-e29b-41d4-a716-446655440023",
+                kind: "mission",
+                title: "RealTycoon2 운영 리듬",
+                status: "active",
+                parentId: null,
+              },
+              {
+                id: "550e8400-e29b-41d4-a716-446655440024",
+                kind: "objective",
+                title: "Daily cockpit 정착",
+                status: "active",
+                parentId: "550e8400-e29b-41d4-a716-446655440023",
+              },
+              {
+                id: "550e8400-e29b-41d4-a716-446655440025",
+                kind: "key_result",
+                title: "업무 추적 완료율 90%",
+                status: "active",
+                parentId: "550e8400-e29b-41d4-a716-446655440024",
+              },
+              {
+                id: "550e8400-e29b-41d4-a716-446655440021",
+                kind: "project",
+                title: "운영 자동화",
+                status: "in_progress",
+                parentId: "550e8400-e29b-41d4-a716-446655440025",
+              },
+              {
+                id: "550e8400-e29b-41d4-a716-446655440030",
+                kind: "task",
+                title: "리포트 루프 정착",
+                status: "done",
+                parentId: "550e8400-e29b-41d4-a716-446655440021",
+              },
+              {
+                id: "550e8400-e29b-41d4-a716-446655440031",
+                kind: "todo",
+                title: "오늘 리포트 제출",
+                status: "done",
+                parentId: "550e8400-e29b-41d4-a716-446655440030",
+              },
+            ],
+            rollup: {
+              status: "done",
+              progressPercent: 100,
+              deliverableCount: 1,
+              submittedDeliverableCount: 1,
+              goldImpact: 50,
+              gapFlags: [],
+            },
+          },
+        ],
+        gapFlags: [],
+        aiSummary: ["Mission부터 To-Do까지 rollup이 연결되었습니다."],
+      },
+    };
+
+    expect(board.cockpit.hierarchyRows[0]?.path.map((node) => node.kind)).toEqual([
+      "mission",
+      "objective",
+      "key_result",
+      "project",
+      "task",
+      "todo",
+    ]);
+    expect(board.cockpit.hierarchyRows[0]?.rollup).toEqual(expect.objectContaining({
+      status: "done",
+      progressPercent: 100,
+      deliverableCount: 1,
+    }));
+  });
+
   it("exports narrow quick-edit validators for title, lane, deliverable, quality, and OKR updates", () => {
     const exportsByName = sharedExports as Record<string, any>;
 

@@ -20,6 +20,10 @@ import {
   type PromoteRt2CaptureDraft,
   type ReviseRt2CaptureDraft,
   type Rt2CaptureDraftSource,
+  type Rt2CaptureDraftStatus,
+  type Rt2CaptureQueueEvidenceFilter,
+  type Rt2CaptureQueueFilters,
+  type Rt2CaptureReliabilityReport,
   type Rt2CaptureSourceEvidence,
   type TransitionRt2CaptureDraft,
   type UpsertRt2CaptureSource,
@@ -257,7 +261,7 @@ function toCaptureDraft(row: CaptureRow, latestRevision: CaptureRevisionRow | nu
     externalUserId: row.externalUserId ?? null,
     rawText: row.rawText,
     parsedDraft: row.parsedDraft as Record<string, unknown>,
-    status: row.status as "review_required" | "duplicate" | "permission_blocked" | "failed" | "promoted" | "discarded",
+    status: row.status as Rt2CaptureDraftStatus,
     promotionTarget: row.promotionTarget as "task" | "todo" | "deliverable" | null,
     promotedIssueId: row.promotedIssueId ?? null,
     promotedWorkProductId: row.promotedWorkProductId ?? null,
@@ -292,6 +296,108 @@ function toCaptureDraft(row: CaptureRow, latestRevision: CaptureRevisionRow | nu
     latestRevision: latestRevision ? toCaptureRevision(latestRevision) : null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+type CaptureDraftView = ReturnType<typeof toCaptureDraft>;
+
+const FAILED_SYNC_REASON_CODES = new Set([
+  "signature_missing",
+  "signature_invalid",
+  "source_blocked",
+  "source_stale",
+  "source_not_installed",
+  "source_error",
+  "malformed_payload",
+]);
+
+function normalizeCaptureFilters(filters?: Partial<Rt2CaptureQueueFilters> | null): Rt2CaptureQueueFilters {
+  return {
+    sources: [...new Set(filters?.sources ?? [])],
+    statuses: [...new Set(filters?.statuses ?? [])],
+    evidence: [...new Set(filters?.evidence ?? [])],
+  };
+}
+
+function hasEvidence(filters: Rt2CaptureQueueFilters, evidence: Rt2CaptureQueueEvidenceFilter) {
+  return filters.evidence.includes(evidence);
+}
+
+function isDuplicateDraft(draft: CaptureDraftView) {
+  return draft.status === "duplicate" || Boolean(draft.duplicateOfDraftId || draft.duplicateWarning);
+}
+
+function isFailedSyncDraft(draft: CaptureDraftView) {
+  const reasonCode = draft.sourceEvidence?.reasonCode ?? null;
+  return (
+    draft.status === "failed"
+    || draft.status === "permission_blocked"
+    || draft.permissionStatus === "blocked"
+    || FAILED_SYNC_REASON_CODES.has(reasonCode ?? "")
+    || draft.failureCode === "parse_error"
+    || draft.failureCode === "permission"
+    || draft.failureCode === "source_failure"
+  );
+}
+
+function isApprovalWaitingDraft(draft: CaptureDraftView) {
+  return draft.status === "review_required" || draft.status === "revision_requested" || draft.status === "on_hold";
+}
+
+function isRevisedDraft(draft: CaptureDraftView) {
+  return draft.status === "revised" || (draft.latestRevision?.revisionNumber ?? 0) > 1;
+}
+
+function draftMatchesFilters(draft: CaptureDraftView, filters?: Partial<Rt2CaptureQueueFilters> | null) {
+  const normalized = normalizeCaptureFilters(filters);
+  if (normalized.sources.length > 0 && !normalized.sources.includes(draft.source)) return false;
+  if (normalized.statuses.length > 0 && !normalized.statuses.includes(draft.status)) return false;
+  if (hasEvidence(normalized, "duplicate") && !isDuplicateDraft(draft)) return false;
+  if (hasEvidence(normalized, "failed_sync") && !isFailedSyncDraft(draft)) return false;
+  if (hasEvidence(normalized, "approval_waiting") && !isApprovalWaitingDraft(draft)) return false;
+  if (hasEvidence(normalized, "revised") && !isRevisedDraft(draft)) return false;
+  return true;
+}
+
+function retryCountForDraft(draft: CaptureDraftView) {
+  const auditRetries = draft.auditTrail.filter((entry) => {
+    const action = typeof entry.action === "string" ? entry.action : "";
+    const message = typeof entry.message === "string" ? entry.message : "";
+    return /retry|resent|resend/i.test(`${action} ${message}`);
+  }).length;
+  const metadata = draft.sourceEvidence?.metadata ?? {};
+  const metadataRetries = Object.entries(metadata).reduce((total, [key, value]) => {
+    if (!/retry|attempt/i.test(key)) return total;
+    const numeric = Number.parseInt(value, 10);
+    return Number.isFinite(numeric) && numeric > 0 ? total + numeric : total;
+  }, 0);
+  return auditRetries + metadataRetries;
+}
+
+function promotionLatencyMinutes(draft: CaptureDraftView) {
+  if (draft.status !== "promoted") return null;
+  const promotedAt = draft.auditTrail
+    .map((entry) => (entry.action === "promoted" && typeof entry.at === "string" ? new Date(entry.at) : null))
+    .find((date): date is Date => Boolean(date && !Number.isNaN(date.getTime())));
+  const end = promotedAt ?? draft.updatedAt;
+  return Math.max(0, Math.round((end.getTime() - draft.createdAt.getTime()) / 60000));
+}
+
+function buildReliabilityMetrics(drafts: CaptureDraftView[]) {
+  const latencies = drafts
+    .map(promotionLatencyMinutes)
+    .filter((value): value is number => value !== null);
+  return {
+    draftCount: drafts.length,
+    reviewRequiredCount: drafts.filter((draft) => draft.status === "review_required").length,
+    revisedCount: drafts.filter(isRevisedDraft).length,
+    duplicateCount: drafts.filter(isDuplicateDraft).length,
+    failureCount: drafts.filter(isFailedSyncDraft).length,
+    permissionBlockedCount: drafts.filter((draft) => draft.status === "permission_blocked").length,
+    promotedCount: drafts.filter((draft) => draft.status === "promoted").length,
+    retryCount: drafts.reduce((total, draft) => total + retryCountForDraft(draft), 0),
+    averagePromotionLatencyMinutes: latencies.length > 0 ? Math.round(latencies.reduce((total, value) => total + value, 0) / latencies.length) : null,
+    maxPromotionLatencyMinutes: latencies.length > 0 ? Math.max(...latencies) : null,
   };
 }
 
@@ -763,7 +869,7 @@ export function rt2WorkBoardService(db: Db) {
       return toCaptureDraft(row, revision);
     },
 
-    listCaptureQueue: async (companyId: string) => {
+    listCaptureQueue: async (companyId: string, filters?: Partial<Rt2CaptureQueueFilters> | null) => {
       const [sources, rows] = await Promise.all([
         listCaptureSources(companyId),
         db
@@ -771,10 +877,13 @@ export function rt2WorkBoardService(db: Db) {
         .from(rt2CaptureDrafts)
         .where(eq(rt2CaptureDrafts.companyId, companyId))
         .orderBy(desc(rt2CaptureDrafts.createdAt))
-          .limit(80),
+          .limit(200),
       ]);
       const latestRevisions = await getLatestRevisionMap(rows.map((row) => row.id));
-      const drafts = rows.map((row) => toCaptureDraft(row, latestRevisions.get(row.id) ?? null));
+      const drafts = rows
+        .map((row) => toCaptureDraft(row, latestRevisions.get(row.id) ?? null))
+        .filter((draft) => draftMatchesFilters(draft, filters))
+        .slice(0, 80);
       return {
         companyId,
         sources,
@@ -786,6 +895,41 @@ export function rt2WorkBoardService(db: Db) {
           promoted: drafts.filter((draft) => draft.status === "promoted").length,
         },
         drafts,
+      };
+    },
+
+    getCaptureReliabilityReport: async (companyId: string): Promise<Rt2CaptureReliabilityReport> => {
+      const [sources, rows] = await Promise.all([
+        listCaptureSources(companyId),
+        db
+          .select()
+          .from(rt2CaptureDrafts)
+          .where(eq(rt2CaptureDrafts.companyId, companyId))
+          .orderBy(desc(rt2CaptureDrafts.createdAt)),
+      ]);
+      const latestRevisions = await getLatestRevisionMap(rows.map((row) => row.id));
+      const drafts = rows.map((row) => toCaptureDraft(row, latestRevisions.get(row.id) ?? null));
+      const sourceLabels = new Map<Rt2CaptureDraftSource, string>();
+      for (const source of Object.keys(CAPTURE_SOURCE_LABELS) as Rt2CaptureDraftSource[]) {
+        sourceLabels.set(source, CAPTURE_SOURCE_LABELS[source]);
+      }
+      for (const source of sources) {
+        sourceLabels.set(source.source, source.label);
+      }
+      for (const draft of drafts) {
+        if (!sourceLabels.has(draft.source)) {
+          sourceLabels.set(draft.source, CAPTURE_SOURCE_LABELS[draft.source]);
+        }
+      }
+      return {
+        companyId,
+        generatedAt: new Date(),
+        totals: buildReliabilityMetrics(drafts),
+        rows: Array.from(sourceLabels.entries()).map(([source, label]) => ({
+          source,
+          label,
+          ...buildReliabilityMetrics(drafts.filter((draft) => draft.source === source)),
+        })),
       };
     },
 

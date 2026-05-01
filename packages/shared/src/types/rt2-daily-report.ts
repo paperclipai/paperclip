@@ -87,6 +87,32 @@ export interface Rt2DailyTraceRow {
   gapFlags: Rt2DailyGapFlag[];
 }
 
+export type Rt2DailyHierarchyNodeKind = "mission" | "objective" | "key_result" | "goal" | "project" | "task" | "todo";
+
+export interface Rt2DailyHierarchyNode {
+  id: string;
+  kind: Rt2DailyHierarchyNodeKind;
+  title: string;
+  status: string;
+  parentId: string | null;
+}
+
+export interface Rt2DailyHierarchyRollup {
+  status: Rt2DailyReportCard["status"];
+  progressPercent: number;
+  deliverableCount: number;
+  submittedDeliverableCount: number;
+  goldImpact: number;
+  gapFlags: Rt2DailyGapFlag[];
+}
+
+export interface Rt2DailyHierarchyRow {
+  taskIssueId: string;
+  todoIssueId: string;
+  path: Rt2DailyHierarchyNode[];
+  rollup: Rt2DailyHierarchyRollup;
+}
+
 export interface Rt2DailyCockpitSummary {
   tasksWorked: number;
   todosCompleted: number;
@@ -101,6 +127,7 @@ export interface Rt2DailyCockpitSummary {
 export interface Rt2DailyCockpit {
   summary: Rt2DailyCockpitSummary;
   traceRows: Rt2DailyTraceRow[];
+  hierarchyRows: Rt2DailyHierarchyRow[];
   gapFlags: Array<{
     kind: Rt2DailyGapFlag;
     taskIssueId: string;

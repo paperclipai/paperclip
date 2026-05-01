@@ -88,6 +88,8 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const boardUserId = "board-user";
+    const missionId = randomUUID();
+    const objectiveId = randomUUID();
     const goalId = randomUUID();
     const taskIssueId = randomUUID();
     const todoIssueId = randomUUID();
@@ -115,13 +117,31 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
       membershipRole: "owner",
     });
 
-    await db.insert(goals).values({
-      id: goalId,
-      companyId,
-      title: "Improve daily operating cadence",
-      level: "objective",
-      status: "active",
-    });
+    await db.insert(goals).values([
+      {
+        id: missionId,
+        companyId,
+        title: "Build RealTycoon2 operating rhythm",
+        level: "mission",
+        status: "active",
+      },
+      {
+        id: objectiveId,
+        companyId,
+        title: "Improve daily operating cadence",
+        level: "objective",
+        status: "active",
+        parentId: missionId,
+      },
+      {
+        id: goalId,
+        companyId,
+        title: "Ship daily cockpit proof",
+        level: "key_result",
+        status: "active",
+        parentId: objectiveId,
+      },
+    ]);
 
     await db.insert(issues).values({
       id: taskIssueId,
@@ -221,7 +241,26 @@ describeEmbeddedPostgres("rt2 daily report routes", () => {
             todoIssueId: fixture.todoIssueId,
             goalPath: expect.arrayContaining([
               expect.objectContaining({ title: "Improve daily operating cadence" }),
+              expect.objectContaining({ title: "Ship daily cockpit proof" }),
             ]),
+          }),
+        ]),
+        hierarchyRows: expect.arrayContaining([
+          expect.objectContaining({
+            todoIssueId: fixture.todoIssueId,
+            path: expect.arrayContaining([
+              expect.objectContaining({ kind: "mission", title: "Build RealTycoon2 operating rhythm" }),
+              expect.objectContaining({ kind: "objective", title: "Improve daily operating cadence" }),
+              expect.objectContaining({ kind: "key_result", title: "Ship daily cockpit proof" }),
+              expect.objectContaining({ kind: "project", title: "Daily Report Project" }),
+              expect.objectContaining({ kind: "task", title: "Launch daily report flow" }),
+              expect.objectContaining({ kind: "todo", title: "Seed daily board card" }),
+            ]),
+            rollup: expect.objectContaining({
+              progressPercent: 100,
+              deliverableCount: 1,
+              goldImpact: 10,
+            }),
           }),
         ]),
       }),

@@ -20,6 +20,7 @@ import type {
   Rt2DailyGapFlag,
   Rt2DailyActivityType,
   Rt2DailyBoard,
+  Rt2DailyHierarchyNode,
   Rt2DailyLane,
   Rt2DailyOkrSource,
   Rt2DailyOkrNode,
@@ -205,6 +206,14 @@ function summarizeGoldImpact(basePriceTotal: number) {
 
 function summarizeXpImpact(basePriceTotal: number, submittedDeliverableCount: number) {
   return Math.max(0, Math.round(basePriceTotal * 0.005) + submittedDeliverableCount * 5);
+}
+
+function hierarchyKindForGoalLevel(level: string): Rt2DailyHierarchyNode["kind"] {
+  const normalized = level.toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "mission") return "mission";
+  if (normalized === "objective") return "objective";
+  if (normalized === "key_result" || normalized === "kr") return "key_result";
+  return "goal";
 }
 
 function inferActivityType(previous: SavedCardRow | null, next: UpsertRt2DailyReportCard): Rt2DailyActivityType {
@@ -604,6 +613,52 @@ export function rt2DailyReportService(db: Db) {
         gapFlags,
       };
     });
+    const cardByTodoId = new Map(cards.map((card) => [card.todoIssueId, card]));
+    const hierarchyRows = traceRows.map((trace) => {
+      const card = cardByTodoId.get(trace.todoIssueId);
+      const goalNodes: Rt2DailyHierarchyNode[] = trace.goalPath.map((goal) => ({
+        id: goal.id,
+        kind: hierarchyKindForGoalLevel(goal.level),
+        title: goal.title,
+        status: goal.status,
+        parentId: goal.parentId,
+      }));
+      const projectNode: Rt2DailyHierarchyNode = {
+        id: trace.projectId,
+        kind: "project",
+        title: trace.projectTitle,
+        status: trace.projectStatus,
+        parentId: goalNodes.at(-1)?.id ?? null,
+      };
+      const taskNode: Rt2DailyHierarchyNode = {
+        id: trace.taskIssueId,
+        kind: "task",
+        title: trace.taskTitle,
+        status: card?.status ?? "unknown",
+        parentId: trace.projectId,
+      };
+      const todoNode: Rt2DailyHierarchyNode = {
+        id: trace.todoIssueId,
+        kind: "todo",
+        title: trace.todoTitle,
+        status: card?.status ?? "unknown",
+        parentId: trace.taskIssueId,
+      };
+
+      return {
+        taskIssueId: trace.taskIssueId,
+        todoIssueId: trace.todoIssueId,
+        path: [...goalNodes, projectNode, taskNode, todoNode],
+        rollup: {
+          status: card?.status ?? "todo",
+          progressPercent: card?.progressPercent ?? 0,
+          deliverableCount: card?.deliverableCount ?? 0,
+          submittedDeliverableCount: card?.submittedDeliverableCount ?? 0,
+          goldImpact: summarizeGoldImpact(card?.basePriceTotal ?? 0),
+          gapFlags: trace.gapFlags,
+        },
+      };
+    });
 
     const deliverablesDefined = cards.reduce((total, card) => total + card.deliverableCount, 0);
     const deliverablesSubmitted = cards.reduce((total, card) => total + card.submittedDeliverableCount, 0);
@@ -639,6 +694,7 @@ export function rt2DailyReportService(db: Db) {
     return {
       summary,
       traceRows,
+      hierarchyRows,
       gapFlags,
       aiSummary: [
         `${summary.tasksWorked}개 task, ${summary.todosCompleted}개 to-do가 오늘 보고에 연결되었습니다.`,

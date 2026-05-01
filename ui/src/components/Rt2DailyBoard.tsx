@@ -4,6 +4,8 @@ import type {
   Rt2BoardQualityStatus,
   Rt2CaptureDraftSummary,
   Rt2CaptureQueue,
+  Rt2CaptureQueueEvidenceFilter,
+  Rt2CaptureReliabilityReport,
   Rt2DailyBoard as Rt2DailyBoardData,
   Rt2DailyLane,
   Rt2DailyReportCard,
@@ -36,6 +38,18 @@ const SORT_OPTIONS = [
   { key: "quality_issue", label: "품질 이슈 먼저" },
   { key: "gold_desc", label: "Gold 높은순" },
 ] as const;
+
+const CAPTURE_STATUS_OPTIONS: Rt2CaptureDraftSummary["status"][] = [
+  "review_required",
+  "revised",
+  "on_hold",
+  "revision_requested",
+  "rejected",
+  "duplicate",
+  "permission_blocked",
+  "failed",
+  "promoted",
+];
 
 type FilterKey = (typeof FILTERS)[number]["key"];
 type SortKey = (typeof SORT_OPTIONS)[number]["key"];
@@ -94,6 +108,7 @@ export function Rt2DailyBoard({
   failedTodoIssueId = null,
   onSaveCard,
   captureQueue = null,
+  captureReliabilityReport = null,
   pendingCaptureDraftId = null,
   onPromoteCaptureDraft,
   onFailCaptureDraft,
@@ -105,6 +120,7 @@ export function Rt2DailyBoard({
   failedTodoIssueId?: string | null;
   onSaveCard: (todoIssueId: string, data: UpsertRt2DailyReportCard) => void;
   captureQueue?: Rt2CaptureQueue | null;
+  captureReliabilityReport?: Rt2CaptureReliabilityReport | null;
   pendingCaptureDraftId?: string | null;
   onPromoteCaptureDraft?: (draftId: string) => void;
   onFailCaptureDraft?: (draftId: string, reason: string) => void;
@@ -266,17 +282,29 @@ export function Rt2DailyBoard({
           <Metric label="메모" value={board.cockpit.summary.effortNoteCount} />
         </div>
         <div className="space-y-2">
-          <h4 className="text-xs font-medium text-muted-foreground">OKR/KPI 추적</h4>
-          {board.cockpit.traceRows.length === 0 ? (
+          <h4 className="text-xs font-medium text-muted-foreground">OKR 트리 · Mission -&gt; To-Do</h4>
+          {board.cockpit.hierarchyRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">오늘 연결된 작업이 없습니다.</p>
           ) : (
-            board.cockpit.traceRows.map((trace) => (
-              <div key={trace.todoIssueId} className="rounded-md border border-border bg-background px-3 py-2">
-                <div className="truncate text-xs font-medium">{trace.todoTitle}</div>
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  {trace.goalPath.length > 0
-                    ? trace.goalPath.map((goal) => goal.title).join(" / ")
-                    : `${trace.projectTitle} / OKR 없음`}
+            board.cockpit.hierarchyRows.map((row) => (
+              <div key={row.todoIssueId} className="rounded-md border border-border bg-background px-3 py-2">
+                <div className="space-y-1">
+                  {row.path.map((node, index) => (
+                    <div
+                      key={`${row.todoIssueId}-${node.kind}-${node.id}`}
+                      className="flex min-w-0 items-center gap-2 text-[11px]"
+                      style={{ paddingLeft: `${Math.min(index, 5) * 10}px` }}
+                    >
+                      <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] text-muted-foreground">
+                        {hierarchyKindLabel(node.kind)}
+                      </span>
+                      <span className="truncate font-medium">{node.title}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 text-[11px] text-muted-foreground">
+                  진행 {row.rollup.progressPercent}% · 산출물 {row.rollup.deliverableCount}개 · 제출 {row.rollup.submittedDeliverableCount}개
+                  {row.rollup.gapFlags.length > 0 ? ` · gap ${row.rollup.gapFlags.length}개` : ""}
                 </div>
               </div>
             ))
@@ -288,6 +316,7 @@ export function Rt2DailyBoard({
         {captureQueue ? (
           <CaptureReviewInbox
             queue={captureQueue}
+            report={captureReliabilityReport}
             pendingDraftId={pendingCaptureDraftId}
             onPromoteDraft={onPromoteCaptureDraft}
             onFailDraft={onFailCaptureDraft}
@@ -765,6 +794,7 @@ function cardMatchesFilters(
 
 function CaptureReviewInbox({
   queue,
+  report,
   pendingDraftId,
   onPromoteDraft,
   onFailDraft,
@@ -772,12 +802,16 @@ function CaptureReviewInbox({
   onTransitionDraft,
 }: {
   queue: Rt2CaptureQueue;
+  report?: Rt2CaptureReliabilityReport | null;
   pendingDraftId: string | null;
   onPromoteDraft?: (draftId: string) => void;
   onFailDraft?: (draftId: string, reason: string) => void;
   onReviseDraft?: Parameters<typeof Rt2DailyBoard>[0]["onReviseCaptureDraft"];
   onTransitionDraft?: Parameters<typeof Rt2DailyBoard>[0]["onTransitionCaptureDraft"];
 }) {
+  const [sourceFilter, setSourceFilter] = useState<Rt2CaptureDraftSummary["source"] | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<Rt2CaptureDraftSummary["status"] | "all">("all");
+  const [evidenceFilters, setEvidenceFilters] = useState<Set<Rt2CaptureQueueEvidenceFilter>>(() => new Set());
   const activeDrafts = queue.drafts.filter((draft) =>
     draft.status === "review_required"
     || draft.status === "revised"
@@ -786,8 +820,32 @@ function CaptureReviewInbox({
     || draft.status === "rejected"
     || draft.status === "duplicate"
     || draft.status === "permission_blocked"
-    || draft.status === "failed",
+    || draft.status === "failed"
+    || draft.status === "promoted",
   );
+  const visibleDrafts = activeDrafts.filter((draft) =>
+    (sourceFilter === "all" || draft.source === sourceFilter)
+    && (statusFilter === "all" || draft.status === statusFilter)
+    && Array.from(evidenceFilters).every((filter) => captureDraftMatchesEvidence(draft, filter)),
+  );
+  const sourceOptions = queue.sources.filter((source) =>
+    queue.drafts.some((draft) => draft.source === source.source) || source.id,
+  );
+  const evidenceOptions: Array<{ key: Rt2CaptureQueueEvidenceFilter; label: string }> = [
+    { key: "duplicate", label: "중복" },
+    { key: "failed_sync", label: "전송 실패" },
+    { key: "approval_waiting", label: "승인 대기" },
+    { key: "revised", label: "수정됨" },
+  ];
+
+  function toggleEvidenceFilter(filter: Rt2CaptureQueueEvidenceFilter) {
+    setEvidenceFilters((current) => {
+      const next = new Set(current);
+      if (next.has(filter)) next.delete(filter);
+      else next.add(filter);
+      return next;
+    });
+  }
 
   return (
     <section className="rounded-lg border border-border bg-card/80 p-4" aria-label="One-Liner 보드 검수함">
@@ -805,13 +863,64 @@ function CaptureReviewInbox({
         </div>
       </div>
 
+      <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" aria-label="검수함 운영 필터">
+        <label className="grid gap-1 text-xs">
+          <span className="text-muted-foreground">출처</span>
+          <select
+            className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+            aria-label="검수함 출처 필터"
+            value={sourceFilter}
+            onChange={(event) => setSourceFilter(event.currentTarget.value as Rt2CaptureDraftSummary["source"] | "all")}
+          >
+            <option value="all">전체 출처</option>
+            {sourceOptions.map((source) => (
+              <option key={source.source} value={source.source}>{source.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1 text-xs">
+          <span className="text-muted-foreground">상태</span>
+          <select
+            className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+            aria-label="검수함 상태 필터"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.currentTarget.value as Rt2CaptureDraftSummary["status"] | "all")}
+          >
+            <option value="all">전체 상태</option>
+            {CAPTURE_STATUS_OPTIONS.map((status) => (
+              <option key={status} value={status}>{captureStatusLabel(status)}</option>
+            ))}
+          </select>
+        </label>
+        <div className="flex flex-wrap gap-2 md:col-span-2">
+          {evidenceOptions.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={`rounded-md border px-2 py-1 text-xs ${evidenceFilters.has(option.key) ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}
+              aria-label={`검수함 ${option.label} 필터`}
+              aria-pressed={evidenceFilters.has(option.key)}
+              onClick={() => toggleEvidenceFilter(option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {report ? <CaptureReliabilityReport report={report} /> : null}
+
       {activeDrafts.length === 0 ? (
         <p className="mt-3 rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
           검수할 One-Liner 초안이 없습니다.
         </p>
+      ) : visibleDrafts.length === 0 ? (
+        <p className="mt-3 rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+          조건에 맞는 초안이 없습니다. 필터를 줄이면 다른 검수 항목을 볼 수 있습니다.
+        </p>
       ) : (
         <div className="mt-3 grid gap-3">
-          {activeDrafts.slice(0, 6).map((draft) => (
+          {visibleDrafts.slice(0, 6).map((draft) => (
             <CaptureDraftCard
               key={draft.id}
               draft={draft}
@@ -825,6 +934,42 @@ function CaptureReviewInbox({
         </div>
       )}
     </section>
+  );
+}
+
+function CaptureReliabilityReport({ report }: { report: Rt2CaptureReliabilityReport }) {
+  const rows = report.rows.filter((row) =>
+    row.draftCount > 0 || row.failureCount > 0 || row.retryCount > 0 || row.promotedCount > 0,
+  );
+  if (rows.length === 0) {
+    return (
+      <div className="mt-3 rounded-md border border-dashed border-border px-3 py-3 text-xs text-muted-foreground" aria-label="capture reliability report">
+        출처별 신뢰도 기록이 아직 없습니다.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-border bg-muted/20 p-3" aria-label="capture reliability report">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold">입력 신뢰도 리포트</h4>
+        <span className="text-[11px] text-muted-foreground">전체 초안 {report.totals.draftCount} · 실패 {report.totals.failureCount} · 재시도 {report.totals.retryCount}</span>
+      </div>
+      <div className="mt-2 grid gap-2">
+        {rows.slice(0, 6).map((row) => (
+          <div key={row.source} className="grid gap-1 rounded-md bg-background px-2 py-2 text-xs md:grid-cols-[1fr_auto] md:items-center">
+            <div className="font-medium text-foreground">{row.label}</div>
+            <div className="flex flex-wrap gap-2 text-muted-foreground">
+              <span>초안 {row.draftCount}</span>
+              <span>실패 {row.failureCount}</span>
+              <span>재시도 {row.retryCount}</span>
+              <span>승인 {row.promotedCount}</span>
+              <span>승인 지연 {latencyLabel(row.averagePromotionLatencyMinutes, row.maxPromotionLatencyMinutes)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1050,6 +1195,25 @@ function CaptureDraftCard({
         </div>
       ) : null}
 
+      {draft.status === "promoted" ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs" aria-label={`${draft.id}-promotion-links`}>
+          <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">원본 초안 근거</span>
+          {latestRevision ? (
+            <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">수정 이력 v{latestRevision.revisionNumber}</span>
+          ) : null}
+          {draft.promotedIssueId ? (
+            <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
+              생성된 {draft.promotionTarget === "todo" ? "To-Do" : "Task"} 보기 {draft.promotedIssueId.slice(0, 8)}
+            </span>
+          ) : null}
+          {draft.promotedWorkProductId ? (
+            <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
+              생성된 산출물 보기 {draft.promotedWorkProductId.slice(0, 8)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
         <div className="rounded-md bg-muted/40 px-2 py-2">
           <span className="font-medium text-foreground">업무 유형</span> {parsed.taskMode || "solo"} · 처리 용량 {parsed.capacity || 1}
@@ -1152,6 +1316,24 @@ function captureFailureEvidenceLabel(draft: Rt2CaptureDraftSummary) {
     return "형식 오류";
   }
   return null;
+}
+
+function captureDraftMatchesEvidence(draft: Rt2CaptureDraftSummary, filter: Rt2CaptureQueueEvidenceFilter) {
+  if (filter === "duplicate") {
+    return draft.status === "duplicate" || Boolean(draft.duplicateOfDraftId || draft.duplicateWarning);
+  }
+  if (filter === "failed_sync") {
+    return Boolean(captureFailureEvidenceLabel(draft)) || draft.status === "failed" || draft.status === "permission_blocked";
+  }
+  if (filter === "approval_waiting") {
+    return draft.status === "review_required" || draft.status === "revision_requested" || draft.status === "on_hold";
+  }
+  return draft.status === "revised" || (draft.latestRevision?.revisionNumber ?? 0) > 1;
+}
+
+function latencyLabel(average: number | null, max: number | null) {
+  if (average == null || max == null) return "기록 없음";
+  return `평균 ${average}분 · 최대 ${max}분`;
 }
 
 function captureSourceLabel(source: Rt2CaptureDraftSummary["source"]) {
@@ -1292,6 +1474,16 @@ function qualityLabel(value: Rt2BoardQualityStatus | "none" | "pending_review" |
   if (value === "pending_review") return "검토 대기";
   if (value === "needs_work") return "수정 필요";
   return "없음";
+}
+
+function hierarchyKindLabel(kind: Rt2DailyBoardData["cockpit"]["hierarchyRows"][number]["path"][number]["kind"]) {
+  if (kind === "mission") return "Mission";
+  if (kind === "objective") return "Objective";
+  if (kind === "key_result") return "KR";
+  if (kind === "project") return "Project";
+  if (kind === "task") return "Task";
+  if (kind === "todo") return "To-Do";
+  return "Goal";
 }
 
 function formatGold(value: number): string {

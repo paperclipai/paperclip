@@ -507,6 +507,135 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     }));
   });
 
+  it("filters capture review queue and reports source reliability", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+
+    const webCreated = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "web",
+        channel: "daily-work",
+        text: "task: Promote reviewed draft; todo: Review ops; deliverable: Ops note; price: 90000",
+      })
+      .expect(201);
+    const webDraftId = webCreated.body.inbound.id as string;
+
+    await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${webDraftId}/revisions`)
+      .send({
+        snapshot: {
+          taskTitle: "Promoted reviewed draft",
+          todoTitle: "Review ops",
+          deliverableTitle: "Ops note",
+          deliverableType: "document",
+          basePrice: 90000,
+          taskMode: "solo",
+          capacity: 1,
+        },
+        changeSummary: "운영 검수 수정",
+      })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/capture-drafts/${webDraftId}/promote`)
+      .send({
+        target: "task",
+        projectId: fixture.projectId,
+        taskMode: "solo",
+        capacity: 1,
+        priority: "medium",
+      })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "mobile",
+        channel: `quick-capture:${fixture.projectId}`,
+        externalUserId: fixture.managerUserId,
+        eventId: "retry-mobile-1",
+        metadata: { retryCount: 2 },
+        text: "task: Mobile retry capture; todo: Retry evidence; deliverable: Retry note; price: 50000",
+      })
+      .expect(201);
+
+    await request(app)
+      .put(`/api/companies/${fixture.companyId}/rt2/capture-sources/slack`)
+      .send({
+        source: "slack",
+        label: "Slack Ops",
+        installationState: "installed",
+        signingStatus: "signed",
+        signingSecret: "phase-57-secret",
+      })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/one-liner/inbound-draft`)
+      .send({
+        source: "slack",
+        channel: "ops",
+        externalUserId: "U123",
+        eventId: "evt-missing-signature",
+        text: "task: Missing signature; deliverable: Blocked note; price: 1000",
+      })
+      .expect(201);
+
+    const mobileQueue = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/capture-drafts?source=mobile`)
+      .expect(200);
+    expect(mobileQueue.body.drafts).toHaveLength(1);
+    expect(mobileQueue.body.drafts[0]).toEqual(expect.objectContaining({ source: "mobile" }));
+
+    const revisedQueue = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/capture-drafts?evidence=revised`)
+      .expect(200);
+    expect(revisedQueue.body.drafts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: webDraftId,
+        status: "promoted",
+        latestRevision: expect.objectContaining({ revisionNumber: 2 }),
+      }),
+    ]));
+
+    const failedQueue = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/capture-drafts?evidence=failed_sync`)
+      .expect(200);
+    expect(failedQueue.body.drafts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "slack",
+        status: "permission_blocked",
+      }),
+    ]));
+
+    const report = await request(app)
+      .get(`/api/companies/${fixture.companyId}/rt2/capture-drafts/reliability-report`)
+      .expect(200);
+    expect(report.body.totals).toEqual(expect.objectContaining({
+      draftCount: 3,
+      failureCount: 1,
+      promotedCount: 1,
+      retryCount: 2,
+    }));
+    expect(report.body.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "web",
+        promotedCount: 1,
+        averagePromotionLatencyMinutes: expect.any(Number),
+      }),
+      expect.objectContaining({
+        source: "slack",
+        failureCount: 1,
+        permissionBlockedCount: 1,
+      }),
+      expect.objectContaining({
+        source: "mobile",
+        retryCount: 2,
+      }),
+    ]));
+  });
+
   it("records signed capture source evidence and blocks missing signatures", async () => {
     fixture = await seedFixture();
     const app = await createApp(fixture.companyId, fixture.managerUserId);

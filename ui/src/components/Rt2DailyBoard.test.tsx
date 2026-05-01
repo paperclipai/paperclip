@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import type { Rt2CaptureQueue, Rt2DailyBoard as Rt2DailyBoardData } from "@paperclipai/shared";
+import type { Rt2CaptureQueue, Rt2CaptureReliabilityReport, Rt2DailyBoard as Rt2DailyBoardData } from "@paperclipai/shared";
 
 vi.mock("@/components/ui/button", () => ({
   Button: ({
@@ -112,6 +112,50 @@ describe("Rt2DailyBoard", () => {
             gapFlags: ["missing_deliverable"],
           },
         ],
+        hierarchyRows: [
+          {
+            taskIssueId: "task-1",
+            todoIssueId: "todo-1",
+            path: [
+              {
+                id: "goal-1",
+                kind: "objective",
+                title: "운영 리듬 개선",
+                status: "active",
+                parentId: null,
+              },
+              {
+                id: "project-1",
+                kind: "project",
+                title: "운영 자동화",
+                status: "in_progress",
+                parentId: "goal-1",
+              },
+              {
+                id: "task-1",
+                kind: "task",
+                title: "주간 운영 리포트",
+                status: "in_progress",
+                parentId: "project-1",
+              },
+              {
+                id: "todo-1",
+                kind: "todo",
+                title: "고객 리포트 정리",
+                status: "in_progress",
+                parentId: "task-1",
+              },
+            ],
+            rollup: {
+              status: "in_progress",
+              progressPercent: 20,
+              deliverableCount: 0,
+              submittedDeliverableCount: 0,
+              goldImpact: 0,
+              gapFlags: ["missing_deliverable"],
+            },
+          },
+        ],
         gapFlags: [
           {
             kind: "missing_deliverable",
@@ -142,6 +186,7 @@ describe("Rt2DailyBoard", () => {
           failedTodoIssueId={props.failedTodoIssueId ?? null}
           onSaveCard={props.onSaveCard ?? onSaveCard}
           captureQueue={props.captureQueue ?? null}
+          captureReliabilityReport={props.captureReliabilityReport ?? null}
           pendingCaptureDraftId={props.pendingCaptureDraftId ?? null}
           onPromoteCaptureDraft={props.onPromoteCaptureDraft}
           onFailCaptureDraft={props.onFailCaptureDraft}
@@ -259,6 +304,55 @@ describe("Rt2DailyBoard", () => {
     };
   }
 
+  function buildReliabilityReport(): Rt2CaptureReliabilityReport {
+    return {
+      companyId: "company-1",
+      generatedAt: new Date("2026-04-30T00:05:00.000Z"),
+      totals: {
+        draftCount: 3,
+        reviewRequiredCount: 1,
+        revisedCount: 1,
+        duplicateCount: 1,
+        failureCount: 1,
+        permissionBlockedCount: 1,
+        promotedCount: 1,
+        retryCount: 2,
+        averagePromotionLatencyMinutes: 12,
+        maxPromotionLatencyMinutes: 18,
+      },
+      rows: [
+        {
+          source: "web",
+          label: "Web",
+          draftCount: 1,
+          reviewRequiredCount: 0,
+          revisedCount: 1,
+          duplicateCount: 0,
+          failureCount: 0,
+          permissionBlockedCount: 0,
+          promotedCount: 1,
+          retryCount: 0,
+          averagePromotionLatencyMinutes: 12,
+          maxPromotionLatencyMinutes: 18,
+        },
+        {
+          source: "slack",
+          label: "Slack Ops",
+          draftCount: 1,
+          reviewRequiredCount: 0,
+          revisedCount: 0,
+          duplicateCount: 0,
+          failureCount: 1,
+          permissionBlockedCount: 1,
+          promotedCount: 0,
+          retryCount: 2,
+          averagePromotionLatencyMinutes: null,
+          maxPromotionLatencyMinutes: null,
+        },
+      ],
+    };
+  }
+
   function buildDragEvent(type: string, dataTransfer: { getData: (type: string) => string; setData: (type: string, value: string) => void; effectAllowed?: string }) {
     const event = new Event(type, { bubbles: true, cancelable: true });
     Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
@@ -334,6 +428,50 @@ describe("Rt2DailyBoard", () => {
                   gapFlags: [],
                 },
               ],
+              hierarchyRows: [
+                {
+                  taskIssueId: "task-1",
+                  todoIssueId: "todo-1",
+                  path: [
+                    {
+                      id: "goal-1",
+                      kind: "objective",
+                      title: "운영 리듬 개선",
+                      status: "active",
+                      parentId: null,
+                    },
+                    {
+                      id: "project-1",
+                      kind: "project",
+                      title: "운영 자동화",
+                      status: "in_progress",
+                      parentId: "goal-1",
+                    },
+                    {
+                      id: "task-1",
+                      kind: "task",
+                      title: "주간 보고",
+                      status: "in_progress",
+                      parentId: "project-1",
+                    },
+                    {
+                      id: "todo-1",
+                      kind: "todo",
+                      title: "주간 보고서 작성",
+                      status: "in_progress",
+                      parentId: "task-1",
+                    },
+                  ],
+                  rollup: {
+                    status: "in_progress",
+                    progressPercent: 30,
+                    deliverableCount: 1,
+                    submittedDeliverableCount: 0,
+                    goldImpact: 10,
+                    gapFlags: [],
+                  },
+                },
+              ],
               gapFlags: [],
               aiSummary: ["1개 task가 오늘 보고에 연결되었습니다."],
             },
@@ -348,6 +486,10 @@ describe("Rt2DailyBoard", () => {
     expect(container.textContent).toContain("진행 중");
     expect(container.textContent).toContain("완료");
     expect(container.textContent).toContain("주간 보고서 작성");
+    expect(container.textContent).toContain("OKR 트리 · Mission -> To-Do");
+    expect(container.textContent).toContain("Objective");
+    expect(container.textContent).toContain("Project");
+    expect(container.textContent).toContain("진행 30% · 산출물 1개 · 제출 0개");
     expect(container.textContent).toContain("담당 user-1");
     expect(container.textContent).toContain("1 산출물");
     expect(container.textContent).toContain("1,000 Gold");
@@ -688,6 +830,113 @@ describe("Rt2DailyBoard", () => {
     expect(container.textContent).toContain("메시징 근거");
     expect(container.textContent).toContain("channel: C-ops");
     expect(container.textContent).toContain("provider: webhook");
+
+    act(() => root.unmount());
+  });
+
+  it("filters capture drafts and renders reliability report with promoted evidence links", () => {
+    const queue = buildCaptureQueue();
+    const base = queue.drafts[0]!;
+    queue.sources = [
+      {
+        id: "source-web",
+        companyId: "company-1",
+        source: "web",
+        label: "Web",
+        installationState: "installed",
+        signingStatus: "unsigned",
+        lastInboundEventAt: null,
+        lastInboundEventId: null,
+        lastErrorCode: null,
+        blockedReason: null,
+        updatedAt: new Date("2026-04-30T00:00:00.000Z"),
+      },
+      {
+        id: "source-slack",
+        companyId: "company-1",
+        source: "slack",
+        label: "Slack Ops",
+        installationState: "installed",
+        signingStatus: "signed",
+        lastInboundEventAt: null,
+        lastInboundEventId: null,
+        lastErrorCode: "signature_invalid",
+        blockedReason: null,
+        updatedAt: new Date("2026-04-30T00:00:00.000Z"),
+      },
+    ];
+    queue.summary = {
+      reviewRequired: 0,
+      duplicate: 0,
+      permissionBlocked: 1,
+      failed: 0,
+      promoted: 1,
+    };
+    queue.drafts = [
+      {
+        ...base,
+        id: "draft-promoted",
+        status: "promoted",
+        promotionTarget: "task",
+        promotedIssueId: "12345678-1234-4234-9234-123456789012",
+        latestRevision: {
+          ...base.latestRevision!,
+          id: "revision-2",
+          revisionNumber: 2,
+        },
+      },
+      {
+        ...base,
+        id: "draft-slack-failed",
+        source: "slack",
+        status: "permission_blocked",
+        permissionStatus: "blocked",
+        parsedDraft: {
+          taskTitle: "Slack 서명 실패",
+          deliverableTitle: "오류 근거",
+          basePrice: 1000,
+        },
+        latestRevision: null,
+        sourceEvidence: {
+          ...base.sourceEvidence!,
+          signingStatus: "invalid",
+          reasonCode: "signature_invalid",
+          eventId: "evt-slack-invalid",
+          metadata: { retryCount: "2" },
+        },
+      },
+    ];
+
+    const { container, root } = renderBoard({
+      captureQueue: queue,
+      captureReliabilityReport: buildReliabilityReport(),
+    });
+
+    expect(container.textContent).toContain("입력 신뢰도 리포트");
+    expect(container.textContent).toContain("Slack Ops");
+    expect(container.textContent).toContain("승인 지연 평균 12분");
+    expect(container.textContent).toContain("원본 초안 근거");
+    expect(container.textContent).toContain("생성된 Task 보기 12345678");
+
+    const sourceFilter = container.querySelector('select[aria-label="검수함 출처 필터"]');
+    act(() => {
+      if (sourceFilter instanceof HTMLSelectElement) {
+        sourceFilter.value = "slack";
+        sourceFilter.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    expect(container.textContent).toContain("Slack 서명 실패");
+    expect(container.textContent).not.toContain("생성된 Task 보기 12345678");
+
+    const failedSync = container.querySelector('button[aria-label="검수함 전송 실패 필터"]');
+    expect(failedSync).not.toBeNull();
+    expect(failedSync?.getAttribute("aria-pressed")).toBe("false");
+    act(() => {
+      failedSync?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(failedSync?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain("서명 오류");
 
     act(() => root.unmount());
   });

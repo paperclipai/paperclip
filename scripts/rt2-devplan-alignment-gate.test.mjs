@@ -17,8 +17,8 @@ function makeRoot() {
   const summary = evaluateDevPlanAlignment({ now: new Date("2026-05-01T00:00:00.000Z") });
   assert.equal(summary.status, "passed");
   assert.equal(summary.baselineScorePct, 64);
-  assert.equal(summary.currentScorePct, 64);
-  assert.equal(summary.counts.byStatus.complete, 3);
+  assert.equal(summary.currentScorePct, 72);
+  assert.equal(summary.counts.byStatus.complete, 5);
   assert.match(buildReport(summary), /Graphify v3 corpus graph sidecar/);
 }
 

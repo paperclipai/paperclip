@@ -13,6 +13,8 @@ import type {
   Rt2CaptureDraftSummary,
   Rt2CaptureDraftDetail,
   Rt2CaptureQueue,
+  Rt2CaptureQueueFilters,
+  Rt2CaptureReliabilityReport,
   Rt2CaptureSourceSummary,
   UpdateRt2TaskCapacity,
 } from "@paperclipai/shared";
@@ -189,8 +191,16 @@ export const rt2TasksApi = {
     api.post<Rt2BoardChecklistItem[]>(`/companies/${companyId}/rt2/work-board/cards/${encodeURIComponent(issueId)}/checklist/reorder`, { orderedItemIds }),
   addBoardAttachment: (companyId: string, issueId: string, data: { label: string; url: string; contentType?: string | null }) =>
     api.post<Rt2BoardAttachmentPreview>(`/companies/${companyId}/rt2/work-board/cards/${encodeURIComponent(issueId)}/attachments`, data),
-  listCaptureQueue: (companyId: string) =>
-    api.get<Rt2CaptureQueue>(`/companies/${companyId}/rt2/capture-drafts`),
+  listCaptureQueue: (companyId: string, filters?: Partial<Rt2CaptureQueueFilters>) => {
+    const params = new URLSearchParams();
+    if (filters?.sources?.length) params.set("source", filters.sources.join(","));
+    if (filters?.statuses?.length) params.set("status", filters.statuses.join(","));
+    if (filters?.evidence?.length) params.set("evidence", filters.evidence.join(","));
+    const query = params.toString();
+    return api.get<Rt2CaptureQueue>(`/companies/${companyId}/rt2/capture-drafts${query ? `?${query}` : ""}`);
+  },
+  getCaptureReliabilityReport: (companyId: string) =>
+    api.get<Rt2CaptureReliabilityReport>(`/companies/${companyId}/rt2/capture-drafts/reliability-report`),
   getCaptureDraft: (companyId: string, draftId: string) =>
     api.get<Rt2CaptureDraftDetail>(`/companies/${companyId}/rt2/capture-drafts/${encodeURIComponent(draftId)}`),
   reviseCaptureDraft: (companyId: string, draftId: string, data: {

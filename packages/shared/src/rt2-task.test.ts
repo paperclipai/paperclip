@@ -6,7 +6,10 @@ import {
   completeRt2ExecutionSchema,
   createOneLinerInboundDraftSchema,
   createRt2MessagingInboundSchema,
+  rt2CaptureQueueQuerySchema,
+  rt2CaptureQueueEvidenceFilterSchema,
   rt2CaptureSourceEvidenceMetadataSchema,
+  rt2CaptureDraftStatusSchema,
   createRt2TaskSchema,
   createRt2TodoSchema,
   enqueueRt2ExecutionSchema,
@@ -192,5 +195,31 @@ describe("RT2 task shared contracts", () => {
       action: "mark_review_required",
     });
     expect(() => transitionRt2CaptureDraftSchema.parse({ action: "reject" })).toThrow();
+  });
+
+  it("normalizes capture queue filter queries for review operations", () => {
+    expect(rt2CaptureQueueEvidenceFilterSchema.options).toEqual([
+      "duplicate",
+      "failed_sync",
+      "approval_waiting",
+      "revised",
+    ]);
+    expect(rt2CaptureDraftStatusSchema.parse("revision_requested")).toBe("revision_requested");
+
+    expect(rt2CaptureQueueQuerySchema.parse({
+      source: "slack,webhook,unknown",
+      statuses: ["review_required,revised", "not_real"],
+      evidence: "duplicate,failed_sync,revised,bad",
+    })).toEqual({
+      sources: ["slack", "webhook"],
+      statuses: ["review_required", "revised"],
+      evidence: ["duplicate", "failed_sync", "revised"],
+    });
+
+    expect(rt2CaptureQueueQuerySchema.parse({})).toEqual({
+      sources: [],
+      statuses: [],
+      evidence: [],
+    });
   });
 });

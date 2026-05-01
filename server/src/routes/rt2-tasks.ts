@@ -16,6 +16,7 @@ import {
   failRt2CaptureDraftSchema,
   promoteRt2CaptureDraftSchema,
   reviseRt2CaptureDraftSchema,
+  rt2CaptureQueueQuerySchema,
   reorderRt2BoardChecklistSchema,
   startRt2ExecutionSchema,
   transitionRt2CaptureDraftSchema,
@@ -366,7 +367,14 @@ export function rt2TaskRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoardActor(req);
-    res.json(await boardSvc.listCaptureQueue(companyId));
+    res.json(await boardSvc.listCaptureQueue(companyId, rt2CaptureQueueQuerySchema.parse(req.query)));
+  });
+
+  router.get("/companies/:companyId/rt2/capture-drafts/reliability-report", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoardActor(req);
+    res.json(await boardSvc.getCaptureReliabilityReport(companyId));
   });
 
   router.get("/companies/:companyId/rt2/capture-drafts/:draftId", async (req, res) => {

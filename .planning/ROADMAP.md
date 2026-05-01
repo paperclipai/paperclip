@@ -13,7 +13,7 @@
 - [shipped] **v2.8 RealTycoon2 Product Identity and Daily Work UX** - Phase 48-53 완료, 2026-04-30 ([archive](milestones/v2.8-ROADMAP.md), [requirements](milestones/v2.8-REQUIREMENTS.md), [audit](milestones/v2.8-MILESTONE-AUDIT.md))
 - [shipped] **v2.9 Native Capture and Draft Reliability** - Phase 54-58 완료, 2026-04-30
 - [shipped] **v3.0 Native Distribution Readiness** - Phase 59-64 완료, 2026-05-01 ([archive](milestones/v3.0-ROADMAP.md), [requirements](milestones/v3.0-REQUIREMENTS.md), [audit](milestones/v3.0-MILESTONE-AUDIT.md))
-- [active] **v3.1 DevPlan Core Convergence** - Phase 65 complete, Phase 66-71 planned, 2026-05-01 시작 ([requirements](REQUIREMENTS.md))
+- [active] **v3.1 DevPlan Core Convergence** - Phase 65-66 complete, Phase 67-71 planned, 2026-05-01 시작 ([requirements](REQUIREMENTS.md))
 
 ## 완료됨
 
@@ -114,17 +114,17 @@ Audit status: `tech_debt`. Requirements 12/12, phases 5/5, integration 5/5, flow
 
 ## 현재 위치
 
-v3.1 DevPlan Core Convergence가 진행 중이다. Phase 65는 개발기획서 정합성 기준선과 identity cleanup을 완료했다. v3.0 distribution evidence gates는 완료된 기준선으로 유지하고, 이번 milestone은 `RealTycoon2_DevPlan (2).pdf` 대비 약 64% 정적 싱크로율을 높이기 위해 제품 핵심 루프와 Multica/wikiLLM/Graphify 엔진 충실도를 실제 코드, UI, 문서, 검증 증거로 닫는다.
+v3.1 DevPlan Core Convergence가 진행 중이다. Phase 65는 개발기획서 정합성 기준선과 identity cleanup을 완료했고 Phase 66은 Daily Work 3패널 cockpit, One-Liner evidence, Mission -> To-Do rollup을 완료했다. v3.0 distribution evidence gates는 완료된 기준선으로 유지하고, 이번 milestone은 `RealTycoon2_DevPlan (2).pdf` 대비 약 64% 정적 싱크로율을 높이기 위해 제품 핵심 루프와 Multica/wikiLLM/Graphify 엔진 충실도를 실제 코드, UI, 문서, 검증 증거로 닫는다.
 
 <details open>
-<summary>v3.1 DevPlan Core Convergence (Phase 65 complete, Phase 66-71 planned)</summary>
+<summary>v3.1 DevPlan Core Convergence (Phase 65-66 complete, Phase 67-71 planned)</summary>
 
 **Goal:** RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 엔진 기준을 실제 코드, UI, 문서, 검증 증거로 다시 정렬한다.
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 65 | DevPlan Truth and Identity Cleanup | ALIGN-01..03, IDENTITY-01..03 | Complete |
-| 66 | Daily Work and OKR Cockpit Convergence | DAILY-01..03 | Planned |
+| 66 | Daily Work and OKR Cockpit Convergence | DAILY-01..03 | Complete |
 | 67 | Multica Runtime Execution Alignment | RUNTIME-01..03 | Planned |
 | 68 | wikiLLM Living Memory Workflow | WIKI-01..03 | Planned |
 | 69 | Graphify v3 Corpus Graph Sidecar | GRAPH-01..04 | Planned |
@@ -506,7 +506,7 @@ Success criteria:
 | 63. Mobile Push Notification Loop | v3.0 | 1/1 | Complete | 2026-05-01 |
 | 64. v3.0 Distribution Gate and Capture Regression Closure | v3.0 | 1/1 | Complete | 2026-05-01 |
 | 65. DevPlan Truth and Identity Cleanup | v3.1 | 6/6 | Complete | 2026-05-01 |
-| 66. Daily Work and OKR Cockpit Convergence | v3.1 | 0/0 | Planned | — |
+| 66. Daily Work and OKR Cockpit Convergence | v3.1 | 3/3 | Complete | 2026-05-01 |
 | 67. Multica Runtime Execution Alignment | v3.1 | 0/0 | Planned | — |
 | 68. wikiLLM Living Memory Workflow | v3.1 | 0/0 | Planned | — |
 | 69. Graphify v3 Corpus Graph Sidecar | v3.1 | 0/0 | Planned | — |
@@ -548,4 +548,4 @@ Success criteria:
 - [v3.0 milestone audit](milestones/v3.0-MILESTONE-AUDIT.md)
 
 ---
-*마지막 업데이트: 2026-05-01, v3.1 milestone initialized*
+*마지막 업데이트: 2026-05-01, Phase 66 completed*

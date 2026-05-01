@@ -74,6 +74,11 @@ export function DailyWorkPage() {
     queryFn: () => rt2TasksApi.listCaptureQueue(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId && currentUserId),
   });
+  const captureReliabilityReport = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.rt2Tasks.captureReliabilityReport(selectedCompanyId) : ["rt2-capture-reliability-disabled"],
+    queryFn: () => rt2TasksApi.getCaptureReliabilityReport(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && currentUserId),
+  });
 
   const saveCard = useMutation({
     mutationFn: ({
@@ -109,6 +114,7 @@ export function DailyWorkPage() {
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureReliabilityReport(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: boardQueryKey });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       if (selectedProjectId) {
@@ -119,6 +125,7 @@ export function DailyWorkPage() {
     onError: () => {
       if (selectedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureReliabilityReport(selectedCompanyId) });
       }
     },
   });
@@ -131,6 +138,7 @@ export function DailyWorkPage() {
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureReliabilityReport(selectedCompanyId) });
     },
   });
   const reviseCaptureDraft = useMutation({
@@ -144,6 +152,7 @@ export function DailyWorkPage() {
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureReliabilityReport(selectedCompanyId) });
     },
   });
   const transitionCaptureDraft = useMutation({
@@ -157,6 +166,7 @@ export function DailyWorkPage() {
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureQueue(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.captureReliabilityReport(selectedCompanyId) });
     },
   });
 
@@ -234,6 +244,7 @@ export function DailyWorkPage() {
           failedTodoIssueId={failedTodoIssueId}
           onSaveCard={(todoIssueId, data) => saveCard.mutate({ todoIssueId, data })}
           captureQueue={captureQueue.data ?? null}
+          captureReliabilityReport={captureReliabilityReport.data ?? null}
           pendingCaptureDraftId={promoteCaptureDraft.isPending ? promoteCaptureDraft.variables ?? null : null}
           onPromoteCaptureDraft={(draftId) => promoteCaptureDraft.mutate(draftId)}
           onFailCaptureDraft={(draftId, reason) => failCaptureDraft.mutate({ draftId, reason })}
