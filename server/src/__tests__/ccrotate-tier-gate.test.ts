@@ -45,11 +45,25 @@ describe("mapAdapterToCcrotateTarget", () => {
     expect(mapAdapterToCcrotateTarget("codex_local")).toBe("codex");
   });
 
+  it("maps claude_k8s to claude (shares the org Anthropic billing pool)", () => {
+    // claude_k8s runs Claude in a k8s pod with the org API key — that key
+    // shares quota/billing with the host's `claude` ccrotate pool, so the
+    // tier-cache is authoritative for whether the adapter has any usable
+    // credit. Without this mapping the heartbeat scheduler ignores tier
+    // exhaustion and burns wakes on guaranteed-401 runs.
+    expect(mapAdapterToCcrotateTarget("claude_k8s")).toBe("claude");
+  });
+
   it("returns null for adapters without a ccrotate provider", () => {
     expect(mapAdapterToCcrotateTarget("cursor")).toBeNull();
     expect(mapAdapterToCcrotateTarget("gemini_local")).toBeNull();
     expect(mapAdapterToCcrotateTarget("process")).toBeNull();
     expect(mapAdapterToCcrotateTarget("http")).toBeNull();
+    // opencode_k8s intentionally NOT mapped — its backing provider varies
+    // per deployment (OpenAI- or Anthropic-backed), so we can't blanket-
+    // gate it on either pool. Revisit when the unified ccrotate_runtime
+    // adapter lands with per-agent target config.
+    expect(mapAdapterToCcrotateTarget("opencode_k8s")).toBeNull();
   });
 });
 

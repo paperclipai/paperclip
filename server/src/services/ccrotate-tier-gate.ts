@@ -111,9 +111,19 @@ const DEFAULT_GRACE_MS = 120_000;
 /**
  * Maps a paperclip agent adapter type to the ccrotate target whose tier-cache
  * governs that adapter, or null if the adapter doesn't go through ccrotate.
+ *
+ * `claude_k8s` is the kkroo-fork adapter that runs Claude in a k8s pod against
+ * the org Anthropic API key. The pod has no ccrotate of its own, but the org
+ * key shares billing/quota with the host's `claude` pool — so the tier-cache
+ * IS authoritative for whether the adapter has any usable credit. Mapping it
+ * to "claude" gives the heartbeat scheduler quota-aware deferral on
+ * exhaustion (instead of looping 401s every heartbeat). Actual rotation of
+ * the adapter's LLM call is a separate adapter (claude_k8s_ccrotate), not
+ * this gate.
  */
 export function mapAdapterToCcrotateTarget(adapterType: string): CcrotateTarget | null {
   if (adapterType === "claude_local") return "claude";
+  if (adapterType === "claude_k8s") return "claude";
   if (adapterType === "codex_local") return "codex";
   return null;
 }
