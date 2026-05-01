@@ -12,6 +12,7 @@ import {
   commentExpiredRequestConfirmationInteraction,
   disabledDeclineReasonRequestConfirmationInteraction,
   failedRequestConfirmationInteraction,
+  genericPendingRequestConfirmationInteraction,
   pendingRequestConfirmationInteraction,
   pendingSuggestedTasksInteraction,
   staleTargetRequestConfirmationInteraction,
@@ -213,6 +214,17 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("Open target");
     expect(host.textContent).toContain("Assignee resumes after confirmation");
     expect(host.textContent).toContain("Review context");
+  });
+
+  it("hides target and continuation cues when the confirmation is lightweight", () => {
+    const host = renderCard({
+      interaction: genericPendingRequestConfirmationInteraction,
+    });
+
+    expect(host.textContent).toContain("Decision needed");
+    expect(host.textContent).not.toContain("Review target");
+    expect(host.textContent).not.toContain("Open target");
+    expect(host.textContent).not.toContain("Assignee resumes after confirmation");
   });
 
   it("labels accept-only continuation policies in the card header", () => {

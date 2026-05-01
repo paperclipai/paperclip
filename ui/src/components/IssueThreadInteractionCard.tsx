@@ -1050,6 +1050,7 @@ function RequestConfirmationCard({
   const targetHref = target ? requestConfirmationTargetHref({ interaction, target }) : null;
   const wakesAssignee = interaction.continuationPolicy === "wake_assignee"
     || interaction.continuationPolicy === "wake_assignee_on_accept";
+  const canDecline = Boolean(onRejectInteraction);
   const declineReasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
     ?? (interaction.payload.acceptLabel === "Approve plan"
@@ -1136,7 +1137,7 @@ function RequestConfirmationCard({
             ) : null}
           </div>
 
-          <div className={cn("grid gap-3", wakesAssignee ? "md:grid-cols-2" : "md:grid-cols-1")}>
+          <div className={cn("space-y-3", wakesAssignee && "md:grid md:grid-cols-2 md:gap-3 md:space-y-0")}>
             <div className="rounded-md border border-border/70 bg-background/80 px-3 py-3">
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                 Next action
@@ -1145,7 +1146,7 @@ function RequestConfirmationCard({
                 {interaction.payload.acceptLabel ?? "Confirm"}
               </div>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                This request is holding the thread until someone confirms or declines it.
+                This request is holding the thread until someone {canDecline ? "confirms or declines" : "confirms"} it.
               </p>
             </div>
             {wakesAssignee ? (
