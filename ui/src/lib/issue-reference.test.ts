@@ -9,8 +9,9 @@ describe("issue-reference", () => {
     expect(parseIssuePathIdFromPath("/issues/:id")).toBeNull();
   });
 
-  it("extracts issue ids from full issue URLs", () => {
-    expect(parseIssuePathIdFromPath("http://localhost:3100/PAP/issues/PAP-1179")).toBe("PAP-1179");
+  it("does not treat full issue URLs as internal issue paths", () => {
+    expect(parseIssuePathIdFromPath("http://localhost:3100/PAP/issues/PAP-1179")).toBeNull();
+    expect(parseIssuePathIdFromPath("http://remote.example.test:3103/PAPA/issues/PAPA-115#comment-850083f3-24de-43e7-a8cd-bc01f7cc9f0d")).toBeNull();
   });
 
   it("does not treat GitHub issue URLs as internal Paperclip issue links", () => {
@@ -24,14 +25,10 @@ describe("issue-reference", () => {
     expect(parseIssueReferenceFromHref("/issues/:id")).toBeNull();
   });
 
-  it("normalizes bare identifiers, issue URLs, and issue scheme links into internal links", () => {
+  it("normalizes bare identifiers, relative issue paths, and issue scheme links into internal links", () => {
     expect(parseIssueReferenceFromHref("pap-1271")).toEqual({
       issuePathId: "PAP-1271",
       href: "/issues/PAP-1271",
-    });
-    expect(parseIssueReferenceFromHref("http://localhost:3100/PAP/issues/PAP-1179")).toEqual({
-      issuePathId: "PAP-1179",
-      href: "/issues/PAP-1179",
     });
     expect(parseIssueReferenceFromHref("/PAP/issues/pap-1180")).toEqual({
       issuePathId: "PAP-1180",
@@ -52,6 +49,11 @@ describe("issue-reference", () => {
       issuePathId: "PAP-1271",
       href: "/issues/PAP-1271",
     });
+  });
+
+  it("preserves absolute Paperclip issue URLs so origin, port, and hash are not lost", () => {
+    expect(parseIssueReferenceFromHref("http://localhost:3100/PAP/issues/PAP-1179")).toBeNull();
+    expect(parseIssueReferenceFromHref("http://remote.example.test:3103/PAPA/issues/PAPA-115#comment-850083f3-24de-43e7-a8cd-bc01f7cc9f0d")).toBeNull();
   });
 
   it("ignores literal route placeholder paths", () => {

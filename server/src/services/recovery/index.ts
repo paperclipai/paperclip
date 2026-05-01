@@ -4,6 +4,7 @@ export {
   RECOVERY_REASON_KINDS,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
+  isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
 export type {

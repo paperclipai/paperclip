@@ -142,6 +142,11 @@ export function PluginSettings() {
         : "secondary";
   const pluginDescription = plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
+  const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
+  const environmentDriverNames = environmentDrivers
+    .map((driver) => driver.displayName?.trim() || driver.driverKey)
+    .filter((name, index, values) => values.indexOf(name) === index);
+  const driverLabel = environmentDriverNames.join(", ");
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -235,6 +240,19 @@ export function PluginSettings() {
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
                 />
+              ) : environmentDrivers.length > 0 ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
+                  <p className="font-medium text-foreground">Configure this plugin from Company Environments.</p>
+                  <p className="mt-1 text-muted-foreground">
+                    {driverLabel || "This plugin"} registers environment runtime settings there so credentials stay
+                    company-scoped instead of instance-global.
+                  </p>
+                  <div className="mt-3">
+                    <Link to="/company/settings/environments">
+                      <Button variant="outline" size="sm">Open Company Environments</Button>
+                    </Link>
+                  </div>
+                </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   This plugin does not require any settings.

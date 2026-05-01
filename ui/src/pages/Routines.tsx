@@ -1,15 +1,17 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "@/lib/router";
-import { Check, ChevronDown, ChevronRight, Layers, MoreHorizontal, Plus, Repeat } from "lucide-react";
+import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, MoreHorizontal, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { heartbeatsApi } from "../api/heartbeats";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
@@ -23,7 +25,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
-import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -81,8 +83,12 @@ function nextRoutineStatus(currentStatus: string, enabled: boolean) {
 
 type RoutinesTab = "routines" | "runs";
 type RoutineGroupBy = "none" | "project" | "assignee";
+type RoutineSortField = "updated" | "created" | "title" | "lastRun";
+type RoutineSortDir = "asc" | "desc";
 
 type RoutineViewState = {
+  sortField: RoutineSortField;
+  sortDir: RoutineSortDir;
   groupBy: RoutineGroupBy;
   collapsedGroups: string[];
 };
@@ -94,6 +100,8 @@ type RoutineGroup = {
 };
 
 const defaultRoutineViewState: RoutineViewState = {
+  sortField: "updated",
+  sortDir: "desc",
   groupBy: "none",
   collapsedGroups: [],
 };
@@ -110,6 +118,16 @@ function getRoutineViewState(key: string): RoutineViewState {
 
 function saveRoutineViewState(key: string, state: RoutineViewState) {
   localStorage.setItem(key, JSON.stringify(state));
+}
+
+function timestampValue(value: Date | string | null | undefined) {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function compareNullableText(left: string | null | undefined, right: string | null | undefined) {
+  return (left ?? "").localeCompare(right ?? "", undefined, { sensitivity: "base" });
 }
 
 function formatRoutineRunStatus(value: string | null | undefined) {
@@ -172,6 +190,31 @@ export function buildRoutineGroups(
       label: key === "__unassigned" ? "Unassigned" : (agentById.get(key)?.name ?? "Unknown agent"),
       items: groups[key]!,
     }));
+}
+
+export function sortRoutines(
+  routines: RoutineListItem[],
+  sortField: RoutineSortField,
+  sortDir: RoutineSortDir,
+): RoutineListItem[] {
+  const direction = sortDir === "asc" ? 1 : -1;
+  return [...routines].sort((left, right) => {
+    let result = 0;
+
+    if (sortField === "title") {
+      result = compareNullableText(left.title, right.title);
+    } else if (sortField === "created") {
+      result = timestampValue(left.createdAt) - timestampValue(right.createdAt);
+    } else if (sortField === "lastRun") {
+      result = timestampValue(left.lastRun?.triggeredAt ?? left.lastTriggeredAt) -
+        timestampValue(right.lastRun?.triggeredAt ?? right.lastTriggeredAt);
+    } else {
+      result = timestampValue(left.updatedAt) - timestampValue(right.updatedAt);
+    }
+
+    if (result !== 0) return result * direction;
+    return compareNullableText(left.title, right.title);
+  });
 }
 
 function buildRoutinesTabHref(tab: RoutinesTab) {
@@ -353,6 +396,11 @@ export function Routines() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const { data: routineExecutionIssues, isLoading: recentRunsLoading, error: recentRunsError } = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
     queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
@@ -368,6 +416,14 @@ export function Routines() {
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
   }, [draft.title, composerOpen]);
+
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    return buildMarkdownMentionOptions({
+      agents,
+      projects,
+      members: companyMembers?.users,
+    });
+  }, [agents, companyMembers?.users, projects]);
 
   const createRoutine = useMutation({
     mutationFn: () =>
@@ -494,9 +550,13 @@ export function Routines() {
     [projects],
   );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const sortedRoutines = useMemo(
+    () => sortRoutines(routines ?? [], routineViewState.sortField, routineViewState.sortDir),
+    [routineViewState.sortDir, routineViewState.sortField, routines],
+  );
   const routineGroups = useMemo(
-    () => buildRoutineGroups(routines ?? [], routineViewState.groupBy, projectById, agentById),
-    [agentById, projectById, routineViewState.groupBy, routines],
+    () => buildRoutineGroups(sortedRoutines, routineViewState.groupBy, projectById, agentById),
+    [agentById, projectById, routineViewState.groupBy, sortedRoutines],
   );
   const recentRunsIssueLinkState = useMemo(
     () =>
@@ -591,36 +651,79 @@ export function Routines() {
             <p className="text-sm text-muted-foreground">
               {(routines ?? []).length} routine{(routines ?? []).length === 1 ? "" : "s"}
             </p>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-xs">
-                  <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Group</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-44 p-0">
-                <div className="p-2 space-y-0.5">
-                  {([
-                    ["project", "Project"],
-                    ["assignee", "Agent"],
-                    ["none", "None"],
-                  ] as const).map(([value, label]) => (
-                    <button
-                      key={value}
-                      className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                        routineViewState.groupBy === value
-                          ? "bg-accent/50 text-foreground"
-                          : "text-muted-foreground hover:bg-accent/50"
-                      }`}
-                      onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
-                    >
-                      <span>{label}</span>
-                      {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
-                    </button>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
+            <div className="flex items-center gap-1">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="sm" className="text-xs" title="Sort">
+                    <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Sort</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-44 p-0">
+                  <div className="p-2 space-y-0.5">
+                    {([
+                      ["updated", "Updated"],
+                      ["created", "Created"],
+                      ["lastRun", "Last run"],
+                      ["title", "Title"],
+                    ] as const).map(([field, label]) => (
+                      <button
+                        key={field}
+                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                          routineViewState.sortField === field
+                            ? "bg-accent/50 text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50"
+                        }`}
+                        onClick={() => {
+                          updateRoutineView(
+                            routineViewState.sortField === field
+                              ? { sortDir: routineViewState.sortDir === "asc" ? "desc" : "asc" }
+                              : { sortField: field, sortDir: field === "title" ? "asc" : "desc" },
+                          );
+                        }}
+                      >
+                        <span>{label}</span>
+                        {routineViewState.sortField === field ? (
+                          <span className="text-xs text-muted-foreground">
+                            {routineViewState.sortDir === "asc" ? "Asc" : "Desc"}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="sm" className="text-xs" title="Group">
+                    <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Group</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-44 p-0">
+                  <div className="p-2 space-y-0.5">
+                    {([
+                      ["project", "Project"],
+                      ["assignee", "Agent"],
+                      ["none", "None"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                          routineViewState.groupBy === value
+                            ? "bg-accent/50 text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50"
+                        }`}
+                        onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
+                      >
+                        <span>{label}</span>
+                        {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
         </TabsContent>
         <TabsContent value="runs">
@@ -808,6 +911,7 @@ export function Routines() {
                 placeholder="Add instructions..."
                 bordered={false}
                 contentClassName="min-h-[160px] text-sm text-muted-foreground"
+                mentions={mentionOptions}
                 onSubmit={() => {
                   if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
                     createRoutine.mutate();

@@ -108,6 +108,9 @@ vi.mock("../services/routines.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  companyService: () => ({
+    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+  }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => ({}),
@@ -477,7 +480,7 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("does not implicitly reopen closed issues via POST comments for agent-authored comments", async () => {
+  it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -500,11 +503,10 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
-    expect(res.status).toBe(201);
-    expect(mockIssueService.update).not.toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
-    );
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -625,7 +627,7 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("does not implicitly reopen closed issues via the PATCH comment path for agent-authored comments", async () => {
+  it("rejects non-assignee agent PATCH comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -652,11 +654,10 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello" });
 
-    expect(res.status).toBe(200);
-    expect(mockIssueService.update).not.toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      expect.objectContaining({ status: "todo" }),
-    );
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -874,7 +875,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "restart someone else's work", resume: true });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();

@@ -47,11 +47,14 @@ export function assertNoAgentHostWorkspaceCommandMutation(req: Request, paths: s
   );
 }
 
-export function collectAgentAdapterWorkspaceCommandPaths(adapterConfig: unknown): string[] {
+export function collectAgentAdapterWorkspaceCommandPaths(
+  adapterConfig: unknown,
+  prefix = "adapterConfig",
+): string[] {
   if (!isRecord(adapterConfig)) return [];
   return collectWorkspaceStrategyCommandPaths(
     adapterConfig.workspaceStrategy,
-    "adapterConfig.workspaceStrategy",
+    `${prefix}.workspaceStrategy`,
   );
 }
 

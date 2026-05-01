@@ -187,16 +187,17 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
   });
 
-  it("rewrites full issue URLs to internal issue links", () => {
-    const html = renderMarkdown("See http://localhost:3100/PAP/issues/PAP-1179.", [
-      { identifier: "PAP-1179", status: "blocked" },
+  it("preserves absolute issue URLs as external links", () => {
+    const url = "http://remote.example.test:3103/PAPA/issues/PAPA-115#comment-850083f3-24de-43e7-a8cd-bc01f7cc9f0d";
+    const html = renderMarkdown(`See ${url}.`, [
+      { identifier: "PAPA-115", status: "blocked" },
     ]);
 
-    expect(html).toContain('href="/issues/PAP-1179"');
-    expect(html).toContain("text-red-600");
-    expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
-    expect(html).toContain('data-mention-kind="issue"');
-    expect(html).not.toContain("paperclip-mention-chip--issue");
+    expect(html).toContain(`href="${url}"`);
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain("lucide-external-link");
+    expect(html).not.toContain('href="/issues/PAPA-115"');
+    expect(html).not.toContain("paperclip-markdown-issue-ref");
   });
 
   it("linkifies plain internal issue paths in markdown text", () => {
@@ -363,6 +364,21 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain("<pre");
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
+  });
+
+  it("renders a copy button alongside fenced code blocks", () => {
+    const html = renderMarkdown("```ts\nconst a = 1;\n```");
+
+    expect(html).toContain("paperclip-markdown-codeblock");
+    expect(html).toContain("paperclip-markdown-codeblock-copy");
+    expect(html).toContain('aria-label="Copy code"');
+    expect(html).toContain("lucide-copy");
+  });
+
+  it("does not render a copy button on inline code", () => {
+    const html = renderMarkdown("Reference `inline-code` here.");
+
+    expect(html).not.toContain("paperclip-markdown-codeblock-copy");
   });
 
   it("renders internal issue links and bare identifiers as inline issue refs", () => {

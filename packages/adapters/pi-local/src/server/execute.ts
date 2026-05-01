@@ -10,6 +10,7 @@ import {
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
   adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetFile,
@@ -17,12 +18,14 @@ import {
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
+  startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asString,
   asNumber,
   asStringArray,
   parseObject,
+  applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
@@ -228,12 +231,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (workspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = workspaceCwd;
-  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd,
+    workspaceSource,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    agentHome,
+  });
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
   if (targetPaperclipApiUrl) env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
@@ -275,7 +280,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
-  const loggedEnv = buildInvocationEnvForLogs(env, {
+  let loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
     resolvedCommand,
@@ -301,6 +306,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let remoteRuntimeRootDir: string | null = null;
   let localSkillsDir: string | null = null;
   let remoteSkillsDir: string | null = null;
+  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
   if (executionTargetIsRemote) {
     try {
@@ -333,6 +339,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
       ]);
       throw error;
+    }
+  }
+  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
+    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId,
+      target: executionTarget,
+      runtimeRootDir: remoteRuntimeRootDir,
+      adapterKey: "pi",
+      hostApiToken: env.PAPERCLIP_API_KEY,
+      onLog,
+    });
+    if (paperclipBridge) {
+      Object.assign(env, paperclipBridge.env);
+      loggedEnv = buildInvocationEnvForLogs(env, {
+        runtimeEnv: Object.fromEntries(
+          Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        ),
+        includeRuntimeKeys: ["HOME"],
+        resolvedCommand,
+      });
     }
   }
 
@@ -651,6 +679,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toResult(initial);
   } finally {
     await Promise.all([
+      paperclipBridge?.stop(),
       restoreRemoteWorkspace?.(),
       localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
     ]);

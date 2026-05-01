@@ -103,6 +103,7 @@
   "scripts": {
     "build": "pnpm --filter @paperclipai/shared build && tsc",
     "clean": "rm -rf dist",
+    "ensure-build-deps": "node ../../../scripts/ensure-plugin-build-deps.mjs",
     "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
     "dev:server": "tsx src/dev-cli.ts"
   },

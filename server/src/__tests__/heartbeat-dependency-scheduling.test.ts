@@ -96,7 +96,16 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
-    vi.clearAllMocks();
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Dependency-aware heartbeat test run.",
+      provider: "test",
+      model: "test-model",
+    }));
     runningProcesses.clear();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -347,6 +356,126 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+    let finishFirstRun!: () => void;
+    const firstRunFinished = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await firstRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "First assignment run completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: firstIssueId,
+        companyId,
+        title: "First assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: secondIssueId,
+        companyId,
+        title: "Second assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    try {
+      const firstWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: firstIssueId },
+        contextSnapshot: { issueId: firstIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+
+      const firstRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+      expect(firstRunStarted).toBe(true);
+      const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1);
+      expect(firstAdapterStarted).toBe(true);
+
+      const secondWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: secondIssueId },
+        contextSnapshot: { issueId: secondIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(secondWake).not.toBeNull();
+
+      const secondRunWhileFirstRunning = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(secondRunWhileFirstRunning?.status).toBe("queued");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+      finishFirstRun();
+
+      const secondRunSucceeded = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, secondWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      });
+      expect(secondRunSucceeded).toBe(true);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    } finally {
+      finishFirstRun();
+    }
+  });
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -543,7 +672,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const companyId = randomUUID();
     const agentId = randomUUID();
     const rootIssueId = randomUUID();
-    const childIssueId = randomUUID();
+    const issueChain = Array.from({ length: 17 }, () => randomUUID());
+    const deepDescendantIssueId = issueChain.at(-1)!;
 
     await db.insert(companies).values({
       id: companyId,
@@ -576,15 +706,15 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         priority: "medium",
         assigneeAgentId: agentId,
       },
-      {
-        id: childIssueId,
+      ...issueChain.map((issueId, index) => ({
+        id: issueId,
         companyId,
-        parentId: rootIssueId,
-        title: "Paused child",
+        parentId: index === 0 ? rootIssueId : issueChain[index - 1],
+        title: `Paused desc ${index + 1}`,
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
-      },
+      })),
     ]);
     const [hold] = await db
       .insert(issueTreeHolds)
@@ -602,8 +732,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
-      payload: { issueId: childIssueId },
-      contextSnapshot: { issueId: childIssueId, wakeReason: "issue_blockers_resolved" },
+      payload: { issueId: deepDescendantIssueId },
+      contextSnapshot: { issueId: deepDescendantIssueId, wakeReason: "issue_blockers_resolved" },
     });
 
     expect(blockedWake).toBeNull();
@@ -613,7 +743,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         reason: agentWakeupRequests.reason,
       })
       .from(agentWakeupRequests)
-      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${childIssueId}`)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${deepDescendantIssueId}`)
       .then((rows) => rows[0] ?? null);
     expect(skippedWake).toMatchObject({ status: "skipped", reason: "issue_tree_hold_active" });
 
@@ -621,7 +751,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.insert(issueComments).values({
       id: childCommentId,
       companyId,
-      issueId: childIssueId,
+      issueId: deepDescendantIssueId,
       authorUserId: "board-user",
       body: "Please respond while this hold is active.",
     });
@@ -630,7 +760,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "on_demand",
       triggerDetail: "manual",
       reason: "issue_commented",
-      payload: { issueId: childIssueId, commentId: childCommentId },
+      payload: { issueId: deepDescendantIssueId, commentId: childCommentId },
       requestedByActorType: "agent",
       requestedByActorId: agentId,
     });
@@ -640,11 +770,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
-      payload: { issueId: childIssueId, commentId: childCommentId },
+      payload: { issueId: deepDescendantIssueId, commentId: childCommentId },
       requestedByActorType: "user",
       requestedByActorId: "board-user",
       contextSnapshot: {
-        issueId: childIssueId,
+        issueId: deepDescendantIssueId,
         commentId: childCommentId,
         wakeCommentId: childCommentId,
         wakeReason: "issue_commented",

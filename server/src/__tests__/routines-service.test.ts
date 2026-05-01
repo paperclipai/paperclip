@@ -11,6 +11,8 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueInboxArchives,
+  issueReadStates,
   issues,
   projectWorkspaces,
   projects,
@@ -46,6 +48,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueInboxArchives);
+    await db.delete(issueReadStates);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -269,6 +273,36 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
+  it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
+    const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    const [createdIssue] = await db
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+    expect(createdIssue).toMatchObject({
+      id: run.linkedIssueId,
+      assigneeAgentId: agentId,
+      createdByUserId: userId,
+    });
+
+    const inboxIssues = await issueSvc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      includeRoutineExecutions: true,
+    });
+    expect(inboxIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {
     let wakeupResolved = false;
     const { routine, svc } = await seedFixture({
@@ -347,6 +381,166 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("touches a coalesced routine issue for the manual runner's inbox", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: liveHeartbeatRunId,
+        executionRunId: liveHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+    await db.insert(issueInboxArchives).values({
+      companyId,
+      issueId: previousIssue.id,
+      userId,
+      archivedAt: new Date("2026-03-20T12:02:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    await expect(
+      db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        companyId,
+        issueId: previousIssue.id,
+        userId,
+      }),
+    ]);
+
+    const inboxIssues = await issueSvc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      includeRoutineExecutions: true,
+    });
+    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+  });
+
+  it("touches a skipped active routine issue for the manual runner's inbox", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    const previousRunId = randomUUID();
+    const liveHeartbeatRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "skip_if_active" })
+      .where(eq(routines.id, routine.id));
+
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: liveHeartbeatRunId,
+        executionRunId: liveHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+    await db.insert(issueInboxArchives).values({
+      companyId,
+      issueId: previousIssue.id,
+      userId,
+      archivedAt: new Date("2026-03-20T12:02:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("skipped");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    await expect(
+      db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        companyId,
+        issueId: previousIssue.id,
+        userId,
+      }),
+    ]);
+
+    const inboxIssues = await issueSvc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      includeRoutineExecutions: true,
+    });
+    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
   });
 
   it("does not coalesce live routine runs with different resolved variables", async () => {
