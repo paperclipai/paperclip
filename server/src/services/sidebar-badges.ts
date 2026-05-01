@@ -167,9 +167,6 @@ export function sidebarBadgeService(db: Db) {
           and(
             eq(approvals.companyId, companyId),
             inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
-            currentUserId
-              ? sql<boolean>`(${approvals.requestedByUserId} = ${currentUserId} OR ${approvals.decidedByUserId} = ${currentUserId})`
-              : undefined,
           ),
         )
         .then((rows) =>
