@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Project } from "@paperclipai/shared";
+import type { Agent, ExecutionWorkspace, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
@@ -14,6 +14,7 @@ let issueWorkspaceDraft = {
   executionWorkspaceSettings: { mode: "shared_workspace" },
 };
 let issueWorkspaceBranchName: string | null = null;
+let latestWorkspaceIssue: Record<string, unknown> | null = null;
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: {
@@ -26,14 +27,17 @@ vi.mock("./IssueWorkspaceCard", async () => {
 
   return {
     IssueWorkspaceCard: ({
+      issue,
       onDraftChange,
     }: {
+      issue: Record<string, unknown>;
       onDraftChange?: (
         data: Record<string, unknown>,
         meta: { canSave: boolean; workspaceBranchName?: string | null },
       ) => void;
     }) => {
       React.useEffect(() => {
+        latestWorkspaceIssue = issue;
         issueWorkspaceDraftCalls += 1;
         if (issueWorkspaceDraftCalls > 20) {
           throw new Error("IssueWorkspaceCard onDraftChange looped");
@@ -120,6 +124,43 @@ function createAgent(): Agent {
   };
 }
 
+function createExecutionWorkspace(): ExecutionWorkspace {
+  return {
+    id: "workspace-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "project-workspace-1",
+    sourceIssueId: null,
+    mode: "isolated_workspace",
+    strategyType: "git_worktree",
+    name: "PAP-1634",
+    status: "active",
+    cwd: "/tmp/paperclip/PAP-1634",
+    repoUrl: null,
+    baseRef: "main",
+    branchName: "pap-1634-routine-branch",
+    providerType: "local_fs",
+    providerRef: null,
+    derivedFromExecutionWorkspaceId: null,
+    lastUsedAt: new Date("2026-04-02T00:00:00.000Z"),
+    openedAt: new Date("2026-04-02T00:00:00.000Z"),
+    closedAt: null,
+    cleanupEligibleAt: null,
+    cleanupReason: null,
+    config: {
+      provisionCommand: null,
+      teardownCommand: null,
+      cleanupCommand: null,
+      workspaceRuntime: null,
+      desiredState: null,
+    },
+    metadata: null,
+    runtimeServices: [],
+    createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+  };
+}
+
 describe("RoutineRunVariablesDialog", () => {
   let container: HTMLDivElement;
 
@@ -133,6 +174,7 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceSettings: { mode: "shared_workspace" },
     };
     issueWorkspaceBranchName = null;
+    latestWorkspaceIssue = null;
   });
 
   afterEach(() => {
@@ -258,6 +300,65 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceId: "workspace-1",
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("prefills the supplied execution workspace for workspace-specific routine runs", async () => {
+    const workspace = createExecutionWorkspace();
+    issueWorkspaceDraft = {
+      executionWorkspaceId: workspace.id,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    };
+    issueWorkspaceBranchName = workspace.branchName;
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RoutineRunVariablesDialog
+            open
+            onOpenChange={() => {}}
+            companyId="company-1"
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
+            defaultExecutionWorkspace={workspace}
+            variables={[]}
+            isPending={false}
+            onSubmit={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    for (let i = 0; i < 10 && latestWorkspaceIssue === null; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    expect(latestWorkspaceIssue).toMatchObject({
+      executionWorkspaceId: workspace.id,
+      executionWorkspacePreference: "reuse_existing",
+      currentExecutionWorkspace: workspace,
+      projectWorkspaceId: workspace.projectWorkspaceId,
     });
 
     await act(async () => {
