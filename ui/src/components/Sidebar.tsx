@@ -79,7 +79,13 @@ export function Sidebar() {
             <SquarePen className="h-4 w-4 shrink-0" />
             <span className="truncate">New Issue</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem
+            to="/dashboard"
+            label="Dashboard"
+            icon={LayoutDashboard}
+            liveCount={liveRunCount}
+            info="A live overview of what's happening in this company right now: running agents, recent activity, and key metrics on one page."
+          />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
@@ -87,6 +93,7 @@ export function Sidebar() {
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
+            info="Items that need your attention: failed runs, agent questions, mentions, and approvals waiting on you."
           />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
@@ -97,12 +104,35 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+        <SidebarSection
+          label="Work"
+          info="Day-to-day work: tasks, schedules, and the goals they ladder up to."
+        >
+          <SidebarNavItem
+            to="/issues"
+            label="Issues"
+            icon={CircleDot}
+            info="Discrete pieces of work with a clear definition of done. Anything an agent or person needs to do — bugs, questions, one-off jobs — lives here."
+          />
+          <SidebarNavItem
+            to="/routines"
+            label="Routines"
+            icon={Repeat}
+            info="Recurring work that runs on a schedule or trigger. Use routines for anything that should happen repeatedly without you asking each time."
+          />
+          <SidebarNavItem
+            to="/goals"
+            label="Goals"
+            icon={Target}
+            info="Higher-level objectives this company is working toward. Goals can have sub-goals and link to the issues that contribute to them."
+          />
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem
+              to="/workspaces"
+              label="Workspaces"
+              icon={GitBranch}
+              info="Isolated environments where agents can work in parallel without stepping on each other's files. (Experimental.)"
+            />
           ) : null}
         </SidebarSection>
 
@@ -110,12 +140,40 @@ export function Sidebar() {
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+        <SidebarSection
+          label="Company"
+          info="How this company is configured: who works here, what they can do, and what it costs."
+        >
+          <SidebarNavItem
+            to="/org"
+            label="Org"
+            icon={Network}
+            info="Visualise how agents in this company report to each other — who delegates to whom, and where the CEO sits."
+          />
+          <SidebarNavItem
+            to="/skills"
+            label="Skills"
+            icon={Boxes}
+            info="Reusable capabilities agents can call on. Each skill is a packaged tool, instruction, or behaviour that any agent in the company can use."
+          />
+          <SidebarNavItem
+            to="/costs"
+            label="Costs"
+            icon={DollarSign}
+            info="Track LLM and infrastructure spend across agents and runs, so you can see where the money is going."
+          />
+          <SidebarNavItem
+            to="/activity"
+            label="Activity"
+            icon={History}
+            info="An audit trail of everything that's happened in this company: agent runs, status changes, decisions, and errors."
+          />
+          <SidebarNavItem
+            to="/company/settings"
+            label="Settings"
+            icon={Settings}
+            info="Company-level configuration: secrets, integrations, governance rules, and other settings that apply to all agents."
+          />
         </SidebarSection>
 
         <PluginSlotOutlet

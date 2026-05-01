@@ -22,6 +22,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { SidebarInfoButton } from "./SidebarInfoButton";
 import {
   Collapsible,
   CollapsibleContent,
@@ -195,6 +196,12 @@ export function SidebarProjects() {
               Projects
             </span>
           </CollapsibleTrigger>
+          <SidebarInfoButton
+            title="Projects"
+            info="Group related issues, routines, and goals together. Each project gets its own scoped view in the sidebar."
+            alwaysVisible
+            className="mr-1"
+          />
           <button
             onClick={(e) => {
               e.stopPropagation();

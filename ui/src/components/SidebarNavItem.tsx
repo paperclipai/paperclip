@@ -2,6 +2,7 @@ import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
+import { SidebarInfoButton } from "./SidebarInfoButton";
 import type { LucideIcon } from "lucide-react";
 
 interface SidebarNavItemProps {
@@ -16,6 +17,7 @@ interface SidebarNavItemProps {
   textBadgeTone?: "default" | "amber";
   alert?: boolean;
   liveCount?: number;
+  info?: string;
 }
 
 export function SidebarNavItem({
@@ -30,10 +32,11 @@ export function SidebarNavItem({
   textBadgeTone = "default",
   alert = false,
   liveCount,
+  info,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
 
-  return (
+  const link = (
     <NavLink
       to={to}
       state={SIDEBAR_SCROLL_RESET_STATE}
@@ -45,6 +48,7 @@ export function SidebarNavItem({
           isActive
             ? "bg-accent text-foreground"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+          info && "pr-8",
           className,
         )
       }
@@ -90,5 +94,18 @@ export function SidebarNavItem({
         </span>
       )}
     </NavLink>
+  );
+
+  if (!info) return link;
+
+  return (
+    <div className="group relative">
+      {link}
+      <SidebarInfoButton
+        title={label}
+        info={info}
+        className="absolute right-2 top-1/2 -translate-y-1/2"
+      />
+    </div>
   );
 }

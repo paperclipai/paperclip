@@ -22,6 +22,7 @@ import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { SidebarInfoButton } from "./SidebarInfoButton";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -266,6 +267,12 @@ export function SidebarAgents() {
               Agents
             </span>
           </CollapsibleTrigger>
+          <SidebarInfoButton
+            title="Agents"
+            info="The roster for this company. Each agent has a role, can be paused or resumed, and shows live activity here when running."
+            alwaysVisible
+            className="mr-1"
+          />
           <button
             onClick={(e) => {
               e.stopPropagation();
