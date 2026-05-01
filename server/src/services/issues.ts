@@ -9,9 +9,7 @@ import {
   assets,
   companies,
   companyMemberships,
-  costEvents,
   documents,
-  financeEvents,
   goals,
   heartbeatRuns,
   executionWorkspaces,
@@ -44,6 +42,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
+import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -53,6 +52,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -91,6 +91,17 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
+  settings: ReturnType<typeof parseIssueExecutionWorkspaceSettings>,
+) {
+  return {
+    environmentId: settings?.environmentId ?? null,
+    provisionCommand: settings?.workspaceStrategy?.provisionCommand ?? null,
+    teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
+    workspaceRuntime: settings?.workspaceRuntime ?? null,
+  };
 }
 
 export interface IssueFilters {
@@ -195,6 +206,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
+const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -216,6 +228,16 @@ function truncateInlineSummary(value: string | null | undefined, maxChars = CHIL
   const normalized = value?.trim();
   if (!normalized) return null;
   return normalized.length > maxChars ? `${normalized.slice(0, Math.max(0, maxChars - 15)).trimEnd()} [truncated]` : normalized;
+}
+
+function truncateByCodePoint(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return Array.from(value).slice(0, maxChars).join("");
+}
+
+function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
+  if (value == null) return null;
+  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
 }
 
 function appendAcceptanceCriteriaToDescription(description: string | null | undefined, acceptanceCriteria: string[] | undefined) {
@@ -422,14 +444,35 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-// NOTE: A previous helper `issueLastActivityAtExpr(companyId, userId)` lived
-// here that computed a per-user, per-row "last activity" expression via
-// correlated subqueries on issue_comments / issue_read_states. It was the
-// right-hand side of `inboxVisibleForUserCondition`, which made that predicate
-// non-sargable and caused the inbox query to take 1-2 minutes for accounts
-// with a few thousand issues. It has been replaced by the materialized
-// `issues.last_activity_at` column maintained by DB triggers (see migration
-// 0072_issues_last_activity_at.sql).
+function lastExternalCommentAtExpr(companyId: string, userId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${issueComments.createdAt})
+      FROM ${issueComments}
+      WHERE ${issueComments.issueId} = ${issues.id}
+        AND ${issueComments.companyId} = ${companyId}
+        AND (
+          ${issueComments.authorUserId} IS NULL
+          OR ${issueComments.authorUserId} <> ${userId}
+        )
+    )
+  `;
+}
+
+function issueLastActivityAtExpr(companyId: string, userId: string) {
+  const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
+  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
+  return sql<Date>`
+    GREATEST(
+      COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
+      CASE
+        WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
+        THEN ${issues.updatedAt}
+        ELSE to_timestamp(0)
+      END
+    )
+  `;
+}
 
 const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.read_marked",
@@ -498,27 +541,8 @@ function unreadForUserCondition(companyId: string, userId: string) {
   `;
 }
 
-/**
- * Hide issues that the given user has archived from their inbox, unless new
- * activity has occurred on the issue since the archive timestamp.
- *
- * The right-hand side compares against the materialized
- * {@link issues.lastActivityAt} column rather than a per-row dynamic
- * expression involving correlated subqueries over `issue_comments`,
- * `issue_read_states`, and `activity_log`. That makes the predicate sargable
- * and lets Postgres perform a single hash semi-join against
- * `issue_inbox_archives` instead of replaying multiple correlated subqueries
- * per scanned issue.
- *
- * Semantic note: this uses a global "last activity on the issue" timestamp,
- * not a per-user "subjective" activity timestamp (which is what the previous
- * implementation computed). Concretely: if user U archives issue X at T1 and
- * then *user U themselves* posts a comment at T2 > T1, the issue will resurface
- * (under the old implementation it would not, because U's own comment was
- * counted as "their own touch" and excluded). This matches Slack/Linear inbox
- * semantics and is the desired behavior.
- */
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
+  const issueLastActivityAt = issueLastActivityAtExpr(companyId, userId);
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -526,7 +550,7 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
       WHERE ${issueInboxArchives.issueId} = ${issues.id}
         AND ${issueInboxArchives.companyId} = ${companyId}
         AND ${issueInboxArchives.userId} = ${userId}
-        AND ${issueInboxArchives.archivedAt} >= ${issues.lastActivityAt}
+        AND ${issueInboxArchives.archivedAt} >= ${issueLastActivityAt}
     )
   `;
 }
@@ -553,27 +577,6 @@ function decodeNumericHtmlEntity(digits: string, radix: 16 | 10): string | null 
   } catch {
     return null;
   }
-}
-
-/** Checks if a comment body contains a plain-text @mention of a multi-word agent name. */
-function containsPlainTextAgentMention(bodyLower: string, agentNameLower: string): boolean {
-  const needle = `@${agentNameLower}`;
-  let index = bodyLower.indexOf(needle);
-
-  while (index !== -1) {
-    const before = index > 0 ? bodyLower[index - 1] : "";
-    const afterIndex = index + needle.length;
-    const after = afterIndex < bodyLower.length ? bodyLower[afterIndex] : "";
-
-    const startsMention = before === "" || /[^a-z0-9_]/.test(before);
-    const endsMentionChars = " \t\n\r,!?;:.)]}>\"'`";
-    const endsMention = after === "" || endsMentionChars.includes(after);
-    if (startsMention && endsMention) return true;
-
-    index = bodyLower.indexOf(needle, index + 1);
-  }
-
-  return false;
 }
 
 /** Decodes HTML character references in a raw @mention capture so UI-encoded bodies match agent names. */
@@ -683,6 +686,12 @@ const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
+const SYSTEM_HARNESS_CHILD_ORIGIN_KINDS: string[] = [
+  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND,
+  "stranded_issue_recovery",
+  "stale_active_run_evaluation",
+];
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
   "issue.productivity_review_created",
@@ -1172,12 +1181,12 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
-  const reviewNodeIds = [...nodesById.values()]
-    .filter((node) => node.status === "in_review")
+  const explicitWaitCandidateIds = [...nodesById.values()]
+    .filter((node) => node.status !== "done")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
-  if (reviewNodeIds.length > 0) {
-    for (const chunk of chunkList(reviewNodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+  if (explicitWaitCandidateIds.length > 0) {
+    for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
       const interactionRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueThreadInteractions.issueId })
         .from(issueThreadInteractions)
@@ -1202,22 +1211,28 @@ async function listIssueBlockerAttentionMap(
           ),
         );
       for (const row of approvalRows) explicitWaitingIssueIds.add(row.issueId);
+    }
 
-      const recoveryRows: Array<{ originId: string | null }> = await dbOrTx
-        .select({ originId: issues.originId })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
-            isNull(issues.hiddenAt),
-            inArray(issues.originId, chunk),
-            notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
-          ),
-        );
-      for (const row of recoveryRows) {
-        if (row.originId) explicitWaitingIssueIds.add(row.originId);
-      }
+    // Recovery rows are intentionally company-wide: a liveness escalation for
+    // the same leaf blocker represents an active waiting path even when that
+    // blocker is reached through another blocked graph.
+    const recoveryRows: Array<{ id: string; originId: string | null }> = await dbOrTx
+      .select({ id: issues.id, originId: issues.originId })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
+        ),
+      );
+    for (const row of recoveryRows) {
+      const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
+      if (!parsed || parsed.companyId !== companyId) continue;
+      explicitWaitingIssueIds.add(row.id);
+      explicitWaitingIssueIds.add(parsed.issueId);
+      explicitWaitingIssueIds.add(parsed.leafIssueId);
     }
   }
 
@@ -1255,8 +1270,11 @@ async function listIssueBlockerAttentionMap(
     if (node.status === "done") {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
+    if (explicitWaitingIssueIds.has(node.id)) {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
     if (node.status === "in_review") {
-      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId) || explicitWaitingIssueIds.has(node.id);
+      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
       if (hasWaitingPath) {
         return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
       }
@@ -1376,17 +1394,20 @@ const issueListSelect = {
   goalId: issues.goalId,
   parentId: issues.parentId,
   title: issues.title,
-  // Slice the description prefix server-side to bound payload size. Using
-  // `substring(text, 1, n)` (not `convert_to(...)+substring`) is what makes
-  // this fast on TOAST'd rows: PG can fetch only the first ~n*encoding-max
-  // bytes via heap_tuple_untoast_attr_slice and decompress just enough pglz
-  // chunks to satisfy them. The earlier convert_to-based approach forced a
-  // full detoast on every list row (eBPF profile showed pglz_decompress at
-  // ~14% of pg CPU under list load with 66% of issues > 2KB description).
-  description: sql<string | null>`substring(${issues.description}, 1, ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})`,
+  description: sql<string | null>`
+    CASE
+      WHEN ${issues.description} IS NULL THEN NULL
+      ELSE encode(
+        substring(
+          convert_to(${issues.description}, current_setting('server_encoding'))
+          FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_BYTES}
+        ),
+        'base64'
+      )
+    END
+  `,
   status: issues.status,
   priority: issues.priority,
-  estimate: issues.estimate,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
   checkoutRunId: issues.checkoutRunId,
@@ -1415,7 +1436,6 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
-  lastActivityAt: issues.lastActivityAt,
 };
 
 function withActiveRuns(
@@ -2086,30 +2106,6 @@ export function issueService(db: Db) {
     });
   }
 
-  async function clearStaleExecutionLock(issueId: string, expectedExecutionRunId: string) {
-    const stale = await isTerminalOrMissingHeartbeatRun(expectedExecutionRunId);
-    if (!stale) return false;
-
-    const cleared = await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(issues.id, issueId),
-          eq(issues.executionRunId, expectedExecutionRunId),
-        ),
-      )
-      .returning({ id: issues.id })
-      .then((rows) => rows[0] ?? null);
-
-    return cleared != null;
-  }
-
   return {
     clearExecutionRunIfTerminal,
 
@@ -2248,7 +2244,10 @@ export function issueService(db: Db) {
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
-      const rows = await pageQuery;
+      const rows = (await pageQuery).map((row) => ({
+        ...row,
+        description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
+      }));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
@@ -2566,7 +2565,13 @@ export function issueService(db: Db) {
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parentIssueId)))
+        .where(
+          and(
+            eq(issues.companyId, parent.companyId),
+            eq(issues.parentId, parentIssueId),
+            notInArray(issues.originKind, SYSTEM_HARNESS_CHILD_ORIGIN_KINDS),
+          )
+        )
         .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
       if (children.length === 0) return null;
       if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {
@@ -2919,6 +2924,14 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      const nextExecutionWorkspacePreference =
+        issueData.executionWorkspacePreference !== undefined
+          ? issueData.executionWorkspacePreference
+          : existing.executionWorkspacePreference;
+      const nextExecutionWorkspaceSettings =
+        issueData.executionWorkspaceSettings !== undefined
+          ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
+          : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
       if (nextProjectWorkspaceId) {
         await assertValidProjectWorkspace(existing.companyId, nextProjectId, nextProjectWorkspaceId);
       }
@@ -2992,6 +3005,37 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        if (
+          issueData.executionWorkspaceSettings !== undefined &&
+          nextExecutionWorkspaceId &&
+          nextExecutionWorkspacePreference === "reuse_existing"
+        ) {
+          const workspace = await tx
+            .select({
+              id: executionWorkspaces.id,
+              metadata: executionWorkspaces.metadata,
+            })
+            .from(executionWorkspaces)
+            .where(
+              and(
+                eq(executionWorkspaces.id, nextExecutionWorkspaceId),
+                eq(executionWorkspaces.companyId, existing.companyId),
+              ),
+            )
+            .then((rows: Array<{ id: string; metadata: unknown }>) => rows[0] ?? null);
+          if (workspace) {
+            await tx
+              .update(executionWorkspaces)
+              .set({
+                metadata: mergeExecutionWorkspaceConfig(
+                  (workspace.metadata as Record<string, unknown> | null) ?? null,
+                  buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(nextExecutionWorkspaceSettings),
+                ),
+                updatedAt: new Date(),
+              })
+              .where(eq(executionWorkspaces.id, workspace.id));
+          }
+        }
         const [enriched] = await withIssueLabels(tx, [updated]);
         return enriched;
       };
@@ -3039,14 +3083,6 @@ export function issueService(db: Db) {
           .select({ documentId: issueDocuments.documentId })
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
-
-        // Clean up FK references that don't use CASCADE or SET NULL
-        await tx.delete(issueComments).where(eq(issueComments.issueId, id));
-        await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
-        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.issueId, id));
-        await tx.update(financeEvents).set({ issueId: null }).where(eq(financeEvents.issueId, id));
-        await tx.update(costEvents).set({ issueId: null }).where(eq(costEvents.issueId, id));
-        await tx.update(issues).set({ parentId: null }).where(eq(issues.parentId, id));
 
         const removedIssue = await tx
           .delete(issues)
@@ -3214,42 +3250,6 @@ export function issueService(db: Db) {
         return enriched;
       }
 
-      // If an executionRunId is blocking checkout but its run is dead, clear it and retry
-      if (
-        current.executionRunId &&
-        current.executionRunId !== checkoutRunId &&
-        (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
-      ) {
-        const cleared = await clearStaleExecutionLock(id, current.executionRunId);
-        if (cleared) {
-          const now = new Date();
-          const retried = await db
-            .update(issues)
-            .set({
-              assigneeAgentId: agentId,
-              assigneeUserId: null,
-              checkoutRunId,
-              executionRunId: checkoutRunId,
-              status: "in_progress",
-              startedAt: now,
-              updatedAt: now,
-            })
-            .where(
-              and(
-                eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
-                isNull(issues.executionRunId),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
-          if (retried) {
-            const [enriched] = await withIssueLabels(db, [retried]);
-            return enriched;
-          }
-        }
-      }
-
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,
@@ -3323,45 +3323,6 @@ export function issueService(db: Db) {
             ...adopted,
             adoptedFromRunId: current.checkoutRunId,
           };
-        }
-      }
-
-      // Clear stale execution lock from a dead run before giving up
-      if (
-        actorRunId &&
-        current.status === "in_progress" &&
-        current.assigneeAgentId === actorAgentId &&
-        current.executionRunId &&
-        current.executionRunId !== actorRunId
-      ) {
-        const cleared = await clearStaleExecutionLock(id, current.executionRunId);
-        if (cleared) {
-          const refreshed = await db
-            .update(issues)
-            .set({
-              checkoutRunId: actorRunId,
-              executionRunId: actorRunId,
-              executionLockedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(issues.id, id),
-                eq(issues.status, "in_progress"),
-                eq(issues.assigneeAgentId, actorAgentId),
-                isNull(issues.executionRunId),
-              ),
-            )
-            .returning({
-              id: issues.id,
-              status: issues.status,
-              assigneeAgentId: issues.assigneeAgentId,
-              checkoutRunId: issues.checkoutRunId,
-            })
-            .then((rows) => rows[0] ?? null);
-          if (refreshed) {
-            return { ...refreshed, adoptedFromRunId: current.executionRunId };
-          }
         }
       }
 
@@ -3469,36 +3430,6 @@ export function issueService(db: Db) {
           },
         };
       }),
-    forceRelease: async (id: string) => {
-      const existing = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
-
-      if (!existing) return null;
-
-      const patch: Partial<typeof issues.$inferInsert> = {
-        checkoutRunId: null,
-        executionRunId: null,
-        executionLockedAt: null,
-        executionAgentNameKey: null,
-        updatedAt: new Date(),
-      };
-      if (existing.status === "in_progress") {
-        patch.status = "todo";
-      }
-
-      const updated = await db
-        .update(issues)
-        .set(patch)
-        .where(eq(issues.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!updated) return null;
-      const [enriched] = await withIssueLabels(db, [updated]);
-      return enriched;
-    },
 
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
@@ -3851,14 +3782,9 @@ export function issueService(db: Db) {
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      const bodyLower = body.toLowerCase();
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
-        const agentNameLower = agent.name.toLowerCase();
-        if (
-          tokens.has(agentNameLower) ||
-          (agentNameLower.includes(" ") && containsPlainTextAgentMention(bodyLower, agentNameLower))
-        ) {
+        if (tokens.has(agent.name.toLowerCase())) {
           resolved.add(agent.id);
         }
       }
