@@ -23,9 +23,9 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
- * system adapters like "process" and "http").
+ * system adapters like "process").
  */
-const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+const SYSTEM_ADAPTER_TYPES = new Set(["process"]);
 
 function isAgentAdapterType(type: string): boolean {
   return !SYSTEM_ADAPTER_TYPES.has(type);
