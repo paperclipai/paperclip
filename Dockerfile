@@ -94,6 +94,23 @@ RUN printf '#!/bin/sh\nset -e\nHERMES_SRC="${HERMES_SRC:-/paperclip/.hermes/herm
     && chmod +x /usr/local/bin/hermes-py \
     && ln -sf /usr/local/bin/hermes-py /usr/local/bin/hermes-container
 
+# Koenig customization 2026-05-01: cursor-agent Linux install for cursor adapter.
+# The host's cursor-agent install is Mac arm64 only — bind-mounting it doesn't work
+# on Linux. Download the Linux build directly + create a wrapper that uses the
+# bundled node binary. Auth is API-key-based (CURSOR_API_KEY env var) since the
+# Linux build can't read Mac Keychain.
+ARG CURSOR_AGENT_VERSION=2026.04.30-4edb302
+RUN mkdir -p /opt/cursor-agent/versions/${CURSOR_AGENT_VERSION} \
+    && curl -fsSL "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/arm64/agent-cli-package.tar.gz" \
+       -o /tmp/cursor-agent.tgz \
+    && tar -xzf /tmp/cursor-agent.tgz -C /opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}/ \
+    && rm /tmp/cursor-agent.tgz \
+    && chmod +x /opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}/dist-package/node \
+    && printf '#!/bin/bash\nset -e\nSCRIPT_DIR=/opt/cursor-agent/versions/%s/dist-package\nexport CURSOR_INVOKED_AS="$(basename "$0")"\nexport NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/tmp/cursor-compile-cache}"\nexec -a "$0" "$SCRIPT_DIR/node" --use-system-ca "$SCRIPT_DIR/index.js" "$@"\n' "${CURSOR_AGENT_VERSION}" > /usr/local/bin/cursor-agent \
+    && chmod +x /usr/local/bin/cursor-agent \
+    && ln -sf /usr/local/bin/cursor-agent /usr/local/bin/cursor \
+    && ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
