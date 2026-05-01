@@ -435,6 +435,13 @@
       "when": 1777649385341,
       "tag": "0061_add_project_documents",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1777649836644,
+      "tag": "0062_add_decisions",
+      "breakpoints": true
     }
   ]
 }
