@@ -70,3 +70,5 @@ export { estateRetirementAccounts, retirementAccountTypeEnum } from "./estate_re
 export { estateBusinessInterests, businessEntityTypeEnum } from "./estate_business_interests.js";
 export { estateDigitalAssets, digitalAssetTypeEnum } from "./estate_digital_assets.js";
 export { estateCollectibles, collectibleTypeEnum } from "./estate_collectibles.js";
+export { estateTaxLots, taxLotStatusEnum } from "./estate_tax_lots.js";
+export { estateNetWorthSnapshots } from "./estate_net_worth_snapshots.js";

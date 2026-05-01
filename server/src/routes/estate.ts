@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   estateAssets,
@@ -10,6 +10,8 @@ import {
   estateBusinessInterests,
   estateDigitalAssets,
   estateCollectibles,
+  estateTaxLots,
+  estateNetWorthSnapshots,
 } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
@@ -1035,6 +1037,506 @@ export function estateRoutes(db: Db) {
       .delete(estateCollectibles)
       .where(eq(estateCollectibles.assetId, assetId));
     res.status(204).send();
+  });
+
+  // =========================================================================
+  // Phase 2 Priority 2 — Advanced Financial Features
+  // =========================================================================
+
+  // ---- Portfolio Consolidation View ----------------------------------------
+  // GET /estate/portfolio?companyId=&userId=
+  // Returns all assets + accounts with current values, grouped by class,
+  // plus allocation percentages.
+
+  router.get("/estate/portfolio", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof req.query.userId === "string" && req.query.userId.trim()
+        ? req.query.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    const [assets, accounts] = await Promise.all([
+      db.select().from(estateAssets)
+        .where(and(eq(estateAssets.companyId, companyId), eq(estateAssets.userId, userId)))
+        .orderBy(desc(estateAssets.currentValueCents)),
+      db.select().from(estateFinancialAccounts)
+        .where(and(eq(estateFinancialAccounts.companyId, companyId), eq(estateFinancialAccounts.userId, userId)))
+        .orderBy(desc(estateFinancialAccounts.balanceCents)),
+    ]);
+
+    const assetTotalCents = assets.reduce((sum, a) => sum + Number(a.currentValueCents ?? 0), 0);
+    const accountTotalCents = accounts.reduce((sum, a) => sum + Number(a.balanceCents ?? 0), 0);
+    const netWorthCents = assetTotalCents + accountTotalCents;
+
+    // Group assets by type
+    const byClass: Record<string, { totalCents: number; count: number; allocationPct: number }> = {};
+    for (const asset of assets) {
+      const key = asset.assetType;
+      if (!byClass[key]) byClass[key] = { totalCents: 0, count: 0, allocationPct: 0 };
+      byClass[key].totalCents += Number(asset.currentValueCents ?? 0);
+      byClass[key].count++;
+    }
+    // Financial accounts as own class
+    if (accounts.length > 0) {
+      byClass["financial_account"] = { totalCents: accountTotalCents, count: accounts.length, allocationPct: 0 };
+    }
+    if (netWorthCents > 0) {
+      for (const cls of Object.values(byClass)) {
+        cls.allocationPct = Math.round((cls.totalCents / netWorthCents) * 10000) / 100;
+      }
+    }
+
+    res.json({
+      netWorthCents,
+      netWorthDollars: netWorthCents / 100,
+      assetsTotalCents: assetTotalCents,
+      accountsTotalCents: accountTotalCents,
+      allocationByClass: byClass,
+      assets: assets.map((a) => ({
+        id: a.id,
+        name: a.name,
+        assetType: a.assetType,
+        currentValueCents: Number(a.currentValueCents ?? 0),
+        currentValueDollars: Number(a.currentValueCents ?? 0) / 100,
+        valuationDate: a.valuationDate,
+      })),
+      accounts: accounts.map((a) => ({
+        id: a.id,
+        name: a.name,
+        accountType: a.accountType,
+        balanceCents: Number(a.balanceCents ?? 0),
+        balanceDollars: Number(a.balanceCents ?? 0) / 100,
+        balanceUpdatedAt: a.balanceUpdatedAt,
+      })),
+    });
+  });
+
+  // ---- Net Worth History (snapshots) --------------------------------------
+  // POST /estate/net-worth/snapshot  → capture current net worth as a snapshot
+  // GET  /estate/net-worth/history   → paginated history for charting
+
+  router.post("/estate/net-worth/snapshot", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof req.body.userId === "string" && req.body.userId.trim()
+        ? req.body.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    // Compute current net worth
+    const [assetRow] = await db
+      .select({ total: sql<string>`coalesce(sum(current_value_cents), 0)` })
+      .from(estateAssets)
+      .where(and(eq(estateAssets.companyId, companyId), eq(estateAssets.userId, userId)));
+
+    const [accountRow] = await db
+      .select({ total: sql<string>`coalesce(sum(balance_cents), 0)` })
+      .from(estateFinancialAccounts)
+      .where(and(eq(estateFinancialAccounts.companyId, companyId), eq(estateFinancialAccounts.userId, userId)));
+
+    const [breakdownRows] = await Promise.all([
+      db
+        .select({ assetType: estateAssets.assetType, total: sql<string>`coalesce(sum(current_value_cents), 0)` })
+        .from(estateAssets)
+        .where(and(eq(estateAssets.companyId, companyId), eq(estateAssets.userId, userId)))
+        .groupBy(estateAssets.assetType),
+    ]);
+
+    const assetsTotalCents = Number(assetRow?.total ?? 0);
+    const accountsTotalCents = Number(accountRow?.total ?? 0);
+    const netWorthCents = assetsTotalCents + accountsTotalCents;
+
+    const breakdown: Record<string, number> = {};
+    for (const row of (breakdownRows as unknown as Array<{ assetType: string; total: string }>)) {
+      breakdown[row.assetType] = Number(row.total);
+    }
+
+    const [snapshot] = await db
+      .insert(estateNetWorthSnapshots)
+      .values({
+        companyId,
+        userId,
+        snapshotDate: req.body.snapshotDate ? new Date(req.body.snapshotDate) : new Date(),
+        netWorthCents: String(netWorthCents),
+        assetsTotalCents: String(assetsTotalCents),
+        accountsTotalCents: String(accountsTotalCents),
+        breakdown,
+      })
+      .returning();
+
+    res.status(201).json(snapshot);
+  });
+
+  router.get("/estate/net-worth/history", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof req.query.userId === "string" && req.query.userId.trim()
+        ? req.query.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    const fromDate = typeof req.query.from === "string" ? new Date(req.query.from) : null;
+    const toDate = typeof req.query.to === "string" ? new Date(req.query.to) : null;
+
+    const conditions = [
+      eq(estateNetWorthSnapshots.companyId, companyId),
+      eq(estateNetWorthSnapshots.userId, userId),
+      ...(fromDate ? [gte(estateNetWorthSnapshots.snapshotDate, fromDate)] : []),
+      ...(toDate ? [lte(estateNetWorthSnapshots.snapshotDate, toDate)] : []),
+    ];
+
+    const snapshots = await db
+      .select()
+      .from(estateNetWorthSnapshots)
+      .where(and(...conditions))
+      .orderBy(asc(estateNetWorthSnapshots.snapshotDate));
+
+    res.json({
+      snapshots: snapshots.map((s) => ({
+        id: s.id,
+        snapshotDate: s.snapshotDate,
+        netWorthDollars: Number(s.netWorthCents) / 100,
+        netWorthCents: Number(s.netWorthCents),
+        assetsTotalCents: Number(s.assetsTotalCents),
+        accountsTotalCents: Number(s.accountsTotalCents),
+        breakdown: s.breakdown,
+      })),
+    });
+  });
+
+  // ---- Tax Lot Tracking ----------------------------------------------------
+  // GET    /estate/assets/:assetId/tax-lots
+  // POST   /estate/assets/:assetId/tax-lots
+  // PATCH  /estate/tax-lots/:lotId
+  // DELETE /estate/tax-lots/:lotId
+
+  router.get("/estate/assets/:assetId/tax-lots", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const status = typeof req.query.status === "string" ? req.query.status.trim() : null;
+    const conditions = [eq(estateTaxLots.assetId, assetId)];
+    if (status) conditions.push(eq(estateTaxLots.status, status as "open" | "closed" | "transferred"));
+
+    const lots = await db
+      .select()
+      .from(estateTaxLots)
+      .where(and(...conditions))
+      .orderBy(asc(estateTaxLots.acquiredAt));
+
+    // Summary
+    const openLots = lots.filter((l) => l.status === "open");
+    const totalCostBasisCents = openLots.reduce((s, l) => s + Number(l.totalCostBasisCents), 0);
+    const totalCurrentValueCents = openLots.reduce((s, l) => s + Number(l.currentValueCents ?? 0), 0);
+    const unrealizedGainCents = totalCurrentValueCents - totalCostBasisCents;
+
+    res.json({
+      lots,
+      summary: {
+        totalLots: lots.length,
+        openLots: openLots.length,
+        totalCostBasisCents,
+        totalCurrentValueCents,
+        unrealizedGainCents,
+        unrealizedGainDollars: unrealizedGainCents / 100,
+      },
+    });
+  });
+
+  router.post("/estate/assets/:assetId/tax-lots", async (req, res) => {
+    assertBoard(req);
+    const { assetId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const asset = await resolveAsset(assetId, companyId);
+    if (!asset) throw notFound("Asset not found");
+
+    const { ticker, cusip, securityName, shares, costBasisPerShareCents, acquiredAt, notes } = req.body;
+    if (shares == null) throw badRequest("shares is required");
+    if (costBasisPerShareCents == null) throw badRequest("costBasisPerShareCents is required");
+    if (!acquiredAt) throw badRequest("acquiredAt is required");
+
+    const sharesNum = Number(shares);
+    const basisPerShare = Number(costBasisPerShareCents);
+    const totalCostBasisCents = Math.round(sharesNum * basisPerShare);
+    const acquiredDate = new Date(acquiredAt);
+    const holdingMs = Date.now() - acquiredDate.getTime();
+    const isLongTerm = holdingMs > 365 * 24 * 60 * 60 * 1000;
+
+    const [lot] = await db
+      .insert(estateTaxLots)
+      .values({
+        assetId,
+        companyId,
+        userId: asset.userId,
+        ticker: ticker ?? null,
+        cusip: cusip ?? null,
+        securityName: securityName ?? null,
+        shares: String(sharesNum),
+        costBasisPerShareCents: String(basisPerShare),
+        totalCostBasisCents: String(totalCostBasisCents),
+        acquiredAt: acquiredDate,
+        isLongTerm,
+        notes: notes ?? null,
+      })
+      .returning();
+
+    res.status(201).json(lot);
+  });
+
+  router.patch("/estate/tax-lots/:lotId", async (req, res) => {
+    assertBoard(req);
+    const { lotId } = req.params;
+    const companyId = typeof req.body.companyId === "string" ? req.body.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const [existing] = await db
+      .select()
+      .from(estateTaxLots)
+      .where(and(eq(estateTaxLots.id, lotId), eq(estateTaxLots.companyId, companyId)));
+    if (!existing) throw notFound("Tax lot not found");
+
+    const { currentPricePerShareCents, status, soldAt, salePerShareCents, isWashSale, washSaleDisallowedCents, notes } =
+      req.body;
+
+    const currentPrice = currentPricePerShareCents != null ? Number(currentPricePerShareCents) : null;
+    const currentValue =
+      currentPrice != null ? Math.round(Number(existing.shares) * currentPrice) : null;
+
+    const [updated] = await db
+      .update(estateTaxLots)
+      .set({
+        ...(currentPrice != null && {
+          currentPricePerShareCents: String(currentPrice),
+          currentValueCents: String(currentValue),
+        }),
+        ...(status !== undefined && { status }),
+        ...(soldAt !== undefined && { soldAt: soldAt ? new Date(soldAt) : null }),
+        ...(salePerShareCents != null && { salePerShareCents: String(salePerShareCents) }),
+        ...(isWashSale !== undefined && { isWashSale: Boolean(isWashSale) }),
+        ...(washSaleDisallowedCents != null && { washSaleDisallowedCents: String(washSaleDisallowedCents) }),
+        ...(notes !== undefined && { notes }),
+        updatedAt: new Date(),
+      })
+      .where(eq(estateTaxLots.id, lotId))
+      .returning();
+
+    res.json(updated);
+  });
+
+  router.delete("/estate/tax-lots/:lotId", async (req, res) => {
+    assertBoard(req);
+    const { lotId } = req.params;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const [existing] = await db
+      .select({ id: estateTaxLots.id })
+      .from(estateTaxLots)
+      .where(and(eq(estateTaxLots.id, lotId), eq(estateTaxLots.companyId, companyId)));
+    if (!existing) throw notFound("Tax lot not found");
+
+    await db.delete(estateTaxLots).where(eq(estateTaxLots.id, lotId));
+    res.status(204).send();
+  });
+
+  // ---- RMD Calculation Engine ----------------------------------------------
+  // GET /estate/rmd-summary?companyId=&userId=&year=
+  // Returns all retirement accounts with RMD status + shortfall/excess analysis.
+
+  router.get("/estate/rmd-summary", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof req.query.userId === "string" && req.query.userId.trim()
+        ? req.query.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    const year = typeof req.query.year === "string" ? parseInt(req.query.year, 10) : new Date().getFullYear();
+
+    const retirementDetails = await db
+      .select({
+        id: estateRetirementAccounts.id,
+        assetId: estateRetirementAccounts.assetId,
+        accountType: estateRetirementAccounts.accountType,
+        isRoth: estateRetirementAccounts.isRoth,
+        rmdRequired: estateRetirementAccounts.rmdRequired,
+        rmdAmountCents: estateRetirementAccounts.rmdAmountCents,
+        rmdDueYear: estateRetirementAccounts.rmdDueYear,
+        rmdWithdrawnThisYearCents: estateRetirementAccounts.rmdWithdrawnThisYearCents,
+        custodian: estateRetirementAccounts.custodian,
+        assetName: estateAssets.name,
+        assetValueCents: estateAssets.currentValueCents,
+      })
+      .from(estateRetirementAccounts)
+      .innerJoin(estateAssets, eq(estateRetirementAccounts.assetId, estateAssets.id))
+      .where(
+        and(
+          eq(estateRetirementAccounts.companyId, companyId),
+          eq(estateRetirementAccounts.userId, userId),
+        ),
+      );
+
+    const accounts = retirementDetails.map((r) => {
+      const rmdCents = Number(r.rmdAmountCents ?? 0);
+      const withdrawnCents = Number(r.rmdWithdrawnThisYearCents ?? 0);
+      const remainingCents = r.rmdRequired && r.rmdDueYear === year ? Math.max(0, rmdCents - withdrawnCents) : 0;
+      const isDue = r.rmdRequired && (r.rmdDueYear ?? year) <= year;
+      return {
+        id: r.id,
+        assetId: r.assetId,
+        assetName: r.assetName,
+        accountType: r.accountType,
+        isRoth: r.isRoth,
+        custodian: r.custodian,
+        currentValueCents: Number(r.assetValueCents ?? 0),
+        rmdRequired: r.rmdRequired,
+        rmdDueYear: r.rmdDueYear,
+        rmdAmountCents: rmdCents,
+        rmdWithdrawnThisYearCents: withdrawnCents,
+        rmdRemainingCents: remainingCents,
+        isDueThisYear: isDue,
+        isFullySatisfied: isDue ? withdrawnCents >= rmdCents : null,
+      };
+    });
+
+    const totalRmdDueCents = accounts
+      .filter((a) => a.isDueThisYear)
+      .reduce((s, a) => s + a.rmdAmountCents, 0);
+    const totalWithdrawnCents = accounts
+      .filter((a) => a.isDueThisYear)
+      .reduce((s, a) => s + a.rmdWithdrawnThisYearCents, 0);
+
+    res.json({
+      year,
+      accounts,
+      summary: {
+        totalAccountsWithRmd: accounts.filter((a) => a.rmdRequired).length,
+        accountsDueThisYear: accounts.filter((a) => a.isDueThisYear).length,
+        totalRmdDueCents,
+        totalWithdrawnCents,
+        totalRemainingCents: Math.max(0, totalRmdDueCents - totalWithdrawnCents),
+        allSatisfied: totalRmdDueCents > 0 && totalWithdrawnCents >= totalRmdDueCents,
+      },
+    });
+  });
+
+  // ---- Estate Value Projection ---------------------------------------------
+  // GET /estate/projection?companyId=&userId=&years=&growthRatePct=
+  // Projects net worth forward using a simple compound growth model per asset class.
+
+  router.get("/estate/projection", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof req.query.userId === "string" && req.query.userId.trim()
+        ? req.query.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    const horizonYears = Math.min(
+      50,
+      typeof req.query.years === "string" ? parseInt(req.query.years, 10) || 10 : 10,
+    );
+
+    // Default growth rates by asset class (annual %)
+    const DEFAULT_RATES: Record<string, number> = {
+      real_estate: 4.0,
+      investment: 7.0,
+      retirement: 6.5,
+      vehicle: -5.0,
+      personal_property: 0.0,
+      digital_asset: 15.0,
+      other: 3.0,
+      financial_account: 4.5,
+    };
+
+    // Allow caller to override with ?rates[real_estate]=5
+    const rateOverrides: Record<string, number> = {};
+    if (req.query.rates && typeof req.query.rates === "object") {
+      for (const [k, v] of Object.entries(req.query.rates as Record<string, string>)) {
+        rateOverrides[k] = parseFloat(v);
+      }
+    }
+
+    const [assets, accounts] = await Promise.all([
+      db.select().from(estateAssets)
+        .where(and(eq(estateAssets.companyId, companyId), eq(estateAssets.userId, userId))),
+      db.select().from(estateFinancialAccounts)
+        .where(and(eq(estateFinancialAccounts.companyId, companyId), eq(estateFinancialAccounts.userId, userId))),
+    ]);
+
+    // Group assets by class with their current values
+    const classes: Record<string, number> = {};
+    for (const asset of assets) {
+      const key = asset.assetType;
+      classes[key] = (classes[key] ?? 0) + Number(asset.currentValueCents ?? 0);
+    }
+    const accountTotal = accounts.reduce((s, a) => s + Number(a.balanceCents ?? 0), 0);
+    if (accountTotal > 0) classes["financial_account"] = accountTotal;
+
+    const currentNetWorthCents = Object.values(classes).reduce((s, v) => s + v, 0);
+
+    // Project year-by-year
+    const projections = [];
+    let stateByClass = { ...classes };
+
+    for (let yr = 1; yr <= horizonYears; yr++) {
+      const next: Record<string, number> = {};
+      for (const [cls, val] of Object.entries(stateByClass)) {
+        const rate = (rateOverrides[cls] ?? DEFAULT_RATES[cls] ?? 3.0) / 100;
+        next[cls] = Math.round(val * (1 + rate));
+      }
+      stateByClass = next;
+      const total = Object.values(next).reduce((s, v) => s + v, 0);
+      projections.push({
+        year: new Date().getFullYear() + yr,
+        projectedNetWorthCents: total,
+        projectedNetWorthDollars: total / 100,
+        byClass: Object.fromEntries(Object.entries(next).map(([k, v]) => [k, v / 100])),
+      });
+    }
+
+    res.json({
+      currentNetWorthCents,
+      currentNetWorthDollars: currentNetWorthCents / 100,
+      horizonYears,
+      growthRatesUsed: {
+        ...DEFAULT_RATES,
+        ...rateOverrides,
+      },
+      projections,
+    });
   });
 
   return router;
