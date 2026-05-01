@@ -113,10 +113,6 @@ cross-reference active task IDs. Any worktree directory whose task is
 
 Backlogged Workers/Reviewers → spin up via `paperclip-create-agent`. Always 1 Architect, 1 Planner.
 
-## Budget
-
->80% → critical/high only. 100% → auto-paused. Sustained burn → raise routine cadence lower bound (e.g. daily → every-other-day) via Planner/board; don't just skip work.
-
 ## Context
 
 - Repo: `$PAPERCLIP_PROJECT` (`CLAUDE.md`, `docs/ROADMAP.md`).
