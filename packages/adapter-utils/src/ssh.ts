@@ -1131,7 +1131,23 @@ export async function buildSshSpawnTarget(input: {
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+    .map(([key, value]) => {
+      if (key === "PATH") {
+        // Pod-injected PATH gets prepended so paperclip-specific bins still win
+        // for name collisions, but the host's PATH (with NVM bins, ~/.local/bin,
+        // etc. just sourced from .profile/.bash_profile/nvm.sh above) is
+        // preserved by suffixing $PATH. Without this, `env PATH=…` clobbered
+        // the freshly-sourced login-shell PATH and any host-installed binary
+        // (claude, codex, opencode) became unreachable — surfaced as
+        // `exit 127, env: 'claude': No such file or directory` on the first
+        // claude_local-over-SSH heartbeat. The pod's PATH on its own contains
+        // none of the user-scoped bins where these CLIs are installed, so
+        // an override-style PATH is a category error here regardless of
+        // which adapter is calling.
+        return `PATH=${shellQuote(value)}:"$PATH"`;
+      }
+      return `${key}=${shellQuote(value)}`;
+    });
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   const remoteScript = [
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
