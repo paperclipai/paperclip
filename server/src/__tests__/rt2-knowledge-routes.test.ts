@@ -152,7 +152,7 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
 
     const vaultResponse = await request(app)
       .get(`/api/companies/${companyId}/rt2/knowledge/vault-export`)
-      .query({ limit: 5 });
+      .query({ limit: 20 });
     expect(vaultResponse.status).toBe(200);
     expect(vaultResponse.body.files).toEqual(
       expect.arrayContaining([
@@ -162,6 +162,32 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
         }),
       ]),
     );
+    const wikillmResponse = await request(app)
+      .get(`/api/companies/${companyId}/rt2/knowledge/wikillm-export`)
+      .query({ limit: 10 });
+    expect(wikillmResponse.status).toBe(200);
+    expect(wikillmResponse.body).toEqual(expect.objectContaining({
+      companyId,
+      model: "wikillm-compatible-file-model",
+      fileCount: expect.any(Number),
+      files: expect.arrayContaining([
+        expect.objectContaining({
+          pageKey: "index.md",
+          pageType: "index",
+          confidenceSummary: expect.objectContaining({ EXTRACTED: 1 }),
+          updateEvidence: expect.objectContaining({ reason: "domain_event_projection" }),
+        }),
+        expect.objectContaining({
+          pageKey: `projects/${projectId}.md`,
+          pageType: "project",
+          provenance: expect.objectContaining({ source: "domain_event_projector" }),
+        }),
+        expect.objectContaining({
+          pageKey: "schemas/task.md",
+          pageType: "schema",
+        }),
+      ]),
+    }));
     const importFiles = vaultResponse.body.files.map((file: { path: string; content: string }) => ({
       path: file.path,
       content: file.path === "index.md"
@@ -312,12 +338,15 @@ describeEmbeddedPostgres("rt2 knowledge routes", () => {
     const health = await request(app).get(`/api/companies/${companyId}/rt2/knowledge/local-bridge/health`);
     expect(health.status).toBe(200);
     expect(health.body).toEqual(expect.objectContaining({
-      status: "blocked",
+      status: "conflict",
       conflictCount: 2,
-      blockedReason: "Vault directory is locked by another process.",
+      blockedReason: null,
       lastAppliedAt: expect.any(String),
     }));
     expect(health.body.queue).toEqual(expect.objectContaining({ applied: 1 }));
+    expect(health.body.reasons).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "bridge_conflicts" })]),
+    );
   });
 
   it("returns daily wiki pages through roadmap-compatible daily endpoints", async () => {

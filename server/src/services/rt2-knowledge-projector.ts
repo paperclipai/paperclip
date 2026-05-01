@@ -40,7 +40,12 @@ import type {
   Rt2ObsidianVaultImportPreviewInput,
   Rt2ObsidianVaultWriterSettings,
   Rt2ObsidianVaultWriterSettingsInput,
+  Rt2WikiConfidenceSummary,
+  Rt2WikiContradictionStatus,
+  Rt2WikiLLMExport,
   Rt2WikiPage,
+  Rt2WikiPageProvenance,
+  Rt2WikiPageUpdateEvidence,
   Rt2WikiPageType,
 } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
@@ -63,7 +68,33 @@ function toIso(value: Date): string {
   return value.toISOString();
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function asConfidenceSummary(value: unknown): Rt2WikiConfidenceSummary {
+  const record = asRecord(value);
+  return {
+    EXTRACTED: Number(record.EXTRACTED ?? 0),
+    INFERRED: Number(record.INFERRED ?? 0),
+    AMBIGUOUS: Number(record.AMBIGUOUS ?? 0),
+  };
+}
+
+function asContradictionStatus(value: unknown): Rt2WikiContradictionStatus {
+  return value === "none" || value === "unknown" || value === "unresolved" || value === "resolved"
+    ? value
+    : "unknown";
+}
+
 function toWikiPage(row: WikiPageRow): Rt2WikiPage {
+  const metadata = row.metadata ?? {};
   return {
     id: row.id,
     companyId: row.companyId,
@@ -73,7 +104,12 @@ function toWikiPage(row: WikiPageRow): Rt2WikiPage {
     markdown: row.markdown,
     summary: row.summary,
     sourceEventIds: row.sourceEventIds,
-    metadata: row.metadata,
+    metadata,
+    provenance: metadata.provenance as Rt2WikiPageProvenance | undefined,
+    confidenceSummary: asConfidenceSummary(metadata.confidenceSummary),
+    contradictionStatus: asContradictionStatus(metadata.contradictionStatus),
+    relatedPageKeys: asStringArray(metadata.relatedPageKeys),
+    updateEvidence: (metadata.updateEvidence ?? null) as Rt2WikiPageUpdateEvidence | null,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
   };
@@ -181,6 +217,82 @@ function topicKeysFor(event: Rt2DomainEvent): Array<{ pageKey: string; title: st
   return keys;
 }
 
+function projectKeyFor(projectId: string): string {
+  return `projects/${projectId}.md`;
+}
+
+function schemaKeyFor(entityType: string): string {
+  return `schemas/${entityType}.md`;
+}
+
+function pageKeysFor(event: Rt2DomainEvent): string[] {
+  return [
+    "index.md",
+    "log.md",
+    ...topicKeysFor(event).map((topic) => topic.pageKey),
+    ...(projectIdFor(event) ? [projectKeyFor(projectIdFor(event)!)] : []),
+    schemaKeyFor(event.entityType),
+  ];
+}
+
+function sourceEventTypes(events: Rt2DomainEvent[]): string[] {
+  return [...new Set(events.map((event) => event.eventType))].sort();
+}
+
+function sourceEntityRefs(events: Rt2DomainEvent[]): Rt2WikiPageProvenance["entityRefs"] {
+  const refs = new Map<string, Rt2WikiPageProvenance["entityRefs"][number]>();
+  for (const event of events) {
+    refs.set(`${event.entityType}:${event.entityId}`, {
+      entityType: event.entityType,
+      entityId: event.entityId,
+    });
+  }
+  return [...refs.values()];
+}
+
+function confidenceSummaryFor(events: Rt2DomainEvent[]): Rt2WikiConfidenceSummary {
+  return {
+    EXTRACTED: events.length,
+    INFERRED: 0,
+    AMBIGUOUS: 0,
+  };
+}
+
+function buildWikiMetadata(input: {
+  pageKey: string;
+  pageType: Rt2WikiPageType;
+  events: Rt2DomainEvent[];
+  relatedPageKeys: string[];
+  generatedAt: string;
+  extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const sourceEventIds = input.events.map((event) => event.id);
+  const relatedPageKeys = [...new Set(input.relatedPageKeys.filter((key) => key !== input.pageKey))].sort();
+  return {
+    ...(input.extra ?? {}),
+    pageClass: input.pageType,
+    wikillmCompatible: true,
+    provenance: {
+      source: "domain_event_projector",
+      sourceEventIds,
+      sourceEventTypes: sourceEventTypes(input.events),
+      entityRefs: sourceEntityRefs(input.events),
+      generatedAt: input.generatedAt,
+    } satisfies Rt2WikiPageProvenance,
+    confidenceSummary: confidenceSummaryFor(input.events),
+    contradictionStatus: "none" satisfies Rt2WikiContradictionStatus,
+    relatedPageKeys,
+    updateEvidence: {
+      reason: "domain_event_projection",
+      touchedPageKeys: [input.pageKey, ...relatedPageKeys],
+      sourceEventIds,
+      sourceEventCount: sourceEventIds.length,
+      relatedPageKeys,
+      generatedAt: input.generatedAt,
+    } satisfies Rt2WikiPageUpdateEvidence,
+  };
+}
+
 function renderIndex(events: Rt2DomainEvent[]): { markdown: string; summary: string[] } {
   const projectIds = [...new Set(events.map(projectIdFor).filter((value): value is string => Boolean(value)))];
   const entityTypes = [...new Set(events.map((event) => event.entityType))];
@@ -188,10 +300,10 @@ function renderIndex(events: Rt2DomainEvent[]): { markdown: string; summary: str
     "# RT2 운영 지식 Index",
     "",
     "## Projects",
-    ...(projectIds.length > 0 ? projectIds.map((id) => `- [[topics/projects/${id}.md|${id}]]`) : ["- 아직 project event가 없습니다"]),
+    ...(projectIds.length > 0 ? projectIds.map((id) => `- [[${projectKeyFor(id)}|${id}]]`) : ["- 아직 project event가 없습니다"]),
     "",
     "## Entity Types",
-    ...(entityTypes.length > 0 ? entityTypes.map((type) => `- ${type}`) : ["- 아직 entity가 없습니다"]),
+    ...(entityTypes.length > 0 ? entityTypes.map((type) => `- [[${schemaKeyFor(type)}|${type}]]`) : ["- 아직 entity가 없습니다"]),
     "",
     "## Recent Events",
     ...events.slice(-10).reverse().map(eventLine),
@@ -216,6 +328,46 @@ function renderTopic(pageKey: string, title: string, events: Rt2DomainEvent[]): 
   };
 }
 
+function renderProject(projectId: string, events: Rt2DomainEvent[]): { markdown: string; summary: string[] } {
+  const eventTypes = sourceEventTypes(events);
+  const linkedTopics = [...new Set(events.flatMap((event) => topicKeysFor(event).map((topic) => topic.pageKey)))];
+  return {
+    markdown: [
+      `# Project: ${projectId}`,
+      "",
+      "## Event Types",
+      ...(eventTypes.length > 0 ? eventTypes.map((type) => `- ${type}`) : ["- 아직 event가 없습니다"]),
+      "",
+      "## Related Pages",
+      ...(linkedTopics.length > 0 ? linkedTopics.map((key) => `- [[${key}|${key}]]`) : ["- 관련 page가 없습니다"]),
+      "",
+      "## Events",
+      ...events.map(eventLine),
+    ].join("\n"),
+    summary: [`${events.length} project events`, `${linkedTopics.length} related pages`],
+  };
+}
+
+function renderSchema(entityType: string, events: Rt2DomainEvent[]): { markdown: string; summary: string[] } {
+  const eventTypes = sourceEventTypes(events);
+  const payloadKeys = [...new Set(events.flatMap((event) => Object.keys(event.payload ?? {})))].sort();
+  return {
+    markdown: [
+      `# Schema: ${entityType}`,
+      "",
+      "## Observed Event Types",
+      ...(eventTypes.length > 0 ? eventTypes.map((type) => `- ${type}`) : ["- 아직 event type이 없습니다"]),
+      "",
+      "## Observed Payload Keys",
+      ...(payloadKeys.length > 0 ? payloadKeys.map((key) => `- ${key}`) : ["- payload key가 없습니다"]),
+      "",
+      "## Source Events",
+      ...events.map(eventLine),
+    ].join("\n"),
+    summary: [`${eventTypes.length} event types observed`, `${payloadKeys.length} payload keys observed`],
+  };
+}
+
 function vaultPathFor(pageKey: string): string {
   const safe = pageKey
     .replace(/\\/g, "/")
@@ -228,14 +380,23 @@ function vaultPathFor(pageKey: string): string {
 
 function renderVaultFile(page: Rt2WikiPage): string {
   const eventList = page.sourceEventIds.map((id) => `  - ${id}`).join("\n");
+  const relatedPageList = (page.relatedPageKeys ?? []).map((key) => `  - ${key}`).join("\n");
+  const confidenceSummary = page.confidenceSummary ?? { EXTRACTED: 0, INFERRED: 0, AMBIGUOUS: 0 };
   return [
     "---",
     `rt2_page_key: ${page.pageKey}`,
     `rt2_page_type: ${page.pageType}`,
     `rt2_company_id: ${page.companyId}`,
     `rt2_updated_at: ${page.updatedAt}`,
+    `rt2_contradiction_status: ${page.contradictionStatus ?? "unknown"}`,
+    "rt2_confidence_summary:",
+    `  EXTRACTED: ${confidenceSummary.EXTRACTED}`,
+    `  INFERRED: ${confidenceSummary.INFERRED}`,
+    `  AMBIGUOUS: ${confidenceSummary.AMBIGUOUS}`,
     "rt2_source_event_ids:",
     eventList || "  - none",
+    "rt2_related_page_keys:",
+    relatedPageList || "  - none",
     "---",
     "",
     page.markdown,
@@ -261,7 +422,7 @@ function frontmatterList(content: string, key: string): string[] {
 }
 
 function inferPageType(value: string | null): Rt2WikiPageType | null {
-  if (value === "index" || value === "log" || value === "topic") return value;
+  if (value === "index" || value === "log" || value === "topic" || value === "project" || value === "schema") return value;
   return null;
 }
 
@@ -302,6 +463,47 @@ function extractWikiLinks(markdown: string): string[] {
     if (target) links.add(normalizePageKey(target.endsWith(".md") ? target : `${target}.md`));
   }
   return [...links];
+}
+
+function buildOperatorUpdateMetadata(input: {
+  source: "obsidian_vault_import" | "obsidian_conflict_resolution";
+  pageKey: string;
+  sourceEventIds: string[];
+  markdown: string;
+  path: string;
+  reason: string;
+  generatedAt: string;
+  extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const relatedPageKeys = extractWikiLinks(input.markdown).filter((key) => key !== input.pageKey);
+  return {
+    ...(input.extra ?? {}),
+    source: input.source,
+    path: input.path,
+    wikillmCompatible: true,
+    provenance: {
+      source: input.source,
+      sourceEventIds: input.sourceEventIds,
+      sourceEventTypes: [],
+      entityRefs: [],
+      generatedAt: input.generatedAt,
+    } satisfies Rt2WikiPageProvenance,
+    confidenceSummary: {
+      EXTRACTED: input.sourceEventIds.length,
+      INFERRED: 0,
+      AMBIGUOUS: relatedPageKeys.length > 0 ? 1 : 0,
+    } satisfies Rt2WikiConfidenceSummary,
+    contradictionStatus: "unknown" satisfies Rt2WikiContradictionStatus,
+    relatedPageKeys,
+    updateEvidence: {
+      reason: input.reason,
+      touchedPageKeys: [input.pageKey, ...relatedPageKeys],
+      sourceEventIds: input.sourceEventIds,
+      sourceEventCount: input.sourceEventIds.length,
+      relatedPageKeys,
+      generatedAt: input.generatedAt,
+    } satisfies Rt2WikiPageUpdateEvidence,
+  };
 }
 
 function candidateId(parts: string[]): string {
@@ -1004,6 +1206,8 @@ export function rt2KnowledgeProjectorService(db: Db) {
   async function projectWikiForCompany(companyId: string) {
     const events = await listEvents(companyId);
     const eventIds = events.map((event) => event.id);
+    const generatedAt = new Date().toISOString();
+    const allPageKeys = [...new Set(events.flatMap(pageKeysFor))].sort();
     const index = renderIndex(events);
     await upsertWikiPage({
       companyId,
@@ -1013,6 +1217,13 @@ export function rt2KnowledgeProjectorService(db: Db) {
       markdown: index.markdown,
       summary: index.summary,
       sourceEventIds: eventIds,
+      metadata: buildWikiMetadata({
+        pageKey: "index.md",
+        pageType: "index",
+        events,
+        relatedPageKeys: allPageKeys,
+        generatedAt,
+      }),
     });
     const log = renderLog(events);
     await upsertWikiPage({
@@ -1023,17 +1234,30 @@ export function rt2KnowledgeProjectorService(db: Db) {
       markdown: log.markdown,
       summary: log.summary,
       sourceEventIds: eventIds,
+      metadata: buildWikiMetadata({
+        pageKey: "log.md",
+        pageType: "log",
+        events,
+        relatedPageKeys: allPageKeys,
+        generatedAt,
+      }),
     });
 
     const topics = new Map<string, { title: string; metadata: Record<string, unknown> }>();
+    const projectIds = new Set<string>();
+    const schemaEntityTypes = new Set<string>();
     for (const event of events) {
       for (const topic of topicKeysFor(event)) {
         topics.set(topic.pageKey, { title: topic.title, metadata: topic.metadata });
       }
+      const projectId = projectIdFor(event);
+      if (projectId) projectIds.add(projectId);
+      schemaEntityTypes.add(event.entityType);
     }
     for (const [pageKey, topic] of topics) {
       const topicEvents = events.filter((event) => matchesTopic(event, pageKey));
       const rendered = renderTopic(pageKey, topic.title, topicEvents);
+      const relatedPageKeys = [...new Set(topicEvents.flatMap(pageKeysFor))];
       await upsertWikiPage({
         companyId,
         pageKey,
@@ -1042,7 +1266,62 @@ export function rt2KnowledgeProjectorService(db: Db) {
         markdown: rendered.markdown,
         summary: rendered.summary,
         sourceEventIds: topicEvents.map((event) => event.id),
-        metadata: topic.metadata,
+        metadata: buildWikiMetadata({
+          pageKey,
+          pageType: "topic",
+          events: topicEvents,
+          relatedPageKeys,
+          generatedAt,
+          extra: topic.metadata,
+        }),
+      });
+    }
+
+    for (const projectId of projectIds) {
+      const pageKey = projectKeyFor(projectId);
+      const projectEvents = events.filter((event) => projectIdFor(event) === projectId);
+      const rendered = renderProject(projectId, projectEvents);
+      const relatedPageKeys = [...new Set(projectEvents.flatMap(pageKeysFor))];
+      await upsertWikiPage({
+        companyId,
+        pageKey,
+        pageType: "project",
+        title: `Project: ${projectId}`,
+        markdown: rendered.markdown,
+        summary: rendered.summary,
+        sourceEventIds: projectEvents.map((event) => event.id),
+        metadata: buildWikiMetadata({
+          pageKey,
+          pageType: "project",
+          events: projectEvents,
+          relatedPageKeys,
+          generatedAt,
+          extra: { projectId },
+        }),
+      });
+    }
+
+    for (const entityType of schemaEntityTypes) {
+      const pageKey = schemaKeyFor(entityType);
+      const schemaEvents = events.filter((event) => event.entityType === entityType);
+      const rendered = renderSchema(entityType, schemaEvents);
+      const relatedPageKeys = [...new Set(schemaEvents.flatMap(pageKeysFor))];
+      await upsertWikiPage({
+        companyId,
+        pageKey,
+        pageType: "schema",
+        title: `Schema: ${entityType}`,
+        markdown: rendered.markdown,
+        summary: rendered.summary,
+        sourceEventIds: schemaEvents.map((event) => event.id),
+        metadata: buildWikiMetadata({
+          pageKey,
+          pageType: "schema",
+          events: schemaEvents,
+          relatedPageKeys,
+          generatedAt,
+          extra: { entityType },
+        }),
       });
     }
   }
@@ -1307,6 +1586,31 @@ export function rt2KnowledgeProjectorService(db: Db) {
     };
   }
 
+  async function exportWikiLLM(companyId: string, input: { pageType?: Rt2WikiPageType; limit?: number }): Promise<Rt2WikiLLMExport> {
+    const list = await listWikiPages(companyId, input);
+    const files = list.pages.map((page) => ({
+      path: vaultPathFor(page.pageKey),
+      title: page.title,
+      pageKey: page.pageKey,
+      pageType: page.pageType,
+      content: renderVaultFile(page),
+      sourceEventIds: page.sourceEventIds,
+      updatedAt: page.updatedAt,
+      provenance: page.provenance ?? null,
+      confidenceSummary: page.confidenceSummary ?? { EXTRACTED: 0, INFERRED: 0, AMBIGUOUS: 0 },
+      contradictionStatus: page.contradictionStatus ?? "unknown",
+      relatedPageKeys: page.relatedPageKeys ?? [],
+      updateEvidence: page.updateEvidence ?? null,
+    }));
+    return {
+      companyId,
+      model: "wikillm-compatible-file-model",
+      generatedAt: new Date().toISOString(),
+      fileCount: files.length,
+      files,
+    };
+  }
+
   async function getVaultWriterSettings(companyId: string): Promise<Rt2ObsidianVaultWriterSettings | null> {
     const row = await db
       .select()
@@ -1545,6 +1849,7 @@ export function rt2KnowledgeProjectorService(db: Db) {
       if (!sourceFile) continue;
       if (candidate.kind === "wiki_page") {
         const markdown = stripFrontmatter(sourceFile.content);
+        const sourceEventIds = frontmatterList(sourceFile.content, "rt2_source_event_ids");
         await upsertWikiPage({
           companyId,
           pageKey: candidate.targetKey,
@@ -1552,8 +1857,16 @@ export function rt2KnowledgeProjectorService(db: Db) {
           title: titleFromMarkdown(markdown, candidate.targetKey),
           markdown,
           summary: summarizeMarkdown(markdown),
-          sourceEventIds: frontmatterList(sourceFile.content, "rt2_source_event_ids"),
-          metadata: { source: "obsidian_vault_import", path: sourceFile.path },
+          sourceEventIds,
+          metadata: buildOperatorUpdateMetadata({
+            source: "obsidian_vault_import",
+            pageKey: candidate.targetKey,
+            sourceEventIds,
+            markdown,
+            path: sourceFile.path,
+            reason: "obsidian_vault_import",
+            generatedAt: new Date().toISOString(),
+          }),
         });
         updatedWikiPages += 1;
       }
@@ -1677,7 +1990,16 @@ export function rt2KnowledgeProjectorService(db: Db) {
         markdown,
         summary: summarizeMarkdown(markdown),
         sourceEventIds: frontmatterList(input.file.content, "rt2_source_event_ids"),
-        metadata: { source: "obsidian_conflict_resolution", path: input.file.path, decision: input.decision },
+        metadata: buildOperatorUpdateMetadata({
+          source: "obsidian_conflict_resolution",
+          pageKey,
+          sourceEventIds: frontmatterList(input.file.content, "rt2_source_event_ids"),
+          markdown,
+          path: input.file.path,
+          reason: "obsidian_conflict_resolution",
+          generatedAt: new Date().toISOString(),
+          extra: { decision: input.decision },
+        }),
       });
       applied = true;
     }
@@ -1937,6 +2259,7 @@ export function rt2KnowledgeProjectorService(db: Db) {
     dryRunVaultWriter,
     enqueueLocalBridgeSync,
     exportObsidianVault,
+    exportWikiLLM,
     getDailyWikiPage,
     getLocalBridgeHealth,
     getWikiPage,

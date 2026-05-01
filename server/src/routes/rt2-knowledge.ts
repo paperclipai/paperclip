@@ -5,6 +5,7 @@ import {
   applyRt2LocalBridgeQueueSchema,
   createRt2LocalBridgePairingSchema,
   createRt2LocalBridgeQueueSchema,
+  exportRt2WikiLLMSchema,
   getRt2DailyWikiPageSchema,
   getRt2WikiPageSchema,
   listRt2DailyWikiPagesSchema,
@@ -44,6 +45,13 @@ export function rt2KnowledgeRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const query = listRt2WikiPagesSchema.parse(req.query);
     res.json(await svc.exportObsidianVault(companyId, query));
+  });
+
+  router.get("/companies/:companyId/rt2/knowledge/wikillm-export", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const query = exportRt2WikiLLMSchema.parse(req.query);
+    res.json(await svc.exportWikiLLM(companyId, query));
   });
 
   router.get("/companies/:companyId/rt2/knowledge/vault-writer", async (req, res) => {

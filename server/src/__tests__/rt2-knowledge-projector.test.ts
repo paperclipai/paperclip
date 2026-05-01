@@ -98,12 +98,32 @@ describeEmbeddedPostgres("rt2 knowledge projector", () => {
       expect.arrayContaining([
         "index.md",
         "log.md",
+        `projects/${projectId}.md`,
+        "schemas/task.md",
         `topics/actors/user/board-user.md`,
         `topics/projects/${projectId}.md`,
         "topics/task/task-1.md",
       ]),
     );
     expect(wikiPages.find((page) => page.pageKey === "log.md")?.markdown).toContain("rt2.task.created");
+    expect(wikiPages.find((page) => page.pageKey === `projects/${projectId}.md`)).toEqual(
+      expect.objectContaining({
+        pageType: "project",
+        metadata: expect.objectContaining({
+          wikillmCompatible: true,
+          contradictionStatus: "none",
+          confidenceSummary: expect.objectContaining({ EXTRACTED: 1 }),
+          updateEvidence: expect.objectContaining({
+            reason: "domain_event_projection",
+            sourceEventCount: 1,
+          }),
+          provenance: expect.objectContaining({
+            source: "domain_event_projector",
+            sourceEventTypes: ["rt2.task.created"],
+          }),
+        }),
+      }),
+    );
 
     const graphEdges = await db.select().from(rt2V33GraphEdges).where(eq(rt2V33GraphEdges.companyId, companyId));
     expect(graphEdges).toEqual(
