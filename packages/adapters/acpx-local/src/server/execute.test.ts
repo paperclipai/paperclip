@@ -176,10 +176,14 @@ describe("acpx_local runtime skill isolation", () => {
     const root = await makeTempRoot();
     const sourceCodexHome = path.join(root, "source-codex-home");
     const paperclipHome = path.join(root, "paperclip-home");
+    const instanceId =
+      typeof process.env.PAPERCLIP_INSTANCE_ID === "string" && process.env.PAPERCLIP_INSTANCE_ID.trim().length > 0
+        ? process.env.PAPERCLIP_INSTANCE_ID.trim()
+        : "default";
     const managedCodexHome = path.join(
       paperclipHome,
       "instances",
-      "default",
+      instanceId,
       "companies",
       "company-1",
       "codex-home",
