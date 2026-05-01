@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, isNull, like, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -1341,6 +1341,51 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "recovery.skipped_due_to_source_status"
       );
       return null;
+    }
+
+    // ELE-36 condition 2: debounce races — skip if any recovery for this source was created in the last 5 min
+    const SIBLING_TIME_WINDOW_MS = 5 * 60_000;
+    const [recentSibling] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.issue.companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, input.issue.id),
+          gt(issues.createdAt, new Date(Date.now() - SIBLING_TIME_WINDOW_MS)),
+        ),
+      )
+      .limit(1);
+    if (recentSibling) {
+      logger.info(
+        { event: "recovery.skipped_due_to_recent_sibling", sourceIssueId: input.issue.id, siblingId: recentSibling.id },
+        "recovery.skipped_due_to_recent_sibling"
+      );
+      return null;
+    }
+
+    // ELE-36 condition 3: respect manual ops escalation — skip if an open [FOR OPS] issue mentions this source
+    if (input.issue.identifier) {
+      const [opsActive] = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, input.issue.companyId),
+            like(issues.title, "[FOR OPS]%"),
+            notInArray(issues.status, ["done", "cancelled"]),
+            ilike(issues.description, `%${input.issue.identifier}%`),
+          ),
+        )
+        .limit(1);
+      if (opsActive) {
+        logger.info(
+          { event: "recovery.skipped_due_to_ops_escalation", sourceIssueId: input.issue.id, opsIssueId: opsActive.id },
+          "recovery.skipped_due_to_ops_escalation"
+        );
+        return null;
+      }
     }
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
