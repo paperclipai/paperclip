@@ -30,20 +30,21 @@ export function validateInstanceConfig(
 ): ConfigValidationResult {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const AjvCtor = (Ajv as any).default ?? Ajv;
-  const ajv = new AjvCtor({ allErrors: true });
+  // strict: false — plugin manifests use UI-hint keywords (`propertyOrder`,
+  // `x-paperclip-actions`, `x-paperclip-showWhen`) that Ajv otherwise rejects.
+  // These are read by the form renderer; they have no validation semantics.
+  const ajv = new AjvCtor({ allErrors: true, strict: false });
   // ajv-formats v3 default export is a FormatsPlugin object; call it as a plugin.
   const applyFormats = (addFormats as any).default ?? addFormats;
   applyFormats(ajv);
-  // Register the secret-ref format used by plugin manifests to mark fields that
-  // hold a Paperclip secret UUID rather than a raw value. The format is a UI
-  // hint only — UUID validation happens in the secrets handler at resolve time.
+  // UI-hint formats: each marks a field for a specialized form widget but
+  // accepts any string at the validator level. Actual identity/UUID checks
+  // happen in the plugin worker (e.g. assertCompanyAccess) or in the secrets
+  // handler at resolve time.
   ajv.addFormat("secret-ref", { validate: () => true });
-  // Register the company-id format used to tag arrays of company UUIDs so the
-  // frontend renders a multi-select picker. Like secret-ref, this is a UI hint
-  // only; "*" (portfolio-wide) and any string are accepted at the validator
-  // level — actual access enforcement happens in the plugin worker via
-  // assertCompanyAccess(runCtx.companyId).
   ajv.addFormat("company-id", { validate: () => true });
+  ajv.addFormat("project-id", { validate: () => true });
+  ajv.addFormat("agent-id", { validate: () => true });
   const validate = ajv.compile(schema);
   const valid = validate(configJson);
 

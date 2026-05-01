@@ -21,7 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { companiesApi } from "@/api/companies";
-import type { Company } from "@paperclipai/shared";
+import { projectsApi } from "@/api/projects";
+import { agentsApi } from "@/api/agents";
+import type { Agent, Company, Project } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,6 +68,15 @@ export interface JsonSchemaNode {
   properties?: Record<string, JsonSchemaNode>;
   required?: string[];
   additionalProperties?: boolean | JsonSchemaNode;
+  /**
+   * Explicit ordering for the form renderer. JSON Schema doesn't define field
+   * order, and PostgreSQL JSONB canonicalizes keys (length-then-alphabetical)
+   * when storing the manifest, so author-declared order in the source TS file
+   * is lost. When a schema includes `propertyOrder`, fields named there are
+   * rendered first in the listed order; any remaining fields follow in the
+   * map's iteration order.
+   */
+  propertyOrder?: string[];
 
   // Array
   items?: JsonSchemaNode;
@@ -93,6 +104,39 @@ export interface JsonSchemaFormProps {
   disabled?: boolean;
   /** Additional CSS class for the root container. */
   className?: string;
+  /**
+   * Path prefix to prepend to generated field paths. Used when this form is
+   * nested inside an ArrayField/ObjectField so scalar fields can resolve
+   * sibling values via JSON-pointer-style paths anchored at the form root.
+   * Outer callers should leave this unset.
+   */
+  pathPrefix?: string;
+  /**
+   * UUID of the plugin this form belongs to. Required for `x-paperclip-actions`
+   * buttons to call `POST /api/plugins/:pluginId/actions/:actionKey`. When unset,
+   * action buttons render as disabled.
+   */
+  pluginId?: string;
+}
+
+/**
+ * Per-item action declaration. When an array's items schema (or any object
+ * schema) includes `x-paperclip-actions`, the form renders a button per
+ * declaration alongside that item. Clicking the button calls the plugin's
+ * `performAction` handler keyed by `actionKey` and renders the structured
+ * result inline. The action handler typically validates input and performs
+ * a side-effecting check like a connection probe.
+ */
+export interface PaperclipActionDecl {
+  /** Action key matching `ctx.actions.register(...)` in the plugin worker. */
+  actionKey: string;
+  /** Button label. */
+  label: string;
+  /** Optional aria-label / tooltip. */
+  description?: string;
+  /** When set, the API param under `paramName` is filled from `item[itemKey]`. */
+  paramName?: string;
+  itemKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +705,61 @@ const StringField = React.memo(({
 
 StringField.displayName = "StringField";
 
+// ---------------------------------------------------------------------------
+// Form-root context
+// ---------------------------------------------------------------------------
+// Some scalar fields (project-id, agent-id) need to read sibling values from
+// elsewhere in the form — e.g. a project dropdown filters its options by the
+// company UUID stored at /mailboxes/<idx>/ingestCompanyId. The outer
+// JsonSchemaForm publishes the root values via context so any nested field
+// can resolve them via JSON-pointer-ish paths.
+
+interface FormRootContextValue {
+  /** Reference to the latest root values; mutated by the outer form on each render. */
+  rootRef: React.MutableRefObject<Record<string, unknown>>;
+  /** UUID of the owning plugin, used by action buttons. */
+  pluginId?: string;
+}
+const FormRootContext = React.createContext<FormRootContextValue | null>(null);
+
+function readPath(root: unknown, path: string): unknown {
+  if (!path) return root;
+  const parts = path.split("/").filter(Boolean);
+  let cur: unknown = root;
+  for (const p of parts) {
+    if (cur && typeof cur === "object") {
+      cur = (cur as Record<string, unknown>)[p];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+
+/**
+ * Walk the form path upwards looking for a sibling key on any ancestor. Used
+ * by project/agent dropdowns to find the relevant `ingestCompanyId`. Returns
+ * the value as a string if found and string-typed, otherwise null.
+ */
+function findAncestorString(
+  root: unknown,
+  fieldPath: string,
+  candidateKeys: string[],
+): string | null {
+  const parts = fieldPath.split("/").filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const ancestorPath = "/" + parts.slice(0, i).join("/");
+    const ancestor = readPath(root, ancestorPath);
+    if (ancestor && typeof ancestor === "object") {
+      for (const key of candidateKeys) {
+        const v = (ancestor as Record<string, unknown>)[key];
+        if (typeof v === "string" && v.length > 0) return v;
+      }
+    }
+  }
+  return null;
+}
+
 // Module-scoped companies cache so every CompanyMultiSelectField on a page
 // shares one fetch instead of calling /api/companies once per field.
 let companiesCache: Company[] | null = null;
@@ -806,6 +905,446 @@ const CompanyMultiSelectField = React.memo(({
 
 CompanyMultiSelectField.displayName = "CompanyMultiSelectField";
 
+// ---------------------------------------------------------------------------
+// Per-item action buttons (x-paperclip-actions)
+// ---------------------------------------------------------------------------
+
+interface ItemActionResultCheck {
+  name: string;
+  passed: boolean;
+  message: string;
+  durationMs?: number;
+}
+interface ItemActionResult {
+  ok: boolean;
+  checks?: ItemActionResultCheck[];
+  message?: string;
+  [key: string]: unknown;
+}
+
+const ItemActionsRow = React.memo(({
+  itemSchema,
+  item,
+  disabled,
+}: {
+  itemSchema: JsonSchemaNode;
+  item: unknown;
+  disabled: boolean;
+}) => {
+  const ctx = React.useContext(FormRootContext);
+  const pluginId = ctx?.pluginId;
+  const actions = (itemSchema as JsonSchemaNode)["x-paperclip-actions"] as
+    | PaperclipActionDecl[]
+    | undefined;
+  const [pending, setPending] = useState<string | null>(null);
+  const [result, setResult] = useState<{ actionKey: string; result: ItemActionResult } | null>(null);
+
+  if (!Array.isArray(actions) || actions.length === 0) return null;
+
+  const runAction = async (action: PaperclipActionDecl) => {
+    if (!pluginId) {
+      setResult({
+        actionKey: action.actionKey,
+        result: { ok: false, message: "pluginId not available" },
+      });
+      return;
+    }
+    setPending(action.actionKey);
+    setResult(null);
+    try {
+      const params: Record<string, unknown> = {};
+      if (action.paramName && action.itemKey && item && typeof item === "object") {
+        params[action.paramName] = (item as Record<string, unknown>)[action.itemKey];
+      }
+      const res = await fetch(`/api/plugins/${pluginId}/actions/${action.actionKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ params }),
+      });
+      const json = (await res.json()) as { data?: ItemActionResult; message?: string; error?: string };
+      if (!res.ok) {
+        setResult({
+          actionKey: action.actionKey,
+          result: { ok: false, message: json.error ?? json.message ?? `HTTP ${res.status}` },
+        });
+        return;
+      }
+      const data = json.data ?? (json as unknown as ItemActionResult);
+      setResult({ actionKey: action.actionKey, result: data });
+    } catch (err) {
+      setResult({
+        actionKey: action.actionKey,
+        result: { ok: false, message: (err as Error).message },
+      });
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex gap-2">
+        {actions.map((action) => (
+          <Button
+            key={action.actionKey}
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled || pending !== null || !pluginId}
+            onClick={() => runAction(action)}
+            title={action.description}
+          >
+            {pending === action.actionKey ? "Testing…" : action.label}
+          </Button>
+        ))}
+      </div>
+      {result && (
+        <div
+          className={cn(
+            "w-full rounded-md border p-2 text-xs",
+            result.result.ok
+              ? "border-green-700 bg-green-950/30 text-green-200"
+              : "border-destructive bg-destructive/10 text-destructive",
+          )}
+        >
+          <div className="font-medium">
+            {result.result.ok ? "Passed" : "Failed"}
+            {result.result.message ? ` — ${result.result.message}` : ""}
+          </div>
+          {Array.isArray(result.result.checks) && result.result.checks.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {result.result.checks.map((c, i) => (
+                <li key={i} className="flex items-start gap-1.5">
+                  <span className={c.passed ? "text-green-400" : "text-destructive"}>
+                    {c.passed ? "✓" : "✗"}
+                  </span>
+                  <span className="font-mono text-[0.7rem] opacity-70">{c.name}</span>
+                  <span>— {c.message}</span>
+                  {c.durationMs !== undefined && (
+                    <span className="opacity-50">({c.durationMs}ms)</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+ItemActionsRow.displayName = "ItemActionsRow";
+
+// ---------------------------------------------------------------------------
+// Scalar entity-id dropdowns (company-id / project-id / agent-id)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single-company picker. Triggered by `format: "company-id"` on a scalar
+ * string field. Stores the selected company UUID.
+ */
+const CompanyIdField = React.memo(({
+  value,
+  onChange,
+  disabled,
+  label,
+  description,
+  error,
+  isRequired,
+}: {
+  value: unknown;
+  onChange: (val: unknown) => void;
+  disabled: boolean;
+  label: string;
+  description?: string;
+  error?: string;
+  isRequired?: boolean;
+}) => {
+  const [companies, setCompanies] = useState<Company[] | null>(companiesCache);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (companies) return;
+    let cancelled = false;
+    loadCompaniesOnce()
+      .then((rows) => {
+        if (!cancelled) setCompanies(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companies]);
+
+  const current = typeof value === "string" ? value : "";
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
+      disabled={disabled}
+    >
+      {loadError ? (
+        <p className="text-xs text-destructive">Failed to load companies: {loadError}</p>
+      ) : !companies ? (
+        <p className="text-xs text-muted-foreground">Loading companies…</p>
+      ) : (
+        <Select value={current} onValueChange={onChange} disabled={disabled}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select a company…" />
+          </SelectTrigger>
+          <SelectContent>
+            {companies.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </FieldWrapper>
+  );
+});
+CompanyIdField.displayName = "CompanyIdField";
+
+// Cache projects & agents per company so multiple dropdowns on one page share a fetch.
+const projectsByCompany = new Map<string, { rows?: Project[]; promise?: Promise<Project[]> }>();
+function loadProjectsOnce(companyId: string): Promise<Project[]> {
+  let entry = projectsByCompany.get(companyId);
+  if (entry?.rows) return Promise.resolve(entry.rows);
+  if (!entry) {
+    entry = {};
+    projectsByCompany.set(companyId, entry);
+  }
+  if (!entry.promise) {
+    entry.promise = projectsApi
+      .list(companyId)
+      .then((rows) => {
+        const e = projectsByCompany.get(companyId);
+        if (e) e.rows = rows;
+        return rows;
+      })
+      .catch((err) => {
+        projectsByCompany.delete(companyId);
+        throw err;
+      });
+  }
+  return entry.promise;
+}
+
+const agentsByCompany = new Map<string, { rows?: Agent[]; promise?: Promise<Agent[]> }>();
+function loadAgentsOnce(companyId: string): Promise<Agent[]> {
+  let entry = agentsByCompany.get(companyId);
+  if (entry?.rows) return Promise.resolve(entry.rows);
+  if (!entry) {
+    entry = {};
+    agentsByCompany.set(companyId, entry);
+  }
+  if (!entry.promise) {
+    entry.promise = agentsApi
+      .list(companyId)
+      .then((rows) => {
+        const e = agentsByCompany.get(companyId);
+        if (e) e.rows = rows;
+        return rows;
+      })
+      .catch((err) => {
+        agentsByCompany.delete(companyId);
+        throw err;
+      });
+  }
+  return entry.promise;
+}
+
+/**
+ * Project picker scoped by an ancestor company UUID. Triggered by
+ * `format: "project-id"`. Looks up `ingestCompanyId` (or `companyId`) on any
+ * form ancestor; if none is set, the dropdown is disabled with guidance.
+ */
+const ProjectIdField = React.memo(({
+  value,
+  onChange,
+  disabled,
+  label,
+  description,
+  error,
+  isRequired,
+  fieldPath,
+}: {
+  value: unknown;
+  onChange: (val: unknown) => void;
+  disabled: boolean;
+  label: string;
+  description?: string;
+  error?: string;
+  isRequired?: boolean;
+  fieldPath: string;
+}) => {
+  const ctx = React.useContext(FormRootContext);
+  const root = ctx?.rootRef.current ?? {};
+  const companyId = findAncestorString(root, fieldPath, ["ingestCompanyId", "companyId"]);
+  const [projects, setProjects] = useState<Project[] | null>(
+    companyId ? (projectsByCompany.get(companyId)?.rows ?? null) : null,
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoadError(null);
+    if (!companyId) {
+      setProjects(null);
+      return;
+    }
+    const cached = projectsByCompany.get(companyId)?.rows;
+    if (cached) {
+      setProjects(cached);
+      return;
+    }
+    let cancelled = false;
+    loadProjectsOnce(companyId)
+      .then((rows) => {
+        if (!cancelled) setProjects(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
+
+  const current = typeof value === "string" ? value : "";
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
+      disabled={disabled}
+    >
+      {!companyId ? (
+        <p className="text-xs text-muted-foreground">Select an ingest company first.</p>
+      ) : loadError ? (
+        <p className="text-xs text-destructive">Failed to load projects: {loadError}</p>
+      ) : !projects ? (
+        <p className="text-xs text-muted-foreground">Loading projects…</p>
+      ) : projects.length === 0 ? (
+        <p className="text-xs text-muted-foreground">This company has no projects yet.</p>
+      ) : (
+        <Select value={current} onValueChange={onChange} disabled={disabled}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select a project…" />
+          </SelectTrigger>
+          <SelectContent>
+            {projects.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </FieldWrapper>
+  );
+});
+ProjectIdField.displayName = "ProjectIdField";
+
+/**
+ * Agent picker scoped by an ancestor company UUID. Triggered by
+ * `format: "agent-id"`. Same lookup pattern as ProjectIdField.
+ */
+const AgentIdField = React.memo(({
+  value,
+  onChange,
+  disabled,
+  label,
+  description,
+  error,
+  isRequired,
+  fieldPath,
+}: {
+  value: unknown;
+  onChange: (val: unknown) => void;
+  disabled: boolean;
+  label: string;
+  description?: string;
+  error?: string;
+  isRequired?: boolean;
+  fieldPath: string;
+}) => {
+  const ctx = React.useContext(FormRootContext);
+  const root = ctx?.rootRef.current ?? {};
+  const companyId = findAncestorString(root, fieldPath, ["ingestCompanyId", "companyId"]);
+  const [agents, setAgents] = useState<Agent[] | null>(
+    companyId ? (agentsByCompany.get(companyId)?.rows ?? null) : null,
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoadError(null);
+    if (!companyId) {
+      setAgents(null);
+      return;
+    }
+    const cached = agentsByCompany.get(companyId)?.rows;
+    if (cached) {
+      setAgents(cached);
+      return;
+    }
+    let cancelled = false;
+    loadAgentsOnce(companyId)
+      .then((rows) => {
+        if (!cancelled) setAgents(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
+
+  const current = typeof value === "string" ? value : "";
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
+      disabled={disabled}
+    >
+      {!companyId ? (
+        <p className="text-xs text-muted-foreground">Select an ingest company first.</p>
+      ) : loadError ? (
+        <p className="text-xs text-destructive">Failed to load agents: {loadError}</p>
+      ) : !agents ? (
+        <p className="text-xs text-muted-foreground">Loading agents…</p>
+      ) : agents.length === 0 ? (
+        <p className="text-xs text-muted-foreground">This company has no agents yet.</p>
+      ) : (
+        <Select value={current} onValueChange={onChange} disabled={disabled}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select an agent…" />
+          </SelectTrigger>
+          <SelectContent>
+            {agents.map((a) => (
+              <SelectItem key={a.id} value={a.id}>
+                {a.name ?? a.id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </FieldWrapper>
+  );
+});
+AgentIdField.displayName = "AgentIdField";
+
 /**
  * Specialized field for array values, handling dynamic addition and removal of items.
  */
@@ -883,8 +1422,11 @@ const ArrayField = React.memo(({
             className="group relative flex items-start space-x-2 rounded-lg border p-3"
           >
             <div className="flex-1">
-              <div className="mb-2 text-xs font-medium text-muted-foreground">
-                {itemHeading(item, index)}
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-xs font-medium text-muted-foreground">
+                  {itemHeading(item, index)}
+                </div>
+                <ItemActionsRow itemSchema={itemSchema} item={item} disabled={disabled} />
               </div>
               <FormField
                 propSchema={itemSchema}
@@ -992,6 +1534,7 @@ const ObjectField = React.memo(({
             values={(value as Record<string, unknown>) ?? {}}
             onChange={handleObjectChange}
             disabled={disabled}
+            pathPrefix={path}
             errors={Object.fromEntries(
               Object.entries(errors)
                 .filter(([errPath]) => errPath.startsWith(`${path}/`))
@@ -1109,7 +1652,49 @@ const FormField = React.memo(({
         />
       );
 
-    default: // string
+    default: {
+      // string — check format hints first
+      if (propSchema.format === "company-id") {
+        return (
+          <CompanyIdField
+            value={value}
+            onChange={onChange}
+            disabled={isReadOnly}
+            label={label}
+            isRequired={isRequired}
+            description={propSchema.description}
+            error={error}
+          />
+        );
+      }
+      if (propSchema.format === "project-id") {
+        return (
+          <ProjectIdField
+            value={value}
+            onChange={onChange}
+            disabled={isReadOnly}
+            label={label}
+            isRequired={isRequired}
+            description={propSchema.description}
+            error={error}
+            fieldPath={path}
+          />
+        );
+      }
+      if (propSchema.format === "agent-id") {
+        return (
+          <AgentIdField
+            value={value}
+            onChange={onChange}
+            disabled={isReadOnly}
+            label={label}
+            isRequired={isRequired}
+            description={propSchema.description}
+            error={error}
+            fieldPath={path}
+          />
+        );
+      }
       return (
         <StringField
           value={value}
@@ -1124,6 +1709,7 @@ const FormField = React.memo(({
           maxLength={propSchema.maxLength}
         />
       );
+    }
   }
 });
 
@@ -1138,13 +1724,32 @@ FormField.displayName = "FormField";
  * Renders a form based on a subset of JSON Schema specification.
  * Supports primitive types, enums, secrets, objects, and arrays with recursion.
  */
-export function JsonSchemaForm({
+export function JsonSchemaForm(props: JsonSchemaFormProps) {
+  const existingCtx = React.useContext(FormRootContext);
+  const rootRef = React.useRef<Record<string, unknown>>(props.values);
+  rootRef.current = props.values;
+
+  // Outer call: install the context so nested fields can resolve siblings.
+  // Nested recursions (via ObjectField) inherit the existing provider so the
+  // root reference stays anchored to the top-level form values.
+  if (!existingCtx) {
+    return (
+      <FormRootContext.Provider value={{ rootRef, pluginId: props.pluginId }}>
+        <JsonSchemaFormInner {...props} />
+      </FormRootContext.Provider>
+    );
+  }
+  return <JsonSchemaFormInner {...props} />;
+}
+
+function JsonSchemaFormInner({
   schema,
   values,
   onChange,
   errors = {},
   disabled,
   className,
+  pathPrefix = "",
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 
@@ -1176,6 +1781,26 @@ export function JsonSchemaForm({
     () => new Set(schema.required ?? []),
     [schema.required],
   );
+  // Honor `propertyOrder` (a widely-used JSON Schema extension) for explicit
+  // field order. Fields listed there render first; any remaining keys follow
+  // in the object's iteration order.
+  const orderedKeys = useMemo(() => {
+    const all = Object.keys(properties);
+    const order = Array.isArray(schema.propertyOrder) ? schema.propertyOrder : null;
+    if (!order) return all;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const key of order) {
+      if (key in properties && !seen.has(key)) {
+        out.push(key);
+        seen.add(key);
+      }
+    }
+    for (const key of all) {
+      if (!seen.has(key)) out.push(key);
+    }
+    return out;
+  }, [properties, schema.propertyOrder]);
 
   const handleFieldChange = useCallback(
     (key: string, value: unknown) => {
@@ -1199,12 +1824,30 @@ export function JsonSchemaForm({
 
   return (
     <div className={cn("space-y-6", className)}>
-      {Object.entries(properties).map(([key, propSchema]) => {
+      {orderedKeys.map((key) => {
+        const propSchema = properties[key];
+        // Conditional visibility: a field can declare an
+        // `x-paperclip-showWhen` map of sibling-key → expected value (or
+        // array of accepted values). When the parent's values don't match,
+        // the field is omitted from rendering entirely.
+        const showWhen = (propSchema as JsonSchemaNode)["x-paperclip-showWhen"] as
+          | Record<string, unknown>
+          | undefined;
+        if (showWhen && typeof showWhen === "object") {
+          const mismatch = Object.entries(showWhen).some(([siblingKey, expected]) => {
+            const actual = values[siblingKey];
+            if (Array.isArray(expected)) return !expected.includes(actual);
+            return actual !== expected;
+          });
+          if (mismatch) return null;
+        }
+
         const value = values[key];
         const isRequired = requiredFields.has(key);
-        const error = errors[`/${key}`];
+        const localPath = `/${key}`;
+        const fullPath = `${pathPrefix}${localPath}`;
+        const error = errors[localPath];
         const label = labelFromKey(key, propSchema);
-        const path = `/${key}`;
 
         return (
           <FormField
@@ -1217,7 +1860,7 @@ export function JsonSchemaForm({
             label={label}
             isRequired={isRequired}
             errors={errors}
-            path={path}
+            path={fullPath}
           />
         );
       })}

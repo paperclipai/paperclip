@@ -688,6 +688,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         onChange={handleChange}
         errors={errors}
         disabled={saveMutation.isPending}
+        pluginId={pluginId}
       />
 
       {/* Status messages */}
