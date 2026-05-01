@@ -1797,6 +1797,12 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const parentId = randomUUID();
     const childA = randomUUID();
     const childB = randomUUID();
+    // Set explicit issueNumbers so getWakeableParentAfterChildCompletion's
+    // ORDER BY issue_number ASC, created_at ASC produces the deterministic
+    // [childA, childB] ordering the assertion below expects. Without these,
+    // both children get NULL issueNumber + identical created_at (single
+    // INSERT statement → same now()) and Postgres returns them in an
+    // arbitrary order.
     await db.insert(issues).values([
       {
         id: parentId,
@@ -1805,6 +1811,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         status: "todo",
         priority: "medium",
         assigneeAgentId,
+        issueNumber: 1,
       },
       {
         id: childA,
@@ -1813,6 +1820,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         title: "Child A",
         status: "done",
         priority: "medium",
+        issueNumber: 2,
       },
       {
         id: childB,
@@ -1821,6 +1829,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         title: "Child B",
         status: "blocked",
         priority: "medium",
+        issueNumber: 3,
       },
     ]);
 
