@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { isGeminiUnknownSessionError, parseGeminiJsonl } from "@paperclipai/adapter-gemini-local/server";
+import {
+  isGeminiTurnLimitResult,
+  isGeminiTurnLimitText,
+  isGeminiUnknownSessionError,
+  parseGeminiJsonl,
+} from "@paperclipai/adapter-gemini-local/server";
 import { parseGeminiStdoutLine } from "@paperclipai/adapter-gemini-local/ui";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 
@@ -76,6 +81,16 @@ describe("gemini_local stale session detection", () => {
   it("treats missing session messages as an unknown session error", () => {
     expect(isGeminiUnknownSessionError("", "unknown session id abc")).toBe(true);
     expect(isGeminiUnknownSessionError("", "checkpoint latest not found")).toBe(true);
+  });
+});
+
+describe("gemini_local turn-limit detection", () => {
+  it("detects structured and text turn-limit signals", () => {
+    expect(isGeminiTurnLimitResult({ status: "turn_limit" })).toBe(true);
+    expect(isGeminiTurnLimitResult({ error: "max_turns reached" })).toBe(true);
+    expect(isGeminiTurnLimitResult(null, 53)).toBe(true);
+    expect(isGeminiTurnLimitText("turn_limit reached")).toBe(true);
+    expect(isGeminiTurnLimitText("maximum turns reached")).toBe(true);
   });
 });
 

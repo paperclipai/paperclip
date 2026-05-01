@@ -7,6 +7,7 @@ export {
   describeGeminiFailure,
   detectGeminiAuthRequired,
   isGeminiTurnLimitResult,
+  isGeminiTurnLimitText,
 } from "./parse.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
