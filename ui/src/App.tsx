@@ -184,11 +184,25 @@ function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
-  const { companies, selectedCompany, loading } = useCompany();
+  const { companies, selectedCompany, loading, error, reloadCompanies } = useCompany();
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-foreground">Loading...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-xl py-10 px-4">
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 text-destructive">
+          <h1 className="text-xl font-semibold">Failed to load companies</h1>
+          <p className="mt-2 text-sm">{error.message}</p>
+          <div className="mt-4">
+            <Button onClick={() => reloadCompanies()}>Retry</Button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -209,10 +223,24 @@ function CompanyRootRedirect() {
 
 function UnprefixedBoardRedirect() {
   const location = useLocation();
-  const { companies, selectedCompany, loading } = useCompany();
+  const { companies, selectedCompany, loading, error, reloadCompanies } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-foreground">Loading...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-xl py-10 px-4">
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 text-destructive">
+          <h1 className="text-xl font-semibold">Failed to load companies</h1>
+          <p className="mt-2 text-sm">{error.message}</p>
+          <div className="mt-4">
+            <Button onClick={() => reloadCompanies()}>Retry</Button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
