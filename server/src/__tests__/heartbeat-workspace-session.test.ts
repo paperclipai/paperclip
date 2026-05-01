@@ -101,6 +101,39 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
     expect(result.warning).toBeNull();
   });
 
+  it("migrates fallback workspace sessions to agent_config workspace when agent.adapterConfig.cwd becomes available (#4946)", () => {
+    // Symmetric with the project_primary migration above. When an agent run
+    // previously fell back to _default/ but now resolves via the new
+    // agent_config branch (adapterConfig.cwd reachable), the saved session
+    // params must follow the move — otherwise sessionId stays anchored at
+    // _default/ and the next run silently re-creates the same broken
+    // worktree spawn loop. The guard in migrateFallbackWorkspaceSession was
+    // extended in this PR to admit agent_config alongside project_primary.
+    const agentId = "agent-123";
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
+
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId,
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: fallbackCwd,
+        workspaceId: null,
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: "C:/repos/example",
+        source: "agent_config",
+        projectId: null,
+        workspaceId: null,
+      }),
+    });
+
+    expect(result.sessionParams).toMatchObject({
+      sessionId: "session-1",
+      cwd: "C:/repos/example",
+    });
+    expect(result.warning).toContain("Attempting to resume session");
+  });
+
   it("does not migrate when resolved workspace id differs from previous session workspace id", () => {
     const agentId = "agent-123";
     const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
