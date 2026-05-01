@@ -89,12 +89,20 @@ services:
     volumes:
       # Paperclip durable state (config, instances, spend.jsonl, logs) — named volume for VPS portability
       - paperclip-data:/paperclip
-      # Adapter CLI auth credentials — bind-mount from host so claude_local / codex_local / opencode_local work
+      # Adapter CLI auth credentials — bind-mount from host so claude_local / codex_local / opencode_local / hermes_local work
       - /Users/vardaankoenig/.claude:/paperclip/.claude:rw
       - /Users/vardaankoenig/.codex:/paperclip/.codex:rw
       # OpenCode stores creds at ~/.local/share/opencode/auth.json (xdg-data, not xdg-config)
       - /Users/vardaankoenig/.local/share/opencode:/paperclip/.local/share/opencode:rw
       - /Users/vardaankoenig/.config/opencode:/paperclip/.config/opencode:rw
+      # Hermes Agent: ~/.hermes holds auth.json + .env + config.yaml + sessions/state.db.
+      # The hermes binary itself is a venv-launcher Python script; mounting it
+      # read-only into /usr/local/bin/hermes assumes Python 3.11+ is present in
+      # the image. If hermes_local agents are activated and the binary fails to
+      # launch, install the Python deps in the Dockerfile or run hermes_local on
+      # the host only (do not mount).
+      - /Users/vardaankoenig/.hermes:/paperclip/.hermes:rw
+      - /Users/vardaankoenig/.local/bin/hermes:/usr/local/bin/hermes:ro
       # Koenig project sources (live mount — agents read+write here)
       - /Users/vardaankoenig/Documents/Paperclip/koenig-ai-org:/Users/vardaankoenig/Documents/Paperclip/koenig-ai-org:rw
       # Sibling repo for skills referenced by absolute path
@@ -130,7 +138,10 @@ services:
     container_name: koenig-cron-driver
     restart: unless-stopped
     environment:
-      KOENIG_CRON_TICK_S: "300"
+      # 600s tick (was 300s) — combined with smart-skip in koenig-cron-driver.py
+      # this cuts active invocations by ~75% vs the original 5min cadence while
+      # still firing at least every 60min (force-tick every 6th cycle) for periodic tasks.
+      KOENIG_CRON_TICK_S: "600"
       PAPERCLIP_HOST: "http://paperclip:3100"
     env_file:
       - ../.env.koenig

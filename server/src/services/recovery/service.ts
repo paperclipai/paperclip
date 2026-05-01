@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -1245,6 +1245,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  // P0 #6 dampening — 60-min cooldown on recovery-issue creation per source.
+  // Without this, a stalled source ticket whose recovery was just closed
+  // (cancelled or done) can immediately spawn a NEW recovery on the next
+  // sweep — caused the "Recover stalled" pile-up that needed bulk cleanup.
+  // Looking at ALL recoveries (any status) in last 60 min defeats the
+  // ping-pong; if you really need a new recovery for the same source,
+  // wait 60 min or manually re-open the prior one.
+  async function findRecentStrandedIssueRecoveryIssue(
+    companyId: string,
+    sourceIssueId: string,
+    cooldownMinutes: number = 60,
+  ) {
+    const cutoff = new Date(Date.now() - cooldownMinutes * 60 * 1000);
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          isNull(issues.hiddenAt),
+          gte(issues.createdAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
@@ -1328,6 +1358,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
+
+    // P0 #6 dampening — if a recovery for this source was created in the last
+    // 60 min (even if since closed), don't spam a new one. Prevents the
+    // "Recover stalled" ping-pong that caused chief-overload earlier.
+    const recent = await findRecentStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id, 60);
+    if (recent) {
+      logger.info(
+        { sourceIssueId: input.issue.id, recentRecoveryId: recent.id, recentStatus: recent.status },
+        "stranded-issue-recovery dampened — recovery already created for this source within last 60 min",
+      );
+      return null;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;

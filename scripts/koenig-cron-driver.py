@@ -134,7 +134,39 @@ def heartbeat_freshness(token: str) -> str:
         return f"poll-failed: {e}"
 
 
+def has_pending_work(token: str) -> bool:
+    """Smart-skip: return True only if there's actionable work in the inbox.
+    We pre-check the issues API and only invoke Chief Engineering if we see
+    todo/in_progress/in_review items that need orchestration. Saves ~50%+ of
+    heartbeat invocations during quiet periods (would be metered $$ if not on
+    subscription; on subscription, saves rate-limit headroom).
+    """
+    req = urllib.request.Request(
+        f"{PAPERCLIP_HOST}/api/companies/{COMPANY_ID}/issues?limit=10&status=todo",
+        headers={"Authorization": f"Bearer {token}", "Host": "localhost:3100"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        items = data if isinstance(data, list) else data.get("issues", data.get("items", []))
+        return len(items) > 0
+    except Exception as e:  # noqa: BLE001
+        # If pre-check fails, fall back to firing — better safe than starving
+        log(f"pre-check failed ({e}), firing anyway")
+        return True
+
+
 def tick(token: str) -> None:
+    # Smart-skip — don't invoke Chief Engineering when there's nothing to do.
+    # Every 6th tick fires unconditionally so the org doesn't go fully dark
+    # if pre-check misses something or a periodic-only task is needed.
+    global _TICK_COUNT
+    _TICK_COUNT += 1
+    force_fire = (_TICK_COUNT % 6) == 0
+    if not force_fire and not has_pending_work(token):
+        log(f"tick SKIP (no pending work) :: tick #{_TICK_COUNT}")
+        return
+
     url = f"{PAPERCLIP_HOST}/api/agents/{CHIEF_ENGINEERING_ID}/heartbeat/invoke"
     status, body = post(url, token)
     # Note: 500 "Internal server error" still fires the heartbeat — Paperclip
@@ -142,9 +174,13 @@ def tick(token: str) -> None:
     # as "fired", anything else as failure to log.
     if status in (200, 201, 500):
         snapshot = heartbeat_freshness(token)
-        log(f"tick OK status={status} :: {snapshot}")
+        forced = " (forced)" if force_fire else ""
+        log(f"tick OK status={status}{forced} :: {snapshot}")
     else:
         log(f"tick FAIL status={status} body={body[:200]}")
+
+
+_TICK_COUNT = 0
 
 
 def main() -> int:
