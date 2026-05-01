@@ -23,7 +23,9 @@ jobs:
       - name: Block manual lockfile edits
         if: github.head_ref != 'chore/refresh-lockfile'
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          # Diff the PR branch against its merge base so recent base-branch commits
+          # do not masquerade as changes made by the PR itself.
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
@@ -45,7 +47,7 @@ jobs:
 
       - name: Validate dependency resolution when manifests change
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
@@ -79,6 +81,9 @@ jobs:
 
       - name: Run tests
         run: pnpm test:run
+
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
 
       - name: Build
         run: pnpm build

@@ -13,6 +13,10 @@ import type {
   Approval,
   AgentConfigRevision,
 } from "@paperclipai/shared";
+import type {
+  AdapterModelProfileDefinition,
+  AdapterModelProfileKey,
+} from "@paperclipai/adapter-utils";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -27,6 +31,9 @@ export interface AdapterModel {
   id: string;
   label: string;
 }
+
+export type { AdapterModelProfileKey };
+export type AdapterModelProfile = AdapterModelProfileDefinition;
 
 export interface DetectedAdapterModel {
   model: string;
@@ -172,10 +179,17 @@ export const agentsApi = {
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
     ),
+  adapterModelProfiles: (companyId: string, type: string) =>
+    api.get<AdapterModelProfile[]>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/model-profiles`,
+    ),
   testEnvironment: (
     companyId: string,
     type: string,
-    data: { adapterConfig: Record<string, unknown> },
+    data: {
+      adapterConfig: Record<string, unknown>;
+      environmentId?: string | null;
+    },
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,

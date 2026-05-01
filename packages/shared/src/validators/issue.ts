@@ -10,6 +10,7 @@ import {
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
@@ -44,6 +45,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
+    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z.record(z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -330,6 +332,8 @@ export const askUserQuestionsAnswerSchema = z.object({
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  cancelled: z.literal(true).optional(),
+  cancellationReason: z.string().trim().max(4000).nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -445,6 +449,11 @@ export const rejectIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
 export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInteractionSchema>;
+
+export const cancelIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),

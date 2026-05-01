@@ -15,6 +15,7 @@ export interface AdapterOptionMetadata {
   label: string;
   comingSoon: boolean;
   hidden: boolean;
+  experimental: boolean;
 }
 
 export function listKnownAdapterTypes(): string[] {
@@ -44,6 +45,15 @@ export function isValidAdapterType(type: string): boolean {
 }
 
 /**
+ * Check whether an adapter should appear in card-style visual pickers.
+ * Experimental adapters can remain selectable from explicit configuration
+ * dropdowns without being recommended during onboarding or setup flows.
+ */
+export function isVisualAdapterChoice(type: string): boolean {
+  return !getAdapterDisplay(type).hideFromVisualSelection;
+}
+
+/**
  * Build option metadata for a list of adapters (for dropdowns).
  * `labelFor` callback allows callers to override labels; defaults to display registry.
  */
@@ -57,6 +67,7 @@ export function listAdapterOptions(
     label: getLabel(adapter.type),
     comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
     hidden: isAdapterTypeHidden(adapter.type),
+    experimental: !!getAdapterDisplay(adapter.type).experimental,
   }));
 }
 

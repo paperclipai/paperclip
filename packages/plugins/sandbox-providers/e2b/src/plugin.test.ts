@@ -16,7 +16,18 @@ const { MockCommandExitError, MockSandboxNotFoundError, MockTimeoutError } = vi.
     }
   }
   class MockSandboxNotFoundError extends Error {}
-  class MockTimeoutError extends Error {}
+  class MockTimeoutError extends Error {
+    stdout: string;
+    stderr: string;
+    result?: { stdout?: string; stderr?: string };
+
+    constructor(message: string, streams: { stdout?: string; stderr?: string; nested?: boolean } = {}) {
+      super(message);
+      this.stdout = streams.nested ? "" : (streams.stdout ?? "");
+      this.stderr = streams.nested ? "" : (streams.stderr ?? "");
+      this.result = streams.nested ? { stdout: streams.stdout, stderr: streams.stderr } : undefined;
+    }
+  }
   return { MockCommandExitError, MockSandboxNotFoundError, MockTimeoutError };
 });
 
@@ -54,6 +65,10 @@ function createMockSandbox(overrides: {
     setTimeout: vi.fn().mockResolvedValue(undefined),
     kill: vi.fn().mockResolvedValue(undefined),
     pause: vi.fn().mockResolvedValue(undefined),
+    files: {
+      write: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn().mockResolvedValue(undefined),
+    },
     commands: {
       run: vi.fn(async (command: string, options?: { background?: boolean }) => {
         if (options?.background) return handle;
@@ -110,6 +125,26 @@ describe("E2B sandbox provider plugin", () => {
       normalizedConfig: {
         template: "base",
         apiKey: "e2b_test_key",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    });
+  });
+
+  it("defaults a missing template to base", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "e2b",
+      config: {
+        timeoutMs: "450000.9",
+        reuseLease: true,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      normalizedConfig: {
+        template: "base",
+        apiKey: null,
         timeoutMs: 450000,
         reuseLease: true,
       },
@@ -228,8 +263,23 @@ describe("E2B sandbox provider plugin", () => {
     expect(sandbox.kill).toHaveBeenCalled();
   });
 
-  it("executes commands through a connected sandbox", async () => {
+  it("executes commands through a connected sandbox when stdin is provided", async () => {
     const sandbox = createMockSandbox();
+    sandbox.commands.run.mockImplementation(async (command: string, options?: { background?: boolean }) => {
+      if (options?.background) return sandbox.handle;
+      if (command === "pwd") {
+        return {
+          exitCode: 0,
+          stdout: "/home/user\n",
+          stderr: "",
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: "stdin\n",
+        stderr: "",
+      };
+    });
     mockConnect.mockResolvedValue(sandbox);
 
     const result = await plugin.definition.onEnvironmentExecute?.({
@@ -252,27 +302,91 @@ describe("E2B sandbox provider plugin", () => {
     });
 
     expect(mockConnect).toHaveBeenCalledWith("sandbox-123", expect.objectContaining({ apiKey: "resolved-key" }));
-    expect(sandbox.commands.run).toHaveBeenCalledWith("exec 'printf' 'hello'", expect.objectContaining({
-      background: true,
+    expect(sandbox.files.write).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/), "input");
+    expect(sandbox.commands.run).toHaveBeenCalledWith(expect.stringMatching(
+      /^exec 'printf' 'hello' < '\/tmp\/paperclip-stdin-/,
+    ), expect.objectContaining({
       cwd: "/workspace",
       envs: { FOO: "bar" },
-      stdin: true,
       timeoutMs: 1000,
     }));
-    expect(sandbox.commands.sendStdin).toHaveBeenCalledWith(42, "input");
-    expect(sandbox.commands.closeStdin).toHaveBeenCalledWith(42);
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      "exec 'printf' 'hello'",
+      expect.objectContaining({ background: true }),
+    );
+    expect(sandbox.commands.sendStdin).not.toHaveBeenCalled();
+    expect(sandbox.commands.closeStdin).not.toHaveBeenCalled();
+    expect(sandbox.handle.wait).not.toHaveBeenCalled();
+    expect(sandbox.files.remove).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
     expect(result).toEqual({
       exitCode: 0,
       timedOut: false,
-      stdout: "ok\n",
+      stdout: "stdin\n",
       stderr: "",
     });
   });
 
-  it("closes stdin even when sendStdin throws unexpectedly", async () => {
+  it("executes non-stdin commands in foreground mode", async () => {
     const sandbox = createMockSandbox();
-    const failure = new Error("send failed");
-    sandbox.commands.sendStdin.mockRejectedValueOnce(failure);
+    sandbox.commands.run.mockImplementation(async (command: string, options?: { background?: boolean }) => {
+      if (options?.background) return sandbox.handle;
+      if (command === "pwd") {
+        return {
+          exitCode: 0,
+          stdout: "/home/user\n",
+          stderr: "",
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: "foreground\n",
+        stderr: "",
+      };
+    });
+    mockConnect.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "e2b",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: {
+        template: "base",
+        apiKey: "resolved-key",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      env: { FOO: "bar" },
+      timeoutMs: 1000,
+    });
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith("exec 'printf' 'hello'", expect.objectContaining({
+      cwd: "/workspace",
+      envs: { FOO: "bar" },
+      timeoutMs: 1000,
+    }));
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      "exec 'printf' 'hello'",
+      expect.objectContaining({ background: true }),
+    );
+    expect(sandbox.commands.sendStdin).not.toHaveBeenCalled();
+    expect(sandbox.commands.closeStdin).not.toHaveBeenCalled();
+    expect(sandbox.handle.wait).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      exitCode: 0,
+      timedOut: false,
+      stdout: "foreground\n",
+      stderr: "",
+    });
+  });
+
+  it("cleans up staged stdin even when writing it fails", async () => {
+    const sandbox = createMockSandbox();
+    const failure = new Error("write failed");
+    sandbox.files.write.mockRejectedValueOnce(failure);
     mockConnect.mockResolvedValue(sandbox);
 
     await expect(plugin.definition.onEnvironmentExecute?.({
@@ -292,10 +406,101 @@ describe("E2B sandbox provider plugin", () => {
       env: { FOO: "bar" },
       stdin: "input",
       timeoutMs: 1000,
-    })).rejects.toThrow("send failed");
+    })).rejects.toThrow("write failed");
 
-    expect(sandbox.commands.closeStdin).toHaveBeenCalledWith(42);
+    expect(sandbox.files.remove).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
+    expect(sandbox.commands.sendStdin).not.toHaveBeenCalled();
     expect(sandbox.handle.wait).not.toHaveBeenCalled();
+  });
+
+  it("preserves partial foreground output when a non-stdin command times out", async () => {
+    const sandbox = createMockSandbox();
+    sandbox.commands.run.mockImplementation(async (command: string, options?: { background?: boolean }) => {
+      if (options?.background) return sandbox.handle;
+      if (command === "pwd") {
+        return {
+          exitCode: 0,
+          stdout: "/home/user\n",
+          stderr: "",
+        };
+      }
+      throw new MockTimeoutError("command timed out", {
+        stdout: "partial stdout\n",
+        stderr: "partial stderr\n",
+      });
+    });
+    mockConnect.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "e2b",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: {
+        template: "base",
+        apiKey: "resolved-key",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      env: { FOO: "bar" },
+      timeoutMs: 1000,
+    });
+
+    expect(result).toEqual({
+      exitCode: null,
+      timedOut: true,
+      stdout: "partial stdout\n",
+      stderr: "partial stderr\ncommand timed out\n",
+    });
+  });
+
+  it("preserves partial foreground output when a stdin command times out", async () => {
+    const sandbox = createMockSandbox();
+    sandbox.commands.run.mockImplementation(async (command: string, options?: { background?: boolean }) => {
+      if (options?.background) return sandbox.handle;
+      if (command === "pwd") {
+        return {
+          exitCode: 0,
+          stdout: "/home/user\n",
+          stderr: "",
+        };
+      }
+      throw new MockTimeoutError("command timed out", {
+        stdout: "stdin stdout\n",
+        stderr: "stdin stderr\n",
+        nested: true,
+      });
+    });
+    mockConnect.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "e2b",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: {
+        template: "base",
+        apiKey: "resolved-key",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      env: { FOO: "bar" },
+      stdin: "input",
+      timeoutMs: 1000,
+    });
+
+    expect(result).toEqual({
+      exitCode: null,
+      timedOut: true,
+      stdout: "stdin stdout\n",
+      stderr: "stdin stderr\ncommand timed out\n",
+    });
   });
 
   it("pauses reusable leases and kills ephemeral leases on release", async () => {
