@@ -184,6 +184,58 @@ The command returns a non-zero exit code when push loop evidence is incomplete. 
 - Click-through evidence: notification clicks must reach the original target route.
 - Capture reliability: permission denied, token invalid, delivery failure, retry, and click-through metrics must appear in reliability evidence.
 
+## Final Distribution Gate
+
+Phase 64 adds the final v3.0 distribution readiness gate:
+
+```sh
+pnpm run rt2:distribution-gate -- --manifest path/to/distribution-readiness.json
+```
+
+This gate consumes the Phase 60-63 `summary.json` files and focused v2.9 regression evidence. It writes:
+
+```text
+.planning/native-distribution-gate-runs/<timestamp>/
+```
+
+Each run writes:
+
+- `summary.json` - machine-readable release identity, input summary status, regression evidence, blockers, and passed checks
+- `report.md` - operator-readable final release-readiness status
+
+The command returns a non-zero exit code when final distribution readiness is incomplete. Required checks include:
+
+- Release identity: `channel`, `version`, `buildId`, `generatedAt`, and optional `maxAgeHours`.
+- Native signing summary: exists, parses, reports `status: passed`, and contains zero blockers.
+- Release channel/updater summary: exists, passes, is inside the freshness window, and matches target channel/version/build identity.
+- Resident surface summary: exists, passes, and matches target channel/version/build identity.
+- Push notification summary: exists, passes, and represents push readiness for the release evidence bundle.
+- Focused v2.9 regression evidence: all required command IDs report `status: passed` with evidence references.
+- Secret hygiene: raw private keys, provider tokens, passwords, device tokens, APNs/Web Push keys, and signing material are rejected.
+
+Required regression command IDs:
+
+- `shared-rt2-task`
+- `server-rt2-task-routes`
+- `ui-quick-capture-queue`
+- `ui-quick-capture-page`
+- `ui-daily-board`
+- `test-identity-gate`
+- `rt2-identity-gate`
+- `typecheck`
+
+Common final blocker codes:
+
+- `SIGNING_SUMMARY_MISSING` / `SIGNING_SUMMARY_BLOCKED`
+- `UPDATER_SUMMARY_STALE`
+- `UPDATER_CHANNEL_MISMATCH` / `UPDATER_BUILD_MISMATCH`
+- `RESIDENT_SUMMARY_BLOCKED` / `RESIDENT_BUILD_MISMATCH`
+- `PUSH_SUMMARY_BLOCKED`
+- `CAPTURE_REGRESSION_MISSING` / `CAPTURE_REGRESSION_FAILED`
+- `SECRET_REFERENCE_REQUIRED`
+
+The final distribution gate does not replace the underlying Phase 60-63 gates. Operators should run the underlying gate first, fix any blockers there, then pass the resulting summaries into the final gate.
+
 ## Runtime Confidence Report
 
 Phase 47 adds a consolidated runtime confidence report that consumes release-host evidence and the milestone artifact gate:

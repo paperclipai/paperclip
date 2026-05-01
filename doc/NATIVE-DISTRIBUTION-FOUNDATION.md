@@ -489,6 +489,87 @@ Required pass conditions:
 - Click-through evidence confirms the notification/deep link reached the original review target route.
 - Capture reliability evidence includes permission denied, invalid token, delivery failure, retry, and click-through metrics.
 
+## Phase 64 Final Distribution Gate
+
+Phase 64 adds the final v3.0 distribution readiness gate:
+
+```sh
+pnpm run rt2:distribution-gate -- --manifest path/to/distribution-readiness.json
+```
+
+The gate consumes Phase 60-63 `summary.json` files plus focused v2.9 regression evidence. It writes durable evidence under `.planning/native-distribution-gate-runs/`:
+
+- `summary.json` - machine-readable release identity, input summaries, regression evidence, blockers, and passed checks
+- `report.md` - operator-readable final readiness report
+
+The command exits non-zero when any required evidence is missing, stale, blocked, mismatched, or failed.
+
+### Distribution Readiness Manifest Shape
+
+```json
+{
+  "schemaVersion": 1,
+  "release": {
+    "channel": "beta",
+    "version": "2026.501.0",
+    "buildId": "beta-2026.501.0-current",
+    "generatedAt": "2026-05-01T01:00:00.000Z",
+    "maxAgeHours": 24
+  },
+  "summaries": {
+    "signing": ".planning/native-signing-runs/<timestamp>/summary.json",
+    "updater": ".planning/native-updater-runs/<timestamp>/summary.json",
+    "resident": ".planning/native-resident-runs/<timestamp>/summary.json",
+    "push": ".planning/native-push-runs/<timestamp>/summary.json"
+  },
+  "regressionEvidence": {
+    "commands": [
+      {
+        "id": "shared-rt2-task",
+        "command": "pnpm exec vitest run --project @paperclipai/shared packages/shared/src/rt2-task.test.ts",
+        "status": "passed",
+        "evidence": ".planning/phases/64-v30-distribution-gate-and-capture-regression-closure/logs/shared-rt2-task.log",
+        "startedAt": "2026-05-01T00:00:00.000Z",
+        "endedAt": "2026-05-01T00:00:10.000Z"
+      }
+    ]
+  }
+}
+```
+
+Required pass conditions:
+
+- `release.channel` is one of `internal`, `beta`, or `stable`.
+- Signing, updater, resident, and push summaries all exist, parse as JSON, report `status: "passed"`, and contain zero blockers.
+- Updater `generatedAt` and `updateState.checkedAt` are inside the release freshness window. Default freshness is 24 hours unless `maxAgeHours` is set.
+- Updater and resident release identity matches the target release channel/version/build ID.
+- Focused v2.9 regression evidence includes all required command IDs with `status: "passed"` and evidence references:
+  - `shared-rt2-task`
+  - `server-rt2-task-routes`
+  - `ui-quick-capture-queue`
+  - `ui-quick-capture-page`
+  - `ui-daily-board`
+  - `test-identity-gate`
+  - `rt2-identity-gate`
+  - `typecheck`
+- Raw signing, updater, APNs/Web Push, provider, token, password, or private-key material is rejected. Use secret references only.
+
+Stable final blocker codes include:
+
+- `SIGNING_SUMMARY_MISSING`
+- `SIGNING_SUMMARY_BLOCKED`
+- `UPDATER_SUMMARY_STALE`
+- `UPDATER_CHANNEL_MISMATCH`
+- `UPDATER_BUILD_MISMATCH`
+- `RESIDENT_SUMMARY_BLOCKED`
+- `RESIDENT_BUILD_MISMATCH`
+- `PUSH_SUMMARY_BLOCKED`
+- `CAPTURE_REGRESSION_MISSING`
+- `CAPTURE_REGRESSION_FAILED`
+- `SECRET_REFERENCE_REQUIRED`
+
+The final gate does not run provider sends, native packaging, app-store workflows, or Playwright browser suites. It validates release/operator evidence that those surfaces are ready.
+
 ## Updater Key Material
 
 Updater signing is separate from OS code signing.
@@ -581,6 +662,10 @@ Documents may contain only placeholders and secret references, for example:
 - `scripts/rt2-push-notification-gate.test.mjs`
 - `.planning/phases/63-mobile-push-notification-loop/63-CONTEXT.md`
 - `.planning/phases/63-mobile-push-notification-loop/63-RESEARCH.md`
+- `scripts/rt2-distribution-gate.mjs`
+- `scripts/rt2-distribution-gate.test.mjs`
+- `.planning/phases/64-v30-distribution-gate-and-capture-regression-closure/64-CONTEXT.md`
+- `.planning/phases/64-v30-distribution-gate-and-capture-regression-closure/64-RESEARCH.md`
 
 ## External Official References
 
@@ -600,9 +685,7 @@ Documents may contain only placeholders and secret references, for example:
 
 ## Phase 60-64 Handoff
 
-Next phase:
-
-- Phase 64 should enforce final distribution and v2.9 regression gates using the Phase 60-63 evidence summaries.
+Phase 64 enforces final distribution and v2.9 regression gates using the Phase 60-63 evidence summaries.
 
 Later phases:
 

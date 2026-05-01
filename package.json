@@ -61,7 +61,9 @@
     "rt2:resident-surface-gate": "node scripts/rt2-resident-surface-gate.mjs",
     "test:resident-surface-gate": "node scripts/rt2-resident-surface-gate.test.mjs",
     "rt2:push-notification-gate": "node scripts/rt2-push-notification-gate.mjs",
-    "test:push-notification-gate": "node scripts/rt2-push-notification-gate.test.mjs"
+    "test:push-notification-gate": "node scripts/rt2-push-notification-gate.test.mjs",
+    "rt2:distribution-gate": "node scripts/rt2-distribution-gate.mjs",
+    "test:distribution-gate": "node scripts/rt2-distribution-gate.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

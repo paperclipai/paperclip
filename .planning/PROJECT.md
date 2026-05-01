@@ -14,11 +14,11 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **완료된 마일스톤:** v2.0 RT2 Refoundation, v2.1 개발기획서 반영 및 운영자 채택, v2.2 개발기획서 완전 정합성 고도화, v2.3 운영 검증 및 외부 연동 실체화, v2.4 Knowledge+Economy 심화, v2.5 Semantic Knowledge Intelligence, v2.6 운영 커넥터 및 자율성 하드닝, v2.7 릴리즈 호스트 검증 및 런타임 신뢰도, v2.8 RealTycoon2 Product Identity and Daily Work UX, v2.9 Native Capture and Draft Reliability
 
-**현재 마일스톤:** v3.0 Native Distribution Readiness
+**최근 완료 마일스톤:** v3.0 Native Distribution Readiness
 
 **최근 완료:** v2.9는 persistent draft revision, PWA/mobile quick capture, Slack/Teams/webhook signed inbound, review operations reliability, Phase 58 traceability closure를 완료했다. DRAFT/NATIVE/MSG/REVIEW capture reliability는 shipped baseline이다.
 
-**현재 진행:** v3.0은 Phase 59에서 native distribution foundation을 완료했고 Phase 60에서 macOS/Windows native signing evidence gate를 완료했으며 Phase 61에서 release channel/signed updater evidence gate를 완료했고 Phase 62에서 resident tray/global shortcut evidence gate를 완료했으며 Phase 63에서 Mobile/Web Push/APNs evidence gate를 완료했다. 다음으로 final distribution gate를 production distribution readiness closure로 만든다. v2.9 capture reliability는 regression gate로만 보호한다.
+**현재 진행:** v3.0은 Phase 59에서 native distribution foundation을 완료했고 Phase 60에서 macOS/Windows native signing evidence gate를 완료했으며 Phase 61에서 release channel/signed updater evidence gate를 완료했고 Phase 62에서 resident tray/global shortcut evidence gate를 완료했으며 Phase 63에서 Mobile/Web Push/APNs evidence gate를 완료했고 Phase 64에서 final distribution gate와 v2.9 capture regression closure를 완료했다. v2.9 capture reliability는 regression gate로만 보호한다.
 
 ## Current Milestone: v3.0 Native Distribution Readiness
 
@@ -31,6 +31,7 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 - Internal/beta/stable release channel, signed updater feed, rollback candidate, rollout evidence를 관리한다. - Phase 61 완료
 - Resident tray/menubar app과 OS-level global shortcut이 v2.9 draft review loop로 빠른 입력을 전달하게 한다. - Phase 62 완료
 - Mobile/Web Push/APNs token, delivery/retry/failure/click evidence를 company-scoped notification loop로 연결한다. - Phase 63 완료
+- Phase 60-63 evidence summary와 v2.9 capture regression evidence를 final distribution gate로 묶는다. - Phase 64 완료
 
 **Deferred from this milestone:**
 - Cross-company federation full apply.
@@ -49,7 +50,7 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 - Board review inbox source/status/evidence filters, promoted draft evidence labels, source-level capture reliability report.
 - Phase 58 validation/verification artifact closure and v2.9 traceability sync.
 
-**Distribution boundary:** Full app-store signing/updater/notarization, release channel, resident tray, OS-level global shortcut, and mobile push are v3.0 evidence-gated surfaces. Final release acceptance remains Phase 64 scope.
+**Distribution boundary:** Full app-store signing/updater/notarization, release channel, resident tray, OS-level global shortcut, mobile push, and final release acceptance are v3.0 evidence-gated surfaces. Public store operations remain future scope.
 
 ## 최근 마일스톤: v2.8 RealTycoon2 Product Identity and Daily Work UX
 
@@ -182,9 +183,9 @@ v2.0-v2.2에서 완료한 것:
 - [x] v2.9 messaging capture 요구사항 3개. - Phase 56, Phase 58 검증
 - [x] v2.9 review operations 요구사항 3개. - Phase 57, Phase 58 검증
 
-### 진행 중
+### 완료됨
 
-- [ ] v3.0 Native Distribution Readiness 요구사항 12개 중 11개 완료. Phase 59-63 complete, Phase 64 planned.
+- [x] v3.0 Native Distribution Readiness 요구사항 12개 중 12개 완료. Phase 59-64 complete.
 
 ### 범위 밖
 
@@ -215,6 +216,7 @@ v2.0-v2.2에서 완료한 것:
 - Phase 61은 release channel/signed updater evidence gate를 추가해 internal/beta/stable channel metadata, updater signature/checksum, rollout/rollback, installed/update state, Phase 60 signing prerequisite, secret hygiene evidence를 검증하고 `.planning/native-updater-runs/` report로 남긴다.
 - Phase 62는 resident surface evidence gate를 추가해 tray/menubar status, global shortcut lifecycle, privacy boundary, native capture handoff, macOS/Windows resident evidence를 검증하고 `.planning/native-resident-runs/` report로 남긴다.
 - Phase 63은 push notification evidence gate를 추가해 Mobile/Web Push/APNs registration scope, minimal payload target, delivery/retry/invalid-token handling, notification click-through, capture reliability metrics, secret hygiene evidence를 검증하고 `.planning/native-push-runs/` report로 남긴다.
+- Phase 64는 final distribution gate를 추가해 Phase 60-63 summary evidence, stale updater/wrong channel/build checks, focused v2.9 regression evidence, secret hygiene를 하나의 배포 차단 조건으로 묶고 `.planning/native-distribution-gate-runs/` report로 남긴다.
 - macOS/Windows 실제 signing credential은 repo에 저장하지 않고 manifest evidence와 secret reference로만 다룬다.
 - Mobile push는 APNs/Web Push/device token을 company/user/device scope로 관리하고 최소 payload/deep-link 방식으로 board review target에 연결하는 evidence gate를 갖췄다.
 
@@ -248,10 +250,11 @@ v2.0-v2.2에서 완료한 것:
 | Phase 61에서 release channel/signed updater evidence gate를 credential-free script로 구현 | internal/beta/stable channel metadata와 updater signatures는 OS signing evidence와 별도이며, rollback/rollout/update state가 없으면 배포 운영이 불가능하다 | 좋음 - Phase 62 tray/global shortcut이 installed channel/build identity와 update state를 상태 표시에 사용할 수 있음 |
 | Phase 62에서 resident tray/global shortcut을 native dependency 없이 evidence gate로 닫음 | 실제 Tauri shell 추가 전에도 tray 상태, shortcut lifecycle/privacy, capture review handoff의 release blocker contract를 고정해야 한다 | 좋음 - Phase 64 final distribution gate가 resident surface readiness summary를 소비할 수 있음 |
 | Phase 63에서 Mobile/Web Push/APNs loop를 provider 전송 없이 evidence gate로 닫음 | push credential, APNs/Web Push provider availability, native mobile packaging이 없어도 subscription scope, minimal payload, delivery/retry/click/reliability contract는 먼저 고정할 수 있다 | 좋음 - Phase 64 final distribution gate가 push readiness summary를 소비할 수 있음 |
+| Phase 64에서 final distribution gate를 summary aggregator로 닫음 | 실제 native artifact와 credential은 operator evidence이며 repo는 release readiness contract와 fail-closed blocker taxonomy를 제공해야 한다 | 좋음 - v3.0 completion truth가 code, docs, requirements, roadmap, verification에서 일치함 |
 
 ## 다음 마일스톤 목표
 
-v3.0은 Native Distribution Readiness다. Phase 59에서 확정한 Tauri v2/native distribution foundation, Phase 60 native signing evidence gate, Phase 61 release channel/updater evidence gate, Phase 62 resident surface evidence gate, Phase 63 push notification evidence gate를 기준으로 final distribution gate를 구현하되, v2.9 capture reliability는 shipped baseline으로 보호한다.
+v3.0 Native Distribution Readiness는 완료됐다. Phase 59에서 확정한 Tauri v2/native distribution foundation, Phase 60 native signing evidence gate, Phase 61 release channel/updater evidence gate, Phase 62 resident surface evidence gate, Phase 63 push notification evidence gate, Phase 64 final distribution gate를 기준으로 future release/operator evidence를 채우면 된다. v2.9 capture reliability는 shipped baseline으로 계속 보호한다.
 
 ## Evolution
 
