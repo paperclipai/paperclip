@@ -90,6 +90,7 @@ export type {
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
+export type { ProjectFolder } from "./project-folder.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,

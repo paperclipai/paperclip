@@ -148,6 +148,15 @@ export {
 } from "./project.js";
 
 export {
+  createProjectFolderSchema,
+  updateProjectFolderSchema,
+  reorderProjectFoldersSchema,
+  type CreateProjectFolder,
+  type UpdateProjectFolder,
+  type ReorderProjectFolders,
+} from "./project-folder.js";
+
+export {
   createIssueSchema,
   createChildIssueSchema,
   createIssueLabelSchema,

@@ -432,6 +432,26 @@ export function CompanySettings() {
         </div>
       </div>
 
+
+      {/* Project Folders */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Projects
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <ToggleField
+            label="Enable project folders"
+            hint="Organise projects into folders. When enabled, projects can be grouped into named folders and dragged between them."
+            checked={!!selectedCompany.projectFoldersEnabled}
+            onChange={(enabled) =>
+              companiesApi.update(selectedCompanyId!, { projectFoldersEnabled: enabled }).then(() =>
+                queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
+              )
+            }
+          />
+        </div>
+      </div>
+
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">

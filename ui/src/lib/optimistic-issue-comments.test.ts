@@ -541,6 +541,7 @@ describe("optimistic issue comments", () => {
           goalId: null,
           goalIds: [],
           goals: [],
+          folderId: null,
           name: "Project one",
           description: null,
           status: "in_progress",

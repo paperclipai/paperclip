@@ -60,6 +60,7 @@ export interface Project {
   goalId: string | null;
   goalIds: string[];
   goals: ProjectGoalRef[];
+  folderId: string | null;
   name: string;
   description: string | null;
   status: ProjectStatus;
