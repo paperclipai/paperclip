@@ -18,10 +18,10 @@ Use this skill instead of `browser-use` when running in the Docker container (li
 
 ## Browser Walkthrough via Playwright
 
-Write an inline script `/tmp/qa-walk.mjs` for each QA task, then run it:
+Write an inline script `/tmp/qa-walk.cjs` for each QA task, then run it:
 
 ```javascript
-import { chromium } from 'playwright';
+const { chromium } = require('playwright'); // NODE_PATH makes this resolvable
 
 const browser = await chromium.launch({
   executablePath: '/usr/bin/chromium',
@@ -46,7 +46,7 @@ console.log('All checks passed');
 
 Run it:
 ```bash
-node /tmp/qa-walk.mjs
+node /tmp/qa-walk.cjs
 ```
 
 Any thrown error = BLOCK. Script exits 0 = checks passed.
@@ -83,5 +83,5 @@ Targets: INP < 200ms, LCP < 2.5s, CLS < 0.1. Regression >5% on any → BLOCK.
 ```bash
 chromium --version        # should print version string
 lighthouse --version      # should print version string
-node -e "import('playwright').then(m => console.log('playwright ok'))"
+node -e "require('playwright'); console.log('playwright ok')"
 ```
