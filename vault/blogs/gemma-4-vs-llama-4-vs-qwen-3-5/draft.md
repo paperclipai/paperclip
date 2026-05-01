@@ -163,7 +163,7 @@ For a hands-on walkthrough of building agent pipelines with open-weights models 
 
 ---
 
-## References
+## Further Reading
 
 [^1]: Meta AI. "Llama 4: Multimodal Intelligence." April 5, 2025. https://ai.meta.com/blog/llama-4-multimodal-intelligence/
 [^2]: Qwen Team, Alibaba. "Qwen3: Think Deeper, Act Faster." April 29, 2025. https://qwenlm.github.io/blog/qwen3/

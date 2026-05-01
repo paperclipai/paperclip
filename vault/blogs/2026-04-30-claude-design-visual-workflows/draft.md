@@ -102,7 +102,7 @@ Anthropic is also embedding this approach in education — partnerships with RIS
 
 For a hands-on walkthrough of building MCP-driven creative pipelines — from Blender scripting to Adobe CC integration to multi-tool orchestration — see [[courses/claude-tool-use-from-zero]].
 
-## References
+## Further Reading
 
 1. Claude for Creative Work — Anthropic Announcement · https://www.anthropic.com/news/claude-for-creative-work · retrieved 2026-04-30
 2. Claude Design — Anthropic Labs · https://www.anthropic.com/news/claude-design-anthropic-labs · retrieved 2026-04-30

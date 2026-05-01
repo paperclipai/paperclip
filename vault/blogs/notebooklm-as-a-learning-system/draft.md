@@ -117,7 +117,7 @@ For a structured comparison of NotebookLM against other frontier AI tools across
 
 ---
 
-## References
+## Further Reading
 
 1. Google Workspace Updates. "Students can now create personal class notebooks with NotebookLM in Google Classroom." April 27, 2026. http://workspaceupdates.googleblog.com/2026/04/students-can-now-create-personal-class-notebooks-with-NotebookLM-in-Google-Classroom.html
 2. Google Blog. "Audio Overviews in NotebookLM." September 11, 2024. https://blog.google/technology/ai/notebooklm-audio-overviews/

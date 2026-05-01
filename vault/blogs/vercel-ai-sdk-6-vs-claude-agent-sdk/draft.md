@@ -174,7 +174,7 @@ For how MCP connectors from both SDKs interact with the 2026 transport spec and 
 
 ---
 
-## References
+## Further Reading
 
 [1] Vercel. "AI SDK 6." *Vercel Blog*, December 22, 2025. https://vercel.com/blog/ai-sdk-6 · retrieved 2026-04-30  
 [2] Anthropic. "Agent Capabilities API." *Claude Blog*, May 22, 2025. https://claude.com/blog/agent-capabilities-api · retrieved 2026-04-30  

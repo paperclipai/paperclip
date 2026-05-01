@@ -156,7 +156,7 @@ For a practical path through Agent SDK orchestration, MCP server wiring, and har
 
 ---
 
-## References
+## Further Reading
 
 [1] Cursor Changelog — https://cursor.com/changelog · retrieved 2026-04-30
 [2] Cursor 3.0 release notes — Agents Window, /best-of-n, /worktree — https://cursor.com/changelog/3-0 · retrieved 2026-04-30

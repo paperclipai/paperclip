@@ -145,7 +145,7 @@ For a structured framework on choosing between Opus 4.7, Sonnet 4.6, and competi
 
 ---
 
-## References
+## Further Reading
 
 [1] Introducing Claude Opus 4.7 — https://www.anthropic.com/news/claude-opus-4-7 · retrieved 2026-04-30
 [2] Claude Opus Model Card — https://www.anthropic.com/claude/opus · retrieved 2026-04-30

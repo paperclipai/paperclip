@@ -125,7 +125,7 @@ Whether you are using it in the ChatGPT interface or scaling it via Bedrock, the
 
 ***
 
-## References
+## Further Reading
 
 [1] Introducing GPT-5.5 — OpenAI — https://openai.com/index/introducing-gpt-5-5/ · retrieved 2026-04-30
 

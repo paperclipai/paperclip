@@ -145,7 +145,7 @@ If you are evaluating this migration, start by auditing which OpenAI API calls a
 
 For teams new to both Bedrock and multi-model IAM patterns, [[course/claude-tool-use-from-zero]] walks through the foundational patterns — including how to structure IAM policies for model inference, when Bedrock's cross-model Guardrails justify the migration cost, and how to instrument CloudWatch dashboards for LLM observability. The same AWS patterns that govern Claude on Bedrock now govern OpenAI models too.
 
-## References
+## Further Reading
 
 [^1]: OpenAI, "OpenAI on AWS," https://openai.com/index/openai-on-aws/
 [^2]: Amazon Bedrock, "What is Amazon Bedrock — Supported models," https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html

@@ -187,7 +187,7 @@ export default {
 * [[blog/2026-04-30-anthropic-creative-connectors|Anthropic ships Creative Connectors for Agent SDK]]
 * [[glossary/mcp|Glossary: Model Context Protocol]]
 
-## References
+## Further Reading
 [1] Managed OAuth for Access — https://blog.cloudflare.com/managed-oauth-for-access/ · retrieved 2026-04-30
 [2] Dynamic Workers & Sandboxes — https://blog.cloudflare.com/dynamic-workers/ · retrieved 2026-04-30
 [3] Artifacts: Git for Agents — https://blog.cloudflare.com/artifacts-git-for-agents-beta/ · retrieved 2026-04-30

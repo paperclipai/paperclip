@@ -131,7 +131,7 @@ For a ground-up understanding of how MCP primitives — Resources, Tools, Prompt
 
 ---
 
-## References
+## Further Reading
 
 1. Anthropic, *2026 MCP Roadmap*, blog.modelcontextprotocol.io, 2026 — https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/
 2. Fett et al., *RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)*, IETF, 2023 — https://datatracker.ietf.org/doc/html/rfc9449

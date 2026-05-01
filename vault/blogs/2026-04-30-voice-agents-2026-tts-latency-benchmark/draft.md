@@ -152,7 +152,7 @@ Run the Kokoro TTFA script above against your target sentence length to baseline
 
 For a full implementation walkthrough — including a streaming voice agent with interleaved LLM + TTS, tool calling, and interruption handling — our course [[course/building-realtime-voice-agents]] covers the complete stack from WebSocket setup through production deployment.
 
-## References
+## Further Reading
 
 [1] Best Voice AI & TTS APIs for Real-Time Voice Agents: 2026 Benchmarks — <https://inworld.ai/resources/best-voice-ai-tts-apis-for-real-time-voice-agents-2026-benchmarks> · retrieved 2026-04-30
 
