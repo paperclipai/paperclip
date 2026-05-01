@@ -1664,13 +1664,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       // PR #4944 greptile review: report the actual gate-suppression reason instead
       // of always claiming no owner was found.
+      // Note: 'inert_status' is short-circuited above (escalateStrandedAssignedIssue
+      // returns early before reaching this switch — bemsas review blocking #1), so
+      // it is not handled here. TypeScript narrowing also reflects this.
       switch (skipReason) {
-        case "inert_status":
-          return [
-            "",
-            "- Recovery issue: none created because the source is already in an inert status (`blocked`, `cancelled`, or `done`) — Paperclip respects the manual-review state.",
-            "- Next action: if the source needs another attempt, move it back to `todo` and the recovery scheduler will reconsider on the next failure.",
-          ].join("\n");
         case "recent_sibling":
           return [
             "",
