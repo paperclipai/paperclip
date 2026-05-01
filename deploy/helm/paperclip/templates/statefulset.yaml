@@ -374,12 +374,16 @@ spec:
                   "github": {
                     "command": "/usr/local/bin/github-mcp-server",
                     "args": ["stdio"]
+                  },
+                  "linear": {
+                    "type": "http",
+                    "url": "http://linear-mcp-server.paperclip.svc.cluster.local:8000/mcp"
                   }
                 }
               }
               EOF
                 chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
-                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github MCP servers"
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github + linear MCP servers"
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi
