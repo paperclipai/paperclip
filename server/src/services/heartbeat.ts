@@ -4076,9 +4076,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // the lock must not be re-stamped — otherwise the dispatch tick silently
     // re-arms execution after a user/agent intentionally moved the issue out of
     // the `todo`/`in_progress` lane.
-    const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
+    const claimedContext = parseObject(claimed.contextSnapshot);
+    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
+      // Status gate mirrors evaluateQueuedRunStaleness: actionable statuses
+      // (`todo`/`in_progress`) always allow lock-stamp. Non-actionable statuses
+      // (`done`/`cancelled`/`in_review`) are allowed only when the run was
+      // claimed via a comment-wake — staleness check explicitly permits those
+      // wakes, so the lock must follow. `blocked`/`backlog` remain excluded:
+      // those are the parked states ONE-504 was about, and staleness rejects
+      // them unconditionally (no comment bypass).
+      const claimWakeCommentId = deriveCommentId(claimedContext, null);
+      const allowedStatuses = claimWakeCommentId
+        ? ["todo", "in_progress", "done", "cancelled", "in_review"]
+        : ["todo", "in_progress"];
       await db
         .update(issues)
         .set({
@@ -4094,7 +4106,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             // Mention/context runs can touch an issue, but only the current assignee
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
-            inArray(issues.status, ["todo", "in_progress"]),
+            inArray(issues.status, allowedStatuses),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
         );
@@ -6934,15 +6946,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .then((rows) => rows[0] ?? null);
 
           if (legacyRun) {
+            const legacyWakeCommentId = deriveCommentId(enrichedContextSnapshot, null);
+            const legacyStatusActionable =
+              issue.status === "todo" || issue.status === "in_progress";
+            const legacyStatusCommentEligible =
+              legacyWakeCommentId &&
+              (issue.status === "done" ||
+                issue.status === "cancelled" ||
+                issue.status === "in_review");
             if (await cancelStaleScheduledRetry(legacyRun)) {
               activeExecutionRun = null;
-            } else if (issue.status !== "todo" && issue.status !== "in_progress") {
+            } else if (!legacyStatusActionable && !legacyStatusCommentEligible) {
               // Auto-dispatch sticky-status invariant (ONE-504): never re-stamp an
               // execution lock onto an issue that has been parked at a non-actionable
-              // status (`done`, `cancelled`, `blocked`, `in_review`, `backlog`).
-              // Without this guard, a wake arriving for a parked issue can adopt a
-              // stale legacy run and silently advance `executionLockedAt`, which is
-              // the smoking-gun observation behind the silent-revert bug.
+              // status. `blocked`/`backlog` are always rejected (no comment bypass);
+              // `done`/`cancelled`/`in_review` are rejected unless a comment wake
+              // is driving the run, mirroring evaluateQueuedRunStaleness which
+              // explicitly allows comment wakes through those statuses.
               activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
