@@ -1,7 +1,7 @@
 ---
 phase: 67
 slug: multica-runtime-execution-alignment
-status: draft
+status: passed
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-05-01
@@ -38,12 +38,12 @@ created: 2026-05-01
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 67-01-01 | 01 | 1 | RUNTIME-01 | T-67-01 | Illegal lifecycle transitions are rejected service-side. | unit | `pnpm exec vitest run --project @paperclipai/shared packages/shared/src/rt2-task.test.ts` | yes | pending |
-| 67-01-02 | 01 | 1 | RUNTIME-01, RUNTIME-02 | T-67-02 / T-67-03 | Runtime dispatch checks capacity and runtime freshness before assignment. | integration | `pnpm exec vitest run --project @paperclipai/server server/src/__tests__/rt2-task-routes.test.ts` | yes | pending |
-| 67-01-03 | 01 | 1 | RUNTIME-02 | T-67-04 | Cancel and cleanup produce durable reason/evidence. | integration | `pnpm exec vitest run --project @paperclipai/server server/src/__tests__/rt2-task-routes.test.ts` | yes | pending |
-| 67-01-04 | 01 | 1 | RUNTIME-03 | T-67-05 | Timeline exposes normalized lifecycle/progress/message/tool events without leaking raw internals. | unit/integration | `pnpm exec vitest run --project @paperclipai/server server/src/__tests__/rt2-task-routes.test.ts` | yes | pending |
-| 67-01-05 | 01 | 1 | RUNTIME-03 | T-67-06 | Task/work card UI shows execution evidence compactly. | ui | `pnpm exec vitest run --project @paperclipai/ui ui/src/components/Rt2TaskPanel.test.tsx ui/src/components/Rt2TaskList.test.tsx` | yes | pending |
-| 67-01-06 | 01 | 1 | RUNTIME-01..03 | T-67-07 | DevPlan gate only marks Multica runtime complete after evidence anchors exist. | script | `node scripts/rt2-devplan-alignment-gate.test.mjs` | yes | pending |
+| 67-01-01 | 01 | 1 | RUNTIME-01 | T-67-01 | Illegal lifecycle transitions are rejected service-side. | unit | `pnpm exec vitest run packages/shared/src/rt2-task.test.ts packages/shared/src/rt2-domain-events.test.ts` | yes | passed |
+| 67-01-02 | 01 | 1 | RUNTIME-01, RUNTIME-02 | T-67-02 / T-67-03 | Runtime dispatch checks capacity and runtime freshness before assignment. | integration | `$env:PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS='true'; pnpm exec vitest run server/src/__tests__/rt2-task-routes.test.ts` | yes | passed |
+| 67-01-03 | 01 | 1 | RUNTIME-02 | T-67-04 | Cancel and cleanup produce durable reason/evidence. | integration | `$env:PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS='true'; pnpm exec vitest run server/src/__tests__/rt2-task-routes.test.ts` | yes | passed |
+| 67-01-04 | 01 | 1 | RUNTIME-03 | T-67-05 | Timeline exposes normalized lifecycle/progress/message/tool events without leaking raw internals. | unit/integration | `$env:PAPERCLIP_ENABLE_EMBEDDED_POSTGRES_TESTS='true'; pnpm exec vitest run server/src/__tests__/rt2-task-routes.test.ts` | yes | passed |
+| 67-01-05 | 01 | 1 | RUNTIME-03 | T-67-06 | Task/work card UI shows execution evidence compactly. | ui | `pnpm exec vitest run ui/src/components/Rt2TaskPanel.test.tsx ui/src/components/Rt2TaskList.test.tsx` | yes | passed |
+| 67-01-06 | 01 | 1 | RUNTIME-01..03 | T-67-07 | DevPlan gate only marks Multica runtime complete after evidence anchors exist. | script | `node scripts/rt2-devplan-alignment-gate.test.mjs && pnpm rt2:devplan-alignment-gate` | yes | passed |
 
 ---
 
@@ -68,4 +68,4 @@ All phase behaviors have automated verification.
 - [x] Feedback latency target documented.
 - [x] `nyquist_compliant: true` set in frontmatter.
 
-**Approval:** approved 2026-05-01
+**Approval:** passed 2026-05-01

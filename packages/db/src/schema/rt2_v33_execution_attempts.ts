@@ -45,7 +45,7 @@ export const rt2V33ExecutionAttempts = pgTable(
   (table) => ({
     stateCheck: check(
       "rt2_v33_execution_attempts_state_check",
-      sql`${table.state} in ('queued', 'claimed', 'running', 'completed', 'failed', 'cancelled', 'blocked')`,
+      sql`${table.state} in ('queued', 'dispatched', 'claimed', 'running', 'completed', 'failed', 'cancelled', 'blocked')`,
     ),
     executorTypeCheck: check(
       "rt2_v33_execution_attempts_executor_type_check",

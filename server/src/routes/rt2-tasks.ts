@@ -2,7 +2,9 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   assignRt2ParticipantSchema,
+  cancelRt2ExecutionSchema,
   claimRt2ExecutionSchema,
+  cleanupRt2ExecutionsSchema,
   createOneLinerInboundDraftSchema,
   createRt2MessagingInboundSchema,
   completeRt2ExecutionSchema,
@@ -14,6 +16,8 @@ import {
   enqueueRt2ExecutionSchema,
   failRt2ExecutionSchema,
   failRt2CaptureDraftSchema,
+  dispatchNextRt2ExecutionSchema,
+  dispatchRt2ExecutionSchema,
   promoteRt2CaptureDraftSchema,
   reviseRt2CaptureDraftSchema,
   rt2CaptureQueueQuerySchema,
@@ -548,6 +552,44 @@ export function rt2TaskRoutes(db: Db) {
     res.status(201).json(attempt);
   });
 
+  router.post(
+    "/companies/:companyId/rt2/executions/dispatch-next",
+    validate(dispatchNextRt2ExecutionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoardActor(req);
+
+      const attempt = await executionSvc.dispatchNext(companyId, req.body);
+
+      res.json(attempt);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/rt2/executions/cleanup-stale",
+    validate(cleanupRt2ExecutionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoardActor(req);
+
+      const result = await executionSvc.cleanupStale(companyId, req.body);
+
+      res.json(result);
+    },
+  );
+
+  router.post("/rt2/executions/:attemptId/dispatch", validate(dispatchRt2ExecutionSchema), async (req, res) => {
+    assertBoardActor(req);
+    const attemptBefore = await executionSvc.getAttempt(req.params.attemptId as string);
+    assertCompanyAccess(req, attemptBefore.companyId);
+
+    const attempt = await executionSvc.dispatch(attemptBefore.id, req.body);
+
+    res.json(attempt);
+  });
+
   router.post("/rt2/executions/:attemptId/claim", validate(claimRt2ExecutionSchema), async (req, res) => {
     assertBoardActor(req);
     const attemptBefore = await executionSvc.getAttempt(req.params.attemptId as string);
@@ -586,6 +628,26 @@ export function rt2TaskRoutes(db: Db) {
     const attempt = await executionSvc.fail(attemptBefore.id, req.body);
 
     res.json(attempt);
+  });
+
+  router.post("/rt2/executions/:attemptId/cancel", validate(cancelRt2ExecutionSchema), async (req, res) => {
+    assertBoardActor(req);
+    const attemptBefore = await executionSvc.getAttempt(req.params.attemptId as string);
+    assertCompanyAccess(req, attemptBefore.companyId);
+
+    const attempt = await executionSvc.cancel(attemptBefore.id, req.body);
+
+    res.json(attempt);
+  });
+
+  router.get("/rt2/executions/:attemptId/timeline", async (req, res) => {
+    assertBoardActor(req);
+    const attemptBefore = await executionSvc.getAttempt(req.params.attemptId as string);
+    assertCompanyAccess(req, attemptBefore.companyId);
+
+    const timeline = await executionSvc.listTimeline(attemptBefore.id);
+
+    res.json(timeline);
   });
 
   router.post("/rt2/executions/:attemptId/retry", async (req, res) => {

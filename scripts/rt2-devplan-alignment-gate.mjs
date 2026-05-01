@@ -89,16 +89,19 @@ const DEFAULT_ROWS = [
   {
     id: "multica-runtime",
     axis: "Multica-style runtime execution",
-    status: "tech_debt",
+    status: "complete",
     weight: 12,
     ownerPhase: "67",
     requirements: ["RUNTIME-01", "RUNTIME-02", "RUNTIME-03"],
     engineParity: true,
     evidence: [
       { type: "service", path: "server/src/services/rt2-task-execution.ts" },
+      { type: "route", path: "server/src/routes/rt2-tasks.ts" },
+      { type: "ui", path: "ui/src/components/Rt2TaskPanel.tsx" },
+      { type: "test", path: "server/src/__tests__/rt2-task-routes.test.ts" },
       { type: "audit", path: ".planning/research/ENGINE-REFERENCE-AUDIT.md" },
     ],
-    gaps: ["Runtime-aware claim, heartbeat cleanup, cancellation, and progress stream parity remain Phase 67 scope."],
+    gaps: [],
   },
   {
     id: "wikillm-memory",

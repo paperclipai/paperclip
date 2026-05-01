@@ -18,7 +18,7 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 
 **최근 완료:** v3.0은 native distribution foundation, macOS/Windows signing evidence gate, release channel/signed updater evidence gate, resident tray/global shortcut evidence gate, Mobile/Web Push/APNs evidence gate, final distribution gate, v2.9 capture regression closure를 완료했다.
 
-**현재 진행:** v3.1 DevPlan Core Convergence. Phase 65는 alignment truth와 identity boundary를 완료했고 Phase 66은 Daily Work 3패널 cockpit, One-Liner evidence, Mission -> To-Do hierarchy rollup을 완료했다. v2.9 capture reliability는 regression gate로만 보호하고, v3.0 distribution evidence gates는 future release/operator evidence 수집의 기준선으로 사용한다. 이번 milestone은 개발기획서 대비 약 64% 정적 싱크로율을 기준선으로 삼아 제품 핵심 루프와 Multica/wikiLLM/Graphify 엔진 충실도를 실제 증거로 끌어올린다.
+**현재 진행:** v3.1 DevPlan Core Convergence. Phase 65는 alignment truth와 identity boundary를 완료했고 Phase 66은 Daily Work 3패널 cockpit, One-Liner evidence, Mission -> To-Do hierarchy rollup을 완료했으며 Phase 67은 Multica-style runtime execution alignment를 완료했다. v2.9 capture reliability는 regression gate로만 보호하고, v3.0 distribution evidence gates는 future release/operator evidence 수집의 기준선으로 사용한다. 이번 milestone은 개발기획서 대비 약 64% 정적 싱크로율을 기준선으로 삼아 제품 핵심 루프와 Multica/wikiLLM/Graphify 엔진 충실도를 실제 증거로 끌어올린다.
 
 ## Current Milestone: v3.1 DevPlan Core Convergence
 
@@ -28,7 +28,7 @@ Paperclip-derived control-plane 자산은 제품 정체성이 아니라 infrastr
 - 개발기획서 장/핵심 축별 alignment matrix와 64% baseline score를 evidence-backed 상태로 만든다.
 - product-facing Paperclip/Paper Company residue를 제거하고 남는 Paperclip 명칭은 compatibility/reference로 제한한다.
 - Daily Work를 PDF의 3패널 cockpit, OKR tree, One-Liner review, Jarvis/detail 흐름으로 수렴시킨다. - Phase 66 완료
-- Multica runtime lifecycle을 runtime/capacity/heartbeat/cancellation/evidence 기준으로 강화한다.
+- Multica runtime lifecycle을 runtime/capacity/heartbeat/cancellation/evidence 기준으로 강화한다. - Phase 67 완료
 - wikiLLM `index.md`/`log.md`/topic/schema page 흐름과 Jarvis citation/update loop를 실제 export/update workflow로 만든다.
 - Graphify v3 sidecar 수준의 corpus ingest, cache, provenance, clustering/query/report 기능을 제품 graph와 분리해 구현한다.
 - Marketplace, P&L, amoeba economy, CareerMate progression을 deliverable/quality/ledger evidence와 연결한다.
@@ -209,7 +209,7 @@ v2.0-v2.2에서 완료한 것:
 - [x] v3.1 DevPlan truth and traceability 요구사항 3개. - Phase 65
 - [x] v3.1 RealTycoon2 identity cleanup 요구사항 3개. - Phase 65
 - [x] v3.1 Daily Work and OKR cockpit 요구사항 3개. - Phase 66
-- [ ] v3.1 Multica runtime alignment 요구사항 3개. - Phase 67
+- [x] v3.1 Multica runtime alignment 요구사항 3개. - Phase 67
 - [ ] v3.1 wikiLLM living memory 요구사항 3개. - Phase 68
 - [ ] v3.1 Graphify v3 engine alignment 요구사항 4개. - Phase 69
 - [ ] v3.1 Economy/Marketplace/P&L/CareerMate loop 요구사항 3개. - Phase 70
@@ -254,6 +254,7 @@ v2.0-v2.2에서 완료한 것:
 - v3.1은 distribution 확장이 아니라 DevPlan Core Convergence다. Phase 65-71은 과장된 completion claim을 줄이고 실제 제품/엔진 증거를 맞추는 데 집중한다.
 - Phase 65는 개발기획서 alignment matrix, RealTycoon2 compatibility boundary, docs/server-facing identity scan, 64% 기준선 UI, DevPlan alignment gate를 완료했다.
 - Phase 66은 Daily Work 3패널 cockpit, One-Liner review/capture evidence, Mission -> To-Do hierarchy rollup을 공유 contract, server read model, UI, focused tests로 닫았고 DevPlan alignment score를 72%로 올렸다.
+- Phase 67은 RT2 execution을 `dispatched` 중심 transition guard, runtime capacity dispatch, heartbeat/timeline/cancel/stale cleanup evidence, work card/Jarvis surface로 닫았고 DevPlan alignment score를 79%로 올렸다.
 
 ## 제약
 
@@ -286,13 +287,13 @@ v2.0-v2.2에서 완료한 것:
 | Phase 62에서 resident tray/global shortcut을 native dependency 없이 evidence gate로 닫음 | 실제 Tauri shell 추가 전에도 tray 상태, shortcut lifecycle/privacy, capture review handoff의 release blocker contract를 고정해야 한다 | 좋음 - Phase 64 final distribution gate가 resident surface readiness summary를 소비할 수 있음 |
 | Phase 63에서 Mobile/Web Push/APNs loop를 provider 전송 없이 evidence gate로 닫음 | push credential, APNs/Web Push provider availability, native mobile packaging이 없어도 subscription scope, minimal payload, delivery/retry/click/reliability contract는 먼저 고정할 수 있다 | 좋음 - Phase 64 final distribution gate가 push readiness summary를 소비할 수 있음 |
 | Phase 64에서 final distribution gate를 summary aggregator로 닫음 | 실제 native artifact와 credential은 operator evidence이며 repo는 release readiness contract와 fail-closed blocker taxonomy를 제공해야 한다 | 좋음 - v3.0 completion truth가 code, docs, requirements, roadmap, verification에서 일치함 |
-| v3.1을 DevPlan Core Convergence로 전환 | 개발기획서 대비 방향성은 맞지만 정적 싱크로율이 약 64%이고 Graphify/wikiLLM/Multica engine parity와 핵심 제품 경험이 덜 닫혔다 | 진행 중 - Phase 65에서 alignment truth와 identity boundary를 닫았고 Phase 66에서 cockpit을 닫았다. Phase 67-71은 runtime, wiki, graph, economy, acceptance gate를 순서대로 닫음 |
+| v3.1을 DevPlan Core Convergence로 전환 | 개발기획서 대비 방향성은 맞지만 정적 싱크로율이 약 64%이고 Graphify/wikiLLM/Multica engine parity와 핵심 제품 경험이 덜 닫혔다 | 진행 중 - Phase 65에서 alignment truth와 identity boundary를 닫았고 Phase 66에서 cockpit, Phase 67에서 runtime을 닫았다. Phase 68-71은 wiki, graph, economy, acceptance gate를 순서대로 닫음 |
 | Graphify를 RT2 product graph와 분리된 corpus graph sidecar로 다룸 | 현재 RT2 graph는 product event projection이고 Graphify v3는 corpus extraction/query engine이므로 같은 것으로 주장하면 completion이 과장된다 | 좋음 - v3.1 Phase 69가 source cache, provenance, clustering, path/query API를 명시적으로 담당 |
 | Phase 66에서 Mission -> To-Do rollup을 daily cockpit `hierarchyRows`로 노출 | 기존 goal/project/task/deliverable 조각을 새 schema로 재작성하지 않고 API/UI가 같은 evidence contract를 보게 해야 했다 | 좋음 - Daily cockpit과 DevPlan daily rows가 evidence-backed complete로 전환되고 score가 72%가 됨 |
 
 ## 다음 마일스톤 목표
 
-v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 alignment truth와 identity cleanup을 완료했고 Phase 66에서 Daily cockpit을 완료했다. Phase 67-70에서 Multica runtime, wikiLLM living memory, Graphify v3 sidecar, Economy/Marketplace/P&L/CareerMate loop를 닫은 뒤 Phase 71에서 64% baseline 대비 score delta와 남은 debt를 감사한다.
+v3.1 DevPlan Core Convergence를 완료한다. Phase 65에서 개발기획서 alignment truth와 identity cleanup을 완료했고 Phase 66에서 Daily cockpit, Phase 67에서 Multica runtime을 완료했다. Phase 68-70에서 wikiLLM living memory, Graphify v3 sidecar, Economy/Marketplace/P&L/CareerMate loop를 닫은 뒤 Phase 71에서 64% baseline 대비 score delta와 남은 debt를 감사한다.
 
 ## Evolution
 

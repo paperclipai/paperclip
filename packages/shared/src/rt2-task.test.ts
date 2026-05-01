@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   LIVE_EVENT_TYPES,
   assignRt2ParticipantSchema,
+  cancelRt2ExecutionSchema,
   claimRt2ExecutionSchema,
+  cleanupRt2ExecutionsSchema,
   completeRt2ExecutionSchema,
+  dispatchRt2ExecutionSchema,
   createOneLinerInboundDraftSchema,
   createRt2MessagingInboundSchema,
   rt2CaptureQueueQuerySchema,
@@ -85,6 +88,19 @@ describe("RT2 task shared contracts", () => {
       executorType: "jarvis",
       executorId: "jarvis-1",
     });
+    expect(dispatchRt2ExecutionSchema.parse({
+      executorType: "runtime",
+      executorId: "worker-1",
+      capacity: 2,
+      runtimeFreshnessSeconds: 60,
+    })).toEqual({
+      executorType: "runtime",
+      executorId: "worker-1",
+      capacity: 2,
+      runtimeFreshnessSeconds: 60,
+    });
+    expect(cancelRt2ExecutionSchema.parse({ reason: "operator stop" })).toEqual({ reason: "operator stop" });
+    expect(cleanupRt2ExecutionsSchema.parse({ limit: 10 })).toEqual({ limit: 10 });
     expect(() => completeRt2ExecutionSchema.parse({})).toThrow();
     expect(completeRt2ExecutionSchema.parse({ missingDeliverableReason: "manual result" })).toEqual({
       missingDeliverableReason: "manual result",

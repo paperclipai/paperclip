@@ -31,9 +31,9 @@ RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 
 
 ### Multica Runtime Alignment
 
-- [ ] **RUNTIME-01**: RT2 execution queue는 Multica-style `queued -> dispatched -> running -> completed/failed/cancelled` 상태 전이와 transition guard를 갖는다.
-- [ ] **RUNTIME-02**: agent/runtime claim은 runtime capacity, heartbeat, stale runtime cleanup, cancellation polling을 기준으로 감사 가능한 evidence를 남긴다.
-- [ ] **RUNTIME-03**: agent progress, message stream, tool/event output은 work card와 Jarvis evidence surface에서 추적 가능하다.
+- [x] **RUNTIME-01**: RT2 execution queue는 Multica-style `queued -> dispatched -> running -> completed/failed/cancelled` 상태 전이와 transition guard를 갖는다.
+- [x] **RUNTIME-02**: agent/runtime dispatch는 runtime capacity, heartbeat, stale runtime cleanup, cancellation polling을 기준으로 감사 가능한 evidence를 남긴다.
+- [x] **RUNTIME-03**: agent progress, message stream, tool/event output은 work card와 Jarvis evidence surface에서 추적 가능하다.
 
 ### wikiLLM Living Memory
 

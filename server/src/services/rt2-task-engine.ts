@@ -2,8 +2,10 @@ import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
+  heartbeatRunEvents,
   issueWorkProducts,
   rt2V33ExecutionAttempts,
+  rt2V33DomainEvents,
   issues,
   rt2V33TaskParticipants,
   rt2V33TaskProfiles,
@@ -13,6 +15,8 @@ import type {
   CreateRt2Task,
   CreateRt2Todo,
   EndRt2Participant,
+  Rt2ExecutionSummary,
+  Rt2ExecutionTimelineEvent,
   UpdateRt2TaskCapacity,
 } from "@paperclipai/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
@@ -199,12 +203,16 @@ export function rt2TaskEngineService(db: Db) {
     };
   }
 
-  function buildExecutionSummary(row: ExecutionAttemptRow) {
+  function normalizeExecutionState(state: string): Rt2ExecutionSummary["state"] {
+    return (state === "claimed" ? "dispatched" : state) as Rt2ExecutionSummary["state"];
+  }
+
+  function buildExecutionSummary(row: ExecutionAttemptRow): Rt2ExecutionSummary {
     return {
       id: row.id,
       taskIssueId: row.taskIssueId,
       todoIssueId: row.todoIssueId ?? null,
-      state: row.state as "queued" | "claimed" | "running" | "completed" | "failed" | "cancelled" | "blocked",
+      state: normalizeExecutionState(row.state),
       executorType: row.executorType as "user" | "jarvis" | "runtime" | null,
       executorId: row.executorId ?? null,
       executionWorkspaceId: row.executionWorkspaceId ?? null,
@@ -220,16 +228,121 @@ export function rt2TaskEngineService(db: Db) {
       startedAt: row.startedAt ?? null,
       completedAt: row.completedAt ?? null,
       updatedAt: row.updatedAt,
+      latestTimelineEvent: null,
     };
   }
 
-  function latestExecutionByIssueId(rows: ExecutionAttemptRow[], owner: "task" | "todo") {
-    const latest = new Map<string, ReturnType<typeof buildExecutionSummary>>();
+  function domainEventKind(eventType: string): Rt2ExecutionTimelineEvent["kind"] {
+    return eventType.includes("stale_cleaned") ? "cleanup" : "lifecycle";
+  }
+
+  function heartbeatEventKind(eventType: string): Rt2ExecutionTimelineEvent["kind"] {
+    const normalized = eventType.toLowerCase();
+    if (normalized.includes("tool")) return "tool";
+    if (normalized.includes("message")) return "message";
+    if (normalized.includes("progress") || normalized.includes("output")) return "progress";
+    return "message";
+  }
+
+  function toDomainTimelineEvent(event: typeof rt2V33DomainEvents.$inferSelect): Rt2ExecutionTimelineEvent {
+    return {
+      id: event.id,
+      source: "rt2_domain_event",
+      kind: domainEventKind(event.eventType),
+      type: event.eventType,
+      message: null,
+      seq: null,
+      payload: event.payload ?? null,
+      createdAt: event.occurredAt,
+    };
+  }
+
+  function toHeartbeatTimelineEvent(event: typeof heartbeatRunEvents.$inferSelect): Rt2ExecutionTimelineEvent {
+    return {
+      id: `heartbeat:${event.id}`,
+      source: "heartbeat",
+      kind: heartbeatEventKind(event.eventType),
+      type: event.eventType,
+      message: event.message ?? null,
+      seq: event.seq,
+      payload: event.payload ?? null,
+      createdAt: event.createdAt,
+    };
+  }
+
+  function newerTimelineEvent(
+    current: Rt2ExecutionTimelineEvent | null,
+    candidate: Rt2ExecutionTimelineEvent,
+  ): Rt2ExecutionTimelineEvent {
+    if (!current) return candidate;
+    const currentTime = current.createdAt.getTime();
+    const candidateTime = candidate.createdAt.getTime();
+    if (candidateTime > currentTime) return candidate;
+    if (candidateTime === currentTime && (candidate.seq ?? 0) > (current.seq ?? 0)) return candidate;
+    return current;
+  }
+
+  async function attachLatestTimelineEvents(entries: Array<{
+    row: ExecutionAttemptRow;
+    summary: Rt2ExecutionSummary;
+  }>) {
+    if (entries.length === 0) return;
+
+    const attemptIds = entries.map((entry) => entry.row.id);
+    const heartbeatRunIds = entries
+      .map((entry) => entry.row.heartbeatRunId)
+      .filter((runId): runId is string => Boolean(runId));
+    const [domainRows, heartbeatRows] = await Promise.all([
+      db
+        .select()
+        .from(rt2V33DomainEvents)
+        .where(and(
+          eq(rt2V33DomainEvents.entityType, "execution"),
+          inArray(rt2V33DomainEvents.entityId, attemptIds),
+        )),
+      heartbeatRunIds.length > 0
+        ? db
+          .select()
+          .from(heartbeatRunEvents)
+          .where(inArray(heartbeatRunEvents.runId, heartbeatRunIds))
+        : Promise.resolve([]),
+    ]);
+
+    const summaryByAttemptId = new Map(entries.map((entry) => [entry.row.id, entry.summary]));
+    const attemptIdsByRunId = new Map<string, string[]>();
+    for (const entry of entries) {
+      if (!entry.row.heartbeatRunId) continue;
+      const existing = attemptIdsByRunId.get(entry.row.heartbeatRunId) ?? [];
+      existing.push(entry.row.id);
+      attemptIdsByRunId.set(entry.row.heartbeatRunId, existing);
+    }
+
+    for (const event of domainRows) {
+      const summary = summaryByAttemptId.get(event.entityId);
+      if (!summary) continue;
+      summary.latestTimelineEvent = newerTimelineEvent(summary.latestTimelineEvent, toDomainTimelineEvent(event));
+    }
+    for (const event of heartbeatRows) {
+      const attemptIdsForRun = attemptIdsByRunId.get(event.runId) ?? [];
+      for (const attemptId of attemptIdsForRun) {
+        const summary = summaryByAttemptId.get(attemptId);
+        if (!summary) continue;
+        summary.latestTimelineEvent = newerTimelineEvent(summary.latestTimelineEvent, toHeartbeatTimelineEvent(event));
+      }
+    }
+  }
+
+  async function latestExecutionByIssueId(rows: ExecutionAttemptRow[], owner: "task" | "todo") {
+    const latest = new Map<string, Rt2ExecutionSummary>();
+    const entries: Array<{ row: ExecutionAttemptRow; summary: Rt2ExecutionSummary }> = [];
     for (const row of rows) {
       const key = owner === "task" ? row.taskIssueId : row.todoIssueId;
       if (!key || latest.has(key)) continue;
-      latest.set(key, buildExecutionSummary(row));
+      const summary = buildExecutionSummary(row);
+      latest.set(key, summary);
+      entries.push({ row, summary });
     }
+    await attachLatestTimelineEvents(entries);
     return latest;
   }
 
@@ -398,7 +511,7 @@ export function rt2TaskEngineService(db: Db) {
         );
       }
 
-      const latestTaskExecutionByIssueId = latestExecutionByIssueId(executionRows, "task");
+      const latestTaskExecutionByIssueId = await latestExecutionByIssueId(executionRows, "task");
 
       return taskRows.map((row) => ({
         issueId: row.issueId,
@@ -467,8 +580,8 @@ export function rt2TaskEngineService(db: Db) {
         todoDeliverablesByIssueId.set(deliverable.issueId, bucket);
       }
 
-      const latestTaskExecutionByIssueId = latestExecutionByIssueId(executionRows, "task");
-      const latestTodoExecutionByIssueId = latestExecutionByIssueId(executionRows, "todo");
+      const latestTaskExecutionByIssueId = await latestExecutionByIssueId(executionRows, "task");
+      const latestTodoExecutionByIssueId = await latestExecutionByIssueId(executionRows, "todo");
 
       return {
         issueId: taskIssue.id,

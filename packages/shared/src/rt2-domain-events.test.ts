@@ -4,6 +4,7 @@ import { appendRt2DomainEventSchema, rt2DomainEventTypeSchema } from "./index.js
 describe("RT2 domain event contracts", () => {
   it("validates known RT2 domain event types", () => {
     expect(rt2DomainEventTypeSchema.parse("rt2.task.created")).toBe("rt2.task.created");
+    expect(rt2DomainEventTypeSchema.parse("rt2.execution.dispatched")).toBe("rt2.execution.dispatched");
     expect(rt2DomainEventTypeSchema.parse("rt2.execution.completed")).toBe("rt2.execution.completed");
     expect(() => rt2DomainEventTypeSchema.parse("issue.created")).toThrow();
   });
@@ -38,4 +39,3 @@ describe("RT2 domain event contracts", () => {
     }));
   });
 });
-

@@ -10,10 +10,13 @@ export type Rt2DomainEventType =
   | "rt2.todo.started"
   | "rt2.deliverable.defined"
   | "rt2.execution.enqueued"
+  | "rt2.execution.dispatched"
   | "rt2.execution.claimed"
   | "rt2.execution.started"
   | "rt2.execution.completed"
   | "rt2.execution.failed"
+  | "rt2.execution.cancelled"
+  | "rt2.execution.stale_cleaned"
   | "rt2.execution.retried";
 
 export type Rt2DomainEventEntityType =
@@ -52,4 +55,3 @@ export interface Rt2DomainEvent {
   occurredAt: Date;
   createdAt: Date;
 }
-

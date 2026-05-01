@@ -7,6 +7,7 @@ export const rt2DeliverableKindSchema = z.enum(["document", "artifact"]);
 export const rt2DeliverableStateSchema = z.enum(["defined", "submitted"]);
 export const rt2ExecutionStateSchema = z.enum([
   "queued",
+  "dispatched",
   "claimed",
   "running",
   "completed",
@@ -307,7 +308,7 @@ export const enqueueRt2ExecutionSchema = z.object({
 
 export type EnqueueRt2Execution = z.infer<typeof enqueueRt2ExecutionSchema>;
 
-export const claimRt2ExecutionSchema = z.object({
+const rt2ExecutionDispatcherSchema = z.object({
   executorType: rt2ExecutionExecutorTypeSchema,
   executorId: z.string().trim().min(1),
   executionWorkspaceId: z.string().uuid().nullable().optional(),
@@ -315,7 +316,19 @@ export const claimRt2ExecutionSchema = z.object({
   heartbeatRunId: z.string().uuid().nullable().optional(),
 });
 
+export const claimRt2ExecutionSchema = rt2ExecutionDispatcherSchema;
 export type ClaimRt2Execution = z.infer<typeof claimRt2ExecutionSchema>;
+
+export const dispatchRt2ExecutionSchema = rt2ExecutionDispatcherSchema.extend({
+  capacity: z.number().int().min(1).max(100).optional(),
+  runtimeFreshnessSeconds: z.number().int().min(1).max(86_400).optional(),
+});
+
+export type DispatchRt2Execution = z.infer<typeof dispatchRt2ExecutionSchema>;
+
+export const dispatchNextRt2ExecutionSchema = dispatchRt2ExecutionSchema;
+
+export type DispatchNextRt2Execution = z.infer<typeof dispatchNextRt2ExecutionSchema>;
 
 export const startRt2ExecutionSchema = z.object({
   runtimeServiceId: z.string().uuid().nullable().optional(),
@@ -340,3 +353,18 @@ export const failRt2ExecutionSchema = z.object({
 });
 
 export type FailRt2Execution = z.infer<typeof failRt2ExecutionSchema>;
+
+export const cancelRt2ExecutionSchema = z.object({
+  reason: z.string().trim().min(1).max(1000).optional(),
+  cancelledBy: z.string().trim().min(1).max(200).optional(),
+});
+
+export type CancelRt2Execution = z.infer<typeof cancelRt2ExecutionSchema>;
+
+export const cleanupRt2ExecutionsSchema = z.object({
+  staleBefore: z.string().datetime().optional(),
+  reason: z.string().trim().min(1).max(1000).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+});
+
+export type CleanupRt2Executions = z.infer<typeof cleanupRt2ExecutionsSchema>;

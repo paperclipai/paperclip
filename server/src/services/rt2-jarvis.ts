@@ -1,14 +1,16 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   approvals,
+  heartbeatRunEvents,
   issueWorkProducts,
   issues,
   rt2JarvisRewriteEvals,
   rt2JarvisRewriteProposals,
   rt2QualityScores,
   rt2V33ContradictionCandidates,
+  rt2V33ExecutionAttempts,
   rt2V33GraphEdges,
   rt2V33GraphNodes,
   rt2V33TaskParticipants,
@@ -111,6 +113,7 @@ export function rt2JarvisService(db: Db) {
       qualityScores,
       wikiPages,
       graphNodes,
+      executions,
     ] = await Promise.all([
       db
         .select({
@@ -147,9 +150,30 @@ export function rt2JarvisService(db: Db) {
         .from(rt2V33GraphNodes)
         .where(and(eq(rt2V33GraphNodes.companyId, companyId), eq(rt2V33GraphNodes.sourceId, task.issueId)))
         .limit(5),
+      db
+        .select()
+        .from(rt2V33ExecutionAttempts)
+        .where(and(eq(rt2V33ExecutionAttempts.companyId, companyId), eq(rt2V33ExecutionAttempts.taskIssueId, task.issueId)))
+        .orderBy(desc(rt2V33ExecutionAttempts.updatedAt), desc(rt2V33ExecutionAttempts.createdAt))
+        .limit(5),
     ]);
 
-    return { todos, participants, deliverables, qualityScores, wikiPages, graphNodes };
+    const heartbeatRunIds = executions
+      .map((execution) => execution.heartbeatRunId)
+      .filter((runId): runId is string => Boolean(runId));
+    const heartbeatEvents = heartbeatRunIds.length > 0
+      ? await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.companyId, companyId),
+          inArray(heartbeatRunEvents.runId, heartbeatRunIds),
+        ))
+        .orderBy(desc(heartbeatRunEvents.createdAt), desc(heartbeatRunEvents.seq))
+        .limit(5)
+      : [];
+
+    return { todos, participants, deliverables, qualityScores, wikiPages, graphNodes, executions, heartbeatEvents };
   }
 
   async function getGrounding(companyId: string, task: TaskContext) {
@@ -391,6 +415,8 @@ export function rt2JarvisService(db: Db) {
       const activeParticipants = evidence.participants.filter((participant) => participant.state === "active").length;
       const openTodos = evidence.todos.filter((todo) => !["done", "cancelled"].includes(todo.status));
       const submittedDeliverables = evidence.deliverables.filter((deliverable) => deliverable.status !== "draft");
+      const latestExecution = evidence.executions[0] ?? null;
+      const latestHeartbeat = evidence.heartbeatEvents[0] ?? null;
 
       const suggestions: string[] = [];
       if (openTodos.length === 0) {
@@ -404,6 +430,16 @@ export function rt2JarvisService(db: Db) {
       }
       if (evidence.qualityScores.some((score) => score.managerDecision === "pending")) {
         suggestions.push("대기 중인 품질평가가 있습니다. 완료 처리 전에 승인 경계를 먼저 정리해야 합니다.");
+      }
+      if (latestExecution?.state === "failed" || latestExecution?.state === "cancelled") {
+        suggestions.push(`최근 실행이 ${latestExecution.state} 상태입니다. failureReason과 runtime evidence를 보고 재시도 여부를 결정하세요.`);
+      }
+      if (
+        latestExecution &&
+        ["dispatched", "claimed", "running"].includes(latestExecution.state) &&
+        !latestHeartbeat
+      ) {
+        suggestions.push("활성 실행이 있지만 heartbeat progress 신호가 없습니다. runtime 연결 또는 cleanup 후보 여부를 확인해야 합니다.");
       }
       if (grounding.warnings.some((warning) => warning.type === "unresolved_contradiction")) {
         suggestions.push("Jarvis 답변 근거에 미해결 contradiction이 있습니다. 실행 결정을 내리기 전에 Bridge 검토가 필요합니다.");
@@ -425,11 +461,26 @@ export function rt2JarvisService(db: Db) {
           activeParticipantCount: activeParticipants,
           wikiPageKeys: evidence.wikiPages.map((page) => page.pageKey),
           graphNodeKeys: evidence.graphNodes.map((node) => node.nodeKey),
+          executionState: latestExecution?.state === "claimed" ? "dispatched" : latestExecution?.state ?? null,
+          executionRuntimeServiceId: latestExecution?.runtimeServiceId ?? null,
+          executionHeartbeatRunId: latestExecution?.heartbeatRunId ?? null,
+          executionLatestSignal: latestHeartbeat
+            ? {
+              type: latestHeartbeat.eventType,
+              message: latestHeartbeat.message,
+              seq: latestHeartbeat.seq,
+              createdAt: latestHeartbeat.createdAt,
+            }
+            : null,
         },
         grounding,
         suggestions,
         insights: [
           `${task.status} 상태의 Task입니다.`,
+          ...(latestExecution
+            ? [`최근 실행: ${latestExecution.state === "claimed" ? "dispatched" : latestExecution.state}${latestExecution.executorId ? ` by ${latestExecution.executorId}` : ""}`]
+            : []),
+          ...(latestHeartbeat?.message ? [`최근 runtime 신호: ${latestHeartbeat.message}`] : []),
           ...evidence.wikiPages.slice(0, 2).map((page) => `관련 wiki: ${page.pageKey} - ${short(page.summary.join(" "))}`),
         ],
         nextSteps: openTodos.slice(0, 5).map((todo) => ({

@@ -76,6 +76,16 @@ describe("Rt2TaskList", () => {
               startedAt: null,
               completedAt: null,
               updatedAt: new Date("2026-04-16T00:00:00Z"),
+              latestTimelineEvent: {
+                id: "event-1",
+                source: "rt2_domain_event",
+                kind: "lifecycle",
+                type: "rt2.execution.enqueued",
+                message: null,
+                seq: null,
+                payload: null,
+                createdAt: new Date("2026-04-16T00:00:00Z"),
+              },
             },
           }]}
           onCreateTask={onCreateTask}
@@ -89,6 +99,7 @@ describe("Rt2TaskList", () => {
     expect(container.textContent).toContain("1 산출물");
     expect(container.textContent).toContain("in progress");
     expect(container.textContent).toContain("실행 queued");
+    expect(container.textContent).toContain("rt2.execution.enqueued");
 
     const createButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("새 작업"));

@@ -6,8 +6,11 @@ import { and, eq } from "drizzle-orm";
 import {
   companies,
   activityLog,
+  agents,
   companyMemberships,
   createDb,
+  heartbeatRunEvents,
+  heartbeatRuns,
   issueWorkProducts,
   issues,
   projects,
@@ -19,6 +22,7 @@ import {
   rt2V33ProjectorState,
   rt2V33TaskParticipants,
   rt2V33TaskProfiles,
+  workspaceRuntimeServices,
   startEmbeddedPostgresTestDatabase,
   getEmbeddedPostgresTestSupport,
 } from "@paperclipai/db";
@@ -69,13 +73,17 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     await db.delete(rt2V33ProjectorState);
     await db.delete(rt2V33DomainEvents);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(rt2V33ExecutionAttempts);
+    await db.delete(heartbeatRuns);
+    await db.delete(workspaceRuntimeServices);
     await db.delete(issueWorkProducts);
     await db.delete(rt2V33TaskParticipants);
     await db.delete(rt2V33TaskProfiles);
     await db.delete(issues);
     await db.delete(companyMemberships);
     await db.delete(projects);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -1101,13 +1109,13 @@ describeEmbeddedPostgres("rt2 task routes", () => {
       state: "queued",
     }));
 
-    const claimed = await request(app)
-      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+    const dispatched = await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/dispatch`)
       .send({ executorType: "jarvis", executorId: "jarvis-launch" })
       .expect(200);
 
-    expect(claimed.body).toEqual(expect.objectContaining({
-      state: "claimed",
+    expect(dispatched.body).toEqual(expect.objectContaining({
+      state: "dispatched",
       executorType: "jarvis",
       executorId: "jarvis-launch",
     }));
@@ -1138,7 +1146,7 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     expect(executionEvents.map((event) => event.eventType)).toEqual(
       expect.arrayContaining([
         "rt2.execution.enqueued",
-        "rt2.execution.claimed",
+        "rt2.execution.dispatched",
         "rt2.execution.started",
         "rt2.execution.completed",
       ]),
@@ -1153,10 +1161,13 @@ describeEmbeddedPostgres("rt2 task routes", () => {
       id: queued.body.id,
       state: "completed",
       executorId: "jarvis-launch",
+      latestTimelineEvent: expect.objectContaining({
+        type: "rt2.execution.completed",
+      }),
     }));
   });
 
-  it("prevents duplicate execution claims", async () => {
+  it("prevents duplicate execution dispatches", async () => {
     fixture = await seedFixture();
     const app = await createApp(fixture.companyId, fixture.managerUserId);
     const task = await createTaskFixture({ capacity: 1, participants: [] });
@@ -1167,16 +1178,164 @@ describeEmbeddedPostgres("rt2 task routes", () => {
       .expect(201);
 
     await request(app)
-      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .post(`/api/rt2/executions/${queued.body.id}/dispatch`)
       .send({ executorType: "user", executorId: fixture.managerUserId })
       .expect(200);
 
     const duplicate = await request(app)
-      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .post(`/api/rt2/executions/${queued.body.id}/dispatch`)
       .send({ executorType: "user", executorId: fixture.userAId });
 
     expect(duplicate.status).toBe(409);
-    expect(duplicate.body.error).toBe("RT2_EXECUTION_ALREADY_CLAIMED");
+    expect(duplicate.body.error).toBe("RT2_EXECUTION_ALREADY_DISPATCHED");
+  });
+
+  it("dispatches queued executions by runtime capacity, exposes heartbeat timeline, and cleans stale active work", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({ capacity: 1, participants: [] });
+    const runtimeServiceId = randomUUID();
+    const agentId = randomUUID();
+    const heartbeatRunId = randomUUID();
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: fixture.companyId,
+      name: "Runtime Worker",
+      role: "operator",
+      status: "idle",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: heartbeatRunId,
+      companyId: fixture.companyId,
+      agentId,
+      status: "running",
+      invocationSource: "on_demand",
+    });
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId,
+      runId: heartbeatRunId,
+      agentId,
+      seq: 1,
+      eventType: "progress",
+      message: "50% complete",
+      payload: { tool: "worker" },
+    });
+
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId: fixture.companyId,
+      projectId: fixture.projectId,
+      scopeType: "project_workspace",
+      serviceName: "worker",
+      status: "running",
+      lifecycle: "shared",
+      provider: "local_process",
+      healthStatus: "healthy",
+      lastUsedAt: new Date(),
+    });
+
+    const firstQueued = await request(app)
+      .post(`/api/rt2/tasks/${task.issueId}/executions`)
+      .send({})
+      .expect(201);
+
+    await request(app)
+      .post(`/api/rt2/tasks/${task.issueId}/executions`)
+      .send({})
+      .expect(201);
+
+    const dispatched = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/executions/dispatch-next`)
+      .send({
+        executorType: "runtime",
+        executorId: "worker-1",
+        runtimeServiceId,
+        heartbeatRunId,
+        capacity: 1,
+      })
+      .expect(200);
+
+    expect(dispatched.body).toEqual(expect.objectContaining({
+      id: firstQueued.body.id,
+      state: "dispatched",
+      runtimeServiceId,
+      heartbeatRunId,
+    }));
+
+    const capacityBlocked = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/executions/dispatch-next`)
+      .send({
+        executorType: "runtime",
+        executorId: "worker-1",
+        runtimeServiceId,
+        capacity: 1,
+      });
+
+    expect(capacityBlocked.status).toBe(409);
+    expect(capacityBlocked.body.error).toBe("RT2_EXECUTION_RUNTIME_CAPACITY_EXCEEDED");
+
+    const timeline = await request(app)
+      .get(`/api/rt2/executions/${dispatched.body.id}/timeline`)
+      .expect(200);
+
+    expect(timeline.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "rt2.execution.dispatched" }),
+        expect.objectContaining({ source: "heartbeat", kind: "progress", message: "50% complete" }),
+      ]),
+    );
+
+    const staleBefore = new Date();
+    await db
+      .update(rt2V33ExecutionAttempts)
+      .set({ updatedAt: new Date(staleBefore.getTime() - 60_000) })
+      .where(eq(rt2V33ExecutionAttempts.id, dispatched.body.id));
+
+    const cleanup = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/executions/cleanup-stale`)
+      .send({ staleBefore: staleBefore.toISOString(), reason: "heartbeat stale" })
+      .expect(200);
+
+    expect(cleanup.body.cleaned).toEqual([
+      expect.objectContaining({
+        id: dispatched.body.id,
+        state: "failed",
+        failureReason: "heartbeat stale",
+      }),
+    ]);
+  });
+
+  it("cancels queued executions with an execution-domain event", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({ capacity: 1, participants: [] });
+
+    const queued = await request(app)
+      .post(`/api/rt2/tasks/${task.issueId}/executions`)
+      .send({})
+      .expect(201);
+
+    const cancelled = await request(app)
+      .post(`/api/rt2/executions/${queued.body.id}/cancel`)
+      .send({ reason: "operator stopped", cancelledBy: fixture.managerUserId })
+      .expect(200);
+
+    expect(cancelled.body).toEqual(expect.objectContaining({
+      state: "cancelled",
+      failureReason: "operator stopped",
+    }));
+
+    const executionEvents = await db
+      .select()
+      .from(rt2V33DomainEvents)
+      .where(eq(rt2V33DomainEvents.entityType, "execution"));
+
+    expect(executionEvents.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining(["rt2.execution.cancelled"]),
+    );
   });
 
   it("creates a retry attempt after a failed execution", async () => {
@@ -1190,7 +1349,7 @@ describeEmbeddedPostgres("rt2 task routes", () => {
       .expect(201);
 
     await request(app)
-      .post(`/api/rt2/executions/${queued.body.id}/claim`)
+      .post(`/api/rt2/executions/${queued.body.id}/dispatch`)
       .send({ executorType: "runtime", executorId: "worker-1" })
       .expect(200);
 

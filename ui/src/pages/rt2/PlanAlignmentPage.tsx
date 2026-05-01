@@ -98,7 +98,7 @@ const ALIGNMENT_ITEMS: AlignmentItem[] = [
     requirements: ["RUNTIME-01", "RUNTIME-02", "RUNTIME-03"],
     evidence: "task execution service, reference audit",
     current: "실행 서비스는 있으나 heartbeat cleanup, cancellation, progress stream parity는 완료 근거가 부족합니다.",
-    gap: "Phase 67에서 runtime-aware claim과 progress/cancel 경계를 검증합니다.",
+    gap: "Phase 67에서 runtime-aware dispatch와 progress/cancel 경계를 검증합니다.",
   },
   {
     id: "wikillm-memory",

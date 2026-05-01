@@ -39,7 +39,7 @@ export type Rt2ExecutionSummary = {
   id: string;
   taskIssueId: string;
   todoIssueId: string | null;
-  state: "queued" | "claimed" | "running" | "completed" | "failed" | "cancelled" | "blocked";
+  state: "queued" | "dispatched" | "claimed" | "running" | "completed" | "failed" | "cancelled" | "blocked";
   executorType: "user" | "jarvis" | "runtime" | null;
   executorId: string | null;
   executionWorkspaceId: string | null;
@@ -55,6 +55,18 @@ export type Rt2ExecutionSummary = {
   startedAt: Date | null;
   completedAt: Date | null;
   updatedAt: Date;
+  latestTimelineEvent: Rt2ExecutionTimelineEvent | null;
+};
+
+export type Rt2ExecutionTimelineEvent = {
+  id: string;
+  source: "rt2_domain_event" | "heartbeat";
+  kind: "lifecycle" | "progress" | "message" | "tool" | "cleanup";
+  type: string;
+  message: string | null;
+  seq: number | null;
+  payload: Record<string, unknown> | null;
+  createdAt: Date;
 };
 
 export type Rt2TaskSummary = {
@@ -247,6 +259,15 @@ export const rt2TasksApi = {
     executionWorkspaceId?: string | null;
     metadata?: Record<string, unknown>;
   }) => api.post<Rt2ExecutionSummary>(`/rt2/tasks/${encodeURIComponent(taskIssueId)}/executions`, data),
+  dispatchExecution: (attemptId: string, data: {
+    executorType: "user" | "jarvis" | "runtime";
+    executorId: string;
+    executionWorkspaceId?: string | null;
+    runtimeServiceId?: string | null;
+    heartbeatRunId?: string | null;
+    capacity?: number;
+    runtimeFreshnessSeconds?: number;
+  }) => api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/dispatch`, data),
   claimExecution: (attemptId: string, data: {
     executorType: "user" | "jarvis" | "runtime";
     executorId: string;
@@ -254,6 +275,15 @@ export const rt2TasksApi = {
     runtimeServiceId?: string | null;
     heartbeatRunId?: string | null;
   }) => api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/claim`, data),
+  dispatchNextExecution: (companyId: string, data: {
+    executorType: "user" | "jarvis" | "runtime";
+    executorId: string;
+    executionWorkspaceId?: string | null;
+    runtimeServiceId?: string | null;
+    heartbeatRunId?: string | null;
+    capacity?: number;
+    runtimeFreshnessSeconds?: number;
+  }) => api.post<Rt2ExecutionSummary>(`/companies/${companyId}/rt2/executions/dispatch-next`, data),
   startExecution: (attemptId: string, data: { runtimeServiceId?: string | null; heartbeatRunId?: string | null } = {}) =>
     api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/start`, data),
   completeExecution: (attemptId: string, data: {
@@ -262,6 +292,12 @@ export const rt2TasksApi = {
   }) => api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/complete`, data),
   failExecution: (attemptId: string, data: { failureReason: string }) =>
     api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/fail`, data),
+  cancelExecution: (attemptId: string, data: { reason?: string; cancelledBy?: string } = {}) =>
+    api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/cancel`, data),
+  getExecutionTimeline: (attemptId: string) =>
+    api.get<Rt2ExecutionTimelineEvent[]>(`/rt2/executions/${encodeURIComponent(attemptId)}/timeline`),
+  cleanupStaleExecutions: (companyId: string, data: { staleBefore?: string; reason?: string; limit?: number } = {}) =>
+    api.post<{ staleBefore: Date; cleaned: Rt2ExecutionSummary[] }>(`/companies/${companyId}/rt2/executions/cleanup-stale`, data),
   retryExecution: (attemptId: string) =>
     api.post<Rt2ExecutionSummary>(`/rt2/executions/${encodeURIComponent(attemptId)}/retry`, {}),
   endParticipant: (taskIssueId: string, userId: string, reason: EndRt2Participant["reason"]) =>

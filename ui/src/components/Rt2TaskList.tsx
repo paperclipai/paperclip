@@ -2,6 +2,10 @@ import type { Rt2TaskSummary } from "../api/rt2-tasks";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 
+function formatExecutionState(state: string) {
+  return state === "claimed" ? "dispatched" : state.replaceAll("_", " ");
+}
+
 export function Rt2TaskList({
   companyId: _companyId,
   projectId: _projectId,
@@ -36,7 +40,14 @@ export function Rt2TaskList({
               <span>{task.todoCount} todos</span>
               <span>{task.deliverableCount} 산출물</span>
               <span>{task.status.replaceAll("_", " ")}</span>
-              <span>{task.execution ? `실행 ${task.execution.state}` : "실행 대기"}</span>
+              <span>{task.execution ? `실행 ${formatExecutionState(task.execution.state)}` : "실행 대기"}</span>
+              {task.execution?.latestTimelineEvent ? (
+                <span>
+                  {task.execution.latestTimelineEvent.message
+                    ? `${task.execution.latestTimelineEvent.kind} ${task.execution.latestTimelineEvent.message}`
+                    : task.execution.latestTimelineEvent.type}
+                </span>
+              ) : null}
             </div>
           </Link>
         ))}

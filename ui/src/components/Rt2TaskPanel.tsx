@@ -2,6 +2,16 @@ import { useEffect, useState } from "react";
 import type { Rt2AssignableUser, Rt2TaskDetail } from "../api/rt2-tasks";
 import { Button } from "@/components/ui/button";
 
+function formatExecutionState(state: string) {
+  return state === "claimed" ? "dispatched" : state.replaceAll("_", " ");
+}
+
+function formatTimelineSignal(detail: Rt2TaskDetail["execution"]) {
+  const event = detail?.latestTimelineEvent;
+  if (!event) return null;
+  return event.message ? `${event.kind} · ${event.message}` : `${event.kind} · ${event.type}`;
+}
+
 export function Rt2TaskPanel({
   detail,
   assignableUsers,
@@ -50,9 +60,18 @@ export function Rt2TaskPanel({
         <div className="text-sm font-medium text-foreground">Execution</div>
         <div>
           {detail.execution
-            ? `${detail.execution.state.replaceAll("_", " ")}${detail.execution.executorId ? ` by ${detail.execution.executorId}` : ""}`
-            : "idle"}
+            ? `실행 ${formatExecutionState(detail.execution.state)}${detail.execution.executorId ? ` · ${detail.execution.executorId}` : ""}`
+            : "실행 대기"}
         </div>
+        {detail.execution?.runtimeServiceId ? (
+          <div>runtime {detail.execution.runtimeServiceId}</div>
+        ) : null}
+        {detail.execution?.heartbeatRunId ? (
+          <div>heartbeat {detail.execution.heartbeatRunId}</div>
+        ) : null}
+        {formatTimelineSignal(detail.execution) ? (
+          <div>{formatTimelineSignal(detail.execution)}</div>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -140,8 +159,11 @@ export function Rt2TaskPanel({
                 {todo.assigneeUserId ?? "unassigned"} · {todo.submittedDeliverableCount} / {todo.deliverableCount} deliverables
               </div>
               <div className="text-xs text-muted-foreground">
-                {todo.execution ? `execution ${todo.execution.state}` : "execution idle"}
+                {todo.execution ? `실행 ${formatExecutionState(todo.execution.state)}` : "실행 대기"}
               </div>
+              {formatTimelineSignal(todo.execution) ? (
+                <div className="text-xs text-muted-foreground">{formatTimelineSignal(todo.execution)}</div>
+              ) : null}
             </div>
             {todo.status === "todo" ? (
               <Button size="sm" variant="outline" onClick={() => onStartTodo(todo.issueId)}>

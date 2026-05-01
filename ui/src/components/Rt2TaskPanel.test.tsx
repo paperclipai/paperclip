@@ -67,6 +67,16 @@ describe("Rt2TaskPanel", () => {
               startedAt: new Date("2026-04-16T00:02:00Z"),
               completedAt: null,
               updatedAt: new Date("2026-04-16T00:02:00Z"),
+              latestTimelineEvent: {
+                id: "event-1",
+                source: "heartbeat",
+                kind: "progress",
+                type: "progress",
+                message: "workspace ready",
+                seq: 1,
+                payload: null,
+                createdAt: new Date("2026-04-16T00:02:30Z"),
+              },
             },
             participants: [
               {
@@ -140,8 +150,9 @@ describe("Rt2TaskPanel", () => {
     expect(container.textContent).toContain("capacity_reduced");
     expect(container.textContent).toContain("0 / 1 deliverables");
     expect(container.textContent).toContain("Assign participant");
-    expect(container.textContent).toContain("running by jarvis-1");
-    expect(container.textContent).toContain("execution idle");
+    expect(container.textContent).toContain("실행 running · jarvis-1");
+    expect(container.textContent).toContain("progress · workspace ready");
+    expect(container.textContent).toContain("실행 대기");
 
     const buttons = Array.from(container.querySelectorAll("button"));
     const joinButton = buttons.find((button) => button.textContent === "Join");

@@ -10,6 +10,7 @@ export type Rt2DeliverableState = "defined" | "submitted";
 
 export type Rt2ExecutionState =
   | "queued"
+  | "dispatched"
   | "claimed"
   | "running"
   | "completed"
@@ -18,6 +19,20 @@ export type Rt2ExecutionState =
   | "blocked";
 
 export type Rt2ExecutionExecutorType = "user" | "jarvis" | "runtime";
+
+export type Rt2ExecutionTimelineSource = "rt2_domain_event" | "heartbeat";
+export type Rt2ExecutionTimelineEventKind = "lifecycle" | "progress" | "message" | "tool" | "cleanup";
+
+export interface Rt2ExecutionTimelineEvent {
+  id: string;
+  source: Rt2ExecutionTimelineSource;
+  kind: Rt2ExecutionTimelineEventKind;
+  type: string;
+  message: string | null;
+  seq: number | null;
+  payload: Record<string, unknown> | null;
+  createdAt: Date;
+}
 
 export interface Rt2DeliverableInput {
   title: string;
@@ -94,6 +109,7 @@ export interface Rt2ExecutionSummary {
   startedAt: Date | null;
   completedAt: Date | null;
   updatedAt: Date;
+  latestTimelineEvent: Rt2ExecutionTimelineEvent | null;
 }
 
 export interface Rt2TaskDetail extends Rt2TaskSummary {
