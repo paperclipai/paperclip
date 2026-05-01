@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { sessionCodec as claudeSessionCodec } from "@paperclipai/adapter-claude-local/server";
+import {
+  sessionCodec as copilotSessionCodec,
+  isCopilotUnknownSessionError,
+} from "@paperclipai/adapter-copilot-local/server";
 import { sessionCodec as codexSessionCodec, isCodexUnknownSessionError } from "@paperclipai/adapter-codex-local/server";
 import {
   sessionCodec as cursorSessionCodec,
@@ -52,6 +56,24 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/codex",
     });
     expect(codexSessionCodec.getDisplayId?.(serialized ?? null)).toBe("codex-session-1");
+  });
+
+  it("normalizes copilot session params with cwd", () => {
+    const parsed = copilotSessionCodec.deserialize({
+      sessionID: "copilot-session-1",
+      cwd: "/tmp/copilot",
+    });
+    expect(parsed).toEqual({
+      sessionId: "copilot-session-1",
+      cwd: "/tmp/copilot",
+    });
+
+    const serialized = copilotSessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "copilot-session-1",
+      cwd: "/tmp/copilot",
+    });
+    expect(copilotSessionCodec.getDisplayId?.(serialized ?? null)).toBe("copilot-session-1");
   });
 
   it("normalizes opencode session params with cwd", () => {
@@ -126,6 +148,23 @@ describe("codex resume recovery detection", () => {
     expect(
       isCodexUnknownSessionError(
         '{"type":"result","ok":true}',
+        "",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("copilot resume recovery detection", () => {
+  it("detects unknown session errors from copilot output", () => {
+    expect(
+      isCopilotUnknownSessionError(
+        "",
+        "resume failed: session not found",
+      ),
+    ).toBe(true);
+    expect(
+      isCopilotUnknownSessionError(
+        "{\"type\":\"result\",\"ok\":true}",
         "",
       ),
     ).toBe(false);
