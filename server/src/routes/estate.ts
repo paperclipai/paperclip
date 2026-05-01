@@ -1555,6 +1555,7 @@ export function estateRoutes(db: Db) {
     if (!companyId) throw badRequest("companyId is required");
     assertCompanyAccess(req, companyId);
     const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    if (!userId) throw badRequest("Could not resolve userId");
 
     const rows = await db
       .select()
@@ -1630,6 +1631,7 @@ export function estateRoutes(db: Db) {
     if (!companyId) throw badRequest("companyId is required");
     assertCompanyAccess(req, companyId);
     const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    if (!userId) throw badRequest("Could not resolve userId");
     const statusFilter = typeof req.query.status === "string" ? req.query.status.trim() : null;
 
     const conditions = [
@@ -1727,6 +1729,7 @@ export function estateRoutes(db: Db) {
     if (!companyId) throw badRequest("companyId is required");
     assertCompanyAccess(req, companyId);
     const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    if (!userId) throw badRequest("Could not resolve userId");
     const reviewYear = parseInt(req.params.year, 10);
     if (isNaN(reviewYear)) throw badRequest("Invalid year");
 
@@ -1756,6 +1759,7 @@ export function estateRoutes(db: Db) {
     if (!companyId) throw badRequest("companyId is required");
     assertCompanyAccess(req, companyId);
     const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    if (!userId) throw badRequest("Could not resolve userId");
     const reviewYear = parseInt(req.params.year, 10);
     if (isNaN(reviewYear)) throw badRequest("Invalid year");
 
@@ -1806,6 +1810,7 @@ export function estateRoutes(db: Db) {
     if (!companyId) throw badRequest("companyId is required");
     assertCompanyAccess(req, companyId);
     const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    if (!userId) throw badRequest("Could not resolve userId");
 
     const rows = await db
       .select()
@@ -1825,6 +1830,7 @@ export function estateRoutes(db: Db) {
     if (!companyId) throw badRequest("companyId is required");
     assertCompanyAccess(req, companyId);
     const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : req.actor!.userId;
+    if (!userId) throw badRequest("Could not resolve userId");
     const stateFilter = typeof req.query.state === "string" ? req.query.state.trim().toUpperCase() : null;
     const yearFilter = typeof req.query.year === "string" ? parseInt(req.query.year, 10) : null;
 

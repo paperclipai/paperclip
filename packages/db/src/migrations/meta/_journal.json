@@ -386,6 +386,13 @@
       "when": 1746403200000,
       "tag": "0054_phase2_advanced_financial",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1746489600000,
+      "tag": "0055_phase2_compliance_automation",
+      "breakpoints": true
     }
   ]
 }
