@@ -538,6 +538,22 @@ export function issueRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  function assertAgentUserAssignmentAllowed(
+    req: Request,
+    res: Response,
+    details: { issueId?: string; companyId?: string; parentIssueId?: string; assigneeUserId: string | null },
+  ) {
+    if (req.actor.type !== "agent" || !details.assigneeUserId) return true;
+    res.status(403).json({
+      error: "Agents cannot assign issues to users",
+      details: {
+        ...details,
+        securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+      },
+    });
+    return false;
+  }
+
   async function assertCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -1823,6 +1839,14 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (
+      !assertAgentUserAssignmentAllowed(req, res, {
+        companyId,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      })
+    ) {
+      return;
+    }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -1900,6 +1924,14 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (
+      !assertAgentUserAssignmentAllowed(req, res, {
+        parentIssueId: parent.id,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      })
+    ) {
+      return;
+    }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId);
     }
@@ -2102,21 +2134,6 @@ export function issueRoutes(
       });
       return;
     }
-    if (
-      req.actor.type === "agent" &&
-      req.body.assigneeUserId !== undefined &&
-      req.body.assigneeUserId !== existing.assigneeUserId
-    ) {
-      res.status(403).json({
-        error: "Agents cannot assign issues to users",
-        details: {
-          issueId: existing.id,
-          assigneeUserId: req.body.assigneeUserId ?? null,
-          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
-        },
-      });
-      return;
-    }
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
@@ -2137,6 +2154,17 @@ export function issueRoutes(
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
     });
+    if (
+      !transition.workflowControlledAssignment &&
+      req.body.assigneeUserId !== undefined &&
+      req.body.assigneeUserId !== existing.assigneeUserId &&
+      !assertAgentUserAssignmentAllowed(req, res, {
+        issueId: existing.id,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      })
+    ) {
+      return;
+    }
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;

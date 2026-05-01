@@ -6,6 +6,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  create: vi.fn(),
   createChild: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -285,6 +286,46 @@ describe("issue execution policy routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agents cannot author execution policies with user participants");
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-created issues assigned directly to users", async () => {
+    const res = await request(await createApp(agentActor()))
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "User assignment issue",
+        assigneeUserId: "local-board",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot assign issues to users");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-created child issues assigned directly to users", async () => {
+    const parent = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-999",
+      title: "Parent issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(parent);
+
+    const res = await request(await createApp(agentActor()))
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({
+        title: "User assignment child issue",
+        assigneeUserId: "local-board",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents cannot assign issues to users");
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
   });
 
