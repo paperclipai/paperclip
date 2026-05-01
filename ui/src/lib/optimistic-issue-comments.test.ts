@@ -726,12 +726,59 @@ describe("optimistic issue comments", () => {
     expect(
       isQueuedIssueComment({
         comment: {
+          id: "comment-2",
           createdAt: new Date("2026-03-28T16:20:05.000Z"),
         },
         activeRunStartedAt: new Date("2026-03-28T16:20:00.000Z"),
+        activeRunWakeCommentId: "comment-1",
         runId: null,
       }),
     ).toBe(true);
+  });
+
+  it("does not mark the comment that triggered the active run as queued", () => {
+    expect(
+      isQueuedIssueComment({
+        comment: {
+          id: "comment-1",
+          createdAt: new Date("2026-03-28T16:20:05.000Z"),
+        },
+        activeRunStartedAt: new Date("2026-03-28T16:20:00.000Z"),
+        activeRunCommentId: "comment-1",
+        activeRunWakeCommentId: "comment-1",
+        runId: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not mark the active run context comment as queued", () => {
+    expect(
+      isQueuedIssueComment({
+        comment: {
+          id: "context-comment",
+          createdAt: new Date("2026-03-28T16:20:05.000Z"),
+        },
+        activeRunStartedAt: new Date("2026-03-28T16:20:00.000Z"),
+        activeRunCommentId: "context-comment",
+        activeRunWakeCommentId: "wake-comment",
+        runId: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not mark the active run wake comment as queued", () => {
+    expect(
+      isQueuedIssueComment({
+        comment: {
+          id: "wake-comment",
+          createdAt: new Date("2026-03-28T16:20:05.000Z"),
+        },
+        activeRunStartedAt: new Date("2026-03-28T16:20:00.000Z"),
+        activeRunCommentId: "context-comment",
+        activeRunWakeCommentId: "wake-comment",
+        runId: null,
+      }),
+    ).toBe(false);
   });
 
   it("does not mark comments with an associated run as queued", () => {
