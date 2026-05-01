@@ -29,7 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -931,8 +931,11 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests.
+      // Wrap with pathToFileURL so Windows absolute paths (e.g. C:\foo\bar.js)
+      // are passed as valid file:// URLs — node ESM rejects raw drive-letter
+      // paths because it parses `c:` as a URL scheme.
+      const mod = await import(pathToFileURL(manifestPath).href) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -1751,8 +1754,18 @@ export function pluginLoader(
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      // On Windows, --import requires a file:// URL (Node's ESM loader rejects
+      // raw drive-letter paths like `D:\...` with ERR_UNSUPPORTED_ESM_URL_SCHEME).
+      //
+      // Skip tsx loader for plugins installed under the user's home
+      // (`~/.paperclip/plugins/...`): these are end-user plugins built and
+      // shipped as JS, not workspace-internal TS. Loading them through tsx
+      // mangles Windows file:// URLs (single-slash `file:/C:/...` instead of
+      // triple-slash) and breaks the bootstrap import chain.
+      const isUserHomePlugin =
+        plugin.packagePath && plugin.packagePath.startsWith(localPluginDir);
+      if (plugin.packagePath && !isUserHomePlugin && existsSync(DEV_TSX_LOADER_PATH)) {
+        workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
