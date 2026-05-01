@@ -176,10 +176,11 @@ describe("acpx_local runtime skill isolation", () => {
     const root = await makeTempRoot();
     const sourceCodexHome = path.join(root, "source-codex-home");
     const paperclipHome = path.join(root, "paperclip-home");
+    const paperclipInstanceId = "test-instance";
     const managedCodexHome = path.join(
       paperclipHome,
       "instances",
-      "default",
+      paperclipInstanceId,
       "companies",
       "company-1",
       "codex-home",
@@ -197,7 +198,7 @@ describe("acpx_local runtime skill isolation", () => {
     try {
       process.env.CODEX_HOME = sourceCodexHome;
       process.env.PAPERCLIP_HOME = paperclipHome;
-      process.env.PAPERCLIP_INSTANCE_ID = "default";
+      process.env.PAPERCLIP_INSTANCE_ID = paperclipInstanceId;
       await runExecutor({
         agent: "codex",
         stateDir: path.join(root, "state"),
