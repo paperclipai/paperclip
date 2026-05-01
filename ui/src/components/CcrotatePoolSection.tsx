@@ -1,8 +1,19 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ccrotateApi, type CcrotateAccountRow, type CcrotateTarget } from "../api/ccrotate";
 import { queryKeys } from "@/lib/queryKeys";
 import { ApiError } from "../api/client";
 import { cn } from "@/lib/utils";
+import { Button } from "./ui/button";
+import { Textarea } from "./ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 interface CcrotatePoolSectionProps {
   companyId: string;
@@ -15,12 +26,55 @@ interface CcrotatePoolSectionProps {
  * account; this shows every snapped account so an operator can see what the
  * pool will rotate to next. */
 export function CcrotatePoolSection({ companyId, target }: CcrotatePoolSectionProps) {
+  const queryClient = useQueryClient();
+  const [importOpen, setImportOpen] = useState(false);
+  const [importBlob, setImportBlob] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
   const { data, error, isLoading } = useQuery({
     queryKey: queryKeys.ccrotate.snapshot(companyId),
     queryFn: () => ccrotateApi.snapshot(companyId),
     enabled: !!companyId,
     refetchInterval: 30_000,
     retry: false,
+  });
+
+  const refreshMutation = useMutation({
+    mutationFn: () => ccrotateApi.refresh(companyId),
+    onSuccess: (res) => {
+      setRefreshError(null);
+      // Partial-failure case: 200 with errors[]. Surface a short note but
+      // still re-render the snapshot since ccrotate writes through whatever
+      // it was able to update.
+      if (res.errors && res.errors.length > 0) {
+        setRefreshError(
+          `partial: ${res.errors.map((e) => `${e.target}: ${e.error}`).join("; ")}`,
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.ccrotate.snapshot(companyId) });
+    },
+    onError: (err) => {
+      setRefreshError(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const importMutation = useMutation({
+    mutationFn: (blob: string) => ccrotateApi.import(companyId, blob),
+    onSuccess: (res) => {
+      setImportError(null);
+      setImportOpen(false);
+      setImportBlob("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.ccrotate.snapshot(companyId) });
+      // After import the cache is fresh-but-imported (no API hit) — kick off
+      // a refresh so the UI reflects current per-account utilization rather
+      // than whatever was captured at export time on the source host.
+      void refreshMutation.mutateAsync();
+      void res; // imported summary is in the response if we ever want to surface it
+    },
+    onError: (err) => {
+      setImportError(err instanceof Error ? err.message : String(err));
+    },
   });
 
   // Plugin-not-installed (404) is expected for instances that haven't installed
@@ -44,11 +98,36 @@ export function CcrotatePoolSection({ companyId, target }: CcrotatePoolSectionPr
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
             ccrotate pool
           </p>
-          <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-            {accounts.length} account{accounts.length === 1 ? "" : "s"}
-            {data?.cacheAge ? ` · ${data.cacheAge}` : ""}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+              {accounts.length} account{accounts.length === 1 ? "" : "s"}
+              {data?.cacheAge ? ` · ${data.cacheAge}` : ""}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-[10px] uppercase tracking-wider"
+              disabled={refreshMutation.isPending}
+              onClick={() => refreshMutation.mutate()}
+              aria-label="Refresh ccrotate pool"
+            >
+              {refreshMutation.isPending ? "Refreshing…" : "Refresh"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-[10px] uppercase tracking-wider"
+              onClick={() => {
+                setImportError(null);
+                setImportOpen(true);
+              }}
+              aria-label="Import ccrotate snapshot"
+            >
+              Import
+            </Button>
+          </div>
         </div>
+        {refreshError ? <p className="text-xs text-destructive">{refreshError}</p> : null}
         {error instanceof Error && !(error instanceof ApiError && error.status === 404) ? (
           <p className="text-xs text-destructive">{error.message}</p>
         ) : null}
@@ -59,6 +138,45 @@ export function CcrotatePoolSection({ companyId, target }: CcrotatePoolSectionPr
           ))}
         </div>
       </div>
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Import ccrotate snapshot</DialogTitle>
+            <DialogDescription>
+              Paste a <code className="font-mono">mp-gz-b64:…</code> blob from{" "}
+              <code className="font-mono">ccrotate export</code> on a healthy host. The
+              snapshot is imported on this pod (sync-aware merge — local entries
+              fresher than the import are kept) and persisted so future Job pods
+              re-import the same canonical state on preRun.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={importBlob}
+            onChange={(e) => setImportBlob(e.target.value)}
+            placeholder="mp-gz-b64:…"
+            rows={8}
+            className="font-mono text-[11px] leading-snug"
+            disabled={importMutation.isPending}
+            spellCheck={false}
+          />
+          {importError ? <p className="text-xs text-destructive">{importError}</p> : null}
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setImportOpen(false)}
+              disabled={importMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={importMutation.isPending || !importBlob.trim().startsWith("mp-gz-b64:")}
+              onClick={() => importMutation.mutate(importBlob.trim())}
+            >
+              {importMutation.isPending ? "Importing…" : "Import"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

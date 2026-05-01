@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "kkroo.ccrotate";
-export const PLUGIN_VERSION = "0.2.1";
+export const PLUGIN_VERSION = "0.3.0";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -28,6 +28,14 @@ const manifest: PaperclipPluginManifestV1 = {
       auth: "board",
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },
+    },
+    {
+      routeKey: "refresh",
+      method: "POST",
+      path: "/refresh",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
     },
     {
       routeKey: "state-get",

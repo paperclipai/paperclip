@@ -19,6 +19,17 @@ export interface CcrotateSnapshotResponse {
   targets: Record<CcrotateTarget, { error?: string; accounts?: CcrotateAccountRow[] }>;
 }
 
+export interface CcrotateRefreshResponse {
+  ok: boolean;
+  errors?: Array<{ target: CcrotateTarget; error: string }>;
+}
+
+export interface CcrotateImportResponse {
+  ok: boolean;
+  imported?: { updated: number; kept: number };
+  capturedAt?: string;
+}
+
 const BASE = "/plugins/kkroo.ccrotate/api";
 
 export const ccrotateApi = {
@@ -26,4 +37,8 @@ export const ccrotateApi = {
     api.get<CcrotateSnapshotResponse>(
       `${BASE}/snapshot?companyId=${encodeURIComponent(companyId)}`,
     ),
+  refresh: (companyId: string) =>
+    api.post<CcrotateRefreshResponse>(`${BASE}/refresh`, { companyId }),
+  import: (companyId: string, blob: string) =>
+    api.post<CcrotateImportResponse>(`${BASE}/import`, { companyId, blob }),
 };

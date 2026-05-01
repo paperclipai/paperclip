@@ -148,6 +148,85 @@ async function handleSnapshot(): Promise<PluginApiResponse> {
   return { status: 200, body };
 }
 
+async function handleRefresh(): Promise<PluginApiResponse> {
+  // Full per-account refresh — calls Anthropic + Claude/Codex APIs for every
+  // saved account and rewrites the on-disk tier-cache.
+  //
+  // Manually triggered from the UI, so the longer wall-clock vs `refresh-one`
+  // is acceptable. ccrotate's refresh handles its own per-account cooldowns
+  // and skips accounts already throttled, so consecutive button presses
+  // are safe; back-to-back refreshes within the cooldown window will return
+  // the same data without an API hit.
+  //
+  // Run both targets sequentially. ccrotate refresh defaults to the active
+  // CCROTATE_TARGET, so we drive each one explicitly.
+  const errors: { target: CcrotateTarget; error: string }[] = [];
+  for (const target of TARGETS) {
+    const result = await runProcess("ccrotate", ["--target", target, "refresh"], 180_000);
+    if (result.code !== 0) {
+      errors.push({
+        target,
+        error: result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`,
+      });
+    }
+  }
+  // Even if one target failed, return what we got — the snapshot route on
+  // the next refetch reads the on-disk cache and will surface partial data.
+  // 502 if BOTH targets failed, 200 with errors[] if partial.
+  if (errors.length === TARGETS.length) {
+    return {
+      status: 502,
+      body: { ok: false, errors },
+    };
+  }
+  return { status: 200, body: { ok: true, errors: errors.length > 0 ? errors : undefined } };
+}
+
+async function handleImport(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  if (!ctxRef) return { status: 503, body: { error: "plugin not initialized" } };
+  const body = (input.body ?? {}) as { blob?: unknown };
+  const blob = typeof body.blob === "string" ? body.blob.trim() : "";
+  if (!blob.startsWith("mp-gz-b64:")) {
+    return {
+      status: 400,
+      body: { error: "expected JSON body { blob: string starting with 'mp-gz-b64:' }" },
+    };
+  }
+  // 1. Run ccrotate import locally on the paperclip pod so the live tier-cache
+  //    immediately reflects the imported state (the snapshot route reads
+  //    ccrotate's on-disk cache via `ccrotate when`, not the DB blob).
+  const importResult = await runProcess("ccrotate", ["import", blob, "--force"], 30_000);
+  if (importResult.code !== 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: importResult.stderr.trim() || importResult.stdout.trim() || `exit ${importResult.code}`,
+      },
+    };
+  }
+  // ccrotate import prints e.g. "Import complete: N updated, M kept (local fresher)."
+  const summary = (importResult.stdout + importResult.stderr).match(
+    /(\d+)\s+updated,\s*(\d+)\s+kept/i,
+  );
+  const imported = summary
+    ? { updated: Number(summary[1]), kept: Number(summary[2]) }
+    : undefined;
+
+  // 2. Persist the imported blob to plugin_state so the next Job pod's
+  //    preRun hook re-imports the same canonical state.
+  const value: PersistedSnapshot = { blob, capturedAt: new Date().toISOString() };
+  await ctxRef.state.set(
+    {
+      scopeKind: "instance",
+      namespace: SNAPSHOT_NAMESPACE,
+      stateKey: SNAPSHOT_KEY,
+    },
+    value,
+  );
+  return { status: 200, body: { ok: true, imported, capturedAt: value.capturedAt } };
+}
+
 async function handleStateGet(_input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (!ctxRef) return { status: 503, body: { error: "plugin not initialized" } };
   const value = await ctxRef.state.get({
@@ -198,6 +277,8 @@ const plugin: PaperclipPlugin = definePlugin({
       switch (input.routeKey) {
         case "snapshot":
           return await handleSnapshot();
+        case "refresh":
+          return await handleRefresh();
         case "state-get":
           return await handleStateGet(input);
         case "state-put":
