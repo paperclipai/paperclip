@@ -23,19 +23,25 @@ describe("resolveRawGitHubUrl", () => {
     expect(url).toBe("https://ghe.acme.com/raw/acme/skills/main/docs/SKILL.md");
   });
 
-  it("returns Gitea-style URL for Gitea hosts", () => {
+  it("returns Gitea-style URL for Gitea hosts (branch name)", () => {
     const url = resolveRawGitHubUrl("git.acme.com", "acme", "skills", "main", "SKILL.md", "gitea");
-    expect(url).toBe("https://git.acme.com/acme/skills/raw/branch/main/SKILL.md");
+    expect(url).toBe("https://git.acme.com/acme/skills/raw/main/SKILL.md");
   });
 
   it("returns Gitea-style URL for nested paths on Gitea", () => {
     const url = resolveRawGitHubUrl("git.acme.com", "acme", "skills", "main", "scripts/run.sh", "gitea");
-    expect(url).toBe("https://git.acme.com/acme/skills/raw/branch/main/scripts/run.sh");
+    expect(url).toBe("https://git.acme.com/acme/skills/raw/main/scripts/run.sh");
+  });
+
+  it("returns Gitea-style URL for a pinned commit SHA", () => {
+    const sha = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+    const url = resolveRawGitHubUrl("git.acme.com", "acme", "skills", sha, "SKILL.md", "gitea");
+    expect(url).toBe(`https://git.acme.com/acme/skills/raw/${sha}/SKILL.md`);
   });
 
   it("strips leading slash from filePath", () => {
     const url = resolveRawGitHubUrl("git.acme.com", "acme", "skills", "main", "/SKILL.md", "gitea");
-    expect(url).toBe("https://git.acme.com/acme/skills/raw/branch/main/SKILL.md");
+    expect(url).toBe("https://git.acme.com/acme/skills/raw/main/SKILL.md");
   });
 
   it("defaults to GHE format when gitType is omitted", () => {

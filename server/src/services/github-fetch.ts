@@ -53,8 +53,9 @@ export function resolveRawGitHubUrl(
     return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${p}`;
   }
   if (gitType === "gitea") {
-    // Gitea raw file URL format: /{owner}/{repo}/raw/branch/{ref}/{path}
-    return `https://${hostname}/${owner}/${repo}/raw/branch/${ref}/${p}`;
+    // Gitea supports /raw/{ref}/{path} for branches, tags, and commit SHAs.
+    // The /raw/branch/{ref}/{path} form only accepts branch names and 404s on SHAs.
+    return `https://${hostname}/${owner}/${repo}/raw/${ref}/${p}`;
   }
   // GitHub Enterprise
   return `https://${hostname}/raw/${owner}/${repo}/${ref}/${p}`;

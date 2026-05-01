@@ -957,11 +957,12 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
 
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
-    const skillDir = path.posix.dirname(skillPath);
+    const rawDir = path.posix.dirname(skillPath);
+    const skillDir = rawDir === "." ? "" : rawDir;
     const inventory = allFiles
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
+      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : true))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : (skillDir ? entry.slice(skillDir.length + 1) : entry);
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
