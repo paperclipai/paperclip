@@ -1,106 +1,77 @@
-# v3.1 Requirements: DevPlan Core Convergence
+# v3.2 Requirements: Future Scope
 
-**Milestone:** v3.1 DevPlan Core Convergence
-**Status:** active
+**Milestone:** v3.2 Future Scope
+**Status:** planning
 **Created:** 2026-05-01
-**Baseline assessment:** RealTycoon2 개발기획서 대비 정적 싱크로율 약 64%
 
 ## Goal
 
-RealTycoon2 개발기획서의 핵심 제품 루프와 Multica/wikiLLM/Graphify 엔진 기준을 실제 코드, UI, 문서, 검증 증거로 다시 정렬한다.
+RealTycoon2를 trusted internal company evidence ecosystem에서 public/open marketplace, cross-company federation, billing/payroll settlement, public store operations 영역으로 확장한다.
 
 ## Requirements
 
-### DevPlan Truth and Traceability
+### Public Marketplace Launch
 
-- [x] **ALIGN-01**: 운영자는 개발기획서 장/핵심 축별로 구현됨, 부분 구현, 미구현, tech debt 상태와 근거 파일을 한 곳에서 확인할 수 있다.
-- [x] **ALIGN-02**: 완료 주장에는 code path, route/schema, UI surface, test/evidence 중 최소 하나 이상의 근거가 연결되고, 근거가 없으면 partial/debt로 표시된다.
-- [x] **ALIGN-03**: milestone close gate는 Graphify, wikiLLM, Multica 수준의 엔진 parity 주장을 근거 없이 `complete`로 표시하지 못하게 막는다.
+- [ ] **MKT-01**: Public/open marketplace는 company-scoped evidence ecosystem 외부에서도 discoverable하고 settlement/ledger/CareerMate evidence가 visible하다.
+- [ ] **MKT-02**: Public listing은 approval workflow를 거치며 trusted company boundary 밖에서도 quality/price/reputation evidence가 온전하다.
+- [ ] **MKT-03**: Marketplace search/discovery는 public metadata와 private evidence contract를 분리하여 운영한다.
 
-### RealTycoon2 Identity Cleanup
+### Billing, Payroll, and Settlement
 
-- [x] **IDENTITY-01**: 제품 표면 문서, UI copy, onboarding/default state는 RealTycoon2-first Korean identity를 사용하고 Paperclip은 infrastructure/reference로만 설명된다.
-- [x] **IDENTITY-02**: identity regression scan은 UI, docs, server-facing copy에서 product-facing Paperclip/Paper Company/legacy English default copy를 탐지한다.
-- [x] **IDENTITY-03**: `@paperclipai/*`, `PAPERCLIP_*` 같은 호환성 명칭은 public product identity가 아니라 legacy compatibility layer로 문서화된다.
+- [ ] **BILL-01**: Settlement는 approved deliverable 기반 automatic payment processing으로 확장되어 approved 상태에서 ledger transaction이 발생한다.
+- [ ] **BILL-02**: Payroll processing은 agent/operator gold balance에서 monthly payroll deduction/credit 루프를 실행한다.
+- [ ] **BILL-03**: Payment settlement evidence는 bank/payment provider integration receipt와 reconcile 가능하다.
 
-### Daily Work and OKR Cockpit
+### Federation and Cross-Company Evidence
 
-- [x] **DAILY-01**: 첫 운영 화면은 개발기획서의 3패널 구조인 왼쪽 OKR tree, 중앙 daily report/board/task mesh, 오른쪽 detail/Jarvis/chat 흐름을 제공한다.
-- [x] **DAILY-02**: One-Liner 입력은 review, Task/To-Do/Deliverable 생성, knowledge projection, economy evidence까지 한 cockpit에서 추적된다.
-- [x] **DAILY-03**: Mission -> Objective -> Key Result -> Project -> Task -> To-Do 계층과 rollup 상태가 API와 UI에서 일관되게 보인다.
+- [ ] **FED-01**: Cross-company federation은 company boundary, policy, audit model을跨越하는 evidence sharing contract를 갖는다.
+- [ ] **FED-02**: Federation partner company의 evidence는 local company scope와 분리되어 audit trail이 company 별로 유지된다.
 
-### Multica Runtime Alignment
+### Autonomous Jarvis Direct Apply
 
-- [x] **RUNTIME-01**: RT2 execution queue는 Multica-style `queued -> dispatched -> running -> completed/failed/cancelled` 상태 전이와 transition guard를 갖는다.
-- [x] **RUNTIME-02**: agent/runtime dispatch는 runtime capacity, heartbeat, stale runtime cleanup, cancellation polling을 기준으로 감사 가능한 evidence를 남긴다.
-- [x] **RUNTIME-03**: agent progress, message stream, tool/event output은 work card와 Jarvis evidence surface에서 추적 가능하다.
+- [ ] **AUTO-01**: Autonomous Jarvis direct apply는 approval-first governance boundary를 유지하면서 eval-backed proposal이 직접 적용되는 루프를 갖는다.
+- [ ] **AUTO-02**: Direct apply risk evaluation은 rubric-based scoring과 operator review approval gate를 거친다.
 
-### wikiLLM Living Memory
+### Public Store Operations
 
-- [x] **WIKI-01**: RT2 event/wiki store는 `index.md`, `log.md`, topic/project/schema page 형태의 wikiLLM-compatible file model로 export 또는 materialize될 수 있다.
-- [x] **WIKI-02**: wiki ingest/update workflow는 provenance, confidence, contradiction flag, related page update evidence를 남긴다.
-- [x] **WIKI-03**: Jarvis grounded answer는 wiki page citation을 제공하고, 가치 있는 답변은 review 가능한 wiki draft/update로 되돌릴 수 있다.
+- [ ] **STORE-01**: Public store listing/operations는 App Store/Google Play/metastore presence에 대한 metadata management evidence를 갖는다.
+- [ ] **STORE-02**: Store reviewer communication과 status tracking이 company-scoped audit trail로 관리된다.
 
-### Graphify v3 Engine Alignment
+### v3.2 Acceptance Gate
 
-- [x] **GRAPH-01**: Graphify sidecar는 repo/docs/wiki source file을 SHA256 file cache와 source location metadata로 증분 ingest한다.
-- [x] **GRAPH-02**: graph build path는 code/docs extraction interface, confidence score, relation provenance를 저장한다.
-- [x] **GRAPH-03**: graph query API는 node, neighbors, community, shortest path, god nodes, graph stats를 제공하고 실제 clustering algorithm 또는 명시된 fallback을 사용한다.
-- [x] **GRAPH-04**: graph report는 RT2 product graph와 corpus graph를 구분하고 knowledge gap, surprising connection, suggested question을 노출한다.
-
-### Economy, Marketplace, and CareerMate Loop
-
-- [ ] **ECON-01**: Marketplace와 P&L은 primary navigation loop에서 접근 가능하며 deliverable price, quality, gold evidence와 연결된다.
-- [ ] **ECON-02**: price negotiation, settlement, anti-gaming outcome은 amoeba/user/project P&L rollup에 반영된다.
-- [ ] **ECON-03**: CareerMate/avatar/reputation progression은 ledger와 quality evidence를 기반으로 계산되며 placeholder stat으로만 표시되지 않는다.
-
-### v3.1 Acceptance Gate
-
-- [ ] **GATE-01**: v3.1 acceptance gate는 DevPlan alignment, identity, daily cockpit, runtime, wiki/graph, economy loop에 대한 focused tests/scans를 실행한다.
-- [ ] **GATE-02**: milestone audit은 64% baseline 대비 score delta, 남은 blocker, accepted debt, future scope를 구체적인 파일 근거와 함께 보고한다.
+- [ ] **GATE-01**: v3.2 acceptance gate는 public marketplace, billing/payroll, federation, autonomous Jarvis, store operations에 대한 focused tests/scans를 실행한다.
+- [ ] **GATE-02**: milestone audit은 v3.1 baseline 대비 개선 evidence와 남은 blocker, accepted debt, future scope를 구체적인 파일 근거와 함께 보고한다.
 
 ## Future Requirements
 
-- Public/open company marketplace launch는 trusted company ecosystem 밖의 public rollout 단계에서 다룬다.
-- Autonomous Jarvis direct apply는 approval-first contradiction/governance loop가 v3.1 이후 안정화된 뒤 다룬다.
-- Native store listing, marketing, reviewer account operations는 v3.0 distribution evidence를 실제 credential/operator 환경에서 채운 뒤 다룬다.
-- Cross-company federation full apply는 company boundary, policy, audit model을 별도 milestone에서 다룬다.
+- Real-time payment provider webhook integration은 payment receipt validation 후 처리한다.
+- Mandatory provider-only eval path는 autonomous Jarvis direct apply 안정화 후 별도 phase로 다룬다.
 
 ## Out of Scope
 
-- backend/data platform greenfield rewrite. 기존 Express, React/Vite, Drizzle, Postgres/PGlite 기반을 보존한다.
+- Backend/data platform greenfield rewrite. 기존 Express, React/Vite, Drizzle, Postgres/PGlite 기반을 보존한다.
 - v2.9 capture reliability 재작성. DRAFT/NATIVE/MSG/REVIEW는 regression gate 실패 수정만 허용한다.
 - 실제 Apple/Windows signing credential, APNs/Web Push provider secret 저장. repo에는 secret reference와 evidence manifest만 둔다.
-- Graphify upstream code를 무비판적으로 vendor-in 하는 방식. RT2 product graph와 corpus graph boundary를 먼저 고정한다.
+- Graphify upstream code를 무비판적으로 vendor-in 하는 방식. RT2 product graph와 corpus graph boundary는 v3.1에서 고정됨.
 
 ## Traceability
 
 | Requirement | Phase |
 |-------------|-------|
-| ALIGN-01 | Phase 65 |
-| ALIGN-02 | Phase 65 |
-| ALIGN-03 | Phase 65 |
-| IDENTITY-01 | Phase 65 |
-| IDENTITY-02 | Phase 65 |
-| IDENTITY-03 | Phase 65 |
-| DAILY-01 | Phase 66 |
-| DAILY-02 | Phase 66 |
-| DAILY-03 | Phase 66 |
-| RUNTIME-01 | Phase 67 |
-| RUNTIME-02 | Phase 67 |
-| RUNTIME-03 | Phase 67 |
-| WIKI-01 | Phase 68 |
-| WIKI-02 | Phase 68 |
-| WIKI-03 | Phase 68 |
-| GRAPH-01 | Phase 69 |
-| GRAPH-02 | Phase 69 |
-| GRAPH-03 | Phase 69 |
-| GRAPH-04 | Phase 69 |
-| ECON-01 | Phase 70 |
-| ECON-02 | Phase 70 |
-| ECON-03 | Phase 70 |
-| GATE-01 | Phase 71 |
-| GATE-02 | Phase 71 |
+| MKT-01 | Phase 72 |
+| MKT-02 | Phase 72 |
+| MKT-03 | Phase 72 |
+| BILL-01 | Phase 73 |
+| BILL-02 | Phase 73 |
+| BILL-03 | Phase 73 |
+| FED-01 | Phase 74 |
+| FED-02 | Phase 74 |
+| AUTO-01 | Phase 75 |
+| AUTO-02 | Phase 75 |
+| STORE-01 | Phase 76 |
+| STORE-02 | Phase 76 |
+| GATE-01 | Phase 77 |
+| GATE-02 | Phase 77 |
 
 ---
-*마지막 업데이트: 2026-05-01, Phase 69 completed*
+*마지막 업데이트: 2026-05-01, v3.2 started*
