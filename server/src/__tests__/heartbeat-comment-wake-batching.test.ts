@@ -13,6 +13,7 @@ import {
   applyPendingMigrations,
   companies,
   createDb,
+  creditLedger,
   ensurePostgresDatabase,
   heartbeatRuns,
   issueComments,
@@ -277,6 +278,14 @@ describe("heartbeat comment wake batching", () => {
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
+      });
+
+      // Grant credits so the credit preflight in claimQueuedRun allows runs to proceed.
+      await db.insert(creditLedger).values({
+        accountId: companyId,
+        eventType: "subscription_grant",
+        amount: 10000,
+        idempotencyKey: `test-grant-${companyId}`,
       });
 
       const comment1 = await db
