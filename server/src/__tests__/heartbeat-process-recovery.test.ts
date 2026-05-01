@@ -877,6 +877,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     autoCompleteIssueOnSuccess?: boolean;
     adapterResult?: Awaited<ReturnType<typeof mockAdapterExecute>>;
     seedConcreteActionEvidence?: boolean;
+    waitForCompletedIssue?: boolean;
   }) {
     if (input.adapterResult) {
       mockAdapterExecute.mockResolvedValueOnce(input.adapterResult);
@@ -898,6 +899,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, fixture.runId);
     await waitForHeartbeatIdle(db);
+    if (input.waitForCompletedIssue) {
+      await waitForValue(async () => {
+        const completedIssue = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, fixture.issueId))
+          .then((rows) => rows[0] ?? null);
+        return completedIssue?.status === "done" ? completedIssue : null;
+      });
+    }
 
     const issue = await db.select().from(issues).where(eq(issues.id, fixture.issueId)).then((rows) => rows[0] ?? null);
     const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)).then((rows) => rows[0] ?? null);
@@ -908,6 +919,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { issue, run } = await executeAutoCompleteFixture({
       autoCompleteIssueOnSuccess: true,
       seedConcreteActionEvidence: true,
+      waitForCompletedIssue: true,
     });
 
     expect(run?.status).toBe("succeeded");
