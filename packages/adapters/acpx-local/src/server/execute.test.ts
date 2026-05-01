@@ -214,27 +214,30 @@ describe("acpx_local runtime skill isolation", () => {
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 
-  it("cleans stale credential wrapper scripts for the same ACPX agent", async () => {
+  it("cleans stale credential wrapper scripts across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const baseConfig = {
-      agent: "custom",
       agentCommand: "node ./fake-acp.js",
       stateDir,
     };
 
     await runExecutor({
       ...baseConfig,
+      agent: "custom-a",
       env: { PAPERCLIP_API_KEY: "old-key" },
     });
     await runExecutor({
       ...baseConfig,
+      agent: "custom-b",
       env: { PAPERCLIP_API_KEY: "new-key" },
     });
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    expect(wrappers.filter((name) => name.startsWith("custom-") && name.endsWith(".sh"))).toHaveLength(1);
-    expect(wrappers.filter((name) => name.startsWith("custom-") && name.endsWith(".env"))).toHaveLength(1);
+    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
+    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(1);
+    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(false);
+    expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
     const wrapperPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".sh"))!);
     const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".env"))!);
     const wrapper = await fs.readFile(wrapperPath, "utf8");

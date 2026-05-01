@@ -264,6 +264,37 @@ describe("acpx_local execute", () => {
     }
   });
 
+  it("closes duplicate warm handles from concurrent runs for the same session key", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-concurrent-"));
+    try {
+      const runtimes: FakeRuntime[] = [];
+      const warmHandles = new Map();
+      const execute = createAcpxLocalExecutor({
+        warmHandles,
+        createRuntime: (options) => {
+          const runtime = new FakeRuntime(options);
+          runtimes.push(runtime);
+          return runtime;
+        },
+      });
+
+      const [first, second] = await Promise.all([
+        execute(buildContext(root, { runId: "run-1" })),
+        execute(buildContext(root, { runId: "run-2" })),
+      ]);
+
+      expect(first.exitCode).toBe(0);
+      expect(second.exitCode).toBe(0);
+      expect(runtimes).toHaveLength(2);
+      expect(warmHandles.size).toBe(1);
+      expect(runtimes.flatMap((runtime) => runtime.closeInputs).filter((input) =>
+        input.reason === "paperclip duplicate warm handle cleanup"
+      )).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("retries with a fresh session when ACPX cannot resume the saved backend session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-resume-"));
     try {

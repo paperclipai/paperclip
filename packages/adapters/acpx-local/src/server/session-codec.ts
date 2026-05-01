@@ -15,6 +15,7 @@ export const sessionCodec: AdapterSessionCodec = {
 
     return {
       ...(runtimeSessionName ? { runtimeSessionName } : {}),
+      ...(readString(record.sessionKey) ? { sessionKey: readString(record.sessionKey) } : {}),
       ...(readString(record.acpxRecordId) ? { acpxRecordId: readString(record.acpxRecordId) } : {}),
       ...(acpSessionId ? { acpSessionId } : {}),
       ...(agentSessionId ? { agentSessionId } : {}),

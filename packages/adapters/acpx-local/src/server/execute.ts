@@ -580,11 +580,10 @@ async function writeAgentWrapper(input: {
     contents: script,
     mode: 0o700,
   });
-  const stalePrefix = `${input.acpxAgent}-`;
   const staleWrappers = await fs.readdir(wrappersDir).catch(() => []);
   await Promise.all(
     staleWrappers.map(async (name) => {
-      const isManagedWrapperFile = name.startsWith(stalePrefix) && (name.endsWith(".sh") || name.endsWith(".env"));
+      const isManagedWrapperFile = name.endsWith(".sh") || name.endsWith(".env");
       if (!isManagedWrapperFile || name === path.basename(wrapperPath) || name === path.basename(envFilePath)) return;
       await fs.rm(path.join(wrappersDir, name), { force: true });
     }),
@@ -942,6 +941,14 @@ async function cleanupIdleHandles(input: {
   }
 }
 
+function warmHandleMatches(
+  entry: RuntimeCacheEntry | undefined,
+  runtime: AcpRuntime,
+  handle: AcpRuntimeHandle,
+): boolean {
+  return entry?.runtime === runtime && entry.handle === handle;
+}
+
 export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -1099,19 +1106,30 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
-        warmHandles.delete(prepared.sessionKey);
+        if (warmHandleMatches(warmHandles.get(prepared.sessionKey), runtime, sessionHandle)) {
+          warmHandles.delete(prepared.sessionKey);
+        }
         await runtime.close({
           handle: sessionHandle,
           reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
           discardPersistentState: terminal.status === "cancelled" || timedOut,
         }).catch(() => {});
       } else if (prepared.mode === "persistent") {
-        warmHandles.set(prepared.sessionKey, {
-          runtime,
-          handle: sessionHandle,
-          fingerprint: prepared.fingerprint,
-          lastUsedAt: now(),
-        });
+        const existing = warmHandles.get(prepared.sessionKey);
+        if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
+          await runtime.close({
+            handle: sessionHandle,
+            reason: "paperclip duplicate warm handle cleanup",
+            discardPersistentState: false,
+          }).catch(() => {});
+        } else {
+          warmHandles.set(prepared.sessionKey, {
+            runtime,
+            handle: sessionHandle,
+            fingerprint: prepared.fingerprint,
+            lastUsedAt: now(),
+          });
+        }
       }
 
       const errorMessage = timedOut
@@ -1157,7 +1175,9 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
         discardPersistentState: timedOut,
       }).catch(() => {});
-      warmHandles.delete(prepared.sessionKey);
+      if (warmHandleMatches(warmHandles.get(prepared.sessionKey), runtime, sessionHandle)) {
+        warmHandles.delete(prepared.sessionKey);
+      }
       await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
       return {
         exitCode: 1,
