@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -362,6 +362,248 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       scheduledRetryAttempt: 1,
     });
   });
+
+  it("coalesces duplicate max-turn continuation schedules for the same source run and attempt", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture();
+    const retryOptions = {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    };
+
+    const [first, second] = await Promise.all([
+      heartbeat.scheduleBoundedRetry(runId, retryOptions),
+      heartbeat.scheduleBoundedRetry(runId, retryOptions),
+    ]);
+
+    expect(first.outcome).toBe("scheduled");
+    expect(second.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled" || second.outcome !== "scheduled") return;
+
+    expect(new Set([first.run.id, second.run.id]).size).toBe(1);
+
+    const retryRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.retryOfRunId, runId),
+          eq(heartbeatRuns.scheduledRetryReason, MAX_TURN_CONTINUATION_RETRY_REASON),
+          eq(heartbeatRuns.scheduledRetryAttempt, 1),
+        ),
+      );
+    expect(retryRuns).toHaveLength(1);
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        coalescedCount: agentWakeupRequests.coalescedCount,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, MAX_TURN_CONTINUATION_WAKE_REASON));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      id: retryRuns[0]?.wakeupRequestId,
+      coalescedCount: 1,
+    });
+    expect(wakeups[0]?.idempotencyKey).toContain(`:${issueId}:${runId}:1`);
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRuns[0]?.id);
+  });
+
+  it("does not promote a duplicate max-turn continuation that does not own the issue lock", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const duplicateWakeupId = randomUUID();
+    const duplicateRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: duplicateWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      payload: {
+        issueId,
+        retryOfRunId: runId,
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        scheduledRetryAttempt: 1,
+      },
+      status: "queued",
+      requestedByActorType: "system",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: duplicateRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      wakeupRequestId: duplicateWakeupId,
+      retryOfRunId: runId,
+      scheduledRetryAt: scheduled.dueAt,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      contextSnapshot: {
+        issueId,
+        wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: duplicateRunId })
+      .where(eq(agentWakeupRequests.id, duplicateWakeupId));
+
+    const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+
+    const duplicate = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, duplicateRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(duplicate).toEqual({
+      status: "cancelled",
+      errorCode: "issue_execution_lock_changed",
+    });
+
+    const duplicateWakeup = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, duplicateWakeupId))
+      .then((rows) => rows[0] ?? null);
+    expect(duplicateWakeup?.status).toBe("cancelled");
+  });
+
+  it.each(["blocked", "todo", "backlog"] as const)(
+    "does not schedule a max-turn continuation when the issue is already %s",
+    async (issueStatus) => {
+      const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus });
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+        maxAttempts: 2,
+        delayMs: 1_000,
+      });
+
+      expect(scheduled).toMatchObject({
+        outcome: "not_scheduled",
+        errorCode: "issue_not_in_progress",
+        issueId,
+      });
+
+      const retryRuns = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId))
+        .then((rows) => rows[0]?.count ?? 0);
+      expect(retryRuns).toBe(0);
+    },
+  );
+
+  it.each(["blocked", "todo", "backlog"] as const)(
+    "cancels a due max-turn continuation when the issue moves to %s before retry promotion",
+    async (issueStatus) => {
+      const { issueId, runId, now } = await seedMaxTurnFixture();
+
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now,
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+        maxAttempts: 2,
+        delayMs: 1_000,
+      });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+
+      await db.update(issues).set({
+        status: issueStatus,
+        updatedAt: new Date(now.getTime() + 500),
+      }).where(eq(issues.id, issueId));
+
+      const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+      const retryRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scheduled.run.id))
+        .then((rows) => rows[0] ?? null);
+      expect(retryRun).toMatchObject({
+        status: "cancelled",
+        errorCode: "issue_not_in_progress",
+      });
+
+      const wakeupRequest = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeupRequest?.status).toBe("cancelled");
+
+      const issue = await db
+        .select({
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue).toEqual({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      });
+
+      const event = await db
+        .select({
+          message: heartbeatRunEvents.message,
+          payload: heartbeatRunEvents.payload,
+        })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, scheduled.run.id))
+        .orderBy(sql`${heartbeatRunEvents.seq} desc`)
+        .then((rows) => rows[0] ?? null);
+      expect(event?.message).toContain("no longer in_progress");
+      expect(event?.payload).toMatchObject({
+        currentStatus: issueStatus,
+        requiredStatus: "in_progress",
+        scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      });
+    },
+  );
 
   it("does not queue max-turn continuations after the configured cap", async () => {
     const { runId, now } = await seedMaxTurnFixture({ scheduledRetryAttempt: 2 });

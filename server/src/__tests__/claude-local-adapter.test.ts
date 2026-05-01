@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isClaudeMaxTurnsResult, isClaudeMaxTurnsText } from "@paperclipai/adapter-claude-local/server";
+import { isClaudeMaxTurnsResult } from "@paperclipai/adapter-claude-local/server";
 import { parseClaudeStdoutLine } from "@paperclipai/adapter-claude-local/ui";
 import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 
@@ -21,16 +21,20 @@ describe("claude_local max-turn detection", () => {
     ).toBe(true);
   });
 
-  it("detects max-turn exhaustion by text", () => {
-    expect(isClaudeMaxTurnsText("error_max_turns")).toBe(true);
-    expect(isClaudeMaxTurnsText("Maximum turns reached.")).toBe(true);
-  });
-
   it("returns false for non-max-turn results", () => {
     expect(
       isClaudeMaxTurnsResult({
         subtype: "success",
         stop_reason: "end_turn",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not detect max-turn exhaustion from unstructured result text", () => {
+    expect(
+      isClaudeMaxTurnsResult({
+        subtype: "error",
+        result: "Tool output said: Maximum turns reached.",
       }),
     ).toBe(false);
   });

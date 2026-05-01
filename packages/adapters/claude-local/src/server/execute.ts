@@ -46,7 +46,6 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
-  isClaudeMaxTurnsText,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -694,14 +693,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
-      const maxTurnsExhausted = isClaudeMaxTurnsText([
-        fallbackErrorMessage,
-        proc.stdout,
-        proc.stderr,
-      ].join("\n"));
       const transientUpstream =
         !loginMeta.requiresLogin &&
-        !maxTurnsExhausted &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
           parsed: null,
@@ -719,8 +712,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
-        : maxTurnsExhausted
-        ? "max_turns_exhausted"
         : transientUpstream
         ? "claude_transient_upstream"
         : null;
@@ -736,7 +727,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
-          ...(maxTurnsExhausted ? { stopReason: "max_turns_exhausted" } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
