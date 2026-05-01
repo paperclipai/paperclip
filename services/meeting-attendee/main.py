@@ -824,8 +824,9 @@ def _format_org_context(ctx: dict[str, Any], max_chars: int = 14000) -> str:
 
 
 async def decide(state: MeetingState, utterance: str, speaker: str) -> dict[str, Any]:
-    """Call Sonnet 4.6 with tool-use to decide silent / speak / log.
-    Sonnet may call search_vault, list_tickets, get_capability, web_search before deciding.
+    """Call Haiku 4.5 with tool-use to decide silent / speak / log.
+    Haiku for low-latency conversational pacing. Wake-word fast-path bypasses
+    extensive tool use when user is directly addressing the bot.
     """
     if not utterance.strip():
         return {"action": "silent", "text": "", "reason": "empty-utterance"}
@@ -835,6 +836,16 @@ async def decide(state: MeetingState, utterance: str, speaker: str) -> dict[str,
         if any(kw in lower for kw in ("we decided", "let's go with", "agreed", "approved")):
             return {"action": "log", "log_kind": "decision", "text": utterance, "reason": "keyword-decision"}
         return {"action": "silent", "text": "", "reason": "no-api-key-default-silent"}
+
+    # Wake-word fast-path detection: if anyone (not just Vardaan) directly addresses
+    # the bot, give it priority + fewer tool rounds for snappier response.
+    _utt_lower = utterance.lower()
+    _wake_pattern = _re.compile(
+        r"\b(bot|nova|ronald|claude|agent|hey\s+bot|hey\s+nova|hey\s+ronald|hey\s+claude|"
+        r"meeting\s+bot|note\s*taker|notetaker|are\s+you\s+there|you\s+there)\b",
+        _re.IGNORECASE,
+    )
+    is_directly_addressed = bool(_wake_pattern.search(_utt_lower))
 
     org_ctx = state.__dict__.get("_org_context") or {}
     system = _DECISION_SYSTEM_PROMPT.format(
@@ -848,13 +859,23 @@ async def decide(state: MeetingState, utterance: str, speaker: str) -> dict[str,
         from anthropic import AsyncAnthropic  # type: ignore
         client = AsyncAnthropic(api_key=_ENV["ANTHROPIC_API_KEY"])
 
-        messages: list[dict] = [{"role": "user", "content": "Decide. Use research tools if Vardaan asked a question that benefits from current data. Then return strict JSON for the final action."}]
+        # Wake-word path: tight token cap, fewer tool rounds for snappy reply.
+        # Normal path: more tool rounds for thoughtful research-backed answers.
+        if is_directly_addressed:
+            initial_user = "User directly addressed the bot. Respond in ≤25 words. Use at most 1 quick tool call only if status/data is essential. Return strict JSON."
+            max_rounds = 2
+            max_toks = 250
+        else:
+            initial_user = "Decide. Use research tools if asked a question that benefits from current data. Then return strict JSON. If you DO speak, keep it ≤30 words."
+            max_rounds = 4
+            max_toks = 350
 
-        # Tool-use loop — max 6 rounds
-        for _round in range(6):
+        messages: list[dict] = [{"role": "user", "content": initial_user}]
+
+        for _round in range(max_rounds):
             resp = await client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=600,
+                model="claude-haiku-4-5",
+                max_tokens=max_toks,
                 system=system,
                 tools=_TOOL_DEFINITIONS,
                 messages=messages,
@@ -1791,7 +1812,8 @@ async def transcript(request: Request) -> dict[str, Any]:
         # the previous response is still being played out by Recall (TTS for a 170-word
         # answer is ~60s of audio, plus join-lobby variance). Manual /speak endpoint
         # is exempt — admin override speaks regardless.
-        BOT_SPEAK_COOLDOWN_S = 30
+        # Default cooldown 8s; reduced further to 4s when user is directly addressing.
+        BOT_SPEAK_COOLDOWN_S = 4 if _re.search(r"\b(bot|nova|ronald|claude|agent|hey)\b", utterance.lower()) else 8
         if state.bot_interventions:
             last_spoken_ts = state.bot_interventions[-1].get("ts", 0)
             elapsed = ts - last_spoken_ts
